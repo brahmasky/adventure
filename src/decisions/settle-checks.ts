@@ -42,6 +42,13 @@ export function claimsCheck(text: string, evidence: readonly LedgerEvent[], atta
   return out;
 }
 
+/** Guard 3 (spec §3.2): the newest tool event of the run is a denied tool_finished or a gate deny. */
+export function lastCallDenied(evidence: readonly LedgerEvent[]): boolean {
+  const last = [...evidence].reverse().find((e) => e.event_type === "tool_finished" || e.event_type === "policy_decision");
+  if (!last) return false;
+  return last.event_type === "tool_finished" ? last.payload.status === "denied" : last.payload.decision === "deny";
+}
+
 const OPEN = new Set(["pending", "in_progress"]);
 const shape = (t: TodoSnapshot): string => JSON.stringify(t.phases.map((p) => p.tasks.map((x) => [x.content, x.status])));
 export const pendingCount = (t: TodoSnapshot): number => t.phases.reduce((n, p) => n + p.tasks.filter((x) => OPEN.has(x.status)).length, 0);

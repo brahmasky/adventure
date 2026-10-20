@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { decide } from "../../src/decisions/decide.js";
 import { fallbackCardText, shouldRecord, storeRecorder } from "../../src/decisions/record.js";
 import type { AnyDecideResult, AnyEntry, Entry, RungResult } from "../../src/decisions/types.js";
+import { TURN_SETTLE } from "../../src/decisions/entries/turn-settle.js";
 import { RunStore } from "../../src/run/run-store.js";
 import { drainOutbox } from "../helpers/omp-worker.js";
 
@@ -124,6 +125,16 @@ describe("storeRecorder: decision_fallback (ruling 9)", () => {
     expect(open(store)).toEqual([["decision_fallback", "turn.handler"]]);
     await decide(HANDLER, { v: "abstain" }, { run_id: null, recorder: rec, exec: { system_one: jevAbstains, model: modelPicks } });
     expect(store.listOpenIncidents()).toEqual([]);
+    store.close();
+  });
+  it("ruling 14: turn.settle's Jev-rung timeouts page through the Jev incidents, never decision_fallback; another entry's do", () => {
+    const store = RunStore.openInMemory();
+    const rec = storeRecorder(store, { env: ENV });
+    const timedOut = (verdict: string) => result({ verdict, rung: "fail", fallbackReason: "timeout", fallbackRung: "system_one" });
+    for (let k = 0; k < 3; k += 1) rec.record(TURN_SETTLE as unknown as AnyEntry, timedOut("settle"), { run_id: null, tool_call_id: null });
+    expect(store.listOpenIncidents()).toEqual([]);
+    for (let k = 0; k < 3; k += 1) rec.record(any, timedOut("pass"), { run_id: null, tool_call_id: null });
+    expect(open(store)).toEqual([["decision_fallback", "test.judge"]]);
     store.close();
   });
   it("budget (an oversized state) and a fail with no named failure (shadowed or abstained) are not fallbacks and never page", async () => {

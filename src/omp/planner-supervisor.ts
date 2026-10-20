@@ -17,7 +17,11 @@ import type { ToolRegistry } from "../tools/tool-registry.js";
 import { ACK_NUDGE_TEXT, isBareAck } from "./bare-ack.js";
 import type { BridgeRequest } from "./bridge-protocol.js";
 import { BridgeServer } from "./bridge-server.js";
-import { createBridgeHandler, flushUnreported, FULL_PAUSE, TRUST_WAIT_MIN_MS, type ActiveTurn, type PausePolicy, type SendBackKind } from "./bridge-handler.js";
+import { createBridgeHandler, flushUnreported, FULL_PAUSE, TRUST_WAIT_MIN_MS, type ActiveTurn, type GateHold, type PausePolicy, type SendBackKind, type SettleDecisionReply } from "./bridge-handler.js";
+import { drainJudges, JUDGE_DRAIN_MS } from "./bridge-read-judge.js";
+import type { SettleReason } from "../decisions/entries/turn-settle.js";
+import type { TodoSnapshot } from "../decisions/settle-state.js";
+import type { JevRequest, JevResult } from "../jev/jev-client.js";
 import { selectorKey, STEP_UP } from "./model-roles.js";
 import { familyOf, type ModelFamily, type ModelString } from "./model-string.js";
 import { PLANNER_HEARTBEAT_MS, type OmpConfig } from "./omp-config.js";
@@ -30,6 +34,8 @@ import { parseAttachments } from "./attachments.js";
 import type { RoleResolver } from "./role-resolver.js";
 import { writeSeatbeltProfiles } from "./seatbelt.js";
 import { resolveLessonSessionReset } from "./session-seed.js";
+import { decideSettle, SETTLE_BUDGET_MS } from "./settle-judge.js";
+import { finalAudit, settleStateFor, todoSnapshot, writeSettleOutcomes, type SettleCtx, type SettleTurn, type Snapshot } from "./supervisor-settle.js";
 import { verifyInstalledWrapper } from "./shell-wrapper.js";
 import { chatWorkspace } from "./workspace.js";
 import type { ToolDeclaration } from "./tool-decls.js";
@@ -102,6 +108,10 @@ export interface SupervisorDeps {
   manifestWaitMs?: number;
   /** How long `start()` (spawn → ready → open_session) may take (default START_WAIT_MS). */
   startWaitMs?: number;
+  /** turn.settle's own Jev client per run (audit role `settle`, 1.5 s, no retry): required, there is no off switch (R13). */
+  settleClient: (run_id: string) => (r: JevRequest) => Promise<JevResult>;
+  /** Live-gate seam only (never set by the daemon): forwarded to the bridge handler (judge_read) and used by settleRequest. */
+  gateHold?: GateHold;
 }
 
 export const RETRY_NOTE = "(The previous model was unavailable. Continue answering my last message.)";
@@ -122,6 +132,10 @@ const CRASH_LIMIT = 3;
 /** macOS sun_path is 104 bytes including the terminating NUL. */
 const MAX_SOCK_PATH = 103;
 const TIMED_OUT = Symbol("timed_out");
+/** Ruling 7: the outer race is the last net past Houge's own settle budget. */
+const SETTLE_SLACK_MS = 250;
+/** The live gate's hold (spec §7 cases 2 and 8): a delay inside the handler, so Houge's own budget and the extension's timer are what is measured. */
+const gateHold = (ms: number | undefined): Promise<void> => (ms ? new Promise((r) => setTimeout(r, ms)) : Promise.resolve());
 /** A turn step whose turn ended (abort, exit) before the step settled. */
 const ENDED = Symbol("ended");
 /** A start we stopped ourselves (abort, shutdown, replacement): no crash count, no incident. */
@@ -181,6 +195,8 @@ interface Turn {
   /** Spec §3.5: pass 0 is the first answer, pass 1 opens at the continuation's agent_start; `lastText` is the current pass's final text. */
   passes: Pass[]; sentBack: boolean; sentBackKind?: SendBackKind; continuationSeen: boolean; continuationFailed?: boolean;
   userText: string; settleText?: string;
+  /** Spec §5: the todo list before the prompt (null: get_state failed); the settle row's id and its send-back reason (§3.5 outcomes). */
+  todoBefore: TodoSnapshot | null; settleDecisionId: string | null; settleReason?: SettleReason;
   /** The child generation this turn committed to (set as promptTop begins; -1 before): only its bridge loss aborts the turn. */
   childGen: number;
   /** Concurrent approval waits: the deadline stays paused until every one resolved. */
@@ -492,7 +508,7 @@ export class PlannerSupervisor {
       route: null, role: "default", effort: null, chain: [], routedBy: undefined, startMissing: 0, legsTried: 0, retriedOther: false, pinFailed: false, failed: new Set(),
       deadlineLeft: cfg.turnTimeoutMs, deadlineAt: Date.now(),
       run_id: req.run_id, trustLevel: () => active.trust?.level() ?? "clean",
-      passes: [{ texts: [], final: "" }], sentBack: false, continuationSeen: false, userText: req.text
+      passes: [{ texts: [], final: "" }], sentBack: false, continuationSeen: false, userText: req.text, todoBefore: null, settleDecisionId: null
     };
     active.onSendBack = (kind, text) => this.onSendBack(turn, kind, text);
     this.armDeadline(turn); // the deadline covers child start and prompt build too
@@ -632,6 +648,9 @@ export class PlannerSupervisor {
     if ((await this.pinFirst(turn, s)) === ENDED || turn.failure) return;
     try {
       this.carryTrust(turn);
+      const snap = await this.step(turn, todoSnapshot(this.settleCtx())); // spec §5: one get_state before the prompt
+      if (snap === ENDED) return;
+      turn.todoBefore = snap?.todo ?? null;
       const sent = claimAtDispatch(this.d.store, this.d.chatId, prompt, this.d.turnContext.pid);
       turn.live = true;
       turn.dispatched = true;
@@ -776,8 +795,46 @@ export class PlannerSupervisor {
     }
     this.clearTimers(turn);
     if (turn.asyncWait) await this.dropAsyncChild(turn); // before the terminal write (codex final I1)
-    if (turn.failure) this.finishFailure(turn, turn.failure);
-    else this.finishSuccess(turn);
+    await drainJudges(turn.active, JUDGE_DRAIN_MS); // 2b-R5: in-flight read judgements complete (bounded) before flush and finalize
+    const ctx = this.settleCtx();
+    writeSettleOutcomes(ctx, this.settleView(turn));
+    // senior plan W: the audit's todo state is taken before delivery (one bounded RPC), so it is this turn's
+    const snap: Snapshot | null | undefined = !turn.failure && turn.sentBack && turn.continuationSeen && !turn.continuationFailed ? await todoSnapshot(ctx) : undefined;
+    if (turn.failure) { this.finishFailure(turn, turn.failure); return; }
+    this.finishSuccess(turn);
+    if (snap !== undefined) void finalAudit(ctx, this.settleView(turn), snap).catch((e) => console.error(`planner supervisor: final audit failed: ${message(e)}`));
+  }
+
+  private settleCtx(): SettleCtx {
+    return { store: this.d.store, chatId: this.d.chatId, workspace: this.workspace(), session: () => this.session,
+      queueHasTelegram: () => this.queue.some((q) => q.source === "telegram"), bridgeToken: () => this.bridgeToken,
+      settleDeps: (run_id) => ({ store: this.d.store, env: this.d.env, client: this.d.settleClient(run_id), chatId: this.d.chatId }) };
+  }
+  /** `Turn` carries `run_id` and `trustLevel` from newTurn on (senior plan r2 S: no Object.assign on the live turn), so the Turn IS a SettleTurn. */
+  private settleView(t: Turn): SettleTurn { return t; }
+
+  /** The bridge's `settle` (spec §3): the first fire decides; the second (stop_hook_active, or a turn already sent back) only ends the continuation. */
+  private async settleRequest(active: ActiveTurn, req: { stop_hook_active: boolean; text: string }): Promise<SettleDecisionReply> {
+    const t = this.turn;
+    if (!t || t.active !== active || t.finished) return { sendBack: false };
+    if (req.stop_hook_active || t.sentBack) return { sendBack: false };
+    const arrived = Date.now();
+    try {
+      await gateHold(this.d.gateHold?.settleMs); // live-gate seam (Task 12): spends the budget, never set by the daemon
+      const ctx = this.settleCtx();
+      const state = settleStateFor(ctx, this.settleView(t), req.text, arrived, await todoSnapshot(ctx));
+      // codex plan B8: one deadline from the request's ARRIVAL covers the hold, get_state, the ledger read and the decision
+      const decided = await bounded(decideSettle(ctx.settleDeps(t.run_id), state, arrived + SETTLE_BUDGET_MS), Math.max(0, arrived + SETTLE_BUDGET_MS + SETTLE_SLACK_MS - Date.now()));
+      if (decided === TIMED_OUT) { console.error(`planner supervisor: settle past its budget for ${t.run_id}`); return { sendBack: false }; }
+      t.settleDecisionId = decided.decisionId;
+      if (!decided.sendBack) return { sendBack: false };
+      t.settleReason = decided.reason;
+      return { sendBack: true, note: decided.note, kind: decided.kind };
+    } catch (e) {
+      // senior plan W: a throw must not reject the memo and vanish; the reply fails open and the failure is logged with a fixed code
+      console.error(`planner supervisor: settle_failed ${t.run_id}: ${message(e)}`);
+      return { sendBack: false };
+    }
   }
 
   /**
@@ -805,6 +862,8 @@ export class PlannerSupervisor {
     if (kind === "other") turn.retriedOther = true;
     turn.legIndex++;
     turn.lastError = undefined;
+    // senior plan W: the retried leg's session_stop is decided afresh, never answered from the failed leg's memo
+    for (const k of [...turn.active.cache.keys()]) if (k.startsWith("settle:")) turn.active.cache.delete(k);
     Object.assign(turn, newDeferred());
     return this.promptRetry(turn, s, kind);
   }
@@ -1121,7 +1180,8 @@ export class PlannerSupervisor {
   /** One listener per child; resolves the returned promise once a manifest request was answered (ruling 2). */
   private async listen(gen: number, sock: string, token: string): Promise<{ bridge: BridgeServer; manifestServed: Promise<void> }> {
     const { store, cfg, ctx, decls, env, turnEnvelopeActions } = this.d;
-    const inner = createBridgeHandler({ store, cfg, ctx, decls, env, turnEnvelopeActions, activeTurn: () => this.turn?.active ?? null });
+    const inner = createBridgeHandler({ store, cfg, ctx, decls, env, turnEnvelopeActions, activeTurn: () => this.turn?.active ?? null,
+      settle: (turn, req) => this.settleRequest(turn, req), ...(this.d.gateHold ? { gateHold: this.d.gateHold } : {}) });
     let served: () => void = () => undefined;
     const manifestServed = new Promise<void>((r) => { served = r; });
     const handle = async (req: BridgeRequest) => {
@@ -1369,7 +1429,7 @@ export class PlannerSupervisor {
   private finishSuccess(t: Turn): void {
     const { store, outcome, chatId } = this.d;
     t.finished = true;
-    flushUnreported(store, t.active);
+    flushUnreported(store, t.active, this.d);
     this.endTrust(t); // spec §7.2: turn_trust_final at every turn end, success or failure
     // spec §3.5: a model error in pass 1 completes with pass 0 alone (an errored fragment is never delivered)
     const used = t.continuationFailed ? t.passes.slice(0, 1) : t.passes;
@@ -1386,7 +1446,7 @@ export class PlannerSupervisor {
   private finishFailure(t: Turn, f: { type: PlannerFailure; ref: string }): void {
     const { store, outcome } = this.d;
     t.finished = true;
-    flushUnreported(store, t.active);
+    flushUnreported(store, t.active, this.d);
     this.endTrust(t); // spec §7.2: turn_trust_final at every turn end, success or failure
     if (t.n > t.recorded || (t.dispatched && t.n === 0)) this.recordAborted(t, f.ref === DAEMON_SHUTDOWN ? "shutdown" : "aborted");
     if (f.type === "turn_timeout" || f.type === "frame_idle") store.recordLoopHalted(t.req.run_id, { reason: f.type, steps: t.n });

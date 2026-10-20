@@ -1,6 +1,7 @@
 import { ALERT_REOPEN_QUIET_MS, openAlertedIncident, resolveOpenIncidents } from "../run/incident-alert.js";
 import type { DecisionInsert, RunStore } from "../run/run-store.js";
 import { TOOL_INJECTION_ID } from "./entries/tool-injection.js";
+import { TURN_SETTLE_ID } from "./entries/turn-settle.js";
 import { FRONT_DOOR_ENTRIES } from "./entry-ids.js";
 import { message } from "./decide.js";
 import { RUNNER_REASON_CODES, type AnyDecideResult, type AnyEntry, type DecisionRecorder } from "./types.js";
@@ -13,9 +14,11 @@ export const DECISION_FALLBACK_WINDOW_MS = 60 * 60 * 1000;
  * Plan ruling 9: entries whose Jev-rung failures already page through the Jev incidents (openJevIncident and the triage
  * jev_skip_rate). Their Jev failures do not count toward decision_fallback: one call, one page. tool.injection joins them
  * (Paco 2026-10-14, "no alert, just log"): its plain timeouts and outages are logged and counted in the digest only; the
- * turn's trust rise is the safety answer, and 429/auth still page through the Jev incidents.
+ * turn's trust rise is the safety answer, and 429/auth still page through the Jev incidents. turn.settle joins them
+ * (2b-i ruling 14): a Jev failure settles the turn as today and the Jev incident is the page; its own budget and
+ * todo_unavailable rows page through decision_health (settle-judge.ts).
  */
-const JEV_PAGED_ELSEWHERE: ReadonlySet<string> = new Set([...FRONT_DOOR_ENTRIES, TOOL_INJECTION_ID]);
+const JEV_PAGED_ELSEWHERE: ReadonlySet<string> = new Set([...FRONT_DOOR_ENTRIES, TOOL_INJECTION_ID, TURN_SETTLE_ID]);
 const RECORD_FAILED: ReadonlySet<string> = new Set(["decision_record_failed"]);
 const RUNNER_CODES: ReadonlySet<string> = new Set(RUNNER_REASON_CODES);
 

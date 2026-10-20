@@ -7,6 +7,8 @@ import { enqueueUrgentCard } from "../decisions/urgent.js";
 import { settleJevState } from "../decisions/settle-state.js";
 import { askSettle, SETTLE_QUESTION_REASON, SETTLE_QUESTIONS } from "../jev/settle-ask.js";
 import type { JevRequest, JevResult } from "../jev/jev-client.js";
+import { JEV_PROVIDER } from "../llm/metered-pricing.js";
+import type { SendBackKind } from "./bridge-handler.js";
 import { openAlertedIncident, resolveOpenIncidents } from "../run/incident-alert.js";
 import type { RunStore } from "../run/run-store.js";
 
@@ -25,10 +27,9 @@ export const REASON_LINES: Readonly<Record<"claim_scheduled" | "claim_saved" | "
   claim_sent: "You said you sent it, but nothing was published or sent this turn. If you meant to do it, do it now with the tool; if it was done in an earlier turn, say so instead."
 };
 export interface SettleDeps { store: RunStore; env: NodeJS.ProcessEnv; client: (r: JevRequest) => Promise<JevResult>; chatId: string; now?: () => string; clock?: () => number }
-// single-quoted on purpose: panel-judge-providers.test.ts bans the double-quoted metered-provider name outside src/llm
 export type SettleDecision =
   | { sendBack: false; decisionId: string | null; reason: SettleReason | null }
-  | { sendBack: true; kind: 'rule' | 'jev'; reason: SettleReason; note: string; decisionId: string | null };
+  | { sendBack: true; kind: SendBackKind; reason: SettleReason; note: string; decisionId: string | null };
 
 /** Code-owned sentences per Jev reason (senior plan S: the question instructions talk about fields, not to the planner). */
 export const JEV_LINES: Readonly<Record<"jev_claims_done" | "jev_unverified" | "jev_promise" | "jev_asks_permission", string>> = {
@@ -77,7 +78,7 @@ export async function decideSettle(d: SettleDeps, s: SettleState, deadline: numb
   const reason = r.reason as SettleReason | null;
   settleHealthAfter(d, now(), reason);
   if (r.verdict !== "send_back" || reason === null) return { sendBack: false, decisionId: r.decisionId, reason };
-  return { sendBack: true, kind: r.rung === "system_one" ? 'jev' : 'rule', reason, note: settleNote(reason, s), decisionId: r.decisionId };
+  return { sendBack: true, kind: r.rung === "system_one" ? JEV_PROVIDER : "rule", reason, note: settleNote(reason, s), decisionId: r.decisionId };
 }
 
 /** Rows with reason budget or todo_unavailable in the last hour (spec §3.3; decision_fallback excludes both). */

@@ -17,7 +17,7 @@ import { resolveTrustAskTtlMs, type TurnTrust } from "../decisions/trust.js";
 import type { CompiledTaskContract, Identity } from "../domain/types.js";
 import type { RunStore } from "../run/run-store.js";
 import type { ToolRegistry } from "../tools/tool-registry.js";
-import type { BridgeRequest } from "./bridge-protocol.js";
+import type { BridgeRequest, SettleReply } from "./bridge-protocol.js";
 import { BUILTIN_CAPABILITY, capabilityFor, type RegistryEntry } from "./capability-map.js";
 import { classifyCommand } from "./command-matcher.js";
 import { gateTargets } from "./gate-path.js";
@@ -89,6 +89,8 @@ export interface BridgeHandlerDeps {
   activeTurn: () => ActiveTurn | null;
   /** Live-gate holds (spec §4/§5): how long the bridge sits on a judge_read or settle before answering. Nothing sets it in production. */
   gateHold?: GateHold;
+  /** turn.settle (2b-i §3): the supervisor decides; absent only in bare tests (then every settle answers false). */
+  settle?: (turn: ActiveTurn, req: SettleReq) => Promise<SettleDecisionReply>;
 }
 export interface GateHold { judgeReadMs?: number; settleMs?: number }
 
@@ -130,6 +132,9 @@ const bytes = (s: string) => Buffer.byteLength(s, "utf8");
 type CallReq = Extract<BridgeRequest, { kind: "call" }>;
 type GateReq = Extract<BridgeRequest, { kind: "gate" }>;
 type ReportReq = Extract<BridgeRequest, { kind: "report" }>;
+export type SettleReq = Extract<BridgeRequest, { kind: "settle" }>;
+/** The supervisor's answer: the bridge strips `kind` (who sent it back) after handing it to onSendBack. */
+export type SettleDecisionReply = { sendBack: false } | { sendBack: true; note: string; kind: SendBackKind };
 
 /** Built-in name per allowed gate (edit and write share fs_write); read back by report/flush. */
 const builtinNames = new WeakMap<ActiveTurn, Map<string, string>>();
@@ -159,8 +164,19 @@ export function createBridgeHandler(deps: BridgeHandlerDeps): (req: BridgeReques
     if (req.kind === "call") return memo(turn, `call:${req.toolCallId}`, () => serialise(turn, () => handleCall(deps, turn, req)));
     if (req.kind === "gate") return memo(turn, `gate:${req.toolCallId}`, async () => handleGate(deps, turn, req));
     if (req.kind === "report") return handleReport(deps, turn, req);
+    // ruling 1: keyed by run and fire, so a duplicate of either fire replays its answer and never decides twice
+    if (req.kind === "settle") return memo(turn, `settle:${turn.run_id}:${req.stop_hook_active}`, () => handleSettle(deps, turn, req));
     throw new Error("unknown request kind");
   };
+}
+
+async function handleSettle(deps: BridgeHandlerDeps, turn: ActiveTurn, req: SettleReq): Promise<SettleReply> {
+  if (!deps.settle) return { sendBack: false };
+  const r = await deps.settle(turn, req);
+  if (!r.sendBack) return { sendBack: false };
+  // before the reply leaves (BridgeServer.answer writes after this resolves); pass 1 itself opens at the continuation's agent_start (ruling 12)
+  turn.onSendBack?.(r.kind, req.text);
+  return { sendBack: true, note: r.note };
 }
 
 /** Replay: a toolCallId executes at most once per turn; a duplicate gets the same promise. */

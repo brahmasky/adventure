@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { BudgetLedger } from "../../src/budget/budget-ledger.js";
 import { WITHHELD_TEXT } from "../../src/decisions/entries/tool-injection.js";
+import type { JevRequest, JevResult } from "../../src/jev/jev-client.js";
 import { createBridgeHandler } from "../../src/omp/bridge-handler.js";
 import { resolveOmpConfig } from "../../src/omp/omp-config.js";
 import { loadToolDeclarations, TOOL_DECLS_DIR } from "../../src/omp/tool-decls.js";
@@ -95,6 +96,22 @@ describe("buildOmpTools wires tool.injection", () => {
     expect(bodies.length).toBeGreaterThan(0);
     expect(bodies.some((b) => b.includes(token.slice(0, 8)))).toBe(false);
     expect(bodies.some((b) => b.includes("venue.example.invalid/verify/"))).toBe(true);
+    vi.unstubAllEnvs();
+  });
+});
+
+// 2b-i §3.3: turn.settle's Jev call is its own audit role on the run, 1.5 s, no retry; the supervisor cannot start without it.
+describe("supervisorDeps wires turn.settle", () => {
+  it("the supervisor deps carry turn.settle's own Jev client on audit role settle (1.5 s, no retry)", async () => {
+    vi.stubEnv("TYPESAFE_API_KEY", "test-key");
+    const store = RunStore.openInMemory();
+    const jevFetch = vi.fn(async () => new Response(JSON.stringify({ model: "jev-1.13.0", usage: { input_tokens: 1 }, answers: {} }), { status: 200 }));
+    const worker = ompWorker(store, mkdtempSync(join(tmpdir(), "hsettle-")), { jevFetch: jevFetch as unknown as typeof fetch });
+    const deps = (worker as unknown as { supervisorDeps: (chatId: string) => { settleClient: (run_id: string) => (r: JevRequest) => Promise<JevResult> } }).supervisorDeps("42");
+    const run_id = createQueuedTurnRun(store);
+    await deps.settleClient(run_id)({ state: {}, questions: {} });
+    expect(store.getLedgerEvents(run_id).filter((e) => e.event_type === "llm_attempt").map((e) => (e.payload as { role: string }).role)).toEqual(["settle"]);
+    expect(jevFetch).toHaveBeenCalledTimes(1);
     vi.unstubAllEnvs();
   });
 });

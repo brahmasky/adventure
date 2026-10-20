@@ -162,6 +162,7 @@ import { INJECTION_TOTAL_MS } from "../decisions/entries/tool-injection.js";
 import { createInjectionJudge, type InjectionJudge } from "../decisions/injection-judge.js";
 import { isSkipReason, TURN_HANDLER, type TurnHandlerState, type TurnHandlerVerdict } from "../decisions/entries/turn-handler.js";
 import { TURN_GEAR, type TurnGearState, type TurnGearVerdict } from "../decisions/entries/turn-gear.js";
+import { SETTLE_JEV_MS } from "../decisions/entries/turn-settle.js";
 import { storeRecorder } from "../decisions/record.js";
 import { decisionOf, recordTapOutcome } from "../decisions/tap-outcomes.js";
 import type { AnyDecideResult, AnyEntry, DecideResult, DecisionRecorder, FallbackReason, RungOutcome, RungResult } from "../decisions/types.js";
@@ -2377,7 +2378,8 @@ export class CoreWorker {
       outcome: this.ompOutcomeSink(chatId),
       resolveMessage: (claim) => this.resolveOmpMessage(claim),
       triage: (i) => this.triageTurn(i),
-      roles: this.roles
+      roles: this.roles,
+      settleClient: (run_id) => this.settleClient(run_id)
     };
   }
 
@@ -2885,6 +2887,17 @@ export class CoreWorker {
       audit: this.runStore.llmAuditSink({ run_id, role: "injection" }),
       meteredBreached: () => this.runStore.meteredFuseLatched(),
       retries: 0, timeoutMs: INJECTION_TOTAL_MS,
+      ...(this.ompOptions.jevFetch ? { fetchImpl: this.ompOptions.jevFetch } : {})
+    });
+  }
+
+  /** turn.settle's own Jev call (2b-i §3.3): its own audit role, 1.5 s, no retry — a failure settles the turn as today. */
+  private settleClient(run_id: string): (req: JevRequest) => Promise<JevResult> {
+    return createJevClient({
+      apiKey: this.broker ? this.broker.typesafeKey() : process.env.TYPESAFE_API_KEY,
+      audit: this.runStore.llmAuditSink({ run_id, role: "settle" }),
+      meteredBreached: () => this.runStore.meteredFuseLatched(),
+      retries: 0, timeoutMs: SETTLE_JEV_MS,
       ...(this.ompOptions.jevFetch ? { fetchImpl: this.ompOptions.jevFetch } : {})
     });
   }

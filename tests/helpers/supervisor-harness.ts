@@ -13,6 +13,7 @@ import { ToolRegistry } from "../../src/tools/tool-registry.js";
 import { formatModelString, parseModelString, type ModelString } from "../../src/omp/model-string.js";
 import { selectorKey } from "../../src/omp/model-roles.js";
 import type { TurnRole } from "../../src/jev/tree-policy.js";
+import type { JevRequest, JevResult } from "../../src/jev/jev-client.js";
 import { openManifestClient } from "./bridge-manifest.js";
 
 export type Script = {
@@ -53,7 +54,7 @@ export type Fake = PlannerSessionLike & {
   /** Emit a frame now, outside any prompt (a late or stray frame). */
   emitForTest: (f: OmpFrame) => void;
   resets: number;
-  /** A bridge request over the fake child's own manifest socket: resolves with the reply of the same id. */
+  /** A bridge request over the fake child's own manifest socket, as the extension sends it: resolves with the reply's result (rejects on ok: false). */
   request: (msg: object) => Promise<unknown>;
   /** Replaces getState() for the rest of the test. */
   scriptGetState: (fn: () => Promise<PlannerState>) => void;
@@ -79,8 +80,10 @@ export function fakeSession(script: Script = {}): Fake {
       let i: number;
       while ((i = buf.indexOf("\n")) >= 0) {
         const line = buf.slice(0, i); buf = buf.slice(i + 1);
-        let m: { id?: string } | undefined; try { m = JSON.parse(line) as { id?: string }; } catch { continue; }
-        if (m?.id === id) { sock.off("data", onData); sock.off("close", onClose); resolve(m); }
+        let m: { id?: string; ok?: boolean; result?: unknown; error?: string } | undefined; try { m = JSON.parse(line) as typeof m; } catch { continue; }
+        if (m?.id !== id) continue;
+        sock.off("data", onData); sock.off("close", onClose);
+        if (m.ok) resolve(m.result); else reject(new Error(m.error ?? "bridge error"));
       }
     };
     const onClose = () => { sock.off("data", onData); reject(new Error("bridge socket closed")); };
@@ -173,6 +176,10 @@ export function fakeRoles(over: Partial<Record<TurnRole, string[]>> = {}): Roles
   return roles;
 }
 
+/** turn.settle's default Jev: every question answered at 0.1 (below the 0.5 bar), so a settle the rules pass settles. */
+export const jev01 = async (r: JevRequest): Promise<JevResult> => ({ ok: true, model: "jev-1.13.0", input_tokens: 1, latency_ms: 1,
+  answers: Object.fromEntries(Object.keys(r.questions).map((id) => [id, { type: "noul" as const, noul: 0.1 }])) });
+
 /** `o.store`: share a store across supervisors (a restart); the caller closes it. */
 export function harness(session = fakeSession(), env: Record<string, string> = {}, extra: Partial<SupervisorDeps> = {}, o: { sessionState?: "current" | "none"; store?: RunStore } = {}) {
   const store = o.store ?? RunStore.openInMemory();
@@ -189,7 +196,7 @@ export function harness(session = fakeSession(), env: Record<string, string> = {
     turnContext: { store, memoryRoot: new URL("../../memory", import.meta.url).pathname, dataDir: data, skillsReader: () => undefined, coreBlock: () => undefined, retrieve: async () => ({ facts: [], pages: [] }), env: {} },
     buildTools: () => ({ registry: new ToolRegistry(), quarantine: async () => ({ digest: "", contains_instructions: false, source_meta: { tool: "x", bytes: 0 } }) }),
     posture: () => null, outcome, sessionFactory: (o) => session.bind(o), versionCheck: () => ({ ok: true, version: "18.4.4" }),
-    skipPreflightForTest: true, manifestWaitMs: 5_000, roles: fakeRoles(), ...extra
+    skipPreflightForTest: true, manifestWaitMs: 5_000, roles: fakeRoles(), settleClient: () => jev01, ...extra
   });
   cleanups.push(async () => { await sup.shutdown(); if (!o.store) store.close(); rmSync(data, { recursive: true, force: true }); });
   return { store, sup, outcome, session, data };

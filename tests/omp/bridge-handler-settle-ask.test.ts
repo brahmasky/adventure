@@ -6,7 +6,7 @@ import { BudgetLedger } from "../../src/budget/budget-ledger.js";
 import { MASKED_READ_REASON, SETTLE_REASON } from "../../src/decisions/trust-ask.js";
 import { TurnTrust } from "../../src/decisions/trust.js";
 import type { CompiledTaskContract, SideEffectLevel } from "../../src/domain/types.js";
-import { createBridgeHandler, MASKED_REDIRECT_CODE, MASKED_WRITE_REDIRECT, SETTLE_REDIRECT_CODE, SETTLE_WRITE_REDIRECT, type ActiveTurn } from "../../src/omp/bridge-handler.js";
+import { createBridgeHandler, MASKED_REDIRECT_CODE, MASKED_WRITE_REDIRECT, SETTLE_REDIRECT_CODE, SETTLE_WRITE_REDIRECT, type ActiveTurn, type BridgeHandlerDeps } from "../../src/omp/bridge-handler.js";
 import { maskedKey } from "../../src/omp/bridge-read-judge.js";
 import type { BridgeRequest } from "../../src/omp/bridge-protocol.js";
 import type { ExternalReadResult } from "../../src/omp/external-read.js";
@@ -26,7 +26,7 @@ type Exec = NonNullable<ToolMetadata["execute"]>;
 const meta = (name: string, side_effect_level: SideEffectLevel, execute?: Exec): ToolMetadata => ({ name, category: "tool", side_effect_level, risk_level: "low",
   timeout_ms: 5_000, output_limit_bytes: 64_000, ...(execute ? { execute } : {}) });
 
-function setup(o: { env?: NodeJS.ProcessEnv; cwd?: "home" } = {}) {
+function setup(o: { env?: NodeJS.ProcessEnv; cwd?: "home"; settle?: BridgeHandlerDeps["settle"] } = {}) {
   const store = RunStore.openInMemory(); const run_id = createQueuedTurnRun(store);
   const claim = store.claimRun(run_id, "planner:c:a", 120)!;
   const contract: CompiledTaskContract = { ...claim.contract, allowed_actions: ENVELOPE, forbidden_actions: ["coding_agent_cli", "paid_action"],
@@ -42,7 +42,7 @@ function setup(o: { env?: NodeJS.ProcessEnv; cwd?: "home" } = {}) {
     registry, signal: new AbortController().signal, cwd: o.cwd === "home" ? home : dir, step: { n: 0 }, cache: new Map(), unreported: new Map(), quarantine,
     setAwaitingApproval: () => undefined, postureOk: () => null, trust: new TurnTrust({ store, run_id, chat_id: "555", born: "telegram", env }) };
   const handle = createBridgeHandler({ store, cfg: resolveOmpConfig({}), ctx: { home, repo: join(dir, "repo"), data: join(dir, "data") },
-    decls: DECLS, env, turnEnvelopeActions: ENVELOPE, activeTurn: () => turn });
+    decls: DECLS, env, turnEnvelopeActions: ENVELOPE, activeTurn: () => turn, ...(o.settle ? { settle: o.settle } : {}) });
   const events = (t: string) => store.getLedgerEvents(run_id).filter((e) => e.event_type === t).map((e) => e.payload);
   return { store, run_id, turn, handle, home, events };
 }
@@ -121,5 +121,20 @@ describe("report applied and the todo row (spec §2.5)", () => {
     const { handle, events } = setup();
     await handle({ id: "p2", kind: "report", toolCallId: "zz", outcome: "succeeded", bytes_out: 1, duration_ms: 1 });
     expect(events("tool_finished")).toEqual([]);
+  });
+});
+
+describe("settle dispatch", () => {
+  it("memoises per run and fire; calls onSendBack before answering; with no settle dep answers sendBack: false", async () => {
+    const calls: string[] = [];
+    const { handle, turn } = setup({ settle: async (_t, r) => { calls.push(`settle:${r.stop_hook_active}`); return r.stop_hook_active ? { sendBack: false } : { sendBack: true, note: "N", kind: "jev" }; } });
+    turn.onSendBack = (kind, text) => { calls.push(`onSendBack:${kind}:${text}`); };
+    const first = { id: "s1", kind: "settle" as const, stop_hook_active: false, text: "done" };
+    expect(await handle(first)).toEqual({ sendBack: true, note: "N" });
+    expect(await handle({ ...first, id: "s2" })).toEqual({ sendBack: true, note: "N" });
+    expect(await handle({ id: "s3", kind: "settle", stop_hook_active: true, text: "" })).toEqual({ sendBack: false });
+    expect(calls).toEqual(["settle:false", "onSendBack:jev:done", "settle:true"]);
+    const bare = setup();
+    expect(await bare.handle(first)).toEqual({ sendBack: false });
   });
 });

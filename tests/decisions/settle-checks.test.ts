@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { claimsCheck, pendingCount, settleChecks, todoCheck } from "../../src/decisions/settle-checks.js";
+import { claimsCheck, lastCallDenied, pendingCount, settleChecks, todoCheck } from "../../src/decisions/settle-checks.js";
 import { settleRule, type SettleState, type TodoSnapshot } from "../../src/decisions/entries/turn-settle.js";
 
 // Spec §3.3: the claims check is code-owned and tested per verb, with and without evidence, zh and en, with negations;
@@ -77,5 +77,15 @@ describe("settleChecks inside settleRule", () => {
     expect(settleRule(s({ todoNow: todo("pending") }))).toMatchObject({ verdict: "send_back", reason: "todo_pending" });
     expect(settleRule(s({ todoNow: null }))).toEqual({ abstain: true, reason: "todo_unavailable" });
     expect(settleRule(s({}))).toEqual({ abstain: true });
+  });
+});
+
+describe("lastCallDenied", () => {
+  const ev = (event_type: string, payload: Record<string, unknown>, sequence: number) => ({ event_id: "e", correlation_id: "c", event_type, occurred_at: "t", actor: "core", sequence, payload }) as any;
+  it("reads the NEWEST tool event: a denied tool_finished or a gate deny; an older denial behind a success does not count", () => {
+    expect(lastCallDenied([ev("tool_finished", { status: "denied", reason: "denied_by_paco" }, 1)])).toBe(true);
+    expect(lastCallDenied([ev("policy_decision", { decision: "deny", reason: "protected_path" }, 1)])).toBe(true);
+    expect(lastCallDenied([ev("tool_finished", { status: "denied" }, 1), ev("tool_finished", { status: "succeeded" }, 2)])).toBe(false);
+    expect(lastCallDenied([])).toBe(false);
   });
 });
