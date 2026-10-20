@@ -60,19 +60,10 @@ export type Fake = PlannerSessionLike & {
   scriptGetState: (fn: () => Promise<PlannerState>) => void;
 };
 
-/** In-memory omp child. Its start() plays the extension against the REAL bridge socket (ruling 3). */
-export function fakeSession(script: Script = {}): Fake {
-  const frameCbs: Array<(f: OmpFrame) => void> = []; const exitCbs: Array<(i: ExitInfo) => void> = [];
-  const sockets: Socket[] = [];
-  const emit = (f: OmpFrame) => frameCbs.forEach((cb) => cb(f));
-  // the model the child really runs: the spawn's --model, a resumed session's stored one, then each successful set_model
-  let current = "anthropic/claude-opus-5-5";
-  const assistant = (text: string, extra: object = {}) => {
-    const [provider, model] = current.split("/");
-    emit({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text }], provider, model, usage: { input: 10, output: 2 }, stopReason: "stop", ...extra } } as OmpFrame);
-  };
-  let getStateFn: (() => Promise<PlannerState>) | undefined; let reqN = 0;
-  const request = (msg: object): Promise<unknown> => new Promise((resolve, reject) => {
+/** A bridge request over the fake child's own manifest socket, as the extension sends it: resolves with the reply's result (rejects on ok: false). */
+function bridgeRequester(sockets: Socket[]): (msg: object) => Promise<unknown> {
+  let reqN = 0;
+  return (msg: object): Promise<unknown> => new Promise((resolve, reject) => {
     const sock = sockets[0]; if (!sock) { reject(new Error("no bridge socket")); return; }
     const id = `x${++reqN}`; let buf = "";
     const onData = (d: Buffer) => {
@@ -90,30 +81,48 @@ export function fakeSession(script: Script = {}): Fake {
     sock.on("data", onData); sock.once("close", onClose);
     sock.write(`${JSON.stringify({ ...msg, id })}\n`);
   });
+}
+
+/** The fake child's start(): plays the extension against the real bridge socket (ruling 3); `setCurrent` records the model it runs. */
+async function startFake(s: Fake, script: Script, sockets: Socket[], setCurrent: (m: string) => void): Promise<{ resumed: boolean; sessionId: string }> {
+  const child = s.options.length; const o = s.options[child - 1] as PlannerSessionOptions;
+  script.log?.push(`start:${child}`);
+  setCurrent(script.resumeModel ?? `${o.model.provider}/${o.model.model}`);
+  if (script.start) await script.start();
+  if (script.exitCode) { s.exit(1); throw new PlannerRpcError(script.exitCode); }
+  if (script.dropBridge) {
+    const k = await openManifestClient(o.bridgeSock, o.bridgeToken);
+    await new Promise((r) => k.once("data", r)); // the manifest was answered
+    k.destroy(); await script.afterDrop?.();
+    return { resumed: false, sessionId: "s" };
+  }
+  if (script.badModels?.includes(`${o.model.provider}/${o.model.model}`)) {
+    sockets.push(await openManifestClient(o.bridgeSock, o.bridgeToken)); // the extension loads before omp checks --model
+    s.exit(1);
+    throw new PlannerRpcError("exited:model_missing");
+  }
+  if (!script.noManifest) { sockets.push(await openManifestClient(o.bridgeSock, o.bridgeToken)); script.log?.push(`manifest:${child}`); }
+  return { resumed: false, sessionId: "s" };
+}
+
+/** In-memory omp child. Its start() plays the extension against the REAL bridge socket (ruling 3). */
+export function fakeSession(script: Script = {}): Fake {
+  const frameCbs: Array<(f: OmpFrame) => void> = []; const exitCbs: Array<(i: ExitInfo) => void> = [];
+  const sockets: Socket[] = [];
+  const emit = (f: OmpFrame) => frameCbs.forEach((cb) => cb(f));
+  // the model the child really runs: the spawn's --model, a resumed session's stored one, then each successful set_model
+  let current = "anthropic/claude-opus-5-5";
+  const assistant = (text: string, extra: object = {}) => {
+    const [provider, model] = current.split("/");
+    emit({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text }], provider, model, usage: { input: 10, output: 2 }, stopReason: "stop", ...extra } } as OmpFrame);
+  };
+  let getStateFn: (() => Promise<PlannerState>) | undefined;
+  const request = bridgeRequester(sockets);
   const drop = () => { for (const k of sockets.splice(0)) k.destroy(); };
   const s: Fake = {
     prompts: [], steers: [], models: [], pins: [], options: [], resets: 0,
     bind: (o) => { s.options.push(o); return s; },
-    start: async () => {
-      const child = s.options.length; const o = s.options[child - 1] as PlannerSessionOptions;
-      script.log?.push(`start:${child}`);
-      current = script.resumeModel ?? `${o.model.provider}/${o.model.model}`;
-      if (script.start) await script.start();
-      if (script.exitCode) { s.exit(1); throw new PlannerRpcError(script.exitCode); }
-      if (script.dropBridge) {
-        const k = await openManifestClient(o.bridgeSock, o.bridgeToken);
-        await new Promise((r) => k.once("data", r)); // the manifest was answered
-        k.destroy(); await script.afterDrop?.();
-        return { resumed: false, sessionId: "s" };
-      }
-      if (script.badModels?.includes(`${o.model.provider}/${o.model.model}`)) {
-        sockets.push(await openManifestClient(o.bridgeSock, o.bridgeToken)); // the extension loads before omp checks --model
-        s.exit(1);
-        throw new PlannerRpcError("exited:model_missing");
-      }
-      if (!script.noManifest) { sockets.push(await openManifestClient(o.bridgeSock, o.bridgeToken)); script.log?.push(`manifest:${child}`); }
-      return { resumed: false, sessionId: "s" };
-    },
+    start: () => startFake(s, script, sockets, (m) => { current = m; }),
     prompt: async (t: string) => { if (script.promptError) throw new PlannerRpcError(script.promptError); s.prompts.push(t); script.log?.push(`prompt:${s.options.length}`); setTimeout(() => (script.onPrompt ?? ((_t, e) => { e({ type: "turn_start" }); assistant("answer"); e({ type: "agent_end" }); }))(t, emit), 5); },
     steer: async (t: string) => { s.steers.push(t); },
     getState: async () => getStateFn?.() ?? script.getState?.() ?? { todoPhases: [], queuedMessageCount: 0, queuedMessages: { steering: [], followUp: [] } },
