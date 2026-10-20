@@ -1,4 +1,47 @@
-# 🧭 CURRENT SYSTEM STATE — 2026-10-19 (read this first)
+# 🧭 CURRENT SYSTEM STATE — 2026-10-20 (read this first)
+
+**Decision ladder stage 2b-i (extension hooks and `turn.settle`): BUILT on `feat/ladder-2b-hooks`, NOT merged; merge +
+rebuild `dist/` + kickstart pending.** Live only after Paco merges. The `feat/memory-write` block below is a separate branch,
+also not merged (check `git branch --no-merged main` before assuming either is on main). Spec
+`docs/superpowers/specs/2026-10-19-ladder-2b-hooks-settle-design.md` Rev 3 (+ §3.3 calibration note), plan
+`docs/superpowers/plans/2026-10-20-ladder-2b-hooks-settle.md` Rev 2.3 (Rulings 1-16). What it does: built-in `read` results are
+judged by `tool.injection` inside omp's `tool_result` hook (whole-text floor if the judge is late, `late` rows, a read of a
+masked file redirects an edit/write to bash and asks); `turn.settle` (rule, then Jev) sends an unfinished reply back once
+through `session_stop`; omp's `todo` tool is on; the steer guard reads the queue arrays. The Jev rung's bars were set by
+measurement, not the spec's 0.5: wording set B, per-question bars 0.6/0.8/0.7/0.7, threshold version `2026-10-20.2`.
+Evidence (the last full run, Task 13b, `b6a5679`): typecheck clean; full suite 349 files / 4857 tests passed, none
+skipped; build OK. Pre-merge sanity on 30 days of real replies: first run 114/133 = 85.7 %
+sent back (FAIL), after recalibration 6/133 = 4.5 % (bar at most 10 %), planted 9/9, 0 fallbacks; the sampled send-backs are
+listed in `task-12b-report.md` (build ledger dir) for Paco's read. Live gate on real Jev and omp 18.12.3: PASS 14/14 (exit 0,
+`b6a5679`); the first run on that omp version found three production defects (queue-count semantics, `N:` read prefix, a
+golden item on its bar), all fixed. Rollback check PASS twice (a transcript with todo calls, one with a continuation leg).
+Not yet done at the time of writing: the final whole-branch reviews, a full live-gate re-run on the final HEAD (cases
+4, 5, 8-11 were not re-run after the last gate-script fix `56b59cb`), and the merge.
+- [ ] Paco: sign off the ADR 0030 amendment (2026-10-20), merge `feat/ladder-2b-hooks`, rebuild `dist/`, then kickstart
+  `com.houge.daemon`. The daemon is running (launchd, no `houge.parked` / `houge.kill` seen at build time); check for a run in
+  flight at merge time.
+- Protected files touched: `src/omp/` (bridge-handler, bridge-protocol, bridge-read-judge, response-cap, extension/*,
+  planner-session, planner-supervisor, supervisor-settle, settle-judge, attachments), `src/decisions/` (egress,
+  injection-judge, trust, trust-ask, types, entry-ids, outcomes, registry, record, golden, digest, settle-state,
+  settle-checks, entries/turn-settle, entries/tool-injection), `src/jev/decide.ts`, `src/run/run-store.ts`,
+  `docs/decisions/0030-decision-ladder.md` (amendment, README row).
+- Open items (accepted residuals, ADR 0030 amendment): the final audit is un-awaited (lost on a daemon stop); a settle
+  decision outrunning the 250 ms slack leaves a row without an outcome; the `unverified` 0.8 bar is fragile above a 0.7-0.8
+  cluster (revisit when more than 10 % of replies are sent back over 14 days); flag-embedded paths (`--output=cfg.yml`)
+  evade the masked bash ask; a `report` can lag the terminal `agent_end`; the settle health counter can re-page on a flap;
+  2b-R15 is defence in depth only (the gate denies daemon-tmp reads); strict `get_state` validation turns the steer guard
+  off on a malformed reply (pages `todo_unavailable`). An image-only read ends the turn `untrusted` (Ruling 11).
+  The omp prefix form `N#HASH:` is not covered by the mask.
+- Carried forward from the memory-write block (still open): in-turn "记下来" saves, gate cases 7 and 8 (a save request typed
+  inside a running turn is not acted on); `memory.kind` at its 0.85 bar is decided by the model in 4 of 6 incident runs.
+- Next build: decision ladder stage 2b-ii (`improve.route`); open question: its proposal surface, since the daily decision
+  digest is off (`HOUGE_DECISION_DIGEST_AT=off` since 2026-10-14).
+- Deferred minors: see the build ledger (`.superpowers/sdd/2026-10-20-ladder-2b-hooks-settle/progress.md`, `minor (deferred)`
+  lines; git-excluded).
+- No env var changed (`docs/reference/configuration.md` unchanged: R13 forbids an off switch and the hook timer is a
+  constructor option).
+
+# Earlier block — 2026-10-19: memory write (feat/memory-write)
 
 **Memory write (rules and facts from Paco's thread): BUILT on `feat/memory-write`, NOT merged; live only after Paco merges,
 rebuilds `dist/` and kickstarts.** Spec `docs/superpowers/specs/2026-10-15-memory-write-thread-anchor-design.md` Rev 3, plan

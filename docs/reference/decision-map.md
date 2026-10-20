@@ -1,6 +1,6 @@
 # Decision map: who decides what in a Houge turn
 
-As of 2026-10-17 (decision ladder stages 1 and 2a live; 2b next). Design: [ADR 0029](../decisions/0029-jev-system-one.md),
+As of 2026-10-20 (decision ladder stages 1 and 2a live; 2b-i built on `feat/ladder-2b-hooks`, not merged; 2b-ii next). Design: [ADR 0029](../decisions/0029-jev-system-one.md),
 [ADR 0030](../decisions/0030-decision-ladder.md), [the decision-tree spec](../superpowers/specs/2026-10-06-jev-decision-tree-design.md),
 [the decision-ladder spec](../superpowers/specs/2026-10-12-decision-ladder-design.md). Jev details (bars, rows, arming):
 [jev-decision-layer.md](jev-decision-layer.md). Update this map whenever an entry, lane or rung changes.
@@ -50,9 +50,9 @@ flowchart TD
   PL --> TC["Each tool call: planner chooses; code gates (+ turn.trust ask); Paco taps if asked"]
   TC --> TR["Each result: tool.injection (rule floor, then Jev); turn.trust (code)"]
   TR --> PL
-  PL --> SE["Settle: turn.settle (2b)"]
+  PL --> SE["Settle: turn.settle (2b-i): one bounded send-back"]
   SE --> RP["Reply"]
-  RP --> IR["After the turn: improve.route (2b)"]
+  RP --> IR["After the turn: improve.route (2b-ii)"]
   RP --> BG["Background episodic pass (model, not on the ladder)"]
 ```
 
@@ -99,8 +99,8 @@ The `memory.kind` golden set has no `fix` items: Jev does not clear 0.85 on `fix
 | Tool allowed? asks first? | code, then Paco | contract allow-list and approval gates; registry in stage 4 |
 | `turn.trust` (clean / untrusted / hostile) | code, locked | untrusted: `lesson_write`, `schedule_task`, `self_write_propose`, `skill_author` ask; hostile: every write asks |
 | `tool.shell_netread` | code | feeds the trust level |
-| `tool.injection` | rule floor, then Jev | pass / frame / withhold; tighten only |
-| `turn.settle` (2b) | rule, then Jev | send back once, or settle |
+| `tool.injection` | rule floor, then Jev | pass / frame / withhold; tighten only (since 2b-i also on omp's built-in `read`, with a whole-text floor if the judge is late) |
+| `turn.settle` (2b-i, built, not merged) | rule, then Jev | send back once, or settle |
 
 ## Registry entries
 
@@ -109,11 +109,11 @@ The `memory.kind` golden set has no `fix` items: Jev does not clear 0.85 on `fix
 | `turn.handler` | ack rule → Jev tree → Tiny → planner | Paco | lane choice; save-first rule with Undo | live, stage 1 |
 | `turn.gear` | rule → Jev scores → Default | Paco | planner role | live, stage 1 |
 | `memory.kind` | Jev `memory_kind`, its own request (provisional bar 0.85, armed at ship) → distill → other | Paco | write a lesson and/or fact, an Undo per item; hand a fix/nothing to the planner | built on feat/memory-write (live after Paco's merge and kickstart) |
-| `tool.injection` | floor → Jev → pass | tool | tighten only | live, 2a |
+| `tool.injection` | floor → Jev → pass | tool | tighten only; 2b-i adds built-in `read` as a source (judged inside omp's `tool_result` hook) | live, 2a; `read` source built on feat/ladder-2b-hooks |
 | `turn.trust` | max rule (locked) | tool | adds taps | live, 2a |
 | `tool.shell_netread` | patterns | tool | trust level | live, 2a |
-| `turn.settle` | rule → Jev → settle | mixed | send back once | 2b |
-| `improve.route` | code → Jev → Tiny → nothing | mixed | code: lesson with Undo, pending skill; Jev/Tiny: proposals | 2b |
+| `turn.settle` | rule (claims and todo checks) → Jev (four noul questions, per-question provisional bars 0.6/0.8/0.7/0.7) → settle | mixed | one bounded send-back through omp's `session_stop`; a Jev send-back also asks on writes for the rest of the turn (`settleAsk`) | built on feat/ladder-2b-hooks (live after Paco's merge and kickstart) |
+| `improve.route` | code → Jev → Tiny → nothing | mixed | code: lesson with Undo, pending skill; Jev/Tiny: proposals | 2b-ii (next; proposal surface open) |
 | intake, context, supervision, settle families | migrated as they are | — | unchanged | stage 3 |
 | `tool.policy`, `tool.shell_class`, `tool.path`, `approval.standing`, … | migrated; standing approvals | — | gates | stage 4 |
 

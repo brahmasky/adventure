@@ -1663,3 +1663,19 @@ across 6 runs; a save request typed inside a running turn is not acted on; same 
 clean, 338 files / 4716 tests passed, build OK. Final reviews (correctness on Opus, security, testing, codex whole-diff): all
 findings fixed or ruled, see the build ledger. The rollback check PASS (17 checks + 1 INFO, 467b852). ADR 0010, 0029 and 0030
 amended (Paco's hand to merge). On branch, not merged; kickstart owed after merge.
+
+## 2026-10-19 to 2026-10-20: decision ladder stage 2b-i (hooks and `turn.settle`), on `feat/ladder-2b-hooks`
+
+Spec Rev 1 to 3, then a plan reviewed by codex (three rounds) and a senior review (two) before any code; 16 rulings made
+while planning (a Jev outage on `turn.settle` pages once, every gated read is reconciled, the pass boundary is the
+continuation's `agent_start`, 2b-R15 is defence in depth only). 14 subagent-driven tasks with two-stage reviews: the bridge
+kinds and the extension's request timeout with a local floor copy; the `tool_result` hook for `read` and the `session_stop`
+hook; Houge-side `judge_read` with pending state, late rows and a bounded drain; asks and redirects (masked paths,
+`settleAsk`); the `turn.settle` entry with claims and todo checks; supervisor passes, one continuation, attachments across
+passes and a final-pass audit; omp's todo tool; the golden set. The pre-merge sanity failed first: 114 of 133 real replies
+sent back (85.7 %). A probe over the same frozen replies chose wording set B with per-question provisional bars 0.6/0.8/0.7/0.7;
+the re-run sent back 6/133 (4.5 %) with 9/9 planted. The live gate on omp 18.12.3 (probes had been on 18.10.4) failed three
+cases that no unit test could reach: `queuedMessageCount` counts `liveSteered` (a phantom steer guard), omp's `N:` line
+prefix hid secrets from the mask (a planted key reached Jev), and a golden item sat on its bar. All three were fixed in
+production code, the prefix widened to omp's other forms (`N|`, `N-M:`), and the gate then passed 14/14; the rollback check
+passed twice. ADR 0030 amended (Paco's hand). On branch, not merged; kickstart owed after merge; 2b-ii (`improve.route`) is next.

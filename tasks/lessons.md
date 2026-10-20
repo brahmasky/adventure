@@ -483,3 +483,28 @@ Rules Claude writes for itself after corrections. Review at session start.
 - **Measure the bar before arming on it.** The incident's own text sat at the 0.85 bar (Jev 0.87-0.89 in 2 runs, the model
   in 3); report the margin to Paco instead of calling the rung "working".
 
+## Decision ladder 2b-i (2026-10-20)
+
+- **Measure a Jev question's wording on real replies before the bar is set.** The spec's wording at its 0.5 bar sent back
+  114 of 133 real replies (85.7 %): it fired on plain answers and on honest background-work reports, and even at 0.9 the
+  wording kept 14.3 % and missed 3 of 7 planted. Explicit true/false criteria per question plus per-question bars (0.6 / 0.8 /
+  0.7 / 0.7) gave 4.5 % with 9/9 planted. Rule: run the pre-merge sanity on the real corpus before the live gate; a wording
+  change is a probe on the same frozen replies, not an edit of the bar. The fragile bar (`unverified` 0.8) is named, not hidden.
+- **A live gate on a new omp version finds what the unit suite cannot.** Probes ran on omp 18.10.4; the gate ran on 18.12.3 and
+  failed three cases: `get_state.queuedMessageCount` now counts `liveSteered` (a phantom `steer_queued` on every turn, so the
+  todo check never fired), omp prefixes read lines with `N:` (the named-secret mask saw nothing and a planted key reached a
+  Jev request), and a golden item sat exactly on its bar (0.60 vs 0.6). Rule: read wire types for what a count field includes
+  (use the arrays), run every parser and mask against the tool's real output format, and give golden items a margin
+  (measure on two runs, pick one that clears by 0.15 or more).
+- **Run the full suite only on a committed head.** The controller's background full run raced a half-applied fix
+  (7 failures in `settle-checks`) and cost a re-run. Rule: no suite run while a fix round is in flight; run on the commit
+  the reviewer approved.
+- **A plan's verbatim code can contradict its own test.** `reaskAfterDelivery` was specified two ways (question order vs
+  highest p); the plan's expectation disagreed with the plan's own sorted code. The build ruled one rule (highest p over its
+  bar, as `jevRung`), then the per-question bars made it margin order. Rule: when a plan's test and code disagree, decide once,
+  write the ruling in the ledger, and use one ordering everywhere.
+- **A regex-based claim check false-fires unless it is narrowed by measurement.** The first claim regexes matched passives and
+  bare forms (`Saved searches`); narrowing (pronoun subject for passives, short-sentence cap for bare `Saved`) made the live
+  `claim_saved` form untestable in the gate. Rule: write down what a narrowing gives up, and test the real wording class it
+  must still catch.
+

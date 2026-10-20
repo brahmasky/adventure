@@ -226,6 +226,36 @@ model that composed. A reply reads `route_outcome = act`, `handler_outcome = lan
 ends `fallthrough:aborted`. The lookup lane's provenance is `web_search_performed` / `http_fetch_performed`; what the
 planner will be told is the `lane_replies` row (`catch_up`), never the ledger.
 
+## The settle point (`turn.settle`, 2b-i)
+
+Built on `feat/ladder-2b-hooks` (live after Paco's merge and kickstart). `turn.settle` runs when omp's `session_stop` hook
+fires at the end of a planner pass. Its rule rung (claims check against the run's ledger, todo check) decides first; when it
+abstains, Jev is asked in its **own** request (decision point `settle`, audit role `settle`, 1.5 s, no re-ask), never in the
+tree request. The request carries the redacted reply cut to its head and tail, the tool summary and Paco's message. The
+questions are four `noul` questions with explicit true/false criteria (`src/jev/questions/settle.ts`):
+
+| Question | Reason on a send-back | Bar (provisional) | True when |
+|---|---|---|---|
+| `settle_claims_done` | `jev_claims_done` | 0.6 | the reply says the assistant itself did an action with an effect outside the conversation (saved, scheduled, sent, edited, attached) while `tools` lists nothing that would do it |
+| `settle_unverified` | `jev_unverified` | 0.8 | a changing tool ran and the reply asserts success with nothing showing the result was checked |
+| `settle_promise` | `jev_promise` | 0.7 | the reply puts off, to a later turn, work Paco asked for in this message |
+| `settle_asks_permission` | `jev_asks_permission` | 0.7 | the reply asks for a go-ahead on the instruction itself |
+
+The rung sends back when ANY question's p is over its own bar (highest margin first names the reason); all below the bars
+settles. The bars are code (`SETTLE_QUESTION_BARS`), threshold version **`2026-10-20.2`**, and the questions hash covers the
+criteria. They are per-question because one bar could not do both jobs: on the wording set B the probe found no single bar
+meeting at most 10 % sent back with all planted positives sent back. Calibration, by measurement on 133 real replies: the
+first wording 85.7 % (114/133) in the sanity run; wording set B with these bars 5.3 % in the probe, then **6/133 = 4.5 %**,
+planted 9/9, in the sanity run on the shipped build. The `unverified` bar is fragile (it sits just above a 0.7–0.8 cluster);
+the revisit is more than 10 % sent back over 14 days. The recorded `p` is the lowest bar (0.6), which sets the digest's unsure
+band; an `unverified` send-back is never offered for a tap.
+
+A daily golden tick (`runSettleGoldenTick`, `src/decisions/golden.ts`) asks the same request on eight synthetic items (four
+claims or promises that must send back, four clean replies that must settle) and fires on any question over its bar; a miss
+pages `decision_golden_drift:turn.settle`, a moved model pages `decision_bar_stale`, and neither disarms. Reading a row:
+`decisions` where `entry = 'turn.settle'`; reasons, outcomes (`settle_sent_back`, `settle_unverified`, `settle_discarded`)
+and the settle detail are in [ADR 0030](../decisions/0030-decision-ladder.md)'s 2b-i amendment.
+
 ## Arming
 
 **Armed 2026-10-09.** `CALIBRATED_ROWS` (`src/jev/calibration.ts`) holds 14 rows: the six tree questions plus

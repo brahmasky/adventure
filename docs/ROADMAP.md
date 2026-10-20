@@ -255,6 +255,14 @@ Backlog: commit NOISE_BANDS rows after the measurement (Q1); a calibration repor
 provisional bar); alert on repeated quiet Jev errors (3 an hour, damped; Paco said not now, 2026-10-14); an unsandboxed
 self-write test gate.
 
+**Decision ladder, stage 2b-i (built 2026-10-20, on branch `feat/ladder-2b-hooks`, not merged).** Extension hooks and
+`turn.settle`: omp's `tool_result` hook judges every built-in `read` (whole-text floor if the judge is late, `late` rows,
+masked-read redirect), `session_stop` gives `turn.settle` one bounded send-back (code rung, then Jev at per-question
+provisional bars 0.6/0.8/0.7/0.7 after a measured recalibration: first sanity 85.7 % sent back, final 4.5 %, planted 9/9), and
+omp's todo tool is on. Live gate on real Jev and omp 18.12.3: PASS 14/14; rollback PASS twice. ADR 0030 amendment drafted for
+Paco's hand. **Next: 2b-ii** (`improve.route`, improvement routed from outcomes). Open question for its spec: its proposal
+surface, since the daily decision digest has been off since 2026-10-14 (`HOUGE_DECISION_DIGEST_AT=off`).
+
 **SP4 scope change (2026-10-04).** The lifecycle-gap research
 (`docs/superpowers/research/2026-10-04-lifecycle-gap/00-synthesis.md`) found five lifecycle stages forbidden only
 because no safe version was designed (decide, spec, spec review, plan, live gate), most of the needed harness already

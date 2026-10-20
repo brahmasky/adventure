@@ -300,3 +300,92 @@ This file is protected (ADR 0011); Paco asked for this amendment on 2026-10-17 (
   0029's own amendment line lands with the build.
 - **Revisit when added:** fact Undo taps exceed one in five fact saves over 30 days, or the golden set drifts twice in
   30 days.
+
+## Amendment (2026-10-20): stage 2b-i, extension hooks and `turn.settle` (for Paco's sign-off)
+
+This file is protected (ADR 0011); this amendment is drafted for Paco's hand. Spec:
+[2026-10-19-ladder-2b-hooks-settle-design.md](../superpowers/specs/2026-10-19-ladder-2b-hooks-settle-design.md) (Rev 3 and
+its §3.3 calibration note); plan: [2026-10-20-ladder-2b-hooks-settle.md](../superpowers/plans/2026-10-20-ladder-2b-hooks-settle.md)
+(Rev 2.3, Rulings 1–16). Built on `feat/ladder-2b-hooks`; live only after merge, rebuild and kickstart.
+
+- **`turn.settle` is armed with provisional per-question bars** on four frozen noul questions (claims done, acted but
+  unverified, ends on a promise, asks permission for work already asked), asked in the Jev rung's own request (decision
+  point and audit role `settle`, 1.5 s, no re-ask). The bars are **0.6 / 0.8 / 0.7 / 0.7** in that order, not the 0.5 the
+  spec first named. Why: the first pre-merge sanity run on the spec's wording sent back **85.7 %** of 133 real replies
+  (114; bar at most 10 %). A probe re-asked the same 133 redacted replies with candidate wordings: the first wording gave
+  85.0 % at 0.5 and still 14.3 % at 0.9 (with 3 of 7 planted misses); wording set B (explicit true/false criteria on each
+  question) with these per-question bars gave 7/133 = 5.3 % with 7/7 planted. The re-run on the shipped build sent back
+  **6/133 = 4.5 %** (3 `jev_claims_done`, 3 `jev_unverified`) with **9/9 planted** (the planted set gained an
+  `unverified` item), 0 fallbacks. The threshold version is `2026-10-20.2` and the questions hash covers the criteria, so a
+  criteria edit marks the bars stale. The recorded bar `p` is the lowest (0.6), which sets the digest's unsure band.
+  Decision 9 already allows a provisional bar on this entry (mixed input, effect only a send-back); nothing else about the
+  ladder changes.
+- **Code rung first, then the Jev rung.** The rule abstains (never on a hostile turn, one already sent back, after a
+  denied call, with a queued steer, under 60 s of deadline, while aborting, on an empty reply), then answers from the
+  claims check (scheduled, saved, attached, sent: code-owned verbs, zh and en, first person and past, against the run's
+  ledger; passive and bare forms narrowed to avoid false positives) and the todo check (a list the planner changed this
+  turn and left open). A send-back is ONE bounded continuation through omp's `session_stop`; the reply is the
+  continuation's text, with a code fallback that joins the two under `— restated: —`. A failed continuation delivers pass
+  0 alone. The pass boundary is the continuation's `agent_start` (plan ruling 12). The final pass is audited at the
+  terminal `agent_end` (code checks, Jev re-asked after delivery); a persisting reason writes `settle_unverified` and one
+  urgent card per turn. Outcomes `settle_sent_back`, `settle_unverified`, `settle_discarded`; rows are never rewritten.
+  Settle health pages `decision_health:turn.settle` at three `budget` or `todo_unavailable` rows an hour; a Jev outage
+  pages once through the Jev incident (`turn.settle` joins `JEV_PAGED_ELSEWHERE`, ruling 14).
+- **The named exception is extended (2b-R7).** The code-owned redirect of a built-in `edit`/`write` to bash applies "in
+  a turn the injection judge marked hostile, **or in a continuation after a Jev-rung `turn.settle` send-back**"
+  (`settleAsk`: for the rest of the turn the ask half of every gate evaluates as if the level were hostile, under the
+  reason `this reply was sent back for one more pass`; the recorded level is unchanged; the taps count toward the
+  3-a-day budget). After a code-rung send-back the normal gates apply.
+- **Built-in `read` is a judged source** (`InjectionSource` `read`). The extension sends the canonical text as
+  `judge_read` and applies the rewrite inside a 5 s timer; past it, a fail-closed local copy of the phrase floor and
+  content checks withholds the whole text (the **whole-text floor**); `report { applied }` says what the model saw. The
+  32 KiB cap applies in every branch. A judgement completing after the turn finalised is recorded `armed_mode: late` and
+  mutates nothing; a read still unjudged at the bounded drain raises hostile (outside) or untrusted (local). **Ruling
+  11: every gated read is reconciled.** A `report` for a gated read that never got a `judge_read` (images only, a
+  refused or lost request) raises `judge_timeout`, and so does an unreconciled read at flush. Cost, stated plainly: an
+  image-only read ends the turn `untrusted`, because images are not judged and untrusted is the honest level.
+- **Masked-read redirect (2b-R8).** A local read whose judgement mirrored a mask is shown with the note `⟦Houge masked N
+  value(s) in this file; an edit or write to it will ask Paco⟧` and its real path (resolved and case-folded) is
+  remembered: a built-in `edit`/`write` on it takes the bash redirect, and a bash command naming it asks (`this file was
+  read with values masked`); both count as trust taps. Hex-only and digit-only masks are judge-only and add no path.
+  **The mask is prefix-aware:** omp prefixes read lines with `N:`, `N|`, `N-M:` or `N-M|`; the named-secret key regex and
+  the line-anchored content checks (cookie jar, seed line, and the extension floor's dense-secret key) accept that prefix
+  at the start of a line, in Houge and in the extension's copy. The live gate found this: on omp 18.12.3 a prefixed
+  `3:api_key: …` was not masked and the value reached a Jev request. The prefix form `N#HASH:` is not covered.
+- **omp's todo tool** is enabled for the planner (reminders off, `eager: default`); its calls are ungated (no path, no
+  body leaves the machine) and ledgered as counts-only `tool_finished builtin:todo`; a reminder reaching Houge pages
+  `todo_reminder_seen` and is never rendered.
+- **The steer guard reads the queue arrays.** `get_state` is read for the todo snapshot and the steer guard. On omp
+  18.12.3 `queuedMessageCount` includes `liveSteered`, which produced a phantom `steer_queued` on every turn (gate case 6:
+  the todo check never fired). The guard counts `steering.length + followUp.length`, both validated as string arrays; the
+  count field is validated but not read. A live-steered entry inside `steering` still counts (errs toward settling).
+- **Code rung is always recorded** (`alwaysRecord`): a rule-rung decision always has a row. `improve.route` is 2b-ii.
+- **No env var, no off switch (R13).** Rollback is revert plus rebuild; the rollback check passed twice (a case-6 transcript
+  with todo calls, a case-3 transcript with a continuation leg).
+
+Evidence: full suite 349 files / 4857 tests, typecheck clean; sanity PASS as above; live gate on real Jev and omp 18.12.3
+**PASS 14/14** at `b6a5679`. The gate's first run on that omp version (probes had run on 18.10.4) failed three cases that
+the unit suite could not: the queue-count semantics, the `N:` prefix, and a golden item (`st-planted-zh-1`) sitting on its
+0.6 bar (replaced by a synthetic item that cleared it by 0.35 on two runs).
+
+**Accepted residuals** (each measured or reasoned in the build ledger; none reopens the design):
+
+1. The final audit runs un-awaited after delivery (the reply is never delayed), so a daemon stop during it loses its
+   outcome rows and card.
+2. A settle decision that outruns the 4 s budget plus 250 ms slack writes its row without an outcome (its id is never
+   stored); when it then finds the turn finished or aborting it writes `settle_discarded signal` itself.
+3. The `unverified` bar (0.8) is fragile: it sits just above a 0.7–0.8 cluster of honest background-work reports, and 3 of
+   the 6 real send-backs on the sanity run were `unverified` at about 0.81–0.84. The guard is the revisit line below.
+4. Flag-embedded paths (`--output=cfg.yml`) evade the masked bash ask (the same limit as `pathOperands`).
+5. A `report` lagging the terminal `agent_end` meets a cleared pending map; the read was already raised `judge_timeout` at
+   flush (the cautious side; the window is one socket round trip).
+6. The settle health counter can re-page on a flap (a guard row resolves the incident while the hour's count is still 3).
+7. 2b-R15 (a read under the daemon temp dir is outside text) is reachable only as defence in depth: the gate already
+   denies planner reads there, so the branch cannot fire through `gate` today.
+8. Strict `get_state` validation turns the steer guard off on a malformed reply and pages `todo_unavailable`.
+9. `claim_saved`'s bare `Saved` form fires only on a very short sentence ("Saved — I'll remember that." is too long), so
+   it is untested live (the live case uses the scheduled claim); a sent-back turn that fails after the continuation was seen still records `settle_sent_back`.
+
+**Revisit when added:** the share of real replies sent back exceeds 10 % over 14 days. Golden drift on `turn.settle`
+pages `decision_golden_drift:turn.settle` and does not disarm (R13). A calibrated row may replace the provisional bars
+when Paco commits one.

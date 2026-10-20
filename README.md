@@ -105,8 +105,11 @@ Telegram ──long-poll──▶ houge daemon (launchd; ledger, scheduler, swee
    the child at the next idle boundary.
 4. The daemon prepends a `[context]` block (episodic facts and wiki pages) to the prompt and
    records what it applied, so rating attribution still works.
-5. omp runs its own agent loop. Built-in file calls are gated by the policy hook; Houge tool calls
-   cross the bridge. A model error walks the routed role's candidate list, then steps up a role (Fast → Default →
+5. omp runs its own agent loop. Built-in file calls are gated by the policy hook, and a built-in `read` result
+   is judged for injected instructions (`tool.injection`; a file read with secrets masked asks before it is edited);
+   Houge tool calls cross the bridge. At the end of a pass `turn.settle` (rule, then Jev) may send an unfinished
+   reply back once for one more pass (a claimed action with no evidence, a promise, a permission ask for work
+   already asked); omp's `todo` tool is ungated and its open items are checked. A model error walks the routed role's candidate list, then steps up a role (Fast → Default →
    Thinking); an unknown model string fails at spawn and the next candidate is spawned instead.
 6. A message that arrives mid-turn is steered into the live turn, and Paco gets one reply. Media and
    schedule fires never steer: each queues as its own turn.
@@ -116,7 +119,7 @@ Telegram ──long-poll──▶ houge daemon (launchd; ledger, scheduler, swee
 
 ### Tools
 
-The planner has omp's `read`, `edit` and `write` built-ins and these Houge tools, each one JSON
+The planner has omp's `read`, `edit`, `write` and `todo` built-ins and these Houge tools, each one JSON
 declaration under `src/omp/tools/` plus a daemon-side adapter:
 
 | Tool | What it does |

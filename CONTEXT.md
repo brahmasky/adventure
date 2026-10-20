@@ -78,6 +78,12 @@ This file defines domain language for Houge architecture reviews and implementat
 
 **Hostile turn**: A turn in which `tool.injection` withheld a passage, withheld an outside passage unjudged, or lost its judgement on outside text (framed as not checked); or a turn whose planner transcript carries a hostile level. Shell commands off the read-only list and all writes ask.
 
+**Settle**: The last decision of a planner turn (`turn.settle`, ADR 0030 2b-i): when omp's `session_stop` hook fires, Houge decides whether the reply stands or goes back once. A code rule checks claims against the run's ledger and open todo items; a Jev rung asks four typed questions at per-question provisional bars. The final pass is audited again at the terminal `agent_end`.
+
+**Pass**: One agent leg of a turn between settle points. Pass 0 is the planner's first answer; pass 1 is the continuation a send-back starts (it opens at that leg's `agent_start`). A turn has at most two.
+
+**Send-back**: The one bounded continuation `turn.settle` may request through `session_stop` (`settle_sent_back`): the planner gets a code-owned note naming the reason and runs once more. The delivered reply is the continuation's text (with a code fallback that joins both passes under `— restated: —`; a failed continuation delivers pass 0 alone). A Jev-rung send-back also makes the rest of the turn's writes ask (`settleAsk`). Never repeated: a second fire settles.
+
 **Withhold**: Replacing a passage of tool output with `[withheld: text aimed at the assistant]` before any model reads it.
 
 **Noise band**: A reviewed per-question margin around a bar inside which a decision asks Jev once more and uses the mean (or, over tool input, the more cautious call).
