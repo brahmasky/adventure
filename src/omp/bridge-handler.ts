@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import type { JEV_PROVIDER } from "../llm/metered-pricing.js";
 import { resolve as resolvePath } from "node:path";
 import { CapabilityRunner, type ApprovalRequestSink, type CapabilityExecutionInput, type CapabilityResult } from "../capabilities/capability-runner.js";
 import { decideCapability } from "../policy/capability-policy.js";
@@ -38,6 +39,9 @@ type FsEntry = "fs_read" | "fs_write";
 export type PausePolicy = { pause: "full" } | { pause: "bounded"; ttlMs: number };
 export const FULL_PAUSE: PausePolicy = { pause: "full" };
 
+/** Who sent the turn back (spec §3.5): a code rule, or the Jev rung (the literal lives in the LLM layer: the metered-provider guard scans for it). */
+export type SendBackKind = "rule" | typeof JEV_PROVIDER;
+
 export interface ActiveTurn {
   run_id: string; worker_id: string; chat_id: string; requester: Identity; contract: CompiledTaskContract;
   budget: BudgetLedger; registry: ToolRegistry; signal: AbortSignal; cwd: string; step: { n: number };
@@ -71,6 +75,8 @@ export interface ActiveTurn {
   judgeInFlight?: Map<string, Promise<void>>;
   /** Spec §3.3: this turn continues a Jev-rung send-back, so every Houge effect asks as a hostile turn would. */
   settleAsk?: boolean;
+  /** The send-back callback (spec §3.5): installed by the supervisor; the bridge calls it with the settle request's text before it writes a sendBack reply (Task 10). */
+  onSendBack?: (kind: SendBackKind, settleText: string) => void;
 }
 
 /** A preflight verdict: refuse with a code-owned reason, or go on with the card detail Paco approves. */

@@ -17,7 +17,7 @@ import type { ToolRegistry } from "../tools/tool-registry.js";
 import { ACK_NUDGE_TEXT, isBareAck } from "./bare-ack.js";
 import type { BridgeRequest } from "./bridge-protocol.js";
 import { BridgeServer } from "./bridge-server.js";
-import { createBridgeHandler, flushUnreported, FULL_PAUSE, TRUST_WAIT_MIN_MS, type ActiveTurn, type PausePolicy } from "./bridge-handler.js";
+import { createBridgeHandler, flushUnreported, FULL_PAUSE, TRUST_WAIT_MIN_MS, type ActiveTurn, type PausePolicy, type SendBackKind } from "./bridge-handler.js";
 import { selectorKey, STEP_UP } from "./model-roles.js";
 import { familyOf, type ModelFamily, type ModelString } from "./model-string.js";
 import { PLANNER_HEARTBEAT_MS, type OmpConfig } from "./omp-config.js";
@@ -25,7 +25,8 @@ import { classifyOmpError, frameErrorText, RETRYABLE_ERROR_KINDS, summarizeAssis
 import type { OmpCheckResult } from "./omp-version.js";
 import { sharedOmpVersionCache } from "./omp-version-cache.js";
 import { PlannerRpcError, PlannerSession, type ExitInfo, type PlannerSessionOptions } from "./planner-session.js";
-import { realpathOrSelf, type PathContext } from "./protected-paths.js";
+import { type PathContext } from "./protected-paths.js";
+import { parseAttachments } from "./attachments.js";
 import type { RoleResolver } from "./role-resolver.js";
 import { writeSeatbeltProfiles } from "./seatbelt.js";
 import { resolveLessonSessionReset } from "./session-seed.js";
@@ -175,6 +176,11 @@ interface Turn {
   dispatched: boolean;
   /** 2b-i §5: a todo_reminder frame was seen this turn. */
   todoReminder?: boolean;
+  /** The run id and the turn's trust level now (the settle hook reads them, Task 10). */
+  run_id: string; trustLevel: () => TrustLevel;
+  /** Spec §3.5: pass 0 is the first answer, pass 1 opens at the continuation's agent_start; `lastText` is the current pass's final text. */
+  passes: Pass[]; sentBack: boolean; sentBackKind?: SendBackKind; continuationSeen: boolean; continuationFailed?: boolean;
+  userText: string; settleText?: string;
   /** The child generation this turn committed to (set as promptTop begins; -1 before): only its bridge loss aborts the turn. */
   childGen: number;
   /** Concurrent approval waits: the deadline stays paused until every one resolved. */
@@ -210,6 +216,19 @@ interface Turn {
   laneEnded: boolean;
 }
 
+export interface Pass { texts: string[]; final: string }
+/** 2b-i §3.5 (senior W12): the code fallback joins pass 0 and a too-short pass 1 under this line, so Paco can see it was joined. */
+export const RESTATED_MARKER = "— restated: —";
+
+/** The reply: pass 1's final text; empty → pass 0's; under a third of pass 0's length → pass 0, the marker, pass 1. */
+export function replyOfPasses(passes: readonly Pass[]): string {
+  const p0 = passes[0]?.final ?? "";
+  if (passes.length < 2) return p0;
+  const p1 = passes[passes.length - 1]!.final;
+  if (p1.trim().length === 0) return p0;
+  return p1.length * 3 >= p0.length ? p1 : `${p0}\n${RESTATED_MARKER}\n${p1}`;
+}
+
 /** Error text for error_refs, incidents and logs: a code or a short path-free reason, never an fs message (M-6). */
 const message = (e: unknown) => safeReason(e);
 /** A planner RPC failure as a fixed code (command_failed:<type>, timeout:<type>, …) or an errno code; never omp's text. */
@@ -227,23 +246,7 @@ async function bounded<T>(p: Promise<T>, ms: number): Promise<T | typeof TIMED_O
   try { return await Promise.race([p, timeout]); } finally { clearTimeout(t); }
 }
 
-function inside(root: string, p: string): boolean {
-  const rel = relative(root, p);
-  return rel !== "" && rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
-}
-
-/** `[[attach: <path>]]` lines leave the text; a path is kept only if it (and its real target) is inside the workspace. */
-export function parseAttachments(text: string, workspace: string): { text: string; attachments: string[] } {
-  const attachments: string[] = [];
-  const kept = text.split("\n").filter((line) => {
-    const m = /^\s*\[\[attach:\s*(.+?)\s*\]\]\s*$/.exec(line);
-    if (!m) return true;
-    const abs = resolvePath(workspace, m[1] as string);
-    if (inside(workspace, abs) && inside(realpathOrSelf(workspace), realpathOrSelf(abs))) attachments.push(abs);
-    return false;
-  });
-  return { text: kept.join("\n").trim(), attachments };
-}
+export { parseAttachments };
 
 function newDeferred(): { done: (r: "end" | "abort") => void; ended: Promise<"end" | "abort"> } {
   let done: (r: "end" | "abort") => void = () => undefined;
@@ -486,8 +489,11 @@ export class PlannerSupervisor {
       req, claim, worker, startedAt: Date.now(), merged: [], active, abort, heartbeat, n: 0, recorded: 0, lastText: "", lastError: undefined, deadline: undefined, idle: undefined, idleAt: Date.now(),
       usedTool: false, legIndex: 0, live: false, finished: false, laneEnded: false, aborting: false, dispatched: false, childGen: -1, approvals: 0, trustPausedMs: 0, trustPauseAt: undefined, trustResume: undefined, trustPauseSpan: 0, ...newDeferred(),
       route: null, role: "default", effort: null, chain: [], routedBy: undefined, startMissing: 0, legsTried: 0, retriedOther: false, pinFailed: false, failed: new Set(),
-      deadlineLeft: cfg.turnTimeoutMs, deadlineAt: Date.now()
+      deadlineLeft: cfg.turnTimeoutMs, deadlineAt: Date.now(),
+      run_id: req.run_id, trustLevel: () => active.trust?.level() ?? "clean",
+      passes: [{ texts: [], final: "" }], sentBack: false, continuationSeen: false, userText: req.text
     };
+    active.onSendBack = (kind, text) => this.onSendBack(turn, kind, text);
     this.armDeadline(turn); // the deadline covers child start and prompt build too
     return turn;
   }
@@ -525,6 +531,7 @@ export class PlannerSupervisor {
       const resolved = await this.resolveText(turn);
       if (resolved === ENDED || turn.failure) return;
       const { text, userText, modality } = resolved;
+      turn.userText = userText;
       // Slot B (ADR 0029 §5.1): the child starts now; only planner paths await it. `warm` never rejects: a start failure
       // is the spawn's own incident (or a string result), never this turn's.
       const warm: Promise<StartResult> = this.ensureSession(true).catch((e): StartResult => `spawn_failed: ${message(e)}`);
@@ -579,6 +586,7 @@ export class PlannerSupervisor {
     if ((await bounded(warm, ABORT_GRACE_MS)) === TIMED_OUT) { await this.stopSession(); await this.settleStart(); } // supersede a start that will not settle (gen bump)
     if (turn.failure || turn.abort.signal.aborted) return; // killed while waiting on the warm child: abortTurn already ended the turn
     turn.lastText = v.text;
+    turn.passes[0]!.final = v.text;
     turn.laneButtons = v.buttons;
     turn.laneEnded = true; // from here a late start result may not fail or re-enter this turn
     try { turn.live = false; } finally { turn.done("end"); }
@@ -758,6 +766,8 @@ export class PlannerSupervisor {
       const how = await turn.ended;
       // an abort omp reported itself (no supervisor failure set) is never a success (B6)
       if (how === "abort" && !turn.failure) turn.failure = { type: "planner_exit", ref: "agent_aborted" };
+      // spec §3.5 (senior W6): a model error in pass 1 never enters retryNextLeg; the turn completes with pass 0's text
+      if (turn.sentBack && turn.lastError !== undefined && !turn.failure && (turn.passes[0]?.final ?? "").trim().length > 0) { turn.continuationFailed = true; turn.lastError = undefined; break; }
       if (turn.failure || turn.lastError === undefined) break;
       // an async-wait end is never omp's last word: no Houge retry may overlap the child's own work (codex final I2)
       if (turn.asyncWait) { turn.failure = { type: "model_error", ref: classifyOmpError(turn.lastError) }; break; }
@@ -1179,6 +1189,7 @@ export class PlannerSupervisor {
     // failed leg and the retry's prompt) is ignored and can never fail or end a completed turn (round 2 N6)
     if (!t.live || t.finished) return;
     if (f.type === "turn_start") t.n++;
+    else if (f.type === "agent_start") this.onContinuation(t);
     else if (f.type === "tool_execution_start") { if (f.toolName !== "todo") t.usedTool = true; } // todo is bookkeeping, not a side effect
     else if (f.type === "todo_reminder") this.todoReminderSeen(t);
     else if (f.type === "message_end") this.onAssistant(t, summarizeAssistantMessage(f));
@@ -1188,6 +1199,22 @@ export class PlannerSupervisor {
       if (f.isTerminal === false && f.awaitingAsyncWork === true) t.asyncWait = true; // S2: the child may still continue
       t.live = false; t.done(f.aborted === true ? "abort" : "end");
     }
+  }
+
+  /** Called by the bridge BEFORE it writes the sendBack reply (spec §3.5): marks the turn; pass 1 opens at the continuation's agent_start (ruling 12). */
+  private onSendBack(t: Turn, kind: SendBackKind, settleText: string): void {
+    if (t.finished || t.sentBack) return;
+    t.sentBack = true; t.sentBackKind = kind; t.settleText = settleText;
+    if (kind !== "rule") t.active.settleAsk = true;
+  }
+
+  /** Ruling 12: the second agent_start is the pass boundary, on the frame channel; pass 0's final text is the settle request's when no message_end reached us. */
+  private onContinuation(t: Turn): void {
+    if (!t.sentBack || t.continuationSeen) return;
+    t.continuationSeen = true;
+    const p0 = t.passes[0]!;
+    if (p0.final.trim().length === 0 && t.settleText) { p0.final = t.settleText; t.lastText = t.settleText; }
+    t.passes.push({ texts: [], final: "" });
   }
 
   /** 2b-i §5: reminders are configured off; one reaching the supervisor pages once and is never rendered. */
@@ -1228,7 +1255,7 @@ export class PlannerSupervisor {
 
   /** One llm_attempt per model request, keyed `<run_id>:<n>` (spec §8). */
   private onAssistant(t: Turn, s: AssistantSummary | null): void {
-    if (!s) return;
+    if (!s) return; // 2b-R14: a custom or display:false message is never stored
     if (s.provider !== undefined && s.model !== undefined) this.noteActualModel(s.provider, s.model);
     const failed = s.stopReason === "error" || s.stopReason === "aborted" || s.errorMessage !== undefined;
     const error = failed ? (s.errorMessage ?? s.stopReason ?? "error") : undefined;
@@ -1243,7 +1270,8 @@ export class PlannerSupervisor {
     };
     this.audit(t, attempt);
     t.recorded = t.n;
-    if (s.text.trim().length > 0) t.lastText = s.text;
+    if (t.sentBack && s.stopReason === "aborted") return; // spec §3.5: an aborted message after a send-back is not stored
+    if (s.text.trim().length > 0) { const pass = t.passes[t.passes.length - 1]!; pass.texts.push(s.text); pass.final = s.text; t.lastText = s.text; }
     t.lastError = error;
   }
 
@@ -1342,7 +1370,9 @@ export class PlannerSupervisor {
     t.finished = true;
     flushUnreported(store, t.active);
     this.endTrust(t); // spec §7.2: turn_trust_final at every turn end, success or failure
-    const { text, attachments } = parseAttachments(t.lastText, this.workspace());
+    const reply = replyOfPasses(t.passes);
+    const attachments = [...new Set(t.passes.flatMap((p) => parseAttachments(p.final, this.workspace()).attachments))];
+    const { text } = parseAttachments(reply, this.workspace());
     const base = { worker_id: t.worker, text, duration_ms: Date.now() - t.startedAt, tool_calls: t.active.budget.usage().tool_calls };
     outcome.complete({ ...base, run_id: t.req.run_id, attachments, ...(t.laneButtons ? { buttons: t.laneButtons } : {}) });
     for (const m of t.merged) outcome.complete({ ...base, run_id: m, merged_into: t.req.run_id, attachments: [] });
@@ -1357,7 +1387,7 @@ export class PlannerSupervisor {
     this.endTrust(t); // spec §7.2: turn_trust_final at every turn end, success or failure
     if (t.n > t.recorded || (t.dispatched && t.n === 0)) this.recordAborted(t, f.ref === DAEMON_SHUTDOWN ? "shutdown" : "aborted");
     if (f.type === "turn_timeout" || f.type === "frame_idle") store.recordLoopHalted(t.req.run_id, { reason: f.type, steps: t.n });
-    const base = { worker_id: t.worker, error_ref: f.ref, ...(t.lastText ? { partial: t.lastText } : {}) };
+    const base = { worker_id: t.worker, error_ref: f.ref, ...((t.passes[0]?.final || t.lastText) ? { partial: t.passes[0]?.final || t.lastText } : {}) };
     outcome.fail({ ...base, run_id: t.req.run_id, error_type: f.type });
     for (const m of t.merged) outcome.fail({ ...base, run_id: m, error_type: "merged_parent_failed" });
     this.routeEnd(t, "planner_failed");
