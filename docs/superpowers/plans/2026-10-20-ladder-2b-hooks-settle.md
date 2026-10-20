@@ -454,7 +454,7 @@ const PEM = "-----BEGIN RSA PRIVATE KEY-----\nMIIB\n-----END RSA PRIVATE KEY----
 beforeEach(async () => {
   resetBridgeForTest(); seen.length = 0;
   const sock = join(mkdtempSync(join(tmpdir(), "hxh-")), "b.sock");
-  process.env.HOUGE_BRIDGE_SOCK = sock; process.env.HOUGE_BRIDGE_TOKEN = "t"; process.env.HOUGE_HOOK_TIMEOUT_MS_FOR_TEST = "60";
+  process.env.HOUGE_BRIDGE_SOCK = sock; process.env.HOUGE_BRIDGE_TOKEN = "t";
   server = await BridgeServer.listen(sock, "t", async (req) => {
     seen.push(req);
     if (req.kind === "manifest") return [];
@@ -464,12 +464,13 @@ beforeEach(async () => {
     return { ok: true };
   });
 });
-afterEach(async () => { await server.close(); delete process.env.HOUGE_BRIDGE_SOCK; delete process.env.HOUGE_BRIDGE_TOKEN; delete process.env.HOUGE_HOOK_TIMEOUT_MS_FOR_TEST; });
+afterEach(async () => { await server.close(); delete process.env.HOUGE_BRIDGE_SOCK; delete process.env.HOUGE_BRIDGE_TOKEN; });
 
 type Handlers = { tool_call: (e: any) => any; tool_result: (e: any) => any; session_stop: (e: any) => any };
+/** The policy with a 60 ms hook timer (a constructor option; houge.ts passes none, so the daemon runs the 5 s default). */
 async function policy() {
   const handlers = {} as Handlers;
-  await (await import("../../src/omp/extension/houge-policy.js")).hougePolicy({ registerTool: () => undefined, on: (ev: keyof Handlers, h: any) => { handlers[ev] = h; } });
+  await (await import("../../src/omp/extension/houge-policy.js")).hougePolicy({ registerTool: () => undefined, on: (ev: keyof Handlers, h: any) => { handlers[ev] = h; } }, { hookTimeoutMs: 60 });
   return handlers;
 }
 const read = (text: string, extra: object = {}) => ({ toolName: "read", toolCallId: "r1", isError: false, content: [{ type: "text", text }], details: { totalLines: 3, displayContent: { text, startLine: 1 } }, ...extra });
@@ -604,12 +605,8 @@ export const TRUNCATED_NOTE = "[truncated by Houge at 32 KiB]";
 type Block = { type: string; text?: string } & Record<string, unknown>;
 export interface ReadResultEvent { toolName: string; toolCallId: string; isError?: boolean; content?: Block[]; details?: Record<string, unknown> }
 type Reply = { verdict: "unchanged" } | { verdict: "rewritten"; text: string };
-
-/** Test-only override of the hook timer (never set by the daemon; the extension reads env once per call). */
-function hookTimeoutMs(): number {
-  const v = Number(process.env.HOUGE_HOOK_TIMEOUT_MS_FOR_TEST);
-  return Number.isFinite(v) && v > 0 ? v : HOOK_TIMEOUT_MS;
-}
+/** `timeoutMs`: the hook timer (HOOK_TIMEOUT_MS in the daemon; tests pass a short one through hougePolicy's option). */
+export interface HookOpts { timeoutMs: number }
 
 /** Text blocks joined with `\n` (omp's hashline header and `N:` prefixes included, P1'), cut on a UTF-8 boundary at the cap. */
 export function canonicalText(content: Block[] | undefined): string | null {
@@ -635,9 +632,9 @@ export function rewritten(e: ReadResultEvent, text: string): { content: Block[];
   return { content, details: { ...(e.details ?? {}), displayContent: { text, startLine: 1 } } };
 }
 
-function sendReport(e: ReadResultEvent, bytes: number, durationMs: number, applied: boolean): void {
+function sendReport(e: ReadResultEvent, o: HookOpts, bytes: number, durationMs: number, applied: boolean): void {
   void getBridge().request({ kind: "report", toolCallId: e.toolCallId, outcome: e.isError ? "failed" : "succeeded", bytes_out: bytes, duration_ms: durationMs, applied },
-    { timeoutMs: hookTimeoutMs() }).catch(() => undefined);
+    { timeoutMs: o.timeoutMs }).catch(() => undefined);
 }
 
 /**
@@ -645,20 +642,20 @@ function sendReport(e: ReadResultEvent, bytes: number, durationMs: number, appli
  * a throw — the model gets the judged text or the floored text, never raw text past the floor; the report follows
  * AFTER the result is returned (never awaited: an awaited report could hold the hook past omp's bound, codex B1).
  */
-export async function readResultHook(e: ReadResultEvent, startedAt: number | undefined): Promise<unknown> {
+export async function readResultHook(e: ReadResultEvent, startedAt: number | undefined, o: HookOpts = { timeoutMs: HOOK_TIMEOUT_MS }): Promise<unknown> {
   const t0 = startedAt ?? Date.now();
   const durationMs = () => Date.now() - t0;
   const text = canonicalText(e.content);
   const bytes = Buffer.byteLength(text ?? "", "utf8");
-  if (text === null) { sendReport(e, 0, durationMs(), true); return undefined; }
+  if (text === null) { sendReport(e, o, 0, durationMs(), true); return undefined; }
   try {
-    const r: Reply = await getBridge().request({ kind: "judge_read", toolCallId: e.toolCallId, text }, { timeoutMs: hookTimeoutMs() });
-    if (r.verdict === "rewritten" && typeof r.text === "string") { sendReport(e, bytes, durationMs(), true); return rewritten(e, r.text); }
-    if (r.verdict === "unchanged") { sendReport(e, bytes, durationMs(), true); return undefined; }
+    const r: Reply = await getBridge().request({ kind: "judge_read", toolCallId: e.toolCallId, text }, { timeoutMs: o.timeoutMs });
+    if (r.verdict === "rewritten" && typeof r.text === "string") { sendReport(e, o, bytes, durationMs(), true); return rewritten(e, r.text); }
+    if (r.verdict === "unchanged") { sendReport(e, o, bytes, durationMs(), true); return undefined; }
     throw new Error("malformed judge_read reply");
   } catch {
     const floored = applyFloor(text);
-    sendReport(e, bytes, durationMs(), false);
+    sendReport(e, o, bytes, durationMs(), false);
     return floored.withheld ? rewritten(e, floored.text) : undefined;
   }
 }
@@ -674,16 +671,11 @@ type Block = { type: string; text?: string };
 export interface SessionStopEvent { stop_hook_active: boolean; signal: AbortSignal; last_assistant_message?: { content?: Block[] } }
 const CAP = 32 * 1024;
 
-function hookTimeoutMs(): number {
-  const v = Number(process.env.HOUGE_HOOK_TIMEOUT_MS_FOR_TEST);
-  return Number.isFinite(v) && v > 0 ? v : HOOK_TIMEOUT_MS;
-}
-
 /** 2b-i §2.3: settle on every fire; only `{ sendBack: true, note }` continues the session. Everything else fails open. */
-export async function sessionStopHook(e: SessionStopEvent): Promise<{ continue: true; additionalContext: string } | undefined> {
+export async function sessionStopHook(e: SessionStopEvent, o: { timeoutMs: number } = { timeoutMs: HOOK_TIMEOUT_MS }): Promise<{ continue: true; additionalContext: string } | undefined> {
   try {
     const text = (e.last_assistant_message?.content ?? []).filter((b) => b.type === "text").map((b) => b.text ?? "").join("\n").slice(0, CAP);
-    const r = await getBridge().request({ kind: "settle", stop_hook_active: e.stop_hook_active === true, text }, { timeoutMs: hookTimeoutMs() });
+    const r = await getBridge().request({ kind: "settle", stop_hook_active: e.stop_hook_active === true, text }, { timeoutMs: o.timeoutMs });
     if (e.signal?.aborted) return undefined; // P2': omp aborted the settle pass; a continuation now would be ignored or harmful
     return r?.sendBack === true && typeof r.note === "string" ? { continue: true, additionalContext: r.note } : undefined;
   } catch {
@@ -706,6 +698,10 @@ export const UNGATED_BUILTINS = ["todo"] as const;
 const isUngated = (n: string): n is (typeof UNGATED_BUILTINS)[number] => (UNGATED_BUILTINS as readonly string[]).includes(n);
 ```
 
+`hougePolicy(pi: PiLike, opts: { hookTimeoutMs?: number } = {})`; `const hook = { timeoutMs: opts.hookTimeoutMs ?? HOOK_TIMEOUT_MS };`
+(`houge.ts` passes no option: the daemon always runs the 5 s timer; the option exists for the extension tests only and
+is not reachable from any env var or config).
+
 In the `tool_call` handler, before the `isBuiltin` branch: `if (isUngated(e.toolName)) { startedAt.set(e.toolCallId, Date.now()); return undefined; }`.
 
 Replace the `tool_result` handler and add `session_stop`:
@@ -713,13 +709,13 @@ Replace the `tool_result` handler and add `session_stop`:
 ```ts
   pi.on("tool_result", async (e: { toolName: string; toolCallId: string; isError?: boolean; content?: Array<{ type: string; text?: string }>; details?: Record<string, unknown> }) => {
     const t0 = startedAt.get(e.toolCallId); startedAt.delete(e.toolCallId);
-    if (e.toolName === "read") return readResultHook(e, t0);
+    if (e.toolName === "read") return readResultHook(e, t0, hook);
     if (!isBuiltin(e.toolName) && !isUngated(e.toolName)) return;
     const bytes = (e.content ?? []).reduce((n, c) => n + Buffer.byteLength(c.text ?? "", "utf8"), 0);
     await getBridge().request({ kind: "report", toolCallId: e.toolCallId, outcome: e.isError ? "failed" : "succeeded", bytes_out: bytes,
       duration_ms: t0 === undefined ? 0 : Date.now() - t0, ...(isUngated(e.toolName) ? { tool: e.toolName } : {}) }).catch(() => undefined);
   });
-  pi.on("session_stop", (e) => sessionStopHook(e));
+  pi.on("session_stop", (e) => sessionStopHook(e, hook));
 ```
 
 - [ ] **Step 4: Run the tests to verify they pass**
@@ -1896,8 +1892,10 @@ function jevRung(d: SettleDeps, s: SettleState, deadline: number): () => Promise
   return async () => {
     const left = deadline - (d.clock ?? Date.now)();
     if (left < SETTLE_JEV_MIN_MS) return { failed: "budget", reason: "budget" };
-    const r = await askSettle({ run_id: s.run_id, state: s, client: d.client, store: d.store, boundMs: Math.min(SETTLE_JEV_MS, left) });
-    if ("failed" in r) return { failed: r.failed };
+    const bound = Math.min(SETTLE_JEV_MS, left);
+    const r = await askSettle({ run_id: s.run_id, state: s, client: d.client, store: d.store, boundMs: bound });
+    // a timeout the DEADLINE cut (the bound was shorter than the client's own 1.5 s) is a budget miss, not a Jev timeout
+    if ("failed" in r) return r.failed === "timeout" && bound < SETTLE_JEV_MS ? { failed: "budget", reason: "budget" } : { failed: r.failed };
     const over = SETTLE_QUESTIONS.map((q) => [q.id, r.answers[q.id] ?? 0] as const).filter(([, p]) => p > SETTLE_BAR_P).sort((a, b) => b[1] - a[1]);
     const top = Math.max(...Object.values(r.answers));
     if (over.length > 0) return { verdict: "send_back", reason: SETTLE_QUESTION_REASON[over[0]![0]], p: over[0]![1], detail: { jev: r.answers } };
@@ -2462,13 +2460,12 @@ describe("the settle request end to end (spec §3)", () => {
     expect(outcome.done[0]).toMatchObject({ text: "I've saved it." });
     expect(outcomes(store, run_id)).toEqual([["settle_discarded", "continuation_failed"]]);
   });
-  it("past the 4 s budget Houge answers sendBack: false and the row is fail/budget", async () => {
-    const slow = () => async (): Promise<JevResult> => { await new Promise((r) => setTimeout(r, 6_000)); return { ok: false, reason: "error", detail: "late", error_kind: "timeout" }; };
-    const { session, h } = held(); const { store, sup } = harness(session, {}, { settleClient: slow });
+  it("past the 4 s budget (the gate hold eats 3.8 s of it) Houge answers sendBack: false inside the extension's 5 s and the row is fail/budget", async () => {
+    const { session, h } = held(); const { store, sup } = harness(session, {}, { settleClient: () => jev([0.9, 0.9, 0.9, 0.9]), gateHold: { settleMs: 3_800 } });
     const run_id = createQueuedTurnRun(store); sup.submit(req(run_id)); await until(() => sup.state() === "RUNNING");
     h.say("done"); const t0 = Date.now();
     expect(await session.request(settleReq("done"))).toEqual({ sendBack: false });
-    expect(Date.now() - t0).toBeLessThan(4_600);
+    expect(Date.now() - t0).toBeGreaterThanOrEqual(3_800); expect(Date.now() - t0).toBeLessThan(4_600);
     expect(rows(store, run_id)[0]).toMatchObject({ rung: "fail", reason_code: "budget" });
     h.emit({ type: "agent_end" }); await sup.whenIdle();
   }, 10_000);
@@ -2546,13 +2543,21 @@ import { decideSettle, finalAuditReasons, reaskAfterDelivery, SETTLE_BUDGET_MS, 
 /** Ruling 7: the outer race is the last net past Houge's own budget. */
 const SETTLE_SLACK_MS = 250;
 export const UNVERIFIED_CARD = (reasonLine: string): string => `⚠️ Settled unverified: ${reasonLine}`;
+/** The live gate's hold (spec §7 cases 2 and 8): a delay inside the handler, so Houge's own budget and the extension's timer are what is measured. */
+export interface GateHold { judgeReadMs?: number; settleMs?: number }
+const gateHold = (ms: number | undefined): Promise<void> => (ms ? new Promise((r) => setTimeout(r, ms)) : Promise.resolve());
 // SupervisorDeps gains:
   /** turn.settle's own Jev client per run (audit role `settle`, 1.5 s, no retry): required, there is no off switch (R13). */
   settleClient: (run_id: string) => (r: JevRequest) => Promise<JevResult>;
+  /** Live-gate seam only (never set by the daemon): forwarded to the bridge handler (judge_read) and used by settleRequest. */
+  gateHold?: GateHold;
 // Turn gains: todoBefore: TodoSnapshot | null; settleDecisionId: string | null; settleReason?: SettleReason;
 ```
 
-`listen()` passes `settle: (turn, req) => this.settleRequest(turn, req)` to `createBridgeHandler`.
+`listen()` passes `settle: (turn, req) => this.settleRequest(turn, req)` and `...(this.d.gateHold ? { gateHold: this.d.gateHold } : {})`
+to `createBridgeHandler`; `BridgeHandlerDeps.gateHold?: GateHold` (type exported from `bridge-handler.ts`, re-used by
+the supervisor) and `handleJudgeRead` awaits `deps.gateHold?.judgeReadMs` right after it set the pending entry (so a
+held judge_read is pending while it waits, as a slow bridge would be).
 
 ```ts
   /** omp's get_state through the live child, bounded by the session's own 1 s; null on any failure (the todo check is then off for the turn). */
@@ -2585,6 +2590,7 @@ export const UNVERIFIED_CARD = (reasonLine: string): string => `⚠️ Settled u
     if (!t || t.active !== active || t.finished) return { sendBack: false };
     if (req.stop_hook_active || t.sentBack) return { sendBack: false };
     const arrived = Date.now();
+    await gateHold(this.d.gateHold?.settleMs); // live-gate seam (Task 12): spends the budget, never set by the daemon
     const state = await this.settleState(t, req.text, arrived);
     const decided = await bounded(decideSettle(this.settleDeps(t), state, arrived + SETTLE_BUDGET_MS), SETTLE_BUDGET_MS + SETTLE_SLACK_MS);
     if (decided === TIMED_OUT) { console.error(`planner supervisor: settle past its budget for ${t.req.run_id}`); return { sendBack: false }; }
@@ -2791,15 +2797,15 @@ git commit -m "feat(decisions): turn.settle golden tick, unsure band for its Jev
 ### Task 12: Core wiring (the `settle` Jev client, the gate hold seam) and the pre-merge sanity script
 
 **Files:**
-- Modify: `src/core/core-worker.ts:2366-2381, 2878-2900` (`settleClient`, `settleGateHold`), `src/omp/planner-supervisor.ts` (`SupervisorDeps.gateHold?`, applied in `listen()`)
+- Modify: `src/core/core-worker.ts:335-348, 2366-2381, 2878-2900` (`OmpWorkerOptions.gateHold?`, `settleClient`, both forwarded in `supervisorDeps`)
 - Create: `scripts/settle-sanity.mjs`
 - Modify: `tests/helpers/omp-worker.ts:22-41` (`gateHold?` passed through to `OmpWorkerOptions`)
 - Test: `tests/core/omp-injection-wiring.test.ts` (+1: the supervisor deps carry `settleClient` and the client audits as role `settle`)
 
 **Interfaces:**
 - Produces: `CoreWorker.settleClient(run_id)` (role `settle`, `SETTLE_JEV_MS`, `retries: 0`, honours `ompOptions.jevFetch`);
-  `OmpOptions.gateHold?: { judgeReadMs?: number; settleMs?: number }` → `SupervisorDeps.gateHold`: the bridge handle
-  awaits the hold before handling that kind (a gate seam like `jevFetch`; never set by the daemon);
+  `OmpWorkerOptions.gateHold?: GateHold` → `SupervisorDeps.gateHold` (Task 10 defined the seam; a gate seam like
+  `jevFetch`, never set by the daemon);
   `scripts/settle-sanity.mjs [--db <path>] [--days 30] [--case5 <turn_id prefix>] [--keep]`, exit 0 PASS / 1 FAIL / 2 setup / 3 INCONCLUSIVE.
 
 - [ ] **Step 1: Write the failing test**
@@ -2841,20 +2847,8 @@ Expected: FAIL (`settleClient` undefined; typecheck fails on the required dep un
     });
   }
 ```
-`supervisorDeps` adds `settleClient: (run_id) => this.settleClient(run_id)` and `...(this.ompOptions.gateHold ? { gateHold: this.ompOptions.gateHold } : {})`.
-
-`src/omp/planner-supervisor.ts` `listen()`:
-
-```ts
-    const hold = this.d.gateHold;
-    const handle = async (req: BridgeRequest) => {
-      const ms = req.kind === "judge_read" ? hold?.judgeReadMs : req.kind === "settle" ? hold?.settleMs : undefined; // live-gate seam only
-      if (ms) await new Promise((r) => setTimeout(r, ms));
-      const out = await inner(req);
-      if (req.kind === "manifest") served();
-      return out;
-    };
-```
+`supervisorDeps` adds `settleClient: (run_id) => this.settleClient(run_id)` and `...(this.ompOptions.gateHold ? { gateHold: this.ompOptions.gateHold } : {})`;
+`tests/helpers/omp-worker.ts` forwards an optional `gateHold` the same way it forwards `jevFetch`.
 
 `scripts/settle-sanity.mjs` (pattern: `scripts/live-gate-decisions-2a.mjs` for `copyDb`, `load`, the worktree guard and
 the exit codes; real Jev through `createJevClient` with `role: "settle"`; never opens the live DB for writing):
@@ -2972,8 +2966,9 @@ The eleven cases (spec §7), each with its prompt and its PASS predicate:
 7. **Guards.** Hostile: read `plant.md` then reply with the case-3 sentence → row `settle / hostile`. Queued steer: the
    gate submits a schedule-born request while the telegram turn runs (it queues, never steers) → row `settle /
    steer_queued`.
-8. **Budget.** `jevFetch` delayed 6 s on the `settle` role (match the request's audit role through the sink, or delay
-   every Jev call during this case): row `fail / budget`, completion text is pass 0's.
+8. **Budget.** `gateHold: { settleMs: 3_800 }` with the case-3 prompt: the `turn.settle` row is `fail / budget`
+   (`latency_ms` under 4 250), no send-back, the completion text is pass 0's, and the extension's own timer did not
+   fire first (the row exists, so Houge answered; `settle_discarded` is absent).
 9. **Masked read.** `cfg.yml` with `api_key: ` + 24 random letters; prompt: "Read cfg.yml, then change the line `name:
    old` to `name: new` with the edit tool." PASS: the transcript's read result ends with `MASKED_NOTE(1)`; the ledger has
    a `tool_finished builtin:edit` **denied** with reason `masked_redirect`; if the planner then used bash, an
