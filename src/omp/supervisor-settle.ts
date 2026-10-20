@@ -23,6 +23,8 @@ export interface SettleCtx {
 /** The Turn fields the glue reads and writes (the supervisor's Turn satisfies it structurally). */
 export interface SettleTurn {
   run_id: string; passes: Pass[]; sentBack: boolean; lastError: string | undefined; continuationSeen: boolean; continuationFailed?: boolean; aborting: boolean;
+  /** The turn ended on an abort, Houge's or omp's own (A11.5: an omp-side abort is a signal, never an extension timeout). */
+  endedOnAbort?: boolean;
   deadline: ReturnType<typeof setTimeout> | undefined; deadlineLeft: number; deadlineAt: number; trustLevel: () => TrustLevel;
   userText: string; todoBefore: TodoSnapshot | null; settleDecisionId: string | null; settleReason?: SettleReason;
   /** This turn's code-extracted codes and links (bridge-handler `turnExtracted`), read live: masked by value in every settle state. */
@@ -66,11 +68,15 @@ export function writeOutcome(ctx: SettleCtx, t: SettleTurn, signal: DecisionSign
   catch (e) { console.error(`settle: ${signal} not written for ${t.run_id}: ${safeReason(e)}`); }
 }
 
-/** 2b-R17: the row is never rewritten; what followed the send-back is an outcome (spec §3.5). */
+/**
+ * 2b-R17: the row is never rewritten; what followed the send-back is an outcome (spec §3.5). A11.5/A11.7: a turn Houge aborted
+ * (a /kill, even after the continuation) or omp aborted is a signal, so a killed turn never carries settle_sent_back.
+ */
 export function writeSettleOutcomes(ctx: SettleCtx, t: SettleTurn): void {
   if (!t.sentBack) return;
   if (t.continuationFailed) { writeOutcome(ctx, t, "settle_discarded", "continuation_failed"); return; }
-  if (!t.continuationSeen) { writeOutcome(ctx, t, "settle_discarded", t.aborting ? "signal" : "extension_timeout"); return; }
+  if (t.aborting || t.endedOnAbort) { writeOutcome(ctx, t, "settle_discarded", "signal"); return; }
+  if (!t.continuationSeen) { writeOutcome(ctx, t, "settle_discarded", "extension_timeout"); return; }
   writeOutcome(ctx, t, "settle_sent_back", t.settleReason ?? "settled");
 }
 

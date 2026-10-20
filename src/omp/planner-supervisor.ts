@@ -197,6 +197,8 @@ interface Turn {
   passes: Pass[]; sentBack: boolean; sentBackKind?: SendBackKind; continuationSeen: boolean; continuationFailed?: boolean;
   /** A8: a model error arrived before the continuation (pass 0's), so a pass-1 failure never delivers pass 0 as a success. */
   pass0Errored?: boolean;
+  /** A11.5: the turn ended on an abort (Houge's or omp's own); its settle outcome is a signal. */
+  endedOnAbort?: boolean;
   userText: string; settleText?: string; extracted: () => readonly string[];
   /** Spec §5: the todo list before the prompt (null: get_state failed); the settle row's id and its send-back reason (§3.5 outcomes). */
   todoBefore: TodoSnapshot | null; settleDecisionId: string | null; settleReason?: SettleReason;
@@ -479,7 +481,7 @@ export class PlannerSupervisor {
       this.clearTimers(turn);
       clearInterval(turn.heartbeat);
       this.endTrust(turn); // a turn that crashed past settle still ends with its level (idempotent after finish*)
-      if (turn.dispatched && !turn.todoReminder) resolveOpenIncidents(this.d.store, TODO_REMINDER_KIND, this.d.chatId);
+      this.resolveTodoReminder(turn); // A11.6: guarded, as endTrust: a store throw never crashes the completed turn
       if (this.turn === turn) this.turn = undefined;
     }
   }
@@ -794,6 +796,7 @@ export class PlannerSupervisor {
   private async settle(turn: Turn): Promise<void> {
     for (;;) {
       const how = await turn.ended;
+      if (how === "abort") turn.endedOnAbort = true;
       // an abort omp reported itself (no supervisor failure set) is never a success (B6)
       if (how === "abort" && !turn.failure) turn.failure = { type: "planner_exit", ref: "agent_aborted" };
       // spec §3.5 (senior W6): a model error in pass 1 never enters retryNextLeg; the turn completes with pass 0's text
@@ -809,9 +812,9 @@ export class PlannerSupervisor {
     if (turn.asyncWait) await this.dropAsyncChild(turn); // before the terminal write (codex final I1)
     await drainJudges(turn.active, JUDGE_DRAIN_MS); // 2b-R5: in-flight read judgements complete (bounded) before flush and finalize
     const ctx = this.settleCtx();
-    writeSettleOutcomes(ctx, this.settleView(turn));
     // senior plan W: the audit's todo state is taken before delivery (one bounded RPC), so it is this turn's
     const snap: Snapshot | null | undefined = !turn.failure && turn.sentBack && turn.continuationSeen && !turn.continuationFailed ? await todoSnapshot(ctx) : undefined;
+    writeSettleOutcomes(ctx, this.settleView(turn)); // A11.7: after the snapshot's await, so a /kill inside it is seen
     if (turn.failure) { this.finishFailure(turn, turn.failure); return; }
     const delivered = this.delivered(turn);
     this.finishSuccess(turn, delivered);
@@ -1291,6 +1294,13 @@ export class PlannerSupervisor {
     const p0 = t.passes[0]!;
     if (p0.final.trim().length === 0 && t.settleText) { p0.final = t.settleText; t.lastText = t.settleText; }
     t.passes.push({ texts: [], final: "" });
+  }
+
+  /** A dispatched turn with no todo_reminder frame resolves the open todo_reminder_seen incident; a store failure is logged, never thrown. */
+  private resolveTodoReminder(t: Turn): void {
+    if (!t.dispatched || t.todoReminder) return;
+    try { resolveOpenIncidents(this.d.store, TODO_REMINDER_KIND, this.d.chatId); }
+    catch (e) { console.error(`planner supervisor: todo_reminder_seen not resolved: ${message(e)}`); }
   }
 
   /** 2b-i §5: reminders are configured off; one reaching the supervisor pages once and is never rendered. */

@@ -390,6 +390,27 @@ describe("the settle request end to end (spec §3)", () => {
     expect(outcome.done[0]).toMatchObject({ text: "I've saved it." });
     expect(outcomes(store, run_id)).toEqual([["settle_discarded", "continuation_failed"]]);
   });
+  it("A11.5: omp aborting the turn after a send-back (no continuation, Houge not aborting) writes settle_discarded signal, not extension_timeout", async () => {
+    const { session, h } = held(); const { store, sup } = harness(session);
+    const run_id = createQueuedTurnRun(store); sup.submit(req(run_id)); await running(sup, h);
+    h.say("I've saved it."); expect(await session.request(settleReq("I've saved it."))).toMatchObject({ sendBack: true });
+    h.emit({ type: "agent_end", aborted: true }); await sup.whenIdle();
+    expect(outcomes(store, run_id)).toEqual([["settle_discarded", "signal"]]);
+  });
+  it("A11.7: a /kill while the audit's todo snapshot is in flight leaves settle_discarded signal on the killed turn, never settle_sent_back", async () => {
+    let calls = 0; let release: () => void = () => undefined;
+    const gate = new Promise<void>((r) => { release = r; });
+    const { session, h } = held(); const { store, sup, outcome } = harness(session);
+    session.scriptGetState(async () => { if (++calls >= 3) await gate; return { todoPhases: [], queuedMessageCount: 0, queuedMessages: { steering: [], followUp: [] } }; });
+    cleanups.unshift(() => release());
+    const run_id = createQueuedTurnRun(store); sup.submit(req(run_id)); await running(sup, h);
+    h.say("I've saved it."); expect(await session.request(settleReq("I've saved it."))).toMatchObject({ sendBack: true });
+    h.emit({ type: "agent_start" }); h.say("Nothing is stored yet; tell me what to keep."); h.emit({ type: "agent_end" });
+    await until(() => calls >= 3); // settle() is waiting on the audit's snapshot
+    const killed = sup.abortAll("killed"); release(); await killed; await sup.whenIdle();
+    expect(outcome.failed[0]).toMatchObject({ error_type: "killed" });
+    expect(outcomes(store, run_id)).toEqual([["settle_discarded", "signal"]]);
+  });
   it("past the 4 s budget (the gate hold eats 3.8 s of it) Houge answers sendBack: false inside the extension's 5 s and the row is fail/budget", async () => {
     const { session, h } = held(); const { store, sup } = harness(session, {}, { settleClient: () => jev([0.9, 0.9, 0.9, 0.9]), gateHold: { settleMs: 3_800 } });
     const run_id = createQueuedTurnRun(store); sup.submit(req(run_id)); await running(sup, h);

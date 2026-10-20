@@ -1772,6 +1772,17 @@ describe("probe seams shared with the planner", () => {
     expect(store.listOpenIncidents().filter((i) => i.kind === "todo_reminder_seen")).toHaveLength(0);
   });
 
+  it("A11.6: a store throw while resolving todo_reminder_seen at turn end never crashes the completed turn or strands it as the live turn", async () => {
+    const { store, sup, outcome } = harness(fakeSession());
+    const spy = vi.spyOn(store, "listOpenIncidents").mockImplementation(() => { throw new Error("SQLITE_BUSY"); });
+    cleanups.push(() => spy.mockRestore());
+    const a = createQueuedTurnRun(store); const b = createQueuedTurnRun(store);
+    sup.submit(req(a)); sup.submit(req(b)); await sup.whenIdle();
+    expect(outcome.done).toHaveLength(2);
+    expect(JSON.stringify(outcome.incidents)).not.toContain("planner_turn_crashed");
+    expect(sup.activeTurnForTest()).toBeNull();
+  });
+
   it("isModelRefusal accepts only a classified set_model refusal", () => {
     expect(isModelRefusal(new PlannerRpcError("command_failed:set_model", "Model not found: x/y"))).toBe(true);
     expect(isModelRefusal(new PlannerRpcError("command_failed:set_model", "rate limit"))).toBe(false);
