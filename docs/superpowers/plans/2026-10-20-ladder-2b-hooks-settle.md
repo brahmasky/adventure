@@ -44,6 +44,13 @@ follows [2026-10-17-memory-write.md](2026-10-17-memory-write.md).
   case 4 asserts the partial only, case 7 queues a `needsIngest` Telegram request, case 8 uses the gate hold, and
   preconditions are INCONCLUSIVE, never FAIL; the rollback check resumes with `HOUGE_LESSON_SESSION_RESET=0` and
   asserts `resumed: true`. Accepted residual: a report lagging the terminal `agent_end` (ruling 15).
+- **Rev 2.1 (2026-10-20):** codex round 2 (14 of 14 closed; 6 new mechanical blockers) and the senior re-check (7 of 8
+  closed, one open; 5 new): `PathDeps` for the flush side; the `resolvePath` import; one `onSendBack` signature; the
+  Task 3/9/10 commit lists complete; `SettleJevState` a type alias; `GateHold` declared in bridge-handler.ts and
+  `judgeReadMs` wired through `handleJudgeRead`'s `holdMs`; `parseAttachments` in a leaf module; `Turn` carries
+  `run_id`/`trustLevel` from `newTurn`; ruling 14 tested; the retried-leg test resets `prompted` before the retry;
+  gate case 3b for the attachment; the rollback check reads the session directory for resume evidence; the sanity
+  self-check renders the planted reply through the sample formatter.
 - **Rev 1 (2026-10-20):** first plan from spec Rev 3.
 
 ## Rulings made while planning (each against the spec; a reviewer who disagrees argues from the spec)
@@ -157,7 +164,10 @@ follows [2026-10-17-memory-write.md](2026-10-17-memory-write.md).
 | `src/decisions/settle-state.ts` (create) | `SettleState`, `buildSettleState` (redaction before Jev) |
 | `src/jev/settle-ask.ts` (create) | the four questions, `askSettle` |
 | `src/jev/decide.ts`, `src/llm/audit.ts`, `src/run/run-store.ts` (modify) | decision point and audit role `settle`; `countDecisionsWithReasons` |
-| `src/omp/settle-judge.ts` (create) | guards, claims, todo, note, health counter, `decideSettle`, `finalAudit` helpers |
+| `src/decisions/settle-checks.ts` (create) | the claims and todo checks (rules 2–3), `lastCallDenied` |
+| `src/omp/settle-judge.ts` (create) | note, health counter, `decideSettle`, the final-audit helpers |
+| `src/omp/supervisor-settle.ts` (create) | the supervisor's settle glue: state, outcomes, final audit, card |
+| `src/omp/attachments.ts` (create) | `parseAttachments`, moved out of the supervisor (leaf) |
 | `src/omp/planner-session.ts` (modify) | `getState()` RPC, `--tools read,edit,write,todo` |
 | `src/omp/planner-supervisor.ts` (modify) | config overlay `todo`, passes, continuation, reply, outcomes, drain, final audit, `todo_reminder_seen` |
 | `src/decisions/golden.ts`, `src/decisions/digest.ts`, `src/telegram/telegram-daemon.ts` (modify) | settle golden tick, unsure band |
@@ -791,7 +801,7 @@ git commit -m "feat(omp): extension judges built-in reads through judge_read, se
 - Modify: `src/decisions/injection-judge.ts:23-26, 31-46, 58-67, 69-81, 88-93, 183-202`
 - Modify: `src/decisions/egress.ts:43, 448-459` (`EgressPassage.masked`)
 - Create: `src/omp/response-cap.ts` (the 32 KiB cut, moved out of `bridge-handler.ts`), `src/omp/bridge-read-judge.ts`
-- Modify: `src/omp/bridge-handler.ts:38-61, 121-141, 339, 349-354, 367, 479-496, 519-534` (`Judged` Pick gains `masked`; the withheld-unjudged fallback literal gains `masked: 0`)
+- Modify: `src/omp/bridge-handler.ts:38-61, 66-71, 121-141, 339, 349-354, 367, 479-496, 519-534` (`Judged` Pick gains `masked`; the withheld-unjudged fallback literal gains `masked: 0`; `BridgeHandlerDeps.gateHold?: GateHold` and the exported `GateHold` type)
 - Modify: `src/decisions/entries/tool-injection.ts:887-889` (`InjectionState.masked`), `tests/helpers/omp-worker.ts:69` (`passThroughJudge` gains `masked: 0`)
 - Test: `tests/omp/bridge-read-judge.test.ts`, one case added to `tests/decisions/injection-judge.test.ts`
 
@@ -1022,12 +1032,13 @@ function isOutside(deps: PathDeps, targets: readonly string[]): boolean {
   return targets.some((t) => inside(root, maskedKey(t)));
 }
 
-export async function handleJudgeRead(deps: BridgeHandlerDeps, turn: ActiveTurn, req: JudgeReq, judged: JudgedOutcome): Promise<JudgeReadReply> {
+export async function handleJudgeRead(deps: BridgeHandlerDeps, turn: ActiveTurn, req: JudgeReq, judged: JudgedOutcome, holdMs = 0): Promise<JudgeReadReply> {
   const targets = turn.readTargets?.get(req.toolCallId);
   if (!targets) { console.error(`bridge: judge_read refused unknown_call (${req.toolCallId})`); throw new Error("unknown_call"); }
   const outside = isOutside(deps, targets);
   const pending: JudgePending = { since: Date.now(), replied: false, outside, raised: false };
   pendingOf(turn).set(req.toolCallId, pending);
+  if (holdMs > 0) await new Promise((r) => setTimeout(r, holdMs)); // the live gate's hold (Task 10 `gateHold.judgeReadMs`): pending is registered, so the read is "slow", not missing
   const text = capText(req.text);
   const run = judged(deps, turn, req.toolCallId, text, { outside, paths: [...targets], late: () => turn.trust?.ended() === true });
   inFlightOf(turn).set(req.toolCallId, run.then(() => undefined, () => undefined));
@@ -1105,7 +1116,9 @@ the handler share one cut without a runtime import cycle; `bridge-handler.ts` re
   `if (r.kind === "settle") return typeof r.stop_hook_active === "boolean" && typeof r.text === "string";`
   `report`: also `applied` absent or boolean, `tool` absent or string.
 - dispatch (`createBridgeHandler`): after `if (!turn) throw …`, call `raiseStalePending(turn, Date.now())`; then
-  `if (req.kind === "judge_read") return memo(turn, \`judge:${req.toolCallId}\`, () => handleJudgeRead(deps, turn, req, judgedOutcome));`
+  `if (req.kind === "judge_read") return memo(turn, \`judge:${req.toolCallId}\`, () => handleJudgeRead(deps, turn, req, judgedOutcome, deps.gateHold?.judgeReadMs ?? 0));`
+  (`deps.gateHold` is added to `BridgeHandlerDeps` in Task 10; until then the optional chain reads `undefined` on a
+  deps object that has no such field — declare the optional field in THIS task so the line typechecks: `gateHold?: { judgeReadMs?: number; settleMs?: number }`, exported as `GateHold`).
   (`settle` dispatch lands in Task 10; until then it throws "unknown request kind" as today).
 - Split `judged` into `judgedOutcome(deps, turn, toolCallId, source, text, o): Promise<{ text; masked }>` (runs
   `judgeOrLocal` + `raiseFor`, returns `{ text: out.text, masked: out.masked }`) and keep `judged` as its text-only
@@ -1128,7 +1141,7 @@ Expected: PASS.
 
 ```bash
 npm run typecheck
-git add src/decisions/egress.ts src/decisions/injection-judge.ts src/decisions/trust.ts src/omp/response-cap.ts src/omp/bridge-read-judge.ts src/omp/bridge-handler.ts tests/omp/bridge-read-judge.test.ts tests/decisions/injection-judge.test.ts
+git add src/decisions/egress.ts src/decisions/injection-judge.ts src/decisions/entries/tool-injection.ts src/decisions/trust.ts src/omp/response-cap.ts src/omp/bridge-read-judge.ts src/omp/bridge-handler.ts tests/helpers/omp-worker.ts tests/omp/bridge-read-judge.test.ts tests/decisions/injection-judge.test.ts
 git commit -m "feat(omp): judge_read on the bridge: read source, pending reads, late rows, bounded drain, masked real paths (ladder 2b-i Task 3)"
 ```
 
@@ -1644,7 +1657,7 @@ export function buildSettleState(raw: RawSettleState, redact: (s: string) => str
 }
 
 /** What leaves for TypeSafe: three strings, built HERE (protected) from the redacted fields only (senior plan W). */
-export interface SettleJevState { reply: string; paco_message: string; tools: string }
+export type SettleJevState = { reply: string; paco_message: string; tools: string }; // a type alias, not an interface: decide()'s state is Record<string, unknown> (senior plan r2)
 /** Ruling 8: head and tail of the redacted reply (endings carry promises and permission asks), never the whole 32 KiB. */
 export function settleJevState(s: SettleState): SettleJevState {
   const t = s.redacted.text;
@@ -1690,7 +1703,7 @@ function fallbackOf(r: SkipReason): FallbackReason {
 }
 ```
 
-Switch `tests/decisions/turn-settle.test.ts` to import `SETTLE_QUESTIONS` from `src/jev/settle-ask.js`.
+(The Task 5 test imports `SETTLE_QUESTIONS` from `src/jev/questions/settle.js`; nothing to switch.)
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
@@ -2250,6 +2263,7 @@ git commit -m "feat(omp): get_state RPC, the todo tool for the planner (config o
 - Modify: `tests/omp/planner-supervisor.test.ts` (imports the helpers; no case changes)
 - Modify: `src/omp/planner-supervisor.ts:162-206, 461-487, 569-579, 750-764, 1168-1184, 1216-1234, 1326-1350`
 - Modify: `src/omp/bridge-handler.ts:38-61` (`ActiveTurn.onSendBack?` — declared HERE, so this task typechecks: senior plan B5)
+- Create: `src/omp/attachments.ts` — `parseAttachments` and its `inside` helper moved verbatim from `planner-supervisor.ts:225-241` (a leaf module; the supervisor re-exports it so its existing importers and tests are untouched)
 - Test: `tests/omp/planner-supervisor-settle.test.ts`
 
 **Interfaces:**
@@ -2462,7 +2476,7 @@ Expected: PASS.
 npm run typecheck
 git add tests/helpers/supervisor-harness.ts tests/omp/planner-supervisor.test.ts
 git commit -m "test(omp): move the planner-supervisor harness to tests/helpers (ladder 2b-i Task 9, step 1)"
-git add src/omp/planner-supervisor.ts src/omp/bridge-handler.ts tests/omp/planner-supervisor-settle.test.ts
+git add src/omp/planner-supervisor.ts src/omp/attachments.ts src/omp/bridge-handler.ts tests/omp/planner-supervisor-settle.test.ts
 git commit -m "feat(omp): supervisor passes, the pass boundary, the continuation and the reply fallback (ladder 2b-i Task 9)"
 ```
 
@@ -2721,7 +2735,8 @@ async function handleSettle(deps: BridgeHandlerDeps, turn: ActiveTurn, req: Sett
 
 ```ts
 // src/omp/supervisor-settle.ts — turn.settle's supervisor-side glue (2b-i §3.5–3.6), as functions over a narrow context.
-import { parseAttachments, type PlannerSessionLike } from "./planner-supervisor.js";
+import { parseAttachments } from "./attachments.js"; // a leaf module (Task 9 moved it out of the supervisor): no runtime cycle
+import type { PlannerSessionLike } from "./planner-supervisor.js";
 import { redactForJudge } from "../decisions/egress.js";
 import { buildSettleState, type RawSettleState, type SettleState, type TodoSnapshot } from "../decisions/settle-state.js";
 import { lastCallDenied } from "../decisions/settle-checks.js";
@@ -2804,20 +2819,20 @@ export async function finalAudit(ctx: SettleCtx, t: SettleTurn, snap: Snapshot |
 import { finalAudit, settleStateFor, todoSnapshot, writeSettleOutcomes, type SettleCtx, type Snapshot } from "./supervisor-settle.js";
 import { decideSettle, SETTLE_BUDGET_MS, type SettleDeps } from "./settle-judge.js";
 import { drainJudges, JUDGE_DRAIN_MS } from "./bridge-read-judge.js";
+import type { GateHold } from "./bridge-handler.js";
 import type { JevRequest, JevResult } from "../jev/jev-client.js";
 
 /** Ruling 7: the outer race is the last net past Houge's own budget. */
 const SETTLE_SLACK_MS = 250;
-/** The live gate's hold (spec §7 cases 2 and 8): a delay inside the handler, so Houge's own budget and the extension's timer are what is measured. */
-export interface GateHold { judgeReadMs?: number; settleMs?: number }
+/** The live gate's hold (spec §7 cases 2 and 8): a delay inside the handler, so Houge's own budget and the extension's timer are what is measured. `GateHold` itself is declared in bridge-handler.ts (Task 3) and imported here. */
 const gateHold = (ms: number | undefined): Promise<void> => (ms ? new Promise((r) => setTimeout(r, ms)) : Promise.resolve());
 // SupervisorDeps gains:
   /** turn.settle's own Jev client per run (audit role `settle`, 1.5 s, no retry): required, there is no off switch (R13). */
   settleClient: (run_id: string) => (r: JevRequest) => Promise<JevResult>;
   /** Live-gate seam only (never set by the daemon): forwarded to the bridge handler (judge_read) and used by settleRequest. */
   gateHold?: GateHold;
-// Turn gains: todoBefore: TodoSnapshot | null; settleDecisionId: string | null; settleReason?: SettleReason; settleText?: string;
-//   newTurn initialises `todoBefore: null, settleDecisionId: null` beside Task 9's `passes`, `sentBack`, `continuationSeen`, `userText` (planner-supervisor.ts:479-484);
+// Turn gains: run_id: string; trustLevel: () => TrustLevel; todoBefore: TodoSnapshot | null; settleDecisionId: string | null; settleReason?: SettleReason; settleText?: string;
+//   newTurn initialises `run_id: req.run_id, trustLevel: () => active.trust?.level() ?? "clean", todoBefore: null, settleDecisionId: null` beside Task 9's `passes`, `sentBack`, `continuationSeen`, `userText` (planner-supervisor.ts:479-484);
 //   and the SettleTurn view: `trustLevel: () => t.active.trust?.level() ?? "clean"` and `run_id` (from req) are exposed through `settleView(t)`.
 ```
 
@@ -2827,7 +2842,8 @@ const gateHold = (ms: number | undefined): Promise<void> => (ms ? new Promise((r
       queueHasTelegram: () => this.queue.some((q) => q.source === "telegram"), bridgeToken: () => this.bridgeToken,
       settleDeps: (run_id) => ({ store: this.d.store, env: this.d.env, client: this.d.settleClient(run_id), chatId: this.d.chatId }) };
   }
-  private settleView(t: Turn): SettleTurn { return Object.assign(t, { run_id: t.req.run_id, trustLevel: () => t.active.trust?.level() ?? "clean" }); }
+  /** `Turn` carries `run_id` and `trustLevel` from newTurn on (senior plan r2 S: no Object.assign on the live turn), so the Turn IS a SettleTurn. */
+  private settleView(t: Turn): SettleTurn { return t; }
 
   /** The bridge's `settle` (spec §3): the first fire decides; the second (stop_hook_active, or a turn already sent back) only ends the continuation. */
   private async settleRequest(active: ActiveTurn, req: { stop_hook_active: boolean; text: string }): Promise<SettleDecisionReply> {
@@ -2859,6 +2875,10 @@ return; else `turn.todoBefore = snap?.todo ?? null` (spec §5: one `get_state` b
 
 `retryNextLeg`: after `turn.lastError = undefined`, clear the settle memo so the retried leg's `session_stop` is
 decided afresh (senior plan W): `for (const k of [...turn.active.cache.keys()]) if (k.startsWith("settle:")) turn.active.cache.delete(k);`.
+
+`listen()` passes `settle: (turn, req) => this.settleRequest(turn, req)` and `...(this.d.gateHold ? { gateHold: this.d.gateHold } : {})`
+to `createBridgeHandler` (`BridgeHandlerDeps.gateHold?: GateHold`, declared in Task 3): that is how `judgeReadMs` reaches
+`handleJudgeRead` for live case 2.
 
 `settle()`: after `if (turn.asyncWait) await this.dropAsyncChild(turn);` add
 `await drainJudges(turn.active, JUDGE_DRAIN_MS); // 2b-R5: in-flight read judgements complete (bounded) before flush and finalize`
@@ -2905,6 +2925,8 @@ Harness: `harness()` adds `settleClient: () => jev01` (all four at 0.1) before `
   });
 ```
 (`supervisorDeps` is private; the cast is the test's seam, as the file's other cases reach `buildOmpTools`.)
+
+Ruling 14's test, in `tests/decisions/record.test.ts`: three `turn.settle` results with `rung: "fail", fallbackReason: "timeout", fallbackRung: "system_one"` recorded through `storeRecorder` open no `decision_fallback` incident (the Jev incident is the page), while the same three for an entry outside `JEV_PAGED_ELSEWHERE` do.
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
@@ -3269,9 +3291,9 @@ Pattern: `scripts/check-memory-write-rollback.mjs` (its `parseArgs` already defa
    as the 2a gate boots its worker) with `HOUGE_TELEGRAM_CHAT_ID=-4200` **and `HOUGE_LESSON_SESSION_RESET=0`** (else
    `resetForLessonChange` sees another DB's lesson fingerprint and starts a fresh transcript, and the check proves
    nothing: senior plan W), and one intake run ("ok") is driven through it on the real omp: the run completes
-   (`runs.status = completed`, one assistant chat turn) **and** the old supervisor's `open_session` reported
-   `resumed: true` (read from the old build's planner-session log line or the session file's mtime being unchanged
-   except for the appended turn), proving the previous extension and supervisor resume a transcript that holds `todo`
+   (`runs.status = completed`, one assistant chat turn) **and** the transcript was resumed, read from the session
+   directory itself (nothing logs `open_session`'s `resumed`): the set of `*.jsonl` files under the copied
+   `chat--4200` is unchanged (no new session file) and the newest one grew by the appended turn, proving the previous extension and supervisor resume a transcript that holds `todo`
    calls and a continuation leg. INCONCLUSIVE (exit 3) when omp is unavailable or no session dir was given.
 4. The new build reopens the copy afterwards.
 
