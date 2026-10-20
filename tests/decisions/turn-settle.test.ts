@@ -29,6 +29,8 @@ describe("the turn.settle entry", () => {
     expect(SETTLE_BAR_P).toBe(Math.min(...Object.values(SETTLE_QUESTION_BARS)));
     expect(SETTLE_BAR).toMatchObject({ kind: "provisional", question: "settle", p: 0.6, criteriaHash: SETTLE_QUESTIONS_HASH });
     expect(SETTLE_BAR.source).toContain("calibration 2026-10-20");
+    // A11.9: the two measurements, each labelled (the probe and its sanity rerun)
+    expect(SETTLE_BAR.source).toContain("probe 7/133 = 5.3%, 7/7 planted; sanity rerun 6/133 = 4.5%, 9/9 planted");
     expect(SETTLE_QUESTIONS_HASH).not.toBe(criteriaHash(SETTLE_QUESTIONS[0]!)); // all four questions, not the first alone
   });
   it("the four questions carry noul criteria (set B), and a criteria-only edit moves the bar's hash", () => {
