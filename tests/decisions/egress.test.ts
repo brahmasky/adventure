@@ -392,6 +392,10 @@ describe("omp's read format: a hashline header and an `N:` prefix on every line 
     }
     expect(passageBlock("[/tmp/c.txt#9F]\n7|# Netscape HTTP Cookie File\n8|.example.com\tTRUE")).toBe("cookie_jar");
     expect(seedPhrase("2-3|legal winner thank year wave sausage worth useful legal winner thank yellow")).toBe(true);
+    // B5: the `3-4:` range form on the line-anchored rules too (colon, not bar)
+    expect(passageBlock("[/tmp/c.txt#9F]\n3-4:# Netscape HTTP Cookie File\n5-6:.example.com\tTRUE")).toBe("cookie_jar");
+    const seed34 = "3-4:legal winner thank year wave sausage worth useful legal winner thank yellow";
+    expect(seedPhrase(seed34)).toBe(true); expect(passageBlock(`[/tmp/s.txt#1C]\n1:recovery:\n${seed34}\n`)).toBe("seed_phrase");
   });
   it("a bare `3-4|api_key` with no value is no false positive", () => {
     expect(redactForJudge("3-4|api_key")).toBe("3-4|api_key");

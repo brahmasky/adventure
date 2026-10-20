@@ -176,7 +176,7 @@ export function fakeRoles(over: Partial<Record<TurnRole, string[]>> = {}): Roles
   return roles;
 }
 
-/** turn.settle's default Jev: every question answered at 0.1 (below the 0.5 bar), so a settle the rules pass settles. */
+/** turn.settle's default Jev: every question answered at 0.1 (below each per-question bar of 0.6 to 0.8), so a settle the rules pass settles. */
 export const jev01 = async (r: JevRequest): Promise<JevResult> => ({ ok: true, model: "jev-1.13.0", input_tokens: 1, latency_ms: 1,
   answers: Object.fromEntries(Object.keys(r.questions).map((id) => [id, { type: "noul" as const, noul: 0.1 }])) });
 
