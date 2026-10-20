@@ -7,7 +7,7 @@ import type { BudgetLedger } from "../budget/budget-ledger.js";
 import { digestOutput } from "../core/output-digest.js";
 import { READER_INPUT_CHAR_CAP } from "../core/quarantine.js";
 import { decideSync } from "../decisions/decide.js";
-import { pathOperands } from "../decisions/egress.js";
+import { KEY_MASK, pathOperands, SECRET_MASK } from "../decisions/egress.js";
 import { TOOL_SHELL_NETREAD } from "../decisions/entries/shell-netread.js";
 import { WITHHELD_UNJUDGED_TEXT } from "../decisions/entries/tool-injection.js";
 import { localOutcome, type InjectionJudge, type InjectionSource, type JudgeInput, type JudgeOutcome } from "../decisions/injection-judge.js";
@@ -268,10 +268,19 @@ async function handleCall(deps: BridgeHandlerDeps, turn: ActiveTurn, req: CallRe
   return { content: rendered.content, isError: status !== "succeeded" };
 }
 
-/** The ask (spec §7.2 + 2b-i): the trust level's own, settleAsk's hostile form, or a masked file named by a shell command (ruling 5). */
+/**
+ * 2b-i final review A10, stateless: a write or command carrying a mask would save it over real values. maskedPaths lives one
+ * turn and a shell read never adds to it, so the mask itself is the signal. Accepted residual: a mask-free write to a file
+ * masked in an EARLIER turn is not asked (no cross-turn record is kept).
+ */
+const carriesMask = (s: string): boolean => s.includes(SECRET_MASK) || s.includes(KEY_MASK);
+
+/** The ask (spec §7.2 + 2b-i): the trust level's own, settleAsk's hostile form, a command carrying a mask (A10), or a masked file named by a shell command (ruling 5). */
 function askFor(deps: BridgeHandlerDeps, turn: ActiveTurn, entry: RegistryEntry, command: string | undefined): TrustAsk {
   const ask = effectiveAsk(turn.trust?.level() ?? "clean", turn.settleAsk === true, entry, command);
-  if (ask.ask || command === undefined || !turn.maskedPaths?.size) return ask;
+  if (ask.ask || command === undefined) return ask;
+  if (carriesMask(command)) return { ask: true, reason: MASKED_READ_REASON };
+  if (!turn.maskedPaths?.size) return ask;
   return namesMaskedFile(command, turn, deps.ctx.home) ? { ask: true, reason: MASKED_READ_REASON } : ask;
 }
 
@@ -540,7 +549,7 @@ function gateDenial(deps: BridgeHandlerDeps, turn: ActiveTurn, req: GateReq, ent
   const raws = gatePaths(req.input ?? {});
   if (raws.length === 0) return "missing_path";
   for (const raw of raws) { const d = pathDenial(deps, turn, raw, entry); if (d) return d; }
-  if (entry === "fs_write" && maskedTarget(turn, raws, deps)) return MASKED_REDIRECT_CODE;
+  if (entry === "fs_write" && (maskedTarget(turn, raws, deps) || carriesMask(JSON.stringify(req.input ?? {})))) return MASKED_REDIRECT_CODE;
   const c = turn.contract;
   const d = decideCapability({ capability: entry, category: "tool", side_effect_level: entry === "fs_read" ? "none" : "local_write",
     risk_level: "low", allowed_actions: c.allowed_actions, forbidden_actions: c.forbidden_actions, approval_gates: c.approval_gates });

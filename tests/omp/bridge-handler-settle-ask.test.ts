@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { BudgetLedger } from "../../src/budget/budget-ledger.js";
+import { KEY_MASK, SECRET_MASK } from "../../src/decisions/egress.js";
 import { MASKED_READ_REASON, SETTLE_REASON } from "../../src/decisions/trust-ask.js";
 import { TurnTrust } from "../../src/decisions/trust.js";
 import type { CompiledTaskContract, SideEffectLevel } from "../../src/domain/types.js";
@@ -107,6 +108,32 @@ describe("masked paths at the bridge (spec §4, 2b-R8)", () => {
     const { handle, turn, home } = setup();
     turn.maskedPaths = new Set([maskedKey(join(home, "cfg.yml"))]);
     expect(await handle(gate("write", join(home, "new.yml")))).toEqual({ decision: "allow" });
+  });
+});
+
+describe("a mask is never written back (2b-i final review A10)", () => {
+  // the transcript keeps the masked copy of a read; a later write/edit or shell command carrying it would save the mask over real values
+  it("a built-in write whose content, or an edit whose new_string, holds the mask takes the masked redirect (no masked path needed)", async () => {
+    const { handle, home, events } = setup();
+    const write: BridgeRequest = { id: `r${++seq}`, kind: "gate", tool: "write", input: { path: join(home, "cfg.yml"), content: `api_key: ${SECRET_MASK}\n` }, toolCallId: `g${seq}` };
+    expect(await handle(write)).toEqual({ decision: "deny", reason: MASKED_WRITE_REDIRECT });
+    expect(events("tool_finished").at(-1)).toMatchObject({ status: "denied", reason: MASKED_REDIRECT_CODE });
+    const edit: BridgeRequest = { id: `r${++seq}`, kind: "gate", tool: "edit", input: { path: join(home, "cfg.yml"), old_string: "k: v", new_string: `k: ${SECRET_MASK}` }, toolCallId: `g${seq}` };
+    expect(await handle(edit)).toEqual({ decision: "deny", reason: MASKED_WRITE_REDIRECT });
+    const key: BridgeRequest = { id: `r${++seq}`, kind: "gate", tool: "write", input: { path: join(home, "id"), content: KEY_MASK }, toolCallId: `g${seq}` };
+    expect(await handle(key)).toEqual({ decision: "deny", reason: MASKED_WRITE_REDIRECT });
+  });
+  it("a bash command holding the mask asks with MASKED_READ_REASON", async () => {
+    const { handle, store, run_id } = setup({ env: { HOUGE_TRUST_ASK_TTL_MS: "60000" } });
+    const p = handle(call("bash", { command: `printf '${SECRET_MASK}' > x` })) as Promise<CallResult>;
+    await answerNth(store, run_id, "denied");
+    expect((await p).isError).toBe(true);
+    expect(cardTexts(store).join("\n")).toContain(`Why: ${MASKED_READ_REASON}`);
+  });
+  it("accepted residual: a mask-free write to a file masked in an EARLIER turn is not asked (maskedPaths lives one turn)", async () => {
+    const { handle, home } = setup();
+    const write: BridgeRequest = { id: `r${++seq}`, kind: "gate", tool: "write", input: { path: join(home, "cfg.yml"), content: "api_key: rotated\n" }, toolCallId: `g${seq}` };
+    expect(await handle(write)).toEqual({ decision: "allow" });
   });
 });
 
