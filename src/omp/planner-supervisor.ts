@@ -197,7 +197,7 @@ interface Turn {
   passes: Pass[]; sentBack: boolean; sentBackKind?: SendBackKind; continuationSeen: boolean; continuationFailed?: boolean;
   /** A8/N2: pass 0 ended on a model error (read at the continuation), so a pass-1 failure never delivers pass 0 as a success. */
   pass0Errored?: boolean;
-  /** A11.5: the turn ended on an abort (Houge's or omp's own); its settle outcome is a signal. */
+  /** A11.5/M2: omp aborted the turn itself (agent_end aborted) or the daemon shut down; a failTurn path (child exit) is not one. */
   endedOnAbort?: boolean;
   userText: string; settleText?: string; extracted: () => readonly string[];
   /** Spec §5: the todo list before the prompt (null: get_state failed); the settle row's id and its send-back reason (§3.5 outcomes). */
@@ -401,7 +401,7 @@ export class PlannerSupervisor {
     this.failQueued("planner_exit", DAEMON_SHUTDOWN);
     const t = this.turn;
     // the turn's signal wakes approval waiters and in-flight adapters: nothing holds the process after SIGTERM (M4)
-    if (t) { t.failure ??= { type: "planner_exit", ref: DAEMON_SHUTDOWN }; this.clearTimers(t); t.abort.abort(); t.live = false; t.done("abort"); }
+    if (t) { t.failure ??= { type: "planner_exit", ref: DAEMON_SHUTDOWN }; t.endedOnAbort = true; this.clearTimers(t); t.abort.abort(); t.live = false; t.done("abort"); }
     await bounded(this.draining ?? Promise.resolve(), ABORT_GRACE_MS);
     await this.stopSession();
   }
@@ -796,7 +796,6 @@ export class PlannerSupervisor {
   private async settle(turn: Turn): Promise<void> {
     for (;;) {
       const how = await turn.ended;
-      if (how === "abort") turn.endedOnAbort = true;
       // an abort omp reported itself (no supervisor failure set) is never a success (B6)
       if (how === "abort" && !turn.failure) turn.failure = { type: "planner_exit", ref: "agent_aborted" };
       // spec §3.5 (senior W6): a model error in pass 1 never enters retryNextLeg; the turn completes with pass 0's text
@@ -1276,6 +1275,7 @@ export class PlannerSupervisor {
     else if (f.type === "prompt_result" && f.agentInvoked === false && f.status === "error") this.onPromptRejected(t, frameErrorText(f));
     else if (f.type === "agent_end" && settlesTurn(f)) {
       if (f.isTerminal === false && f.awaitingAsyncWork === true) t.asyncWait = true; // S2: the child may still continue
+      if (f.aborted === true) t.endedOnAbort = true; // omp's own abort (M2: never a failTurn's done("abort"))
       t.live = false; t.done(f.aborted === true ? "abort" : "end");
     }
   }

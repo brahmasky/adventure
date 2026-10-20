@@ -445,6 +445,31 @@ describe("the settle request end to end (spec §3)", () => {
     expect(rows(store, run_id).map((r) => r.reason_code)).toEqual(["todo_unavailable"]);
     expect(outcome.done[0]).toMatchObject({ text: "Done." });
   });
+  it("M2: a send-back then a child exit BEFORE the continuation is extension_timeout, not signal (an exit is no abort)", async () => {
+    const { session, h } = held(); const { store, sup } = harness(session);
+    const run_id = createQueuedTurnRun(store); sup.submit(req(run_id)); await running(sup, h);
+    h.say("I've saved it."); expect(await session.request(settleReq("I've saved it."))).toMatchObject({ sendBack: true });
+    session.exit(1); await sup.whenIdle();
+    expect(outcomes(store, run_id)).toEqual([["settle_discarded", "extension_timeout"]]);
+  });
+  it("M3: a /kill landing after the A9 rescue (while the judge drain waits) records signal on the killed turn, not continuation_failed", async () => {
+    let release: () => void = () => undefined;
+    const slow = new Promise<void>((r) => { release = r; }); const timer = setTimeout(() => release(), 4_000);
+    const judge = async (i: { text: string }) => { await slow; return { text: i.text, verdict: "pass" as const, withheld: 0, withheldUnjudged: 0, framed: 0, notChecked: 0, sent: 1, unanswered: 0, skipped: false, blocked: null, decisionId: null, masked: 0 }; };
+    const { session, h } = held(); const { store, sup, outcome } = harness(session, {}, { buildTools: () => ({ registry: new ToolRegistry(), quarantine: async () => ({ digest: "", contains_instructions: false, source_meta: { tool: "x", bytes: 0 } }), judge }) });
+    cleanups.unshift(() => { clearTimeout(timer); release(); });
+    const run_id = createQueuedTurnRun(store); sup.submit(req(run_id)); await running(sup, h);
+    h.say("I've saved it."); expect(await session.request(settleReq("I've saved it."))).toMatchObject({ sendBack: true });
+    h.emit({ type: "agent_start" });
+    expect(await session.request({ kind: "gate", tool: "read", input: { path: "/tmp/a.txt" }, toolCallId: "r1" })).toEqual({ decision: "allow" });
+    void session.request({ kind: "judge_read", toolCallId: "r1", text: "slow file" }).catch(() => undefined);
+    await until(() => (sup.activeTurnForTest()?.judgeInFlight?.size ?? 0) === 1);
+    session.exit(1); // planner_exit in pass 1: the A9 rescue, then settle() waits on the judge drain
+    await new Promise((r) => setTimeout(r, 100));
+    const killed = sup.abortAll("killed"); release(); await killed; await sup.whenIdle();
+    expect(outcome.failed[0]).toMatchObject({ error_type: "killed" });
+    expect(outcomes(store, run_id)).toEqual([["settle_discarded", "signal"]]);
+  });
   it("past the 4 s budget (the gate hold eats 3.8 s of it) Houge answers sendBack: false inside the extension's 5 s and the row is fail/budget", async () => {
     const { session, h } = held(); const { store, sup } = harness(session, {}, { settleClient: () => jev([0.9, 0.9, 0.9, 0.9]), gateHold: { settleMs: 3_800 } });
     const run_id = createQueuedTurnRun(store); sup.submit(req(run_id)); await running(sup, h);
