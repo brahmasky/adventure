@@ -1,5 +1,5 @@
 import { decide } from "../decisions/decide.js";
-import { SETTLE_BAR_P, SETTLE_JEV_MS, TURN_SETTLE, TURN_SETTLE_ID, type SettleDetail, type SettleReason, type SettleState, type SettleVerdict } from "../decisions/entries/turn-settle.js";
+import { SETTLE_JEV_MS, SETTLE_QUESTION_BARS, TURN_SETTLE, TURN_SETTLE_ID, type SettleDetail, type SettleReason, type SettleState, type SettleVerdict } from "../decisions/entries/turn-settle.js";
 import { claimsCheck, pendingCount, todoCheck } from "../decisions/settle-checks.js";
 import { storeRecorder } from "../decisions/record.js";
 import type { RungResult } from "../decisions/types.js";
@@ -48,14 +48,17 @@ export function settleNote(reason: SettleReason, s: SettleState): string {
   return `${line}\n${NOTE_TAIL}`;
 }
 
-/** Question ids over the bar with their p, highest first: the one rule for the rung and the re-ask. */
+/** The bar of a settle question id; the ids come from SETTLE_QUESTIONS, keyed the same in SETTLE_QUESTION_BARS. */
+const barOfQuestion = (id: string): number => SETTLE_QUESTION_BARS[id as keyof typeof SETTLE_QUESTION_BARS];
+/** Question ids over THEIR bar with their p, furthest over its bar (p − bar) first: the one rule for the rung and the re-ask. */
 function overBar(answers: Record<string, number>): Array<[string, number]> {
-  return SETTLE_QUESTIONS.map((q) => [q.id, answers[q.id] ?? 0] as [string, number]).filter(([, p]) => p > SETTLE_BAR_P).sort((a, b) => b[1] - a[1]);
+  return SETTLE_QUESTIONS.map((q) => [q.id, answers[q.id] ?? 0] as [string, number]).filter(([id, p]) => p > barOfQuestion(id))
+    .sort((a, b) => (b[1] - barOfQuestion(b[0])) - (a[1] - barOfQuestion(a[0])));
 }
 /** The ids come from SETTLE_QUESTIONS, and SETTLE_QUESTION_REASON is keyed by the same ids: the lookup cannot miss. */
 const reasonOf = (id: string): SettleReason => SETTLE_QUESTION_REASON[id]!;
 
-/** The Jev rung: p > 0.5 on any question sends back with that question's reason; all below settles (ruling 6 for the reason). */
+/** The Jev rung: any question's p over its own bar sends back with that question's reason; all below settles (ruling 6 for the reason). */
 function jevRung(d: SettleDeps, s: SettleState, deadline: number): () => Promise<RungResult<SettleVerdict, SettleDetail>> {
   return async () => {
     const left = deadline - (d.clock ?? Date.now)();
@@ -105,7 +108,7 @@ export function finalAuditReasons(s: SettleState): SettleReason[] {
   return out;
 }
 
-/** Spec §3.5: the Jev questions re-asked AFTER delivery, bounded; the first reason over the bar, or null (a failure is null: no card on an outage). */
+/** Spec §3.5: the Jev questions re-asked AFTER delivery, bounded; the reason furthest over its bar (the rung's rule), or null (a failure is null: no card on an outage). */
 export async function reaskAfterDelivery(d: SettleDeps, s: SettleState, boundMs: number): Promise<SettleReason | null> {
   const r = await askSettle({ run_id: s.run_id, state: settleJevState(s), client: d.client, store: d.store, boundMs });
   if ("failed" in r) return null;

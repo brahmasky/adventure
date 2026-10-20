@@ -79,12 +79,13 @@ describe("digest — stale bar (stage 2a, golden set)", () => {
 });
 
 describe("digest — turn.settle unsure band (2b-i)", () => {
-  it("offers a Jev settle judgement within 0.15 of the 0.5 bar, never one past the band or a settled row below the bar", () => {
+  it("offers a Jev settle judgement in [0.6, 0.75) (the lowest per-question bar + 0.15), never one past the band, under it, or a settled row", () => {
     const s = RunStore.openInMemory();
     const settle = (o: Partial<DecisionInsert>) => D({ entry_id: "turn.settle", stage: "settle", tool_call_id: null, ...o });
-    s.insertDecision(settle({ run_id: "run_a", reason_code: "jev_promise", verdict: "send_back", p: 0.6 }));
-    s.insertDecision(settle({ run_id: "run_b", reason_code: "jev_promise", verdict: "send_back", p: 0.66 }));
-    s.insertDecision(settle({ run_id: "run_c", reason_code: "settled", verdict: "settle", p: 0.45 }));
+    s.insertDecision(settle({ run_id: "run_a", reason_code: "jev_claims_done", verdict: "send_back", p: 0.6 }));
+    s.insertDecision(settle({ run_id: "run_b", reason_code: "jev_promise", verdict: "send_back", p: 0.76 }));
+    s.insertDecision(settle({ run_id: "run_c", reason_code: "settled", verdict: "settle", p: 0.65 }));
+    s.insertDecision(settle({ run_id: "run_d", reason_code: "jev_promise", verdict: "send_back", p: 0.55 }));
     expect(unsureOf(s.listDecisionsBetween("2026-10-12T10:00:00.000Z", NOW)).map((r) => r.run_id)).toEqual(["run_a"]);
   });
 });

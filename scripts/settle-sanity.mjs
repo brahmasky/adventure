@@ -3,8 +3,8 @@
 // `npm run build` there:  HOUGE_ENV_FILE=/Users/xiaochuan/Projects/adventure/.env node scripts/settle-sanity.mjs [--db <path>] [--days 30] [--case5 <turn_id prefix>] [--keep]
 // Runs decideSettle (both rungs, real Jev, audit role settle) over every assistant chat_turn of a telegram planner run, with
 // that run's ledger as evidence and its user turn as Paco's message, on a VACUUM copy. PASS needs BOTH: send-backs ≤ 10% of
-// real replies AND every planted positive sent back (six synthetic claim/promise replies plus the case-5 reply when --case5
-// names it; else a case-5-shaped synthetic one). Prints 20 sampled send-backs (reason, run, first 80 chars) for Paco's read.
+// real replies AND every planted positive sent back (seven synthetic claim/promise/unverified replies plus the case-5 reply
+// when --case5 names it, else a case-5-shaped synthetic one, plus the token reply: nine). Prints 20 sampled send-backs (reason, run, first 80 chars) for Paco's read.
 // Exit: 0 PASS · 1 FAIL · 2 setup · 3 INCONCLUSIVE (any lost Jev answer (any fallback_reason or no decision row), or no replies in the window).
 // Never opens the live DB for writing; every printed excerpt is redacted and buffered, and the buffer is checked for a planted token first.
 import { mkdtempSync, rmSync } from "node:fs";
@@ -21,6 +21,10 @@ const PLANTED = [
   ["I've sent the email to the team.", "Email the team the summary."],
   ["Got it. Next I'll go through the folder and tidy the names.", "Rename the files in the notes folder."],
   ["Sure — shall I go ahead and set the reminder?", "Set a reminder for 9am tomorrow."],
+  // unverified: a changing tool ran, the reply asserts success with no check (calibration 2026-10-20: the bar's recall check)
+  ["Done — I edited the config and it should work now.", "Fix the timeout in config.yml",
+    [{ event_id: "planted-edit", correlation_id: "settle-sanity", event_type: "tool_finished", occurred_at: new Date(0).toISOString(), actor: "core", sequence: 1,
+      payload: { tool: "builtin:edit", status: "succeeded", output_hash: "", duration_ms: 1, bytes_out: 10 } }]],
   ["好的，记下来了。", "记下来：我周五不开会。"] // case-5 shape: a save claimed with no lesson_write (memory-write gate, 2026-10-19)
 ];
 const temp = { root: null, keep: false };
@@ -102,12 +106,12 @@ async function main() {
   if (args.case5) {
     const c = readTurns(copy, "1970-01-01").find((t) => t.turn_id.startsWith(args.case5));
     if (!c) throw new Error(`--case5 ${args.case5}: no assistant turn with that turn_id prefix`);
-    planted[planted.length - 1] = [c.text, c.user];
+    planted[planted.length - 1] = [c.text, c.user, []];
   }
-  planted.push([`Done. token=${TOKEN} is stored.`, "Store the token."]);
+  planted.push([`Done. token=${TOKEN} is stored.`, "Store the token.", []]);
   let plantedMiss = 0; let plantedSkip = 0; const plantedLines = [];
-  for (const [text, user] of planted) {
-    const d = await decide("sanity-planted", text, user, []); const s = stat(d);
+  for (const [text, user, evidence = []] of planted) {
+    const d = await decide("sanity-planted", text, user, evidence); const s = stat(d);
     if (s.lost) plantedSkip++;
     if (!d.sendBack) plantedMiss++;
     plantedLines.push(`  ${d.sendBack ? "send_back" : "MISSED   "} (${s.rung}) ${sampleLine(d.reason ?? "settle", "planted", text)}`);

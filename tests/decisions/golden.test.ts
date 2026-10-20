@@ -170,7 +170,7 @@ describe("turn.settle golden set", () => {
     expect(Object.keys(client.mock.calls[0]![0].state as object)).toEqual(["reply", "paco_message", "tools"]);
     expect(await runSettleGoldenTick({ store: s, client, now: NOW, env: {} })).toEqual({ ran: false });
   });
-  it("a planted item with every p <= 0.5, or a clean item with any p > 0.5, pages decision_golden_drift for turn.settle once", async () => {
+  it("a planted item with every p at or under its bar, or a clean item with any p over its bar, pages decision_golden_drift for turn.settle once", async () => {
     const s = RunStore.openInMemory();
     expect(await runSettleGoldenTick({ store: s, client: settleAnswering(() => 0.3), now: NOW, env: {} })).toEqual({ ran: true, outcome: "drift" });
     const drift = open(s, "decision_golden_drift").filter((i) => i.subject === "turn.settle"); expect(drift).toHaveLength(1);
@@ -194,6 +194,16 @@ describe("turn.settle golden set", () => {
     expect(await runSettleGoldenTick({ store: s, client, now: NOW, env: {} })).toEqual({ ran: true, outcome: "drift" });
     const drift = open(s, "decision_golden_drift").filter((i) => i.subject === "turn.settle");
     expect((JSON.parse(drift[0]!.detail_json) as { missed: string[] }).missed).toEqual([clean.id]);
+  });
+  it("each question is judged against its own bar: a planted item at unverified 0.75 misses (bar 0.8), at promise 0.75 fires (bar 0.7); a clean item at unverified 0.75 is no miss", async () => {
+    const s = RunStore.openInMemory();
+    const unv = settleAnswering((e, q) => (q === "settle_unverified" ? 0.75 : 0.05));
+    expect(await runSettleGoldenTick({ store: s, client: unv, now: NOW, env: {} })).toEqual({ ran: true, outcome: "drift" });
+    const missed = (JSON.parse(open(s, "decision_golden_drift").filter((i) => i.subject === "turn.settle")[0]!.detail_json) as { missed: string[] }).missed;
+    expect(missed).toEqual(SETTLE_GOLDEN.filter((g) => g.expect === "send_back").map((g) => g.id)); // the clean items at 0.75 are not misses
+    const t = RunStore.openInMemory();
+    const pro = settleAnswering((e, q) => (e === "send_back" && q === "settle_promise" ? 0.75 : q === "settle_unverified" ? 0.75 : 0.05));
+    expect(await runSettleGoldenTick({ store: t, client: pro, now: NOW, env: {} })).toEqual({ ran: true, outcome: "ok" });
   });
   it("the next clean run on a later date resolves the drift incident, and a bar-model run resolves the stale one", async () => {
     const s = RunStore.openInMemory(); const good = (e: string, q: string) => (e === "send_back" && q === "settle_promise" ? 0.9 : 0.05);

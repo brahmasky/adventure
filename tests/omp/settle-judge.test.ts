@@ -6,7 +6,7 @@ import { RunStore } from "../../src/run/run-store.js";
 import { drainOutbox } from "../helpers/omp-worker.js";
 
 // Spec §3.3–3.4: the ladder runs through the existing runner (one row per settle, alwaysRecord); the Jev rung decides
-// at p > 0.5 with its question's reason; the budget is 4 s from the request's arrival and a budget miss is a `fail`
+// when a question's p exceeds ITS bar (0.6 / 0.8 / 0.7 / 0.7, calibration 2026-10-20) with its question's reason; the budget is 4 s from the request's arrival and a budget miss is a `fail`
 // row with reason `budget`, counted by the settle health counter (3 in an hour page once); the note is code-owned.
 const answering = (ps: number[]) => vi.fn(async (req: JevRequest): Promise<JevResult> => ({ ok: true, model: "jev-1.13.0", input_tokens: 10, latency_ms: 5,
   answers: Object.fromEntries(Object.keys(req.questions).map((id, k) => [id, { type: "noul" as const, noul: ps[k]! }])) }));
@@ -36,10 +36,20 @@ describe("decideSettle", () => {
     expect(await decideSettle(b.d, buildSettleState(raw(), (x) => x), Date.now() + SETTLE_BUDGET_MS)).toMatchObject({ sendBack: false, reason: "settled" });
     expect(rows(b.store)[0]).toMatchObject({ rung: "system_one", verdict: "settle", reason_code: "settled", p: 0.4 });
   });
-  it("two answers over the bar: the highest p names the reason", async () => {
-    const { d, store } = deps(answering([0.6, 0.1, 0.9, 0.1]));
-    expect(await decideSettle(d, buildSettleState(raw(), (x) => x), Date.now() + SETTLE_BUDGET_MS)).toMatchObject({ sendBack: true, reason: "jev_promise" });
-    expect(rows(store)[0]).toMatchObject({ reason_code: "jev_promise", p: 0.9 });
+  it("two answers over their bars: the one furthest over ITS bar names the reason, not the higher raw p", async () => {
+    const { d, store } = deps(answering([0.75, 0.1, 0.8, 0.1])); // claims_done 0.15 over 0.6; promise 0.1 over 0.7
+    expect(await decideSettle(d, buildSettleState(raw(), (x) => x), Date.now() + SETTLE_BUDGET_MS)).toMatchObject({ sendBack: true, reason: "jev_claims_done" });
+    expect(rows(store)[0]).toMatchObject({ reason_code: "jev_claims_done", p: 0.75 });
+  });
+  it("each question is held to its own bar: unverified at 0.75 settles (bar 0.8), promise at 0.75 sends back (bar 0.7), claims_done at its bar settles", async () => {
+    const a = deps(answering([0.1, 0.75, 0.1, 0.1]));
+    expect(await decideSettle(a.d, buildSettleState(raw(), (x) => x), Date.now() + SETTLE_BUDGET_MS)).toMatchObject({ sendBack: false, reason: "settled" });
+    const b = deps(answering([0.1, 0.1, 0.75, 0.1]));
+    expect(await decideSettle(b.d, buildSettleState(raw(), (x) => x), Date.now() + SETTLE_BUDGET_MS)).toMatchObject({ sendBack: true, reason: "jev_promise" });
+    const c = deps(answering([0.6, 0.1, 0.1, 0.1]));
+    expect(await decideSettle(c.d, buildSettleState(raw(), (x) => x), Date.now() + SETTLE_BUDGET_MS)).toMatchObject({ sendBack: false, reason: "settled" });
+    const e = deps(answering([0.1, 0.81, 0.1, 0.1]));
+    expect(await decideSettle(e.d, buildSettleState(raw(), (x) => x), Date.now() + SETTLE_BUDGET_MS)).toMatchObject({ sendBack: true, reason: "jev_unverified" });
   });
   it("todoNow unavailable: Jev still runs; an all-below answer records todo_unavailable", async () => {
     const { d, store } = deps(answering([0.1, 0.1, 0.1, 0.1]));
@@ -96,6 +106,8 @@ describe("decideSettle", () => {
   it("reaskAfterDelivery asks Jev once more and returns the first reason over the bar, or null; a failure is null", async () => {
     const { d } = deps(answering([0.1, 0.7, 0.9, 0.1]));
     expect(await reaskAfterDelivery(d, buildSettleState(raw(), (x) => x), 1_500)).toBe("jev_promise");
+    const u = deps(answering([0.1, 0.75, 0.1, 0.1])); // the same per-question bars as the rung: unverified 0.75 is under its 0.8
+    expect(await reaskAfterDelivery(u.d, buildSettleState(raw(), (x) => x), 1_500)).toBeNull();
     const b = deps(async () => ({ ok: false, reason: "error", detail: "t", error_kind: "transport" }));
     expect(await reaskAfterDelivery(b.d, buildSettleState(raw(), (x) => x), 1_500)).toBeNull();
   });

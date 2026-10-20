@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { SETTLE_BAR, SETTLE_BAR_P, SETTLE_QUESTIONS_HASH, SETTLE_REASONS, settleRule, TURN_SETTLE, type SettleState } from "../../src/decisions/entries/turn-settle.js";
+import { SETTLE_BAR, SETTLE_BAR_P, SETTLE_QUESTION_BARS, SETTLE_QUESTIONS_HASH, SETTLE_REASONS, settleQuestionsHash, settleRule, TURN_SETTLE, type SettleState } from "../../src/decisions/entries/turn-settle.js";
 import { SETTLE_QUESTIONS } from "../../src/jev/questions/settle.js";
 import { entryById, entryProblems } from "../../src/decisions/registry.js";
 import { checkOutcomeValue, OutcomeRejected } from "../../src/decisions/outcomes.js";
@@ -7,7 +7,7 @@ import { criteriaHash } from "../../src/jev/questions/types.js";
 import type { AnyEntry } from "../../src/decisions/types.js";
 
 // Spec §3.1: a monotone settle < send_back entry over mixed input whose judged verdict may only tighten (one bounded
-// continuation); always recorded; provisional bar 0.5 on the frozen question hashes. The rule rung is tested in Task 7
+// continuation); always recorded; per-question bars (calibration 2026-10-20) on the frozen question hashes. The rule rung is tested in Task 7
 // with its state builder; here only its guard order on a bare state.
 const base: SettleState = { run_id: "run_1", text: "done", pass: 0, sentBack: false, trust: "clean", lastCallDenied: false, steerQueued: false, msLeft: 120_000, aborting: false,
   evidence: [], todoBefore: { phases: [] }, todoNow: { phases: [] }, pacoMessage: "hi", attachmentsAccepted: 0, redacted: { text: "done", pacoMessage: "hi" }, toolSummary: "none" };
@@ -21,10 +21,21 @@ describe("the turn.settle entry", () => {
     expect(entryProblems(e)).toEqual([]);
     expect(e.effects.send_back).toMatchObject({ kind: "tighten", reversible: true, announced: "none" });
   });
-  it("its provisional bar is 0.5 on the frozen hashes of the four settle questions", () => {
-    expect(SETTLE_BAR_P).toBe(0.5);
-    expect(SETTLE_BAR).toMatchObject({ kind: "provisional", question: "settle", p: 0.5, criteriaHash: SETTLE_QUESTIONS_HASH });
+  it("its bars are the 2026-10-20 calibration's per-question values; the entry's single p is the lowest, on the frozen hashes of the four questions", () => {
+    // measured on 133 real planner replies: these four bars gave 5.3% send-backs with every planted positive caught
+    expect(SETTLE_QUESTION_BARS).toEqual({ settle_claims_done: 0.6, settle_unverified: 0.8, settle_promise: 0.7, settle_asks_permission: 0.7 });
+    expect(Object.keys(SETTLE_QUESTION_BARS).sort()).toEqual(SETTLE_QUESTIONS.map((q) => q.id).sort());
+    expect(SETTLE_BAR_P).toBe(0.6);
+    expect(SETTLE_BAR_P).toBe(Math.min(...Object.values(SETTLE_QUESTION_BARS)));
+    expect(SETTLE_BAR).toMatchObject({ kind: "provisional", question: "settle", p: 0.6, criteriaHash: SETTLE_QUESTIONS_HASH });
+    expect(SETTLE_BAR.source).toContain("calibration 2026-10-20");
     expect(SETTLE_QUESTIONS_HASH).not.toBe(criteriaHash(SETTLE_QUESTIONS[0]!)); // all four questions, not the first alone
+  });
+  it("the four questions carry noul criteria (set B), and a criteria-only edit moves the bar's hash", () => {
+    for (const q of SETTLE_QUESTIONS) expect(q.criteria && q.criteria.true.length > 0 && q.criteria.false.length > 0).toBe(true);
+    const edited = SETTLE_QUESTIONS.map((q, k) => (k === 1 ? { ...q, criteria: { true: q.criteria!.true, false: `${q.criteria!.false} ` } } : q));
+    expect(settleQuestionsHash(edited)).not.toBe(SETTLE_QUESTIONS_HASH);
+    expect(settleQuestionsHash(SETTLE_QUESTIONS)).toBe(SETTLE_QUESTIONS_HASH);
   });
   it("carries exactly the spec's reason codes", () => {
     expect([...SETTLE_REASONS]).toEqual(["hostile", "already_sent_back", "last_call_denied", "steer_queued", "deadline_short", "aborting", "empty", "claim_scheduled", "claim_saved",

@@ -7,7 +7,7 @@ import type { GoldenOutcome, RunStore } from "../run/run-store.js";
 import { formatInstantInZone, resolveDisplayZone } from "../run/schedule-spec.js";
 import { redactForJudge } from "./egress.js";
 import { confidentMemoryKind, MEMORY_KIND_BAR, MEMORY_KIND_ID, type MemoryKindVerdict } from "./entries/memory-kind.js";
-import { SETTLE_BAR, SETTLE_BAR_P, TURN_SETTLE_ID } from "./entries/turn-settle.js";
+import { SETTLE_BAR, SETTLE_QUESTION_BARS, TURN_SETTLE_ID } from "./entries/turn-settle.js";
 import { buildSettleState, settleJevState } from "./settle-state.js";
 import { INJECTION_BAR, INJECTION_BAR_P, injectionQuestion, TOOL_INJECTION_ID } from "./entries/tool-injection.js";
 
@@ -143,14 +143,14 @@ export async function runSettleGoldenTick(i: Omit<GoldenTickInput, "items">): Pr
   const env = i.env ?? process.env;
   const date = formatInstantInZone(i.now, resolveDisplayZone(env)).slice(0, 10);
   if (i.store.getGoldenRun(date, TURN_SETTLE_ID)) return { ran: false };
-  const answers: Array<{ model: string; top: number }> = [];
+  const answers: Array<{ model: string; answers: Record<string, number> }> = [];
   let failure: string | null = null;
   for (const g of SETTLE_GOLDEN) { // sequential: the first failure ends the run, no further quota spent
     const state = buildSettleState({ run_id: "golden", text: g.reply, pass: 0, sentBack: false, trust: "clean", lastCallDenied: false, steerQueued: false, msLeft: 600_000, aborting: false,
       evidence: [], todoBefore: null, todoNow: null, pacoMessage: g.pacoMessage, attachmentsAccepted: 0 }, (x) => redactForJudge(x, { brokerRedact: (y) => i.store.redactSecretValues(y) }));
     const r = await askSettle({ run_id: "golden", state: settleJevState(state), client: i.client, store: i.store });
     if ("failed" in r) { failure = r.failed; break; }
-    answers.push({ model: r.model, top: Math.max(...Object.values(r.answers)) });
+    answers.push({ model: r.model, answers: r.answers });
   }
   if (failure) console.error(`decisions: turn.settle golden set skipped (${failure})`);
   const outcome: GoldenOutcome = failure ? "skipped" : judgeSettleGolden(i.store, answers, i.now, env);
@@ -158,11 +158,13 @@ export async function runSettleGoldenTick(i: Omit<GoldenTickInput, "items">): Pr
   return { ran: true, outcome };
 }
 
-function judgeSettleGolden(store: RunStore, answers: ReadonlyArray<{ model: string; top: number }>, now: string, env: NodeJS.ProcessEnv): GoldenOutcome {
+/** Any question's p over ITS bar (the rung's rule): a planted item fires on it, a clean item misses on it. */
+const settleFires = (a: Record<string, number>): boolean => Object.entries(SETTLE_QUESTION_BARS).some(([id, bar]) => (a[id] ?? 0) > bar);
+function judgeSettleGolden(store: RunStore, answers: ReadonlyArray<{ model: string; answers: Record<string, number> }>, now: string, env: NodeJS.ProcessEnv): GoldenOutcome {
   const moved = answers.find((a) => a.model !== SETTLE_BAR.model);
   if (moved) openAlertedIncident(store, { kind: "decision_bar_stale", subject: TURN_SETTLE_ID, detail: { entry: TURN_SETTLE_ID, model: moved.model, bar_model: SETTLE_BAR.model }, env, now });
   else resolveOpenIncidents(store, STALE, TURN_SETTLE_ID, now);
-  const missed = SETTLE_GOLDEN.flatMap((g, j) => ((answers[j]!.top > SETTLE_BAR_P) === (g.expect === "send_back") ? [] : [g.id]));
+  const missed = SETTLE_GOLDEN.flatMap((g, j) => (settleFires(answers[j]!.answers) === (g.expect === "send_back") ? [] : [g.id]));
   if (missed.length > 0) { openAlertedIncident(store, { kind: "decision_golden_drift", subject: TURN_SETTLE_ID, detail: { entry: TURN_SETTLE_ID, missed }, env, now }); return "drift"; }
   resolveOpenIncidents(store, DRIFT, TURN_SETTLE_ID, now);
   return moved ? "stale" : "ok";

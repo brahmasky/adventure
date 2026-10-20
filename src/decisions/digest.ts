@@ -29,7 +29,9 @@ const FRONT_DOOR: ReadonlySet<string> = new Set(["turn.handler", "turn.gear"]);
  * (or a fallback like `uncalibrated` / `below_bar` / `cascade`, whose p is arbitrary or sub-bar) is never offered by default.
  */
 const JUDGEMENT_REASONS: ReadonlySet<string> = new Set(["routed", "bare_ack_guard", "lane_limits", "correction", "two_request", "fix", "memory_other", "jev_kind",
-  // turn.settle's Jev answers, offered within UNSURE_BAND of its 0.5 bar
+  // turn.settle's Jev answers, offered within UNSURE_BAND of its single bar SETTLE_BAR_P (0.6, the lowest per-question bar): the band is
+  // [0.6, 0.75) for every settle row whatever its question. Accepted: claims_done (bar 0.6) gets the true near-bar band; for promise and
+  // asks_permission (0.7) only [0.7, 0.75) is offered, and an unverified send-back (bar 0.8) is never offered.
   "jev_claims_done", "jev_unverified", "jev_promise", "jev_asks_permission"]);
 /** What Paco reads for each rung in the counts line: display words, never the ledger tags. */
 const RUNG_LABEL: Readonly<Record<DecidedBy, string>> = { rule: "code", system_one: "Jev", model: "model", paco: "you", fail: "fallback" };

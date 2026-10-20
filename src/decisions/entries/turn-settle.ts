@@ -1,6 +1,6 @@
 import type { LedgerEvent } from "../../run/run-ledger.js";
-import { SETTLE_QUESTIONS } from "../../jev/questions/settle.js";
-import { criteriaHash } from "../../jev/questions/types.js";
+import { SETTLE_QUESTIONS, type SettleQuestionId } from "../../jev/questions/settle.js";
+import { criteriaHash, type NoulQuestion } from "../../jev/questions/types.js";
 import type { TrustLevel } from "./turn-trust.js";
 import { settleChecks } from "../settle-checks.js";
 import type { Entry, ProvisionalBar, RungAbstain, RungAnswer, VerdictEffect } from "../types.js";
@@ -8,7 +8,7 @@ import type { Entry, ProvisionalBar, RungAbstain, RungAnswer, VerdictEffect } fr
 /**
  * `turn.settle` (2b-i spec §3; parent §7.3): does this reply settle, or does it go back for ONE more pass? Rule 1 is the
  * never-send-back guards (2b-R13), rules 2–3 the claims and todo checks (src/omp/settle-judge.ts), then Jev's four noul
- * questions at a provisional 0.5. Monotone settle < send_back: a judge may only tighten (R12 over mixed input). The
+ * questions, each against its own bar (SETTLE_QUESTION_BARS, calibration 2026-10-20). Monotone settle < send_back: a judge may only tighten (R12 over mixed input). The
  * effect of send_back is one bounded continuation (omp's session_stop `continue`); after a Jev-rung send-back every side
  * effect asks (settleAsk, ADR 0030 named exception as extended by 2b-R7). Always recorded, keyed by Houge's run id.
  */
@@ -18,13 +18,18 @@ export const SETTLE_REASONS = ["hostile", "already_sent_back", "last_call_denied
   "claim_attached", "claim_sent", "todo_pending", "todo_unavailable", "jev_claims_done", "jev_unverified", "jev_promise", "jev_asks_permission", "budget", "settled"] as const;
 export type SettleReason = (typeof SETTLE_REASONS)[number];
 export const SETTLE_DISCARDED_VALUES = ["extension_timeout", "signal", "continuation_failed"] as const;
-export const SETTLE_BAR_P = 0.5;
+/** Calibration 2026-10-20 (spec §3.3): a question sends back when its p exceeds ITS bar; unverified's 0.8 sits just above a 0.7–0.8 cluster of honest reports. */
+export const SETTLE_QUESTION_BARS: Readonly<Record<SettleQuestionId, number>> = { settle_claims_done: 0.6, settle_unverified: 0.8, settle_promise: 0.7, settle_asks_permission: 0.7 };
+/** The entry's single bar (what the digest's unsure band reads): the lowest per-question bar. */
+export const SETTLE_BAR_P = 0.6;
 export const SETTLE_JEV_MS = 1_500;
 export const DEADLINE_SHORT_MS = 60_000;
-/** The bar's hash covers all four questions (senior plan S): a change to any of them marks the bar stale. */
-export const SETTLE_QUESTIONS_HASH = criteriaHash({ id: "settle", type: "noul", instructions: SETTLE_QUESTIONS.map((q) => `${q.id}: ${q.instructions}`).join("\n") });
+/** The bar's hash covers all four questions, instructions AND criteria (senior plan S): a change to any of them marks the bar stale. */
+export const settleQuestionsHash = (qs: readonly NoulQuestion[]): string =>
+  criteriaHash({ id: "settle", type: "noul", instructions: qs.map((q) => `${q.id}: ${q.instructions}${q.criteria ? `\n  true: ${q.criteria.true}\n  false: ${q.criteria.false}` : ""}`).join("\n") });
+export const SETTLE_QUESTIONS_HASH = settleQuestionsHash(SETTLE_QUESTIONS);
 export const SETTLE_BAR: ProvisionalBar = { kind: "provisional", question: "settle", criteriaHash: SETTLE_QUESTIONS_HASH, model: "jev-1.13.0", p: SETTLE_BAR_P,
-  source: "2b-i spec §3.3: provisional 0.5 on four noul questions, armed at ship; the sanity run on 30 days of replies bounds the send-back rate at 10%" };
+  source: "calibration 2026-10-20 on 133 planner replies (30 days): set B at per-question bars 0.6/0.8/0.7/0.7 → 5.3% send-backs, 7/7 planted; see spec §3.3" };
 
 /** omp's todo list as get_state reports it (content kept only until the comparison; never recorded or sent). */
 export interface TodoSnapshot { phases: Array<{ name: string; tasks: Array<{ content: string; status: string }> }> }
