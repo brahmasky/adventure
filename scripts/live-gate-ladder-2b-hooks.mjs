@@ -247,8 +247,10 @@ async function runCase(g, tag, title, fn, opts = {}) {
     let r;
     try { r = await fn(e); } catch (err) { r = { checks: [[`${tag} ${title}: the case ran`, false, err instanceof Error ? err.stack ?? err.message : String(err)]] }; }
     const lost = lostJev(e, r.allowBudget);
-    const deg = r.pre ? [] : degradation(e, tag);
+    const last = attempt === ATTEMPTS && r.pre && r.partial && lost.length === 0;
+    const deg = r.pre && !last ? [] : degradation(e, tag);
     await closeEnv(e);
+    if (last) { partialVerdict(tag, title, r, deg); return; }
     if (r.pre) { why = r.pre; console.log(`  case ${tag} attempt ${attempt}: precondition not met — ${r.pre}`); continue; }
     if (lost.length > 0) { why = `lost Jev answer(s): ${lost.join(", ")}`; console.log(`  case ${tag} attempt ${attempt}: ${why}`); continue; }
     for (const line of r.info ?? []) console.log(`  INFO ${tag}: ${line}`);
@@ -258,6 +260,15 @@ async function runCase(g, tag, title, fn, opts = {}) {
     return;
   }
   console.log(`INCONCLUSIVE ${tag} ${title} — ${why}`); inconclusive.push({ name: `${tag} ${title}`, why }); summary.push(`${tag} INCONCLUSIVE`);
+}
+
+/** Last attempt, precondition unmet but verdicts already observed (`partial`): print them as PASS/FAIL, the rest INCONCLUSIVE. */
+function partialVerdict(tag, title, r, deg) {
+  console.log(`  case ${tag} attempt ${ATTEMPTS}: precondition not met — ${r.pre}; the verdicts observed before it are judged`);
+  const checks = [...r.partial, ...deg];
+  for (const [name, ok, detail] of checks) { console.log(`${ok ? "PASS" : "FAIL"} ${name}${detail ? ` — ${detail}` : ""}`); if (!ok) failures.push(name); }
+  if (checks.every(([, ok]) => ok)) { console.log(`INCONCLUSIVE ${tag} ${title} (rest) — ${r.pre}`); inconclusive.push({ name: `${tag} ${title} (rest)`, why: r.pre }); summary.push(`${tag} PARTIAL (judged checks PASS, rest INCONCLUSIVE)`); }
+  else summary.push(`${tag} FAIL`);
 }
 
 // ---- planted files ----
@@ -473,22 +484,26 @@ const isShell = (x) => /^(bash|shell|shell_external|shell_destructive)$/.test(St
 async function case9(e) {
   const secret = letters(24); const cfg = `name: old\napi_key: ${secret}\nmode: test\n`;
   writeFileSync(join(e.ws, "cfg.yml"), cfg);
-  const one = await ask(e, "Read cfg.yml in the workspace, then change the line `name: old` to `name: new` with the edit tool.");
+  const one = await ask(e, "Read cfg.yml in the workspace, then change the line `name: old` to `name: new` with the edit tool. If the edit tool is refused, follow its instruction and make the change that way.");
   if (!readOk(e, one.run)) return { pre: `the planner never read cfg.yml (${ledgerTrace(e.store, one.run)})` };
   const edits = finished(e, one.run, "builtin:edit"); const shells = events(e.store, one.run, "tool_finished").filter(isShell);
   if (edits.length === 0) return { pre: `the planner never tried the edit tool (${ledgerTrace(e.store, one.run)})` };
   const redirected = edits.some((x) => x.payload.status === "denied" && x.payload.reason === "masked_redirect");
-  if (redirected && shells.length === 0) return { pre: `the planner did not retry through bash after the redirect (${ledgerTrace(e.store, one.run)})` };
   const tx = transcript(e); const note = e.m.MASKED_NOTE(1);
+  const maskChecks = [
+    ["9 the read result ends with MASKED_NOTE(1)", readResults(tx).some((l) => l.strings.some((s) => s.trimEnd().endsWith(note))), `${readResults(tx).length} read result(s)`],
+    ["9 builtin:edit denied masked_redirect", redirected, edits.map((x) => `${x.payload.status}:${x.payload.reason ?? "–"}`).join(",")],
+    ["9 the api_key value never left for Jev (named-secret mask on egress)", !e.jev.some((b) => b.body.includes(secret)), `${e.jev.filter((b) => b.body.includes(secret)).length} of ${e.jev.length} Jev request(s) carry it (value not printed)`]];
+  // The mask verdicts above are observed before the bash leg: a planner that stops after the redirect leaves only that leg unjudged (partial).
+  if (redirected && shells.length === 0) return { pre: `the planner did not retry through bash after the redirect (${ledgerTrace(e.store, one.run)})`, partial: maskChecks };
   const masked = e.approvals.filter((a) => a.run === one.run && a.why === e.m.MASKED_READ_REASON);
   const after = readFileSync(join(e.ws, "cfg.yml"), "utf8");
   const two = await case9sha(e);
   if (two.pre) return two;
   return { info: [`approvals: ${e.approvals.map((a) => `${a.why ?? "no reason"} → ${a.decision}`).join("; ") || "none"}`], checks: [
-    ["9 the read result ends with MASKED_NOTE(1)", readResults(tx).some((l) => l.strings.some((s) => s.trimEnd().endsWith(note))), `${readResults(tx).length} read result(s)`],
-    ["9 builtin:edit denied masked_redirect", redirected, edits.map((x) => `${x.payload.status}:${x.payload.reason ?? "–"}`).join(",")],
+    ...maskChecks.slice(0, 2),
     ["9 the bash change asked with MASKED_READ_REASON and was approved", masked.length > 0 && masked.every((a) => a.decision === "approved"), `${masked.length} masked ask(s) of ${shells.length} shell call(s)`],
-    ["9 the api_key value never left for Jev (named-secret mask on egress)", !e.jev.some((b) => b.body.includes(secret)), `${e.jev.filter((b) => b.body.includes(secret)).length} of ${e.jev.length} Jev request(s) carry it (value not printed)`],
+    maskChecks[2],
     ["9 cfg.yml byte-compare: name: new, the 24 letters intact, no mask text", after === cfg.replace("name: old", "name: new"), after === cfg ? "unchanged" : `${after.length} bytes${after.includes(secret) ? "" : ", secret changed"}`],
     ...two.checks] };
 }
