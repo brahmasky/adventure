@@ -8,7 +8,7 @@ import { lessonSetFingerprint } from "../../src/run/lesson-render.js";
 import { resolveOmpConfig } from "../../src/omp/omp-config.js";
 import { PlannerSupervisor, RETRY_NOTE, isModelRefusal, parseAttachments, settlesTurn, writeHougeConfigFile, type PlannerSessionLike, type SupervisorDeps, type SupervisorState, type TurnOutcomeSink } from "../../src/omp/planner-supervisor.js";
 import type { OmpFrame } from "../../src/omp/omp-frames.js";
-import { PlannerRpcError, type ExitInfo, type PlannerSessionOptions } from "../../src/omp/planner-session.js";
+import { PlannerRpcError, type ExitInfo, type PlannerSessionOptions, type PlannerState } from "../../src/omp/planner-session.js";
 import { ToolRegistry } from "../../src/tools/tool-registry.js";
 import { BridgeServer } from "../../src/omp/bridge-server.js";
 import { chatWorkspace } from "../../src/omp/workspace.js";
@@ -45,6 +45,8 @@ type Script = {
   newSession?: () => Promise<{ cancelled: boolean }>;
   /** The prompt RPC rejects with this PlannerRpcError code (omp refused the prompt). */
   promptError?: string;
+  /** Replaces getState(): the todo phases and steer queue. */
+  getState?: () => Promise<PlannerState>;
 };
 const never = () => new Promise<never>(() => undefined);
 type Fake = PlannerSessionLike & {
@@ -96,6 +98,7 @@ function fakeSession(script: Script = {}): Fake {
     },
     prompt: async (t: string) => { if (script.promptError) throw new PlannerRpcError(script.promptError); s.prompts.push(t); script.log?.push(`prompt:${s.options.length}`); setTimeout(() => (script.onPrompt ?? ((_t, e) => { e({ type: "turn_start" }); assistant("answer"); e({ type: "agent_end" }); }))(t, emit), 5); },
     steer: async (t: string) => { s.steers.push(t); },
+    getState: async () => script.getState?.() ?? { todoPhases: [], queuedMessageCount: 0, queuedMessages: { steering: [] } },
     abort: async () => { setTimeout(() => emit({ type: "agent_end", aborted: true }), 5); },
     setModel: async (m: ModelString) => {
       s.models.push(`${m.provider}/${m.model}`); s.pins.push(formatModelString(m)); if (script.logSetModel) script.log?.push(`setModel:${m.provider}/${m.model}`);
@@ -1798,6 +1801,20 @@ describe("PlannerSupervisor — the turn-owned chain (Jev tree spec §4-5)", () 
     expect(outcome.routeEnds[0]).toMatchObject({ handler_outcome: "planner_failed", fast_used_tool: true });
   });
 
+  it("a todo tool call is bookkeeping: it does not count as a tool, so the one `other` retry stays available", async () => {
+    // modelled on "`other` after a tool ran is final at once", with toolName todo instead of a side-effecting tool
+    const session: Fake = fakeSession({ onPrompt: (_t, e) => {
+      e({ type: "turn_start" }); e({ type: "tool_execution_start", toolName: "todo" } as OmpFrame);
+      session.assistant("", { stopReason: "error", errorMessage: "something odd" }); e({ type: "agent_end" });
+    } });
+    const { store, sup, outcome } = harness(session, {}, routed("fast"));
+    const run_id = createQueuedTurnRun(store);
+    sup.submit(req(run_id)); await sup.whenIdle();
+    expect(session.prompts).toEqual(["hi", RETRY_NOTE]);
+    expect(failedOf(outcome, run_id)).toMatchObject({ error_type: "model_error", error_ref: "other" });
+    expect(outcome.routeEnds[0]).toMatchObject({ fast_used_tool: false });
+  });
+
   it("a Fast turn that ran a tool finishes on Fast, marked fast_used_tool; a route without a verdict id writes no routeEnd", async () => {
     // no mid-prompt escalation (spec §5): the calibration signal is the mark, not a second model
     const session: Fake = fakeSession({ onPrompt: (_t, e) => {
@@ -1923,6 +1940,27 @@ describe("probe seams shared with the planner", () => {
       expect(readFileSync(p, "utf8")).toContain("checkUpdate: false");
       expect(statSync(p).mode & 0o777).toBe(0o600);
     } finally { rmSync(data, { recursive: true, force: true }); }
+  });
+
+  it("the config overlay enables omp's todo tool with reminders off (P3b': the overlay alone does not add the tool; --tools does)", () => {
+    const data = mkdtempSync(join(tmpdir(), "hcfg-")); mkdirSync(join(data, "omp"), { recursive: true });
+    cleanups.push(() => rmSync(data, { recursive: true, force: true }));
+    const text = readFileSync(writeHougeConfigFile({ data }), "utf8");
+    expect(text).toContain("todo:\n  enabled: true\n  reminders: false\n  eager: default\n");
+  });
+
+  it("a todo_reminder frame opens incident todo_reminder_seen once; a later turn without one resolves it; no reminder text reaches Paco", async () => {
+    const first: Fake = fakeSession({ onPrompt: (_t, e) => {
+      e({ type: "turn_start" }); e({ type: "todo_reminder", text: "do the thing" } as OmpFrame); e({ type: "todo_reminder", text: "again" } as OmpFrame);
+      first.assistant("ok"); e({ type: "agent_end" });
+    } });
+    const { store, sup, outcome } = harness(first);
+    sup.submit(req(createQueuedTurnRun(store))); await sup.whenIdle();
+    expect(store.listOpenIncidents().filter((i) => i.kind === "todo_reminder_seen")).toHaveLength(1);
+    expect(JSON.stringify([outcome.done, outcome.incidents])).not.toContain("do the thing");
+    const s2 = harness(fakeSession(), {}, {}, { store });
+    s2.sup.submit(req(createQueuedTurnRun(store))); await s2.sup.whenIdle();
+    expect(store.listOpenIncidents().filter((i) => i.kind === "todo_reminder_seen")).toHaveLength(0);
   });
 
   it("isModelRefusal accepts only a classified set_model refusal", () => {

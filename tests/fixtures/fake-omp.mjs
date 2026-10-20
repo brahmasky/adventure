@@ -76,6 +76,11 @@ async function runRpc() {
       if (held) { const h = held; held = null; finish(h.b, h.message, ""); }
       return;
     }
+    if (cmd.type === "get_state") {
+      const data = "rpcGetState" in scen ? scen.rpcGetState : { todoPhases: [], queuedMessageCount: 0, queuedMessages: { steering: [], followUp: [], liveSteered: 0 } };
+      if (scen.rpcGetStateDelayMs) return void setTimeout(() => reply(data), scen.rpcGetStateDelayMs);
+      return reply(data);
+    }
     if (cmd.type === "abort") { reply(); if (b.rpcIgnoreAbort) return; return out({ type: "agent_end", messages: [], aborted: true }); }
     if (cmd.type !== "prompt") return reply();
     if (b.rpcExitAfterPrompt) process.exit(3);

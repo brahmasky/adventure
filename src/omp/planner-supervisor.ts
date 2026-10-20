@@ -11,6 +11,7 @@ import type { Effort, TurnRole } from "../jev/tree-policy.js";
 import type { LlmAttempt, LlmErrorKind } from "../llm/audit.js";
 import type { TurnModality } from "../media/media-config.js";
 import type { NotificationButton } from "../notifications/notification-types.js";
+import { openAlertedIncident, resolveOpenIncidents } from "../run/incident-alert.js";
 import type { ClaimedRun, PlannerFailure, RunStore } from "../run/run-store.js";
 import type { ToolRegistry } from "../tools/tool-registry.js";
 import { ACK_NUDGE_TEXT, isBareAck } from "./bare-ack.js";
@@ -38,7 +39,7 @@ import {
 } from "./turn-context.js";
 
 export type SupervisorState = "STOPPED" | "STARTING" | "IDLE" | "RUNNING" | "AWAITING_APPROVAL" | "ABORTING";
-export type PlannerSessionLike = Pick<PlannerSession, "start" | "prompt" | "steer" | "abort" | "setModel" | "newSession" | "onFrame" | "onExit" | "stop">;
+export type PlannerSessionLike = Pick<PlannerSession, "start" | "prompt" | "steer" | "abort" | "setModel" | "newSession" | "getState" | "onFrame" | "onExit" | "stop">;
 export interface TurnRequest {
   run_id: string; text: string; source: "telegram" | "schedule"; goal?: string; requester: Identity;
   /** A voice/photo turn: its text is a placeholder until resolveMessage ingests it, so it never steers (it queues as its own turn). */
@@ -146,8 +147,10 @@ const pauseLeft = (ttlMs: number, paused: number): number => {
 };
 const exitRef = (i: ExitInfo) => (i.code !== null ? `exit ${i.code}` : `signal ${i.signal ?? "unknown"}`);
 /** omp profile config (spec §4): no xdev devices, no update checks, no telemetry. */
+const TODO_REMINDER_KIND: ReadonlySet<string> = new Set(["todo_reminder_seen"]);
 const HOUGE_CONFIG_YML = "tools:\n  xdev: false\nstartup:\n  checkUpdate: false\nmarketplace:\n  autoUpdate: false\ntelemetry:\n  otlpExportEnabled: false\n"
-  + "retry:\n  maxRetries: 2\n  maxDelayMs: 60000\n"; // S2b: omp's retry window stays under the 180 s frame watchdog
+  + "retry:\n  maxRetries: 2\n  maxDelayMs: 60000\n" // S2b: omp's retry window stays under the 180 s frame watchdog
+  + "todo:\n  enabled: true\n  reminders: false\n  eager: default\n"; // 2b-i §5, P3b': the tool itself comes from --tools
 /** The planner's omp config file, written atomically (0600); the contract probe writes the same file (spec §4.3). */
 export function writeHougeConfigFile(ctx: Pick<PathContext, "data">): string {
   const configFile = join(ctx.data, "omp", "houge-config.yml");
@@ -170,6 +173,8 @@ interface Turn {
   aborting: boolean;
   /** A prompt was sent for this turn (an n = 0 failure still gets its llm_attempt row). */
   dispatched: boolean;
+  /** 2b-i §5: a todo_reminder frame was seen this turn. */
+  todoReminder?: boolean;
   /** The child generation this turn committed to (set as promptTop begins; -1 before): only its bridge loss aborts the turn. */
   childGen: number;
   /** Concurrent approval waits: the deadline stays paused until every one resolved. */
@@ -445,6 +450,7 @@ export class PlannerSupervisor {
       this.clearTimers(turn);
       clearInterval(turn.heartbeat);
       this.endTrust(turn); // a turn that crashed past settle still ends with its level (idempotent after finish*)
+      if (turn.dispatched && !turn.todoReminder) resolveOpenIncidents(this.d.store, TODO_REMINDER_KIND, this.d.chatId);
       if (this.turn === turn) this.turn = undefined;
     }
   }
@@ -1173,7 +1179,8 @@ export class PlannerSupervisor {
     // failed leg and the retry's prompt) is ignored and can never fail or end a completed turn (round 2 N6)
     if (!t.live || t.finished) return;
     if (f.type === "turn_start") t.n++;
-    else if (f.type === "tool_execution_start") t.usedTool = true;
+    else if (f.type === "tool_execution_start") { if (f.toolName !== "todo") t.usedTool = true; } // todo is bookkeeping, not a side effect
+    else if (f.type === "todo_reminder") this.todoReminderSeen(t);
     else if (f.type === "message_end") this.onAssistant(t, summarizeAssistantMessage(f));
     else if (f.type === "error") this.onErrorFrame(t, frameErrorText(f));
     else if (f.type === "prompt_result" && f.agentInvoked === false && f.status === "error") this.onPromptRejected(t, frameErrorText(f));
@@ -1181,6 +1188,13 @@ export class PlannerSupervisor {
       if (f.isTerminal === false && f.awaitingAsyncWork === true) t.asyncWait = true; // S2: the child may still continue
       t.live = false; t.done(f.aborted === true ? "abort" : "end");
     }
+  }
+
+  /** 2b-i §5: reminders are configured off; one reaching the supervisor pages once and is never rendered. */
+  private todoReminderSeen(t: Turn): void {
+    t.todoReminder = true;
+    try { openAlertedIncident(this.d.store, { kind: "todo_reminder_seen", subject: this.d.chatId, detail: { run_id: t.req.run_id }, env: this.d.env }); }
+    catch (e) { console.error(`planner supervisor: todo_reminder_seen not opened: ${message(e)}`); }
   }
 
   /**

@@ -96,7 +96,7 @@ describe("PlannerSession — one long-lived RPC child per chat (spec §4, §7)",
     expect(args).not.toContain("--no-ui");
     expect(args).not.toContain("--no-session"); // open_session needs persistence
     expect(args.filter((a) => a === "-e")).toHaveLength(1); // omp cache-busts each -e import
-    expect(args).toEqual(expect.arrayContaining(["--profile", "houge", "--mode", "rpc", "--tools", "read,edit,write", "--approval-mode", "yolo", "--thinking", "medium"]));
+    expect(args).toEqual(expect.arrayContaining(["--profile", "houge", "--mode", "rpc", "--tools", "read,edit,write,todo", "--approval-mode", "yolo", "--thinking", "medium"]));
   });
 
   it("does not leak the bridge token or any daemon secret through argv", () => {
@@ -127,13 +127,13 @@ describe("PlannerSession — one long-lived RPC child per chat (spec §4, §7)",
   });
 
   // Spec §4.3: the probe child must run with no tools at all; the planner keeps read,edit,write.
-  it("tools: none swaps --tools read,edit,write for --no-tools", () => {
+  it("tools: none swaps --tools read,edit,write,todo for --no-tools", () => {
     const cfg = resolveOmpConfig({ HOUGE_OMP_BIN: "omp" });
     const opts = { ...base, cfg, extensions: [], plannerProfile: "/p.sb", model: parseModelString("kimi-code/k3") };
     const { args } = plannerArgs({ ...opts, tools: "none" });
     expect(args).toContain("--no-tools");
     expect(args).not.toContain("--tools");
-    expect(plannerArgs(opts).args).toEqual(expect.arrayContaining(["--tools", "read,edit,write"]));
+    expect(plannerArgs(opts).args).toEqual(expect.arrayContaining(["--tools", "read,edit,write,todo"]));
   });
 
   // the probe's deliberate pin refusal must not put omp's text in the daemon log (spec §4.3)
@@ -288,5 +288,28 @@ describe("PlannerSession — the planner runs in its own process group (round 2,
     const helper = await helperPid(file);
     await s.prompt("bye").catch(() => undefined);
     await vi.waitFor(() => { expect(alive(helper)).toBe(false); });
+  });
+});
+
+describe("get_state (ladder 2b-i §5)", () => {
+  it("returns todoPhases and the queue fields, validated", async () => {
+    const { s } = make({ rpcGetState: { todoPhases: [{ name: "p", tasks: [{ content: "a", status: "pending" }] }], queuedMessageCount: 1, queuedMessages: { steering: ["x"], followUp: [], liveSteered: 0 } } });
+    await s.start();
+    expect(await s.getState()).toEqual({ todoPhases: [{ name: "p", tasks: [{ content: "a", status: "pending" }] }], queuedMessageCount: 1, queuedMessages: { steering: ["x"] } });
+  });
+  it("a reply without todoPhases[] or a numeric queuedMessageCount rejects get_state_malformed", async () => {
+    for (const data of [{}, { todoPhases: "x", queuedMessageCount: 0 }, { todoPhases: [], queuedMessageCount: "0" }]) {
+      const { s } = make({ rpcGetState: data }); await s.start();
+      await expect(s.getState()).rejects.toMatchObject({ code: "get_state_malformed" });
+    }
+  });
+  it("is bounded at 1 s with the fixed code timeout:get_state", async () => {
+    const { s } = make({ rpcGetStateDelayMs: 2_000 }); await s.start();
+    const t0 = Date.now();
+    await expect(s.getState()).rejects.toMatchObject({ code: "timeout:get_state" });
+    expect(Date.now() - t0).toBeLessThan(1_500);
+  });
+  it("the planner's tools are read, edit, write and todo", () => {
+    expect(plannerArgs({ ...base, cfg: resolveOmpConfig({ HOUGE_OMP_SANDBOX: "0" }), extensions: [], model: parseModelString("anthropic/claude-opus-5-5"), plannerProfile: "/p" }).args).toContain("read,edit,write,todo");
   });
 });

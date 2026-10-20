@@ -8,7 +8,7 @@ export interface PlannerSessionOptions {
   cfg: OmpConfig; sessionDir: string; cwd: string; systemPromptFile: string; extensions: string[]; skills?: string;
   bridgeSock: string; bridgeToken: string; model: ModelString; configFile: string; plannerProfile: string;
   sendTimeoutMs?: number; maxFrameBufferBytes?: number;
-  /** "none": no built-in tools (the contract probe, spec §4.3); absent: the planner's read,edit,write. */
+  /** "none": no built-in tools (the contract probe, spec §4.3); absent: the planner's read,edit,write,todo. */
   tools?: "none";
   /** Do not log a refused command's detail (the probe's deliberate refusals); the rejection still carries it. */
   quietRpcErrors?: boolean;
@@ -16,11 +16,14 @@ export interface PlannerSessionOptions {
 
 export function plannerArgs(o: PlannerSessionOptions): { file: string; args: string[] } {
   const omp = ["--profile", o.cfg.profile, "--mode", "rpc", "--config", o.configFile, "--session-dir", o.sessionDir,
-    "--cwd", o.cwd, ...(o.tools === "none" ? ["--no-tools"] : ["--tools", "read,edit,write"]), ...o.extensions.flatMap((e) => ["-e", e]), "--no-extensions",
+    "--cwd", o.cwd, ...(o.tools === "none" ? ["--no-tools"] : ["--tools", "read,edit,write,todo"]), ...o.extensions.flatMap((e) => ["-e", e]), "--no-extensions",
     "--no-rules", "--approval-mode", "yolo", "--model", `${o.model.provider}/${o.model.model}`,
     ...(o.model.effort ? ["--thinking", o.model.effort] : []), "--append-system-prompt", o.systemPromptFile];
   return o.cfg.sandbox ? { file: "/usr/bin/sandbox-exec", args: ["-f", o.plannerProfile, o.cfg.bin, ...omp] } : { file: o.cfg.bin, args: omp };
 }
+
+export const GET_STATE_TIMEOUT_MS = 1_000;
+export interface PlannerState { todoPhases: Array<{ name: string; tasks: Array<{ content: string; status: string }> }>; queuedMessageCount: number; queuedMessages: { steering: string[] } }
 
 export interface ExitInfo { code: number | null; signal: NodeJS.Signals | null; stopped: boolean }
 type Waiter = { type: string; resolve: (d: unknown) => void; reject: (e: Error) => void; timer: NodeJS.Timeout };
@@ -113,14 +116,23 @@ export class PlannerSession {
     return { cancelled };
   }
 
-  private send(cmd: Record<string, unknown>): Promise<unknown> {
+  /** omp's get_state (2b-i §5): the todo phases and the steer queue, bounded at 1 s; a malformed reply never reads as an empty list. */
+  async getState(): Promise<PlannerState> {
+    const data = (await this.send({ type: "get_state" }, GET_STATE_TIMEOUT_MS)) as Record<string, unknown> | null | undefined;
+    const phases = data?.todoPhases; const n = data?.queuedMessageCount; const q = data?.queuedMessages as { steering?: unknown } | undefined;
+    if (!Array.isArray(phases) || typeof n !== "number") throw new PlannerRpcError("get_state_malformed");
+    const todoPhases = phases.map((p) => { const r = p as { name?: unknown; tasks?: unknown }; return { name: String(r.name ?? ""), tasks: (Array.isArray(r.tasks) ? r.tasks : []).map((t) => { const x = t as { content?: unknown; status?: unknown }; return { content: String(x.content ?? ""), status: String(x.status ?? "") }; }) }; });
+    return { todoPhases, queuedMessageCount: n, queuedMessages: { steering: Array.isArray(q?.steering) ? q.steering.filter((x): x is string => typeof x === "string") : [] } };
+  }
+
+  private send(cmd: Record<string, unknown>, timeoutMs: number = this.o.sendTimeoutMs ?? 30_000): Promise<unknown> {
     const id = `c${++this.n}`;
     if (this.closed || !this.child?.stdin?.writable) return Promise.reject(new PlannerRpcError("not_running"));
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.waiters.delete(id);
         reject(new PlannerRpcError(`timeout:${String(cmd.type)}`));
-      }, this.o.sendTimeoutMs ?? 30_000);
+      }, timeoutMs);
       this.waiters.set(id, { type: String(cmd.type), resolve, reject, timer });
       this.child?.stdin?.write(`${JSON.stringify({ ...cmd, id })}\n`);
     });
