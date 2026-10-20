@@ -1,4 +1,4 @@
-# Decision ladder stage 2b-i: extension hooks and `turn.settle` — Implementation Plan (Rev 1)
+# Decision ladder stage 2b-i: extension hooks and `turn.settle` — Implementation Plan (Rev 2)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -24,6 +24,27 @@ is enabled for the planner (config overlay + `--tools`), with `get_state` as a n
 (Rev 3, commit `11fa1ce`). Parent: [the decision-ladder spec](../specs/2026-10-12-decision-ladder-design.md) §7.1, §7.3,
 §8.2. ADR: [0030](../../decisions/0030-decision-ladder.md) (amendment written in Task 14 for Paco's hand). Plan format
 follows [2026-10-17-memory-write.md](2026-10-17-memory-write.md).
+
+## Changelog
+
+- **Rev 2 (2026-10-20):** codex plan review round 1 (10 blockers, 4 warnings) and the senior plan review (8 blockers,
+  16 warnings, 13 suggestions), every finding verified against HEAD before ruling. Closed: the 32 KiB cap applies in
+  every branch of the read hook; every gated read is reconciled at report and flush (ruling 11); no mutation after
+  finalize; the masked-file bash ask resolves bare names against the cwd and keys are real and case-folded; `isOutside`
+  compares real paths and 2b-R15 is defence in depth (ruling 13); test fixtures live under the turn's HOME (a write
+  root); `onSendBack` is declared in Task 9; `settleClient` is wired in Task 10; the budget is measured from arrival
+  and `budget` is a deadline-cut Jev call (ruling 16); the pass boundary is the continuation's `agent_start` (ruling
+  12); the settle memo is reset per leg; `settleRequest` catches; the audit's todo snapshot precedes delivery; the Jev
+  copy is built in the protected `settle-state.ts`; a planted-secret test runs through the production redactor; the
+  hook timer is a constructor option, not an env var; `judge`/`settle` fakes reset per case; `JudgeOutcome.masked`'s
+  three literals are listed; the outcomes lists are duplicated and pinned; the bar hashes all four questions; Jev note
+  sentences are code-owned; `todo` never sets `usedTool`; `todo` rows reuse `writeBuiltinOutcome`; `turn.settle` pages
+  once on a Jev outage (ruling 14); the settle glue lives in `src/omp/supervisor-settle.ts`; the sanity script prints
+  redacted excerpts and counts only planner-dispatched runs; the live gate's INCONCLUSIVE reads `fallback_reason`,
+  case 4 asserts the partial only, case 7 queues a `needsIngest` Telegram request, case 8 uses the gate hold, and
+  preconditions are INCONCLUSIVE, never FAIL; the rollback check resumes with `HOUGE_LESSON_SESSION_RESET=0` and
+  asserts `resumed: true`. Accepted residual: a report lagging the terminal `agent_end` (ruling 15).
+- **Rev 1 (2026-10-20):** first plan from spec Rev 3.
 
 ## Rulings made while planning (each against the spec; a reviewer who disagrees argues from the spec)
 
@@ -57,6 +78,32 @@ follows [2026-10-17-memory-write.md](2026-10-17-memory-write.md).
 10. **Supervisor test harness.** The in-file helpers of `tests/omp/planner-supervisor.test.ts` move verbatim to
     `tests/helpers/supervisor-harness.ts` (Task 9, step 1) so the new settle tests live in their own file without a
     second copy.
+11. **Every gated read is reconciled** (codex plan B2). A `report` for a gated `read` that never got a `judge_read`
+    (images only, a refused or lost request) raises `judge_timeout`; a gated read with neither at flush is raised per
+    2b-R16. Cost: an image-only read ends the turn `untrusted`; images are unjudged (spec §2.2 residual), so untrusted is
+    the honest level.
+12. **The pass boundary is the continuation's `agent_start`** (senior plan W). Spec §3.5 opens pass 1 at the bridge's
+    `onSendBack`; that callback runs on the bridge socket while pass 0's last `message_end` arrives on omp's stdout, and
+    nothing orders the two pipes. `onSendBack` therefore sets only `sentBack` and `settleAsk`; pass 1 opens (and
+    `continuationSeen` is set) at the second `agent_start`, on the frame channel, where the order is omp's own. A
+    `message_end` between the two belongs to pass 0; if pass 0's final text is still empty at that `agent_start`, the
+    settle request's `text` fills it.
+13. **2b-R15 is defence in depth.** The gate already denies every planner read under the daemon temp dir
+    (`protected-paths.ts:35`, `secretPaths` holds `resolveDaemonTmpDir`), so the `outside` branch of `judge_read` cannot
+    be reached through `gate` in production. The branch stays (a future write root could expose it), its test runs
+    with the daemon temp dir pointed inside the test's home (where the gate allows reads), and a second test pins the
+    production denial. The ADR amendment says so.
+14. **A Jev outage on `turn.settle` pages once.** `turn.settle` joins `JEV_PAGED_ELSEWHERE` (`record.ts:18`): the Jev
+    incident `decide()` opens is the page; its Jev timeouts and outages do not also count toward `decision_fallback`
+    (as `tool.injection`; `memory.kind` pages twice today and is left alone). The settle health counter is separate.
+15. **Residual: a report that lags the terminal `agent_end`.** The read `report` is not awaited by the extension and the
+    drain waits only for judgements, so a report arriving after flush meets a cleared pending map and the read was
+    already raised `judge_timeout` at flush. Accepted: the raise is the cautious side, and the window is one socket
+    round trip.
+16. **`budget` is rare in production.** `get_state` is bounded at 1 s and the ledger read is synchronous, so the Jev
+    bound is normally the full 1.5 s and a slow Jev is `timeout`, not `budget`; `budget` means the state build ate the
+    budget. The health counter therefore mostly sees `todo_unavailable`. The unit test and gate case 8 produce `budget`
+    through a deadline in the past and the gate hold.
 
 ## Global Constraints
 
@@ -360,7 +407,7 @@ export const CONTENT_SOURCES = Object.freeze({
   cookieJar: String.raw`^#\s*(?:Netscape\s+)?HTTP Cookie File`
 });
 const INSTRUCTION = new RegExp(INSTRUCTION_SOURCES.join("|"), "i");
-const INVISIBLE = /[​-‏⁠-⁤﻿­]/g;
+const INVISIBLE = /[​-‏⁠-⁤﻿­]/g; // `\u` escapes, never literal invisibles (a copy-paste drops them silently)
 const CONTENT = [new RegExp(CONTENT_SOURCES.pem), new RegExp(CONTENT_SOURCES.secretJson), new RegExp(CONTENT_SOURCES.serviceAccount), new RegExp(CONTENT_SOURCES.cookieJar, "im")];
 /** The same text as Houge's WITHHELD_TEXT, plus why the whole read is gone (code-owned, never tool bytes). */
 export const FLOORED_TEXT = "[withheld: text aimed at the assistant] (Houge could not judge this file in time; none of it is shown)";
@@ -453,6 +500,7 @@ let settle: (req: Extract<BridgeRequest, { kind: "settle" }>) => Promise<unknown
 const PEM = "-----BEGIN RSA PRIVATE KEY-----\nMIIB\n-----END RSA PRIVATE KEY-----";
 beforeEach(async () => {
   resetBridgeForTest(); seen.length = 0;
+  judge = async () => ({ verdict: "unchanged" }); settle = async () => ({ sendBack: false }); // never carry a case's reply into the next
   const sock = join(mkdtempSync(join(tmpdir(), "hxh-")), "b.sock");
   process.env.HOUGE_BRIDGE_SOCK = sock; process.env.HOUGE_BRIDGE_TOKEN = "t";
   server = await BridgeServer.listen(sock, "t", async (req) => {
@@ -743,16 +791,18 @@ git commit -m "feat(omp): extension judges built-in reads through judge_read, se
 - Modify: `src/decisions/injection-judge.ts:23-26, 31-46, 58-67, 69-81, 88-93, 183-202`
 - Modify: `src/decisions/egress.ts:43, 448-459` (`EgressPassage.masked`)
 - Create: `src/omp/response-cap.ts` (the 32 KiB cut, moved out of `bridge-handler.ts`), `src/omp/bridge-read-judge.ts`
-- Modify: `src/omp/bridge-handler.ts:38-61, 121-141, 349-354, 479-496, 519-534`
+- Modify: `src/omp/bridge-handler.ts:38-61, 121-141, 339, 349-354, 367, 479-496, 519-534` (`Judged` Pick gains `masked`; the withheld-unjudged fallback literal gains `masked: 0`)
+- Modify: `src/decisions/entries/tool-injection.ts:887-889` (`InjectionState.masked`), `tests/helpers/omp-worker.ts:69` (`passThroughJudge` gains `masked: 0`)
 - Test: `tests/omp/bridge-read-judge.test.ts`, one case added to `tests/decisions/injection-judge.test.ts`
 
 **Interfaces:**
 - Consumes: `BridgeRequest` `judge_read` (Task 1); `judged()`/`raiseFor()` (bridge-handler, existing); `realpathOrSelf`
   (`src/omp/protected-paths.ts:164`); `resolveDaemonTmpDir(env, home)` (`src/run/daemon-tmp.ts:23`).
 - Produces (on `ActiveTurn`): `readTargets?: Map<string, string[]>` (set at `gate` for `fs_read`, lexical targets);
-  `maskedPaths?: Set<string>` (real paths); `judgePending?: Map<string, JudgePending>`;
-  `judgeInFlight?: Map<string, Promise<void>>`. Functions (`bridge-read-judge.ts`):
-  `handleJudgeRead(deps, turn, req): Promise<JudgeReadReply>`, `raiseStalePending(turn, now)`,
+  `maskedPaths?: Set<string>` (masked keys: `maskedKey(p)` = `realpathOrSelf(p).toLowerCase()`, as `protected-paths.under`
+  folds case on APFS); `judgePending?: Map<string, JudgePending>`; `judgeInFlight?: Map<string, Promise<void>>`.
+  Functions (`bridge-read-judge.ts`): `maskedKey(p: string): string`,
+  `handleJudgeRead(deps, turn, req, judged: JudgedOutcome): Promise<JudgeReadReply>`, `raiseStalePending(turn, now)`,
   `drainJudges(turn, ms): Promise<void>`, `raisePendingAtFlush(deps, turn)`, `noteReportApplied(deps, turn, id, applied)`, `MASKED_NOTE(n)`, `JUDGE_DRAIN_MS = 3_000`,
   `JudgePending = { since: number; replied: boolean; outside: boolean; raised: boolean }`.
   `JudgeOutcome.masked: number`; `JudgeInput.late?: () => boolean`; `InjectionSource` gains `"read"`.
@@ -760,16 +810,22 @@ git commit -m "feat(omp): extension judges built-in reads through judge_read, se
 - [ ] **Step 1: Write the failing tests** — `tests/omp/bridge-read-judge.test.ts`
 
 Build the turn as `tests/omp/bridge-handler-trust.test.ts` does (copy its `setup`, `meta`, `DECLS`, `ENVELOPE` and
-`judging` helpers; the registry needs only `fs_read`, `fs_write`, `shell`). Add `judgeDelayMs` and `env` knobs:
+`judging` helpers; the registry needs only `fs_read`, `fs_write`, `shell`). `setup` returns `home` (`join(dir, "home")`,
+created with `mkdirSync`; it is both a read-allowed and a write root, where `os.tmpdir()` is neither: senior plan B4) and
+takes the knobs `judgeDelayMs`, `env`, `judge: null` (no judge wired) and `daemonTmpUnderHome: true` (sets
+`HOUGE_DAEMON_TMP_DIR` to `join(home, "daemon-tmp")`, created, returned as `daemonTmp`):
 `judge: createInjectionJudge({ store, client: delayed(judging(), judgeDelayMs), home })` where `delayed` awaits a timer
-before answering.
+before answering. Imports: `homedir` from `node:os`, `resolveDaemonTmpDir` from `src/run/daemon-tmp.js`, `maskedKey`
+from `src/omp/bridge-read-judge.js`.
 
 ```ts
-import { mkdtempSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { WITHHELD_TEXT } from "../../src/decisions/entries/tool-injection.js";
-import { drainJudges, JUDGE_DRAIN_MS, MASKED_NOTE, raiseStalePending } from "../../src/omp/bridge-read-judge.js";
+import { drainJudges, JUDGE_DRAIN_MS, MASKED_NOTE, maskedKey, raiseStalePending } from "../../src/omp/bridge-read-judge.js";
+import { resolveDaemonTmpDir } from "../../src/run/daemon-tmp.js";
 import { flushUnreported } from "../../src/omp/bridge-handler.js";
 // … setup() as described above …
 
@@ -794,29 +850,35 @@ describe("judge_read (spec §4)", () => {
     expect(await handle(judgeRead("r1", "different text"))).toEqual(r); // same promise, not a second judgement
   });
   it("a local read whose judgement mirrored a mask gets the masked note and its real path joins maskedPaths; a judge-only (hex) mask adds nothing", async () => {
-    const { handle, turn, dir } = setup();
-    const real = join(dir, "cfg.yml"); writeFileSync(real, "api_key: ABCDEFGHIJKLMNOPQRSTUVWX\n");
-    symlinkSync(real, join(dir, "link.yml"));
-    await handle(gateRead(join(dir, "link.yml"), "r1"));
+    // fixtures live under the turn's HOME: it is a write root and a readable one (protected-paths writeRoots/secretPaths); os.tmpdir() is neither
+    const { handle, turn, home } = setup();
+    const real = join(home, "cfg.yml"); writeFileSync(real, "api_key: ABCDEFGHIJKLMNOPQRSTUVWX\n");
+    symlinkSync(real, join(home, "link.yml"));
+    await handle(gateRead(join(home, "link.yml"), "r1"));
     const r = await handle(judgeRead("r1", "api_key: ABCDEFGHIJKLMNOPQRSTUVWX\n")) as { verdict: string; text: string };
     expect(r.verdict).toBe("rewritten");
     expect(r.text.endsWith(MASKED_NOTE(1))).toBe(true);
     expect(r.text).not.toContain("ABCDEFGHIJKLMNOPQRSTUVWX");
-    expect([...turn.maskedPaths!]).toEqual([realpathSync(real)]);
-    await handle(gateRead("/tmp/hex", "r2"));
+    expect([...turn.maskedPaths!]).toEqual([maskedKey(real)]);
+    expect(turn.maskedPaths!.has(maskedKey(join(home, "CFG.yml")))).toBe(true); // APFS folds case; so does the key
+    await handle(gateRead(join(home, "hex.txt"), "r2"));
     expect(await handle(judgeRead("r2", "sha ".padEnd(4) + "a".repeat(40)))).toEqual({ verdict: "unchanged" });
     expect(turn.maskedPaths!.size).toBe(1);
   });
-  it("a read under HOUGE_DAEMON_TMP_DIR is judged outside: a lost judgement makes the turn hostile, a local one untrusted", async () => {
-    const tmp = mkdtempSync(join(process.env.TMPDIR ?? "/tmp", "hdt-"));
-    const a = setup({ env: { HOUGE_DAEMON_TMP_DIR: tmp }, judge: null }); // no judge wired: localOutcome, every passage unanswered
-    await a.handle(gateRead(join(tmp, "mail.txt"), "o1"));
+  it("a read under HOUGE_DAEMON_TMP_DIR is judged outside (defence in depth, ruling 13): a lost judgement makes the turn hostile, a local one untrusted", async () => {
+    const a = setup({ judge: null, daemonTmpUnderHome: true }); // the temp dir inside HOME, so the gate lets the read through; no judge wired: localOutcome, every passage unanswered
+    await a.handle(gateRead(join(a.daemonTmp, "mail.txt"), "o1"));
     await a.handle(judgeRead("o1", "mail body"));
     expect(a.turn.trust!.level()).toBe("hostile");
     const b = setup({ judge: null });
-    await b.handle(gateRead("/tmp/local.txt", "l1"));
+    await b.handle(gateRead(join(b.home, "local.txt"), "l1"));
     await b.handle(judgeRead("l1", "local body"));
     expect(b.turn.trust!.level()).toBe("untrusted");
+  });
+  it("in production the gate denies every read under the daemon temp dir before any judge sees it (protected-paths secretPaths)", async () => {
+    const { handle } = setup();
+    const tmp = resolveDaemonTmpDir(process.env, homedir());
+    expect(await handle(gateRead(join(tmp, "mail.txt"), "d1"))).toEqual({ decision: "deny", reason: "protected_path" });
   });
   it("a gated read with a report and no judge_read ever (codex plan B2) raises judge_timeout; one never reported is raised at flush", async () => {
     const a = setup({ judgeDelayMs: 0 });
@@ -925,9 +987,9 @@ function lateAware(inner: DecisionRecorder, late: (() => boolean) | undefined): 
 `src/omp/bridge-read-judge.ts`:
 
 ```ts
-import { realpathSync } from "node:fs";
-import { dirname, join, relative, isAbsolute, sep } from "node:path";
+import { relative, isAbsolute, sep } from "node:path";
 import { resolveDaemonTmpDir } from "../run/daemon-tmp.js";
+import { realpathOrSelf } from "./protected-paths.js";
 import type { BridgeRequest, JudgeReadReply } from "./bridge-protocol.js";
 import type { ActiveTurn, BridgeHandlerDeps } from "./bridge-handler.js"; // types only: no runtime cycle
 import { capResponse } from "./response-cap.js";
@@ -944,17 +1006,18 @@ export type JudgeReq = Extract<BridgeRequest, { kind: "judge_read" }>;
 export type JudgedOutcome = (deps: BridgeHandlerDeps, turn: ActiveTurn, toolCallId: string, text: string, o: { outside: boolean; paths: string[]; late: () => boolean }) => Promise<{ text: string; masked: number }>;
 
 const inside = (root: string, p: string): boolean => { const r = relative(root, p); return r !== "" && r !== ".." && !r.startsWith(`..${sep}`) && !isAbsolute(r); };
-/** A target that does not exist keeps its lexical path, with its parent's real path (spec §4). */
-export function realTarget(p: string): string {
-  try { return realpathSync(p); } catch { try { return join(realpathSync(dirname(p)), p.slice(dirname(p).length + 1)); } catch { return p; } }
-}
+/**
+ * The key two names of one file share (spec §4, codex r3; senior plan W): the real path with every missing tail kept
+ * lexical (`realpathOrSelf`, protected-paths.ts:164), lower-cased as `protected-paths.under` does, since APFS folds case.
+ */
+export const maskedKey = (p: string): string => realpathOrSelf(p).toLowerCase();
 export const pendingOf = (turn: ActiveTurn): Map<string, JudgePending> => (turn.judgePending ??= new Map());
 const inFlightOf = (turn: ActiveTurn): Map<string, Promise<void>> => (turn.judgeInFlight ??= new Map());
 
-/** 2b-R15: a read under the daemon temp dir (media, mail, codex files) is outside text; any target decides (codex r3). */
+/** 2b-R15 (ruling 13: defence in depth): a read under the daemon temp dir is outside text; any target decides (codex r3). Both sides real and case-folded (macOS /var → /private/var). */
 function isOutside(deps: BridgeHandlerDeps, targets: readonly string[]): boolean {
-  const root = resolveDaemonTmpDir(deps.env, deps.ctx.home);
-  return targets.some((t) => inside(root, realTarget(t)));
+  const root = maskedKey(resolveDaemonTmpDir(deps.env, deps.ctx.home));
+  return targets.some((t) => inside(root, maskedKey(t)));
 }
 
 export async function handleJudgeRead(deps: BridgeHandlerDeps, turn: ActiveTurn, req: JudgeReq, judged: JudgedOutcome): Promise<JudgeReadReply> {
@@ -972,7 +1035,7 @@ export async function handleJudgeRead(deps: BridgeHandlerDeps, turn: ActiveTurn,
     if (turn.trust?.ended()) return { verdict: "unchanged" };
     if (!outside && out.masked > 0) {
       const masked = (turn.maskedPaths ??= new Set<string>());
-      for (const t of targets) masked.add(realTarget(t));
+      for (const t of targets) masked.add(maskedKey(t));
       out.text = `${out.text}\n${MASKED_NOTE(out.masked)}`;
     }
     return out.text === text ? { verdict: "unchanged" } : { verdict: "rewritten", text: out.text };
@@ -1077,7 +1140,7 @@ git commit -m "feat(omp): judge_read on the bridge: read source, pending reads, 
 - Test: `tests/omp/bridge-handler-settle-ask.test.ts`, two cases in `tests/decisions/trust-ask.test.ts`
 
 **Interfaces:**
-- Consumes: `ActiveTurn.maskedPaths`, `realTarget` (Task 3); `pathOperands` (`src/decisions/egress.ts:542`).
+- Consumes: `ActiveTurn.maskedPaths`, `maskedKey` (Task 3); `pathOperands` (`src/decisions/egress.ts:542`).
 - Produces: `ActiveTurn.settleAsk?: boolean`; `SETTLE_REASON = "this reply was sent back for one more pass"`;
   `MASKED_READ_REASON = "this file was read with values masked"`; `effectiveAsk(level, settleAsk, entry, command): TrustAsk`;
   gate deny codes `SETTLE_REDIRECT_CODE = "settle_redirect"` / `MASKED_REDIRECT_CODE = "masked_redirect"` with texts
@@ -1132,12 +1195,14 @@ describe("settleAsk at the bridge (spec §3.3, 2b-R7)", () => {
 
 describe("masked paths at the bridge (spec §4, 2b-R8)", () => {
   it("an edit through a symlink to a masked file takes the redirect; a bash command naming the file asks with MASKED_READ_REASON; an unrelated file does neither", async () => {
-    const { handle, turn, dir, store, run_id, events } = setup({ env: { HOUGE_TRUST_ASK_TTL_MS: "60000" } });
-    const real = join(dir, "cfg.yml"); writeFileSync(real, "k: v\n"); symlinkSync(real, join(dir, "link.yml"));
-    turn.maskedPaths = new Set([realpathSync(real)]);
-    expect(await handle(gate("edit", join(dir, "link.yml")))).toEqual({ decision: "deny", reason: MASKED_WRITE_REDIRECT });
-    expect(await handle(gate("edit", join(dir, "other.yml")))).toEqual({ decision: "allow" });
-    const p = handle(call("bash", { command: `sed -i '' 's/k/j/' ${join(dir, "link.yml")}` })) as Promise<CallResult>;
+    // fixtures under HOME (a write root; os.tmpdir() is denied protected_path before the masked check runs: senior plan B4); cwd = home for the bare-name case
+    const { handle, turn, home, store, run_id, events } = setup({ env: { HOUGE_TRUST_ASK_TTL_MS: "60000" }, cwd: "home" });
+    const real = join(home, "cfg.yml"); writeFileSync(real, "k: v\n"); symlinkSync(real, join(home, "link.yml"));
+    turn.maskedPaths = new Set([maskedKey(real)]);
+    expect(await handle(gate("edit", join(home, "link.yml")))).toEqual({ decision: "deny", reason: MASKED_WRITE_REDIRECT });
+    expect(await handle(gate("edit", join(home, "CFG.yml")))).toEqual({ decision: "deny", reason: MASKED_WRITE_REDIRECT }); // case-folded
+    expect(await handle(gate("edit", join(home, "other.yml")))).toEqual({ decision: "allow" });
+    const p = handle(call("bash", { command: `sed -i '' 's/k/j/' ${join(home, "link.yml")}` })) as Promise<CallResult>;
     await answerNth(store, run_id, "denied");
     expect((await p).isError).toBe(true);
     expect(events("approval_requested").at(-1)).toMatchObject({ reason: MASKED_READ_REASON });
@@ -1148,9 +1213,9 @@ describe("masked paths at the bridge (spec §4, 2b-R8)", () => {
     expect(((await handle(call("bash", { command: "cat other.yml" }))) as CallResult).isError).toBe(false);
   });
   it("a new file whose parent directory holds a masked file is not masked (only the file itself)", async () => {
-    const { handle, turn, dir } = setup();
-    turn.maskedPaths = new Set([realpathSync(dir) + "/cfg.yml"]);
-    expect(await handle(gate("write", join(dir, "new.yml")))).toEqual({ decision: "allow" });
+    const { handle, turn, home } = setup();
+    turn.maskedPaths = new Set([maskedKey(join(home, "cfg.yml"))]);
+    expect(await handle(gate("write", join(home, "new.yml")))).toEqual({ decision: "allow" });
   });
 });
 
@@ -1212,16 +1277,17 @@ function askFor(deps: BridgeHandlerDeps, turn: ActiveTurn, entry: RegistryEntry,
 function namesMaskedFile(command: string, turn: ActiveTurn, home: string): boolean {
   const words = command.split(/[\s;|&<>()]+/).map((w) => w.replace(/^["']|["']$/g, "")).filter((w) => w.length > 0 && !w.startsWith("-"));
   const candidates = [...pathOperands(command, turn.cwd, home), ...words.map((w) => resolvePath(turn.cwd, w))];
-  return candidates.some((p) => turn.maskedPaths!.has(realTarget(p)));
+  return candidates.some((p) => turn.maskedPaths!.has(maskedKey(p)));
 }
 ```
 - `gateDenial`, after the hostile line: `if (entry === "fs_write" && turn.settleAsk) return SETTLE_REDIRECT_CODE;` and
   after the path denials: `if (entry === "fs_write" && maskedTarget(turn, raws, deps)) return MASKED_REDIRECT_CODE;` where
-  `maskedTarget` resolves each raw through `gateTargets` then `realTarget` and tests `turn.maskedPaths`.
-- `handleReport`: when `turn.unreported` has no entry and `req.tool === "todo"`, write
-  `finish(deps, turn, { toolCallId: req.toolCallId, tool: "builtin:todo", capability: "todo", status: req.outcome, content: "", started: Date.now() - count(req.duration_ms), digest: \`${count(req.bytes_out)} bytes\` })`
-  — `finish` writes `bytes_out` from `content` (empty → 0); pass the count through a new optional `bytesOut` on `Finish`
-  used when present. Any other unknown id stays a no-op.
+  `maskedTarget` resolves each raw through `gateTargets` then `maskedKey` and tests `turn.maskedPaths`.
+- `handleReport`: when `turn.unreported` has no entry and `req.tool === "todo"`, reuse `writeBuiltinOutcome` with a
+  `tool` override (senior plan S): `writeBuiltinOutcome(deps.store, turn, req.toolCallId, "fs_read", { ok: req.outcome === "succeeded", bytes_out: count(req.bytes_out), duration_ms: count(req.duration_ms) }, "builtin:todo")`
+  — the function gains an optional sixth argument `tool?: string` that wins over `namesFor(turn)`; its `loop_step`
+  carries `capability: "todo"` through the same override (`capability` defaults to the entry). No `Finish.bytesOut`,
+  no empty-string `output_hash`. Any other unknown id stays a no-op.
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
@@ -1260,8 +1326,8 @@ git commit -m "feat(omp): settleAsk and masked-path asks and redirects at the br
 
 ```ts
 import { describe, expect, it } from "vitest";
-import { SETTLE_BAR, SETTLE_BAR_P, SETTLE_REASONS, settleRule, TURN_SETTLE, type SettleState } from "../../src/decisions/entries/turn-settle.js";
-import { SETTLE_QUESTIONS } from "../../src/jev/settle-ask.js";
+import { SETTLE_BAR, SETTLE_BAR_P, SETTLE_QUESTIONS_HASH, SETTLE_REASONS, settleRule, TURN_SETTLE, type SettleState } from "../../src/decisions/entries/turn-settle.js";
+import { SETTLE_QUESTIONS } from "../../src/jev/questions/settle.js";
 import { entryById, entryProblems } from "../../src/decisions/registry.js";
 import { checkOutcomeValue, OutcomeRejected } from "../../src/decisions/outcomes.js";
 import { criteriaHash } from "../../src/jev/questions/types.js";
@@ -1284,7 +1350,8 @@ describe("the turn.settle entry", () => {
   });
   it("its provisional bar is 0.5 on the frozen hashes of the four settle questions", () => {
     expect(SETTLE_BAR_P).toBe(0.5);
-    expect(SETTLE_BAR).toMatchObject({ kind: "provisional", question: "settle", p: 0.5, criteriaHash: criteriaHash(SETTLE_QUESTIONS[0]!) });
+    expect(SETTLE_BAR).toMatchObject({ kind: "provisional", question: "settle", p: 0.5, criteriaHash: SETTLE_QUESTIONS_HASH });
+    expect(SETTLE_QUESTIONS_HASH).not.toBe(criteriaHash(SETTLE_QUESTIONS[0]!)); // all four questions, not the first alone
   });
   it("carries exactly the spec's reason codes", () => {
     expect([...SETTLE_REASONS]).toEqual(["hostile", "already_sent_back", "last_call_denied", "steer_queued", "deadline_short", "aborting", "empty", "claim_scheduled", "claim_saved",
@@ -1372,7 +1439,9 @@ export const SETTLE_DISCARDED_VALUES = ["extension_timeout", "signal", "continua
 export const SETTLE_BAR_P = 0.5;
 export const SETTLE_JEV_MS = 1_500;
 export const DEADLINE_SHORT_MS = 60_000;
-export const SETTLE_BAR: ProvisionalBar = { kind: "provisional", question: "settle", criteriaHash: criteriaHash(SETTLE_QUESTIONS[0]!), model: "jev-1.13.0", p: SETTLE_BAR_P,
+/** The bar's hash covers all four questions (senior plan S): a change to any of them marks the bar stale. */
+export const SETTLE_QUESTIONS_HASH = criteriaHash({ id: "settle", type: "noul", instructions: SETTLE_QUESTIONS.map((q) => `${q.id}: ${q.instructions}`).join("\n") });
+export const SETTLE_BAR: ProvisionalBar = { kind: "provisional", question: "settle", criteriaHash: SETTLE_QUESTIONS_HASH, model: "jev-1.13.0", p: SETTLE_BAR_P,
   source: "2b-i spec §3.3: provisional 0.5 on four noul questions, armed at ship; the sanity run on 30 days of replies bounds the send-back rate at 10%" };
 
 /** omp's todo list as get_state reports it (content kept only until the comparison; never recorded or sent). */
@@ -1427,8 +1496,11 @@ export const TURN_SETTLE: Entry<SettleState, SettleVerdict, SettleDetail> = {
 ```
 
 `src/decisions/registry.ts`: import `TURN_SETTLE` and append it to
-`REGISTRY`. `src/decisions/outcomes.ts`: `settle_sent_back: oneOf(SETTLE_REASONS), settle_unverified: oneOf(SETTLE_REASONS),
-settle_discarded: oneOf(SETTLE_DISCARDED_VALUES)` (import from the entry).
+`REGISTRY`. `src/decisions/outcomes.ts` (the store imports it, so it must not pull `src/jev/questions` into the store's
+import graph: senior plan S): duplicate the two lists as `SETTLE_REASON_VALUES` and `SETTLE_DISCARDED_VALUE_LIST`
+(`as const`), `settle_sent_back: oneOf(SETTLE_REASON_VALUES), settle_unverified: oneOf(SETTLE_REASON_VALUES),
+settle_discarded: oneOf(SETTLE_DISCARDED_VALUE_LIST)`, and pin them equal to the entry's `SETTLE_REASONS` and
+`SETTLE_DISCARDED_VALUES` in `tests/decisions/outcomes.test.ts` (the file's "duplicated value lists match their sources" case).
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
@@ -1505,14 +1577,15 @@ describe("buildSettleState", () => {
 ```ts
 import { describe, expect, it, vi } from "vitest";
 import { askSettle, SETTLE_QUESTIONS, SETTLE_THRESHOLD_VERSION } from "../../src/jev/settle-ask.js";
-import { buildSettleState } from "../../src/decisions/settle-state.js";
+import { buildSettleState, settleJevState } from "../../src/decisions/settle-state.js";
 import type { JevRequest, JevResult } from "../../src/jev/jev-client.js";
 import { RunStore } from "../../src/run/run-store.js";
 
 // Spec §3.3: four noul questions in ONE request on decision point `settle`; all-or-nothing answer validation (one
 // malformed answer fails the call, as jev-client.ts:196-202); a failure is a named fallback, never a partial answer.
-const state = () => buildSettleState({ run_id: "run_1", text: "Done, I'll send it tomorrow.", pass: 0, sentBack: false, trust: "clean", lastCallDenied: false, steerQueued: false, msLeft: 100_000,
-  aborting: false, evidence: [], todoBefore: null, todoNow: null, pacoMessage: "send it", attachmentsAccepted: 0 }, (x) => x);
+/** The Jev copy, as the protected builder makes it: askSettle never sees a SettleState (senior plan W). */
+const state = () => settleJevState(buildSettleState({ run_id: "run_1", text: "Done, I'll send it tomorrow.", pass: 0, sentBack: false, trust: "clean", lastCallDenied: false, steerQueued: false, msLeft: 100_000,
+  aborting: false, evidence: [], todoBefore: null, todoNow: null, pacoMessage: "send it", attachmentsAccepted: 0 }, (x) => x));
 const answering = (ps: number[]) => vi.fn(async (req: JevRequest): Promise<JevResult> => ({ ok: true, model: "jev-1.13.0", input_tokens: 10, latency_ms: 5,
   answers: Object.fromEntries(Object.keys(req.questions).map((id, k) => [id, { type: "noul" as const, noul: ps[k]! }])) }));
 
@@ -1567,13 +1640,22 @@ export function toolSummary(evidence: readonly LedgerEvent[]): string {
 export function buildSettleState(raw: RawSettleState, redact: (s: string) => string): SettleState {
   return { ...raw, redacted: { text: redact(raw.text), pacoMessage: redact(raw.pacoMessage).slice(0, PACO_MESSAGE_CAP) }, toolSummary: toolSummary(raw.evidence) };
 }
+
+/** What leaves for TypeSafe: three strings, built HERE (protected) from the redacted fields only (senior plan W). */
+export interface SettleJevState { reply: string; paco_message: string; tools: string }
+/** Ruling 8: head and tail of the redacted reply (endings carry promises and permission asks), never the whole 32 KiB. */
+export function settleJevState(s: SettleState): SettleJevState {
+  const t = s.redacted.text;
+  const reply = t.length <= SETTLE_JEV_HEAD + SETTLE_JEV_TAIL ? t : `${t.slice(0, SETTLE_JEV_HEAD)}\n[…]\n${t.slice(-SETTLE_JEV_TAIL)}`;
+  return { reply, paco_message: s.redacted.pacoMessage, tools: s.toolSummary };
+}
 ```
 
 `src/jev/settle-ask.ts`:
 
 ```ts
 import type { FallbackReason } from "../decisions/types.js";
-import { SETTLE_JEV_HEAD, SETTLE_JEV_TAIL, type SettleState } from "../decisions/settle-state.js";
+import type { SettleJevState } from "../decisions/settle-state.js";
 import type { RunStore } from "../run/run-store.js";
 import { decide, type SkipReason } from "./decide.js";
 import { langOf } from "./intent-question.js";
@@ -1584,16 +1666,14 @@ export { SETTLE_QUESTIONS, SETTLE_QUESTION_REASON } from "./questions/settle.js"
 /** turn.settle's own Jev call (2b-i §3.3): one request, four noul questions, decision point `settle`, 1.5 s, no re-ask. */
 export const SETTLE_THRESHOLD_VERSION = "2026-10-20.1";
 export type SettleAsk = { answers: Record<string, number>; model: string } | { failed: FallbackReason };
+export { settleJevState } from "../decisions/settle-state.js";
 
-/** Ruling 8: head and tail of the redacted reply (endings carry promises and permission asks), never the whole 32 KiB. */
-export function settleJevState(s: SettleState): Record<string, string> {
-  const t = s.redacted.text;
-  const reply = t.length <= SETTLE_JEV_HEAD + SETTLE_JEV_TAIL ? t : `${t.slice(0, SETTLE_JEV_HEAD)}\n[…]\n${t.slice(-SETTLE_JEV_TAIL)}`;
-  return { reply, paco_message: s.redacted.pacoMessage, tools: s.toolSummary };
-}
-
-export async function askSettle(i: { run_id: string; state: SettleState; client: (r: JevRequest) => Promise<JevResult>; store: RunStore; boundMs?: number; now?: () => Date }): Promise<SettleAsk> {
-  const d = await decide({ point: "settle", run_id: i.run_id, state: settleJevState(i.state), questions: SETTLE_QUESTIONS, lang: langOf(i.state.redacted.text.slice(0, 2_000)),
+/**
+ * Senior plan W: this file is self-writable (src/jev is not protected, as memory-kind-ask.ts); it never sees the raw
+ * `SettleState`. The caller hands it the Jev copy built by the protected `settleJevState` (src/decisions/settle-state.ts).
+ */
+export async function askSettle(i: { run_id: string; state: SettleJevState; client: (r: JevRequest) => Promise<JevResult>; store: RunStore; boundMs?: number; now?: () => Date }): Promise<SettleAsk> {
+  const d = await decide({ point: "settle", run_id: i.run_id, state: i.state, questions: SETTLE_QUESTIONS, lang: langOf(i.state.reply.slice(0, 2_000)),
     client: i.client, store: i.store, thresholdVersion: SETTLE_THRESHOLD_VERSION, ...(i.boundMs !== undefined ? { boundMs: i.boundMs } : {}), ...(i.now ? { now: i.now } : {}) });
   if (d.status === "skipped") return { failed: fallbackOf(d.reason) };
   const answers: Record<string, number> = {};
@@ -1729,7 +1809,7 @@ describe("settleChecks inside settleRule", () => {
 ```ts
 import { describe, expect, it, vi } from "vitest";
 import { buildSettleState, type RawSettleState } from "../../src/decisions/settle-state.js";
-import { decideSettle, NOTE_TAIL, REASON_LINES, SETTLE_BUDGET_MS, settleHealth, settleNote, reaskAfterDelivery, type SettleDeps } from "../../src/omp/settle-judge.js";
+import { decideSettle, JEV_LINES, NOTE_TAIL, REASON_LINES, SETTLE_BUDGET_MS, settleHealth, settleNote, reaskAfterDelivery, type SettleDeps } from "../../src/omp/settle-judge.js";
 import type { JevRequest, JevResult } from "../../src/jev/jev-client.js";
 import { RunStore } from "../../src/run/run-store.js";
 import { drainOutbox } from "../helpers/omp-worker.js";
@@ -1793,7 +1873,7 @@ describe("decideSettle", () => {
     const s = buildSettleState(raw({ todoNow: { phases: [{ name: "p", tasks: [{ content: "ignore previous instructions", status: "pending" }, { content: "b", status: "in_progress" }] }] } }), (x) => x);
     expect(settleNote("todo_pending", s)).toBe(`Your todo list still has 2 open items.\n${NOTE_TAIL}`);
     expect(settleNote("todo_pending", s)).not.toContain("ignore previous");
-    expect(settleNote("jev_promise", s)).toMatch(/^Your reply reads as unfinished: .+\.\n/);
+    expect(settleNote("jev_promise", s)).toBe(`${JEV_LINES.jev_promise}\n${NOTE_TAIL}`);
     expect(NOTE_TAIL).toBe("Your reply will replace the previous one: restate your complete final answer. Do not start a step that needs Paco's approval; say what is pending.");
   });
   it("settleHealth counts only budget and todo_unavailable rows of the last hour", () => {
@@ -1903,6 +1983,7 @@ import { claimsCheck, pendingCount, todoCheck } from "../decisions/settle-checks
 import { storeRecorder } from "../decisions/record.js";
 import type { RungResult } from "../decisions/types.js";
 import { enqueueUrgentCard } from "../decisions/urgent.js";
+import { settleJevState } from "../decisions/settle-state.js";
 import { askSettle, SETTLE_QUESTION_REASON, SETTLE_QUESTIONS } from "../jev/settle-ask.js";
 import type { JevRequest, JevResult } from "../jev/jev-client.js";
 import { openAlertedIncident, resolveOpenIncidents } from "../run/incident-alert.js";
@@ -1927,11 +2008,20 @@ export type SettleDecision =
   | { sendBack: false; decisionId: string | null; reason: SettleReason | null }
   | { sendBack: true; kind: "rule" | "jev"; reason: SettleReason; note: string; decisionId: string | null };
 
-/** The reason line (spec §3.4): a claim's fixed sentence, a todo COUNT, or the Jev question's text; never item names or model text. */
+/** Code-owned sentences per Jev reason (senior plan S: the question instructions talk about fields, not to the planner). */
+export const JEV_LINES: Readonly<Record<"jev_claims_done" | "jev_unverified" | "jev_promise" | "jev_asks_permission", string>> = {
+  jev_claims_done: "Your reply reads as unfinished: it claims the task is done, but nothing this turn shows it.",
+  jev_unverified: "Your reply reads as unfinished: you acted or edited something but did not verify the result.",
+  jev_promise: "Your reply reads as unfinished: it ends on a promise of further work instead of the work.",
+  jev_asks_permission: "Your reply reads as unfinished: it asks permission for work Paco's message already asked for."
+};
+
+/** The reason line (spec §3.4): a claim's fixed sentence, a todo COUNT, or the Jev reason's sentence; never item names or model text. */
 export function settleNote(reason: SettleReason, s: SettleState): string {
   const line = reason in REASON_LINES ? REASON_LINES[reason as keyof typeof REASON_LINES]
+    : reason in JEV_LINES ? JEV_LINES[reason as keyof typeof JEV_LINES]
     : reason === "todo_pending" ? `Your todo list still has ${s.todoNow ? pendingCount(s.todoNow) : 0} open items.`
-    : `Your reply reads as unfinished: ${SETTLE_QUESTIONS.find((q) => SETTLE_QUESTION_REASON[q.id] === reason)?.instructions ?? reason}.`;
+    : `Your reply reads as unfinished (${reason}).`;
   return `${line}\n${NOTE_TAIL}`;
 }
 
@@ -1941,7 +2031,7 @@ function jevRung(d: SettleDeps, s: SettleState, deadline: number): () => Promise
     const left = deadline - (d.clock ?? Date.now)();
     if (left < SETTLE_JEV_MIN_MS) return { failed: "budget", reason: "budget" };
     const bound = Math.min(SETTLE_JEV_MS, left);
-    const r = await askSettle({ run_id: s.run_id, state: s, client: d.client, store: d.store, boundMs: bound });
+    const r = await askSettle({ run_id: s.run_id, state: settleJevState(s), client: d.client, store: d.store, boundMs: bound });
     // a timeout the DEADLINE cut (the bound was shorter than the client's own 1.5 s) is a budget miss, not a Jev timeout
     if ("failed" in r) return r.failed === "timeout" && bound < SETTLE_JEV_MS ? { failed: "budget", reason: "budget" } : { failed: r.failed };
     const over = SETTLE_QUESTIONS.map((q) => [q.id, r.answers[q.id] ?? 0] as const).filter(([, p]) => p > SETTLE_BAR_P).sort((a, b) => b[1] - a[1]);
@@ -1987,7 +2077,7 @@ export function finalAuditReasons(s: SettleState): SettleReason[] {
 
 /** Spec §3.5: the Jev questions re-asked AFTER delivery, bounded; the first reason over the bar, or null (a failure is null: no card on an outage). */
 export async function reaskAfterDelivery(d: SettleDeps, s: SettleState, boundMs: number): Promise<SettleReason | null> {
-  const r = await askSettle({ run_id: s.run_id, state: s, client: d.client, store: d.store, boundMs });
+  const r = await askSettle({ run_id: s.run_id, state: settleJevState(s), client: d.client, store: d.store, boundMs });
   if ("failed" in r) return null;
   const over = SETTLE_QUESTIONS.map((q) => [q.id, r.answers[q.id] ?? 0] as const).filter(([, p]) => p > SETTLE_BAR_P).sort((a, b) => b[1] - a[1]);
   return over.length > 0 ? SETTLE_QUESTION_REASON[over[0]![0]] : null;
@@ -2117,6 +2207,10 @@ export interface PlannerState { todoPhases: Array<{ name: string; tasks: Array<{
 `src/omp/planner-supervisor.ts`:
 - `PlannerSessionLike` picks `getState` too.
 - `HOUGE_CONFIG_YML` += `"todo:\n  enabled: true\n  reminders: false\n  eager: default\n"` (comment: 2b-i §5, P3b').
+- `onFrame`: `tool_execution_start` sets `usedTool` only when `f.toolName !== "todo"` (senior plan S: a todo call is
+  bookkeeping, not a tool with a side effect; it must not block the one `other` retry at `:797` nor change
+  `assistantIntentFor`). Test: a turn whose only tool frame is `todo` completes with `tool_calls 0` and keeps the
+  `other` retry available (an `other` error after it still re-prompts once).
 - `onFrame`: `else if (f.type === "todo_reminder") this.todoReminderSeen(t);` where
 
 ```ts
@@ -2153,6 +2247,7 @@ git commit -m "feat(omp): get_state RPC, the todo tool for the planner (config o
 - Create: `tests/helpers/supervisor-harness.ts` (moved verbatim from `tests/omp/planner-supervisor.test.ts:23-213`)
 - Modify: `tests/omp/planner-supervisor.test.ts` (imports the helpers; no case changes)
 - Modify: `src/omp/planner-supervisor.ts:162-206, 461-487, 569-579, 750-764, 1168-1184, 1216-1234, 1326-1350`
+- Modify: `src/omp/bridge-handler.ts:38-61` (`ActiveTurn.onSendBack?` — declared HERE, so this task typechecks: senior plan B5)
 - Test: `tests/omp/planner-supervisor-settle.test.ts`
 
 **Interfaces:**
@@ -2203,7 +2298,7 @@ function held() {
 }
 /** The fake calls onPrompt asynchronously (codex plan B5): every case waits for `prompted`, never for a function to be "defined". */
 const running = (sup: ReturnType<typeof harness>["sup"], h: { prompted: boolean }) => until(() => h.prompted && sup.state() === "RUNNING");
-const sendBack = (sup: ReturnType<typeof harness>["sup"], kind: "rule" | "jev" = "rule") => sup.activeTurnForTest()!.onSendBack!(kind);
+const sendBack = (sup: ReturnType<typeof harness>["sup"], kind: "rule" | "jev" = "rule", text = "") => sup.activeTurnForTest()!.onSendBack!(kind, text);
 
 describe("replyOfPasses", () => {
   it("one pass: its final text; two passes: pass 1 unless empty (pass 0) or under a third of pass 0 (pass 0, marker, pass 1)", () => {
@@ -2299,22 +2394,35 @@ export function replyOfPasses(passes: readonly Pass[]): string {
 `Turn` gains: `passes: Pass[]; sentBack: boolean; sentBackKind?: "rule" | "jev"; continuationSeen: boolean;
 continuationFailed?: boolean; userText: string;` (`lastText` stays: it is the current pass's final text, used by
 `finishLane` and the old failure path). `newTurn` initialises `passes: [{ texts: [], final: "" }], sentBack: false,
-continuationSeen: false, userText: req.text` and installs `active.onSendBack = (kind) => this.onSendBack(turn, kind)`.
+continuationSeen: false, userText: req.text` and installs `active.onSendBack = (kind, text) => this.onSendBack(turn, kind, text)`.
 `startTurn` sets `turn.userText = userText` once resolved. `finishLane` sets `turn.passes[0]!.final = v.text` beside
 `lastText`.
 
+`ActiveTurn` (bridge-handler.ts) gains `/** The send-back callback (spec §3.5): installed by the supervisor; the bridge calls it before it writes a sendBack reply (Task 10). */ onSendBack?: (kind: "rule" | "jev") => void;`.
+
 ```ts
-  /** The pass boundary (spec §3.5, codex r2 #5): called by the bridge BEFORE it writes the sendBack reply; every frame after it belongs to pass 1. */
-  private onSendBack(t: Turn, kind: "rule" | "jev"): void {
+  /** Called by the bridge BEFORE it writes the sendBack reply (spec §3.5): marks the turn; pass 1 opens at the continuation's agent_start (ruling 12). */
+  private onSendBack(t: Turn, kind: "rule" | "jev", settleText: string): void {
     if (t.finished || t.sentBack) return;
-    t.sentBack = true; t.sentBackKind = kind;
+    t.sentBack = true; t.sentBackKind = kind; t.settleText = settleText;
     if (kind === "jev") t.active.settleAsk = true;
+  }
+
+  /** Ruling 12: the second agent_start is the pass boundary, on the frame channel; pass 0's final text is the settle request's when no message_end reached us. */
+  private onContinuation(t: Turn): void {
+    if (!t.sentBack || t.continuationSeen) return;
+    t.continuationSeen = true;
+    const p0 = t.passes[0]!;
+    if (p0.final.trim().length === 0 && t.settleText) { p0.final = t.settleText; t.lastText = t.settleText; }
     t.passes.push({ texts: [], final: "" });
   }
 ```
 
-`onFrame`: `else if (f.type === "agent_start") { if (t.sentBack && !t.continuationSeen) t.continuationSeen = true; }`.
-(`t.live` is still true during the continuation; nothing else changes.)
+`onFrame`: `else if (f.type === "agent_start") this.onContinuation(t);` (`t.live` is still true during the
+continuation; nothing else changes). `Turn` gains `settleText?: string`. The `active.onSendBack` installed in `newTurn`
+is `(kind, text) => this.onSendBack(turn, kind, text)` — the bridge (Task 10) passes the settle request's text as the
+second argument; `ActiveTurn.onSendBack?: (kind: "rule" | "jev", settleText: string) => void`. In this task's tests the
+helper `sendBack(sup, kind)` calls it with the text the test just said.
 
 `onAssistant`: after the audit lines, replace the `lastText` assignment:
 
@@ -2363,7 +2471,9 @@ git commit -m "feat(omp): supervisor passes, the pass boundary, the continuation
 **Files:**
 - Modify: `src/omp/bridge-handler.ts:66-71, 130-141` (deps `settle`, dispatch, `handleSettle`)
 - Modify: `src/decisions/settle-checks.ts` (`lastCallDenied(evidence)`)
-- Modify: `src/omp/planner-supervisor.ts` (`SupervisorDeps.settleClient`, `settleRequest`, `settleState`, `todoBefore`, outcomes, drain, `finalAudit`, the card)
+- Create: `src/omp/supervisor-settle.ts` (`settleStateFor`, `todoSnapshot`, `writeSettleOutcomes`, `finalAudit`, `UNVERIFIED_CARD`, `SettleCtx`, `SettleTurn`)
+- Modify: `src/omp/planner-supervisor.ts` (`SupervisorDeps.settleClient` and `gateHold`, `settleRequest`, `settleCtx`/`settleView`, `todoBefore`, the memo reset in `retryNextLeg`, drain, the audit snapshot, `flushUnreported(…, this.d)`)
+- Modify: `src/decisions/record.ts:18` (`turn.settle` joins `JEV_PAGED_ELSEWHERE`: ruling 14)
 - Modify: `src/core/core-worker.ts:2366-2381, 2878-2900` (`settleClient`, passed in `supervisorDeps` — in THIS task, so the required dep typechecks at this commit: codex plan B6)
 - Modify: `tests/helpers/supervisor-harness.ts` (`harness` passes a default `settleClient` answering all four at 0.1; `Script.getState`)
 - Test: `tests/omp/planner-supervisor-settle.test.ts` (+ cases), `tests/decisions/settle-checks.test.ts` (+1), `tests/omp/bridge-handler-settle-ask.test.ts` (+1: dispatch), `tests/core/omp-injection-wiring.test.ts` (+1: the role)
@@ -2401,12 +2511,12 @@ describe("settle dispatch", () => {
   it("memoises per run and fire; calls onSendBack before answering; with no settle dep answers sendBack: false", async () => {
     const calls: string[] = [];
     const { handle, turn } = setup({ settle: async (_t, r) => { calls.push(`settle:${r.stop_hook_active}`); return r.stop_hook_active ? { sendBack: false } : { sendBack: true, note: "N", kind: "jev" }; } });
-    turn.onSendBack = (kind) => { calls.push(`onSendBack:${kind}`); };
+    turn.onSendBack = (kind, text) => { calls.push(`onSendBack:${kind}:${text}`); };
     const first = { id: "s1", kind: "settle" as const, stop_hook_active: false, text: "done" };
     expect(await handle(first)).toEqual({ sendBack: true, note: "N" });
     expect(await handle({ ...first, id: "s2" })).toEqual({ sendBack: true, note: "N" });
     expect(await handle({ id: "s3", kind: "settle", stop_hook_active: true, text: "" })).toEqual({ sendBack: false });
-    expect(calls).toEqual(["settle:false", "onSendBack:jev", "settle:true"]);
+    expect(calls).toEqual(["settle:false", "onSendBack:jev:done", "settle:true"]);
     const bare = setup();
     expect(await bare.handle(first)).toEqual({ sendBack: false });
   });
@@ -2507,6 +2617,28 @@ describe("the settle request end to end (spec §3)", () => {
     expect(cards).toHaveLength(1);
     expect(String((cards[0]![1] as { payload: { text: string } }).payload.text)).toMatch(/^⚠️ Settled unverified: You said you saved it/);
   });
+  it("the production redactor strips a planted secret and the bridge token from the real Jev request (spec §3.1)", async () => {
+    const bodies: string[] = [];
+    const spy = (ps: number[]) => (run_id: string) => async (r: JevRequest) => { bodies.push(JSON.stringify(r)); return jev(ps)(r); };
+    const { session, h } = held(); const { store, sup } = harness(session, {}, { settleClient: spy([0.1, 0.1, 0.1, 0.1]) });
+    const run_id = createQueuedTurnRun(store); sup.submit(req(run_id)); await running(sup, h);
+    const token = session.options[0]!.bridgeToken;
+    const text = `Config read. api_key: ABCDEFGHIJKLMNOPQRSTUVWX and the token ${token} are fine.`;
+    h.say(text); await session.request(settleReq(text));
+    expect(bodies).toHaveLength(1);
+    expect(bodies[0]).not.toContain("ABCDEFGHIJKLMNOPQRSTUVWX"); expect(bodies[0]).not.toContain(token);
+    h.emit({ type: "agent_end" }); await sup.whenIdle();
+  });
+  it("a retried leg (model error, RETRY_NOTE) gets its own settle decision, not the first leg's cached answer", async () => {
+    const { session, h } = held(); const { store, sup } = harness(session);
+    const run_id = createQueuedTurnRun(store); sup.submit(req(run_id)); await running(sup, h);
+    expect(await session.request(settleReq(""))).toEqual({ sendBack: false }); // leg 0 settles `empty`
+    h.emit({ type: "error", error: "429 rate limit" }); h.emit({ type: "agent_end" });
+    await until(() => session.prompts.length === 2); h.prompted = false; await running(sup, h);
+    h.say("I've scheduled it."); expect((await session.request(settleReq("I've scheduled it."))) as { sendBack: boolean }).toMatchObject({ sendBack: true });
+    expect(rows(store, run_id).map((x) => x.reason_code)).toEqual(["empty", "claim_scheduled"]);
+    h.emit({ type: "agent_start" }); h.say("Tell me when."); h.emit({ type: "agent_end" }); await sup.whenIdle();
+  });
   it("a model error in pass 1 writes settle_discarded continuation_failed", async () => {
     const { session, h } = held(); const { store, sup, outcome } = harness(session);
     const run_id = createQueuedTurnRun(store); sup.submit(req(run_id)); await running(sup, h);
@@ -2568,8 +2700,7 @@ export type SettleDecisionReply = { sendBack: false } | { sendBack: true; note: 
   /** turn.settle (2b-i §3): the supervisor decides; absent only in bare tests (then every settle answers false). */
   settle?: (turn: ActiveTurn, req: SettleReq) => Promise<SettleDecisionReply>;
 // ActiveTurn gains:
-  /** The pass boundary (spec §3.5): installed by the supervisor; the bridge calls it before writing a sendBack reply. */
-  onSendBack?: (kind: "rule" | "jev") => void;
+
 // dispatch (ruling 1: keyed by run and fire):
     if (req.kind === "settle") return memo(turn, `settle:${turn.run_id}:${req.stop_hook_active}`, () => handleSettle(deps, turn, req));
 
@@ -2577,27 +2708,103 @@ async function handleSettle(deps: BridgeHandlerDeps, turn: ActiveTurn, req: Sett
   if (!deps.settle) return { sendBack: false };
   const r = await deps.settle(turn, req);
   if (!r.sendBack) return { sendBack: false };
-  turn.onSendBack?.(r.kind); // before the reply leaves (BridgeServer.answer writes after this resolves): every later frame is pass 1
+  turn.onSendBack?.(r.kind, req.text); // before the reply leaves (BridgeServer.answer writes after this resolves); pass 1 itself opens at the continuation's agent_start (ruling 12)
   return { sendBack: true, note: r.note };
 }
 ```
 
-`src/omp/planner-supervisor.ts`:
+`src/omp/supervisor-settle.ts` (create; senior plan S: the settle glue lives beside the supervisor, not inside its
+1 400 lines) and `src/omp/planner-supervisor.ts`:
 
 ```ts
+// src/omp/supervisor-settle.ts — turn.settle's supervisor-side glue (2b-i §3.5–3.6), as functions over a narrow context.
+import { parseAttachments, type PlannerSessionLike } from "./planner-supervisor.js";
 import { redactForJudge } from "../decisions/egress.js";
 import { buildSettleState, type RawSettleState, type SettleState, type TodoSnapshot } from "../decisions/settle-state.js";
 import { lastCallDenied } from "../decisions/settle-checks.js";
 import { SETTLE_JEV_MS, type SettleReason } from "../decisions/entries/turn-settle.js";
 import { enqueueUrgentCard } from "../decisions/urgent.js";
 import type { DecisionSignal } from "../decisions/types.js";
-import type { JevRequest, JevResult } from "../jev/jev-client.js";
+import type { RunStore } from "../run/run-store.js";
+import { finalAuditReasons, reaskAfterDelivery, settleNote, type SettleDeps } from "./settle-judge.js";
+import type { Pass } from "./planner-supervisor.js";
+
+export const UNVERIFIED_CARD = (reasonLine: string): string => `⚠️ Settled unverified: ${reasonLine}`;
+/** What the glue reads from the supervisor; every field is a getter so a replaced child or a moved queue is read live. */
+export interface SettleCtx {
+  store: RunStore; chatId: string; env: NodeJS.ProcessEnv; workspace: string;
+  session: () => PlannerSessionLike | undefined; queueHasTelegram: () => boolean; bridgeToken: () => string | undefined;
+  settleDeps: (run_id: string) => SettleDeps;
+}
+/** The Turn fields the glue reads and writes (the supervisor's Turn satisfies it structurally). */
+export interface SettleTurn {
+  run_id: string; passes: Pass[]; sentBack: boolean; continuationSeen: boolean; continuationFailed?: boolean; aborting: boolean;
+  deadline: ReturnType<typeof setTimeout> | undefined; deadlineLeft: number; deadlineAt: number; trustLevel: () => "clean" | "untrusted" | "hostile";
+  userText: string; todoBefore: TodoSnapshot | null; settleDecisionId: string | null; settleReason?: SettleReason;
+}
+export interface Snapshot { todo: TodoSnapshot; queued: number }
+
+/** omp's get_state through the live child (its own 1 s bound); null on any failure: the todo check is then off for the turn. */
+export async function todoSnapshot(ctx: SettleCtx): Promise<Snapshot | null> {
+  const s = ctx.session();
+  if (!s) return null;
+  try { const st = await s.getState(); return { todo: { phases: st.todoPhases }, queued: st.queuedMessageCount }; } catch { return null; }
+}
+
+export function settleStateFor(ctx: SettleCtx, t: SettleTurn, text: string, now: number, snap: Snapshot | null): SettleState {
+  const evidence = ctx.store.getLedgerEvents(t.run_id);
+  const raw: RawSettleState = {
+    run_id: t.run_id, text, pass: t.passes.length - 1, sentBack: t.sentBack, trust: t.trustLevel(), lastCallDenied: lastCallDenied(evidence),
+    steerQueued: (snap?.queued ?? 0) > 0 || ctx.queueHasTelegram(),
+    msLeft: t.deadline ? t.deadlineLeft - (now - t.deadlineAt) : t.deadlineLeft, aborting: t.aborting, evidence, todoBefore: t.todoBefore, todoNow: snap?.todo ?? null,
+    pacoMessage: t.userText, attachmentsAccepted: parseAttachments(text, ctx.workspace).attachments.length
+  };
+  const token = ctx.bridgeToken();
+  return buildSettleState(raw, (s) => redactForJudge(s, { brokerRedact: (x) => ctx.store.redactSecretValues(x), known: token ? [token] : [] }));
+}
+
+export function writeOutcome(ctx: SettleCtx, t: SettleTurn, signal: DecisionSignal, value: string): void {
+  if (!t.settleDecisionId) return;
+  try { ctx.store.insertDecisionOutcome({ decision_id: t.settleDecisionId, signal, value, source: "code" }); }
+  catch (e) { console.error(`settle: ${signal} not written for ${t.run_id}: ${e instanceof Error ? e.message : String(e)}`); }
+}
+
+/** 2b-R17: the row is never rewritten; what followed the send-back is an outcome (spec §3.5). */
+export function writeSettleOutcomes(ctx: SettleCtx, t: SettleTurn): void {
+  if (!t.sentBack) return;
+  if (t.continuationFailed) { writeOutcome(ctx, t, "settle_discarded", "continuation_failed"); return; }
+  if (!t.continuationSeen) { writeOutcome(ctx, t, "settle_discarded", t.aborting ? "signal" : "extension_timeout"); return; }
+  writeOutcome(ctx, t, "settle_sent_back", t.settleReason ?? "settled");
+}
+
+/**
+ * The final-pass audit (2b-R10): the code checks on pass 1's final text with the todo snapshot taken BEFORE the reply was
+ * delivered (senior plan W: a later get_state could belong to the next turn), then Jev re-asked after delivery; one card per turn.
+ */
+export async function finalAudit(ctx: SettleCtx, t: SettleTurn, snap: Snapshot | null): Promise<void> {
+  const text = t.passes[t.passes.length - 1]?.final ?? "";
+  const state = settleStateFor(ctx, t, text, Date.now(), snap);
+  let carded = false;
+  const card = (reason: SettleReason) => {
+    if (carded) return; carded = true;
+    enqueueUrgentCard(ctx.store, { chat_id: ctx.chatId, key: `settle_unverified:${t.run_id}`, text: UNVERIFIED_CARD(settleNote(reason, state).split("\n")[0] ?? reason) });
+  };
+  for (const r of finalAuditReasons(state)) { writeOutcome(ctx, t, "settle_unverified", r); card(r); }
+  const jev = await reaskAfterDelivery(ctx.settleDeps(t.run_id), state, SETTLE_JEV_MS);
+  if (jev) { writeOutcome(ctx, t, "settle_unverified", jev); card(jev); }
+}
+```
+
+`src/omp/planner-supervisor.ts`:
+
+```ts
+import { finalAudit, settleStateFor, todoSnapshot, writeSettleOutcomes, type SettleCtx, type Snapshot } from "./supervisor-settle.js";
+import { decideSettle, SETTLE_BUDGET_MS, type SettleDeps } from "./settle-judge.js";
 import { drainJudges, JUDGE_DRAIN_MS } from "./bridge-read-judge.js";
-import { decideSettle, finalAuditReasons, reaskAfterDelivery, SETTLE_BUDGET_MS, settleNote, type SettleDeps } from "./settle-judge.js";
+import type { JevRequest, JevResult } from "../jev/jev-client.js";
 
 /** Ruling 7: the outer race is the last net past Houge's own budget. */
 const SETTLE_SLACK_MS = 250;
-export const UNVERIFIED_CARD = (reasonLine: string): string => `⚠️ Settled unverified: ${reasonLine}`;
 /** The live gate's hold (spec §7 cases 2 and 8): a delay inside the handler, so Houge's own budget and the extension's timer are what is measured. */
 export interface GateHold { judgeReadMs?: number; settleMs?: number }
 const gateHold = (ms: number | undefined): Promise<void> => (ms ? new Promise((r) => setTimeout(r, ms)) : Promise.resolve());
@@ -2606,38 +2813,17 @@ const gateHold = (ms: number | undefined): Promise<void> => (ms ? new Promise((r
   settleClient: (run_id: string) => (r: JevRequest) => Promise<JevResult>;
   /** Live-gate seam only (never set by the daemon): forwarded to the bridge handler (judge_read) and used by settleRequest. */
   gateHold?: GateHold;
-// Turn gains: todoBefore: TodoSnapshot | null; settleDecisionId: string | null; settleReason?: SettleReason;
+// Turn gains: todoBefore: TodoSnapshot | null; settleDecisionId: string | null; settleReason?: SettleReason; settleText?: string;
+//   and the SettleTurn view: `trustLevel: () => t.active.trust?.level() ?? "clean"` and `run_id` (from req) are exposed through `settleView(t)`.
 ```
 
-`listen()` passes `settle: (turn, req) => this.settleRequest(turn, req)` and `...(this.d.gateHold ? { gateHold: this.d.gateHold } : {})`
-to `createBridgeHandler`; `BridgeHandlerDeps.gateHold?: GateHold` (type exported from `bridge-handler.ts`, re-used by
-the supervisor) and `handleJudgeRead` awaits `deps.gateHold?.judgeReadMs` right after it set the pending entry (so a
-held judge_read is pending while it waits, as a slow bridge would be).
-
 ```ts
-  /** omp's get_state through the live child, bounded by the session's own 1 s; null on any failure (the todo check is then off for the turn). */
-  private async todoSnapshot(): Promise<{ todo: TodoSnapshot; queued: number } | null> {
-    const s = this.session;
-    if (!s) return null;
-    try { const st = await s.getState(); return { todo: { phases: st.todoPhases }, queued: st.queuedMessageCount }; } catch { return null; }
+  private settleCtx(): SettleCtx {
+    return { store: this.d.store, chatId: this.d.chatId, env: this.d.env, workspace: this.workspace(), session: () => this.session,
+      queueHasTelegram: () => this.queue.some((q) => q.source === "telegram"), bridgeToken: () => this.bridgeToken,
+      settleDeps: (run_id) => ({ store: this.d.store, env: this.d.env, client: this.d.settleClient(run_id), chatId: this.d.chatId }) };
   }
-
-  private settleDeps(t: Turn): SettleDeps {
-    return { store: this.d.store, env: this.d.env, client: this.d.settleClient(t.req.run_id), chatId: this.d.chatId };
-  }
-
-  private async settleState(t: Turn, text: string, now: number): Promise<SettleState> {
-    const snap = await this.todoSnapshot();
-    const evidence = this.d.store.getLedgerEvents(t.req.run_id);
-    const raw: RawSettleState = {
-      run_id: t.req.run_id, text, pass: t.passes.length - 1, sentBack: t.sentBack, trust: t.active.trust?.level() ?? "clean", lastCallDenied: lastCallDenied(evidence),
-      steerQueued: (snap?.queued ?? 0) > 0 || this.queue.some((q) => q.source === "telegram"),
-      msLeft: t.deadline ? t.deadlineLeft - (now - t.deadlineAt) : t.deadlineLeft, aborting: t.aborting, evidence, todoBefore: t.todoBefore, todoNow: snap?.todo ?? null,
-      pacoMessage: t.userText, attachmentsAccepted: parseAttachments(text, this.workspace()).attachments.length
-    };
-    const known = this.bridgeToken ? [this.bridgeToken] : [];
-    return buildSettleState(raw, (s) => redactForJudge(s, { brokerRedact: (x) => this.d.store.redactSecretValues(x), known }));
-  }
+  private settleView(t: Turn): SettleTurn { return Object.assign(t, { run_id: t.req.run_id, trustLevel: () => t.active.trust?.level() ?? "clean" }); }
 
   /** The bridge's `settle` (spec §3): the first fire decides; the second (stop_hook_active, or a turn already sent back) only ends the continuation. */
   private async settleRequest(active: ActiveTurn, req: { stop_hook_active: boolean; text: string }): Promise<SettleDecisionReply> {
@@ -2645,55 +2831,40 @@ held judge_read is pending while it waits, as a slow bridge would be).
     if (!t || t.active !== active || t.finished) return { sendBack: false };
     if (req.stop_hook_active || t.sentBack) return { sendBack: false };
     const arrived = Date.now();
-    await gateHold(this.d.gateHold?.settleMs); // live-gate seam (Task 12): spends the budget, never set by the daemon
-    const state = await this.settleState(t, req.text, arrived);
-    // codex plan B8: one deadline from the request's ARRIVAL covers the hold, get_state, the ledger read and the decision
-    const decided = await bounded(decideSettle(this.settleDeps(t), state, arrived + SETTLE_BUDGET_MS), Math.max(0, arrived + SETTLE_BUDGET_MS + SETTLE_SLACK_MS - Date.now()));
-    if (decided === TIMED_OUT) { console.error(`planner supervisor: settle past its budget for ${t.req.run_id}`); return { sendBack: false }; }
-    t.settleDecisionId = decided.decisionId;
-    if (!decided.sendBack) return { sendBack: false };
-    t.settleReason = decided.reason;
-    return { sendBack: true, note: decided.note, kind: decided.kind };
+    try {
+      await gateHold(this.d.gateHold?.settleMs); // live-gate seam (Task 12): spends the budget, never set by the daemon
+      const ctx = this.settleCtx();
+      const state = settleStateFor(ctx, this.settleView(t), req.text, arrived, await todoSnapshot(ctx));
+      // codex plan B8: one deadline from the request's ARRIVAL covers the hold, get_state, the ledger read and the decision
+      const decided = await bounded(decideSettle(ctx.settleDeps(t.req.run_id), state, arrived + SETTLE_BUDGET_MS), Math.max(0, arrived + SETTLE_BUDGET_MS + SETTLE_SLACK_MS - Date.now()));
+      if (decided === TIMED_OUT) { console.error(`planner supervisor: settle past its budget for ${t.req.run_id}`); return { sendBack: false }; }
+      t.settleDecisionId = decided.decisionId;
+      if (!decided.sendBack) return { sendBack: false };
+      t.settleReason = decided.reason;
+      return { sendBack: true, note: decided.note, kind: decided.kind };
+    } catch (e) {
+      // senior plan W: a throw must not reject the memo and vanish; the reply fails open and the failure is logged with a fixed code
+      console.error(`planner supervisor: settle_failed ${t.req.run_id}: ${message(e)}`);
+      return { sendBack: false };
+    }
   }
 ```
 
-`promptTop`: before `s.prompt(sent)`, `turn.todoBefore = (await this.step(turn, this.todoSnapshot()))` → if `ENDED`
-return; else `.todo ?? null` (spec §5: one `get_state` before the prompt).
+`promptTop`: before `s.prompt(sent)`, `const snap = await this.step(turn, todoSnapshot(this.settleCtx()))` → if `ENDED`
+return; else `turn.todoBefore = snap?.todo ?? null` (spec §5: one `get_state` before the prompt).
+
+`retryNextLeg`: after `turn.lastError = undefined`, clear the settle memo so the retried leg's `session_stop` is
+decided afresh (senior plan W): `for (const k of [...turn.active.cache.keys()]) if (k.startsWith("settle:")) turn.active.cache.delete(k);`.
 
 `settle()`: after `if (turn.asyncWait) await this.dropAsyncChild(turn);` add
 `await drainJudges(turn.active, JUDGE_DRAIN_MS); // 2b-R5: in-flight read judgements complete (bounded) before flush and finalize`
-then `this.settleOutcomes(turn);` then the finish calls; after `finishSuccess`:
-`if (turn.sentBack && turn.continuationSeen && !turn.continuationFailed) void this.finalAudit(turn).catch((e) => console.error(\`planner supervisor: final audit failed: ${message(e)}\`));`
-
-```ts
-  private writeOutcome(t: Turn, signal: DecisionSignal, value: string): void {
-    if (!t.settleDecisionId) return;
-    try { this.d.store.insertDecisionOutcome({ decision_id: t.settleDecisionId, signal, value, source: "code" }); }
-    catch (e) { console.error(`planner supervisor: ${signal} not written for ${t.req.run_id}: ${message(e)}`); }
-  }
-
-  /** 2b-R17: the row is never rewritten; what followed the send-back is an outcome (spec §3.5). */
-  private settleOutcomes(t: Turn): void {
-    if (!t.sentBack) return;
-    if (t.continuationFailed) { this.writeOutcome(t, "settle_discarded", "continuation_failed"); return; }
-    if (!t.continuationSeen) { this.writeOutcome(t, "settle_discarded", t.aborting ? "signal" : "extension_timeout"); return; }
-    this.writeOutcome(t, "settle_sent_back", t.settleReason ?? "settled");
-  }
-
-  /** The final-pass audit (2b-R10): code checks on pass 1's final text, then Jev re-asked after delivery; one card per turn at most. */
-  private async finalAudit(t: Turn): Promise<void> {
-    const text = t.passes[t.passes.length - 1]?.final ?? "";
-    const state = await this.settleState(t, text, Date.now());
-    let carded = false;
-    const card = (reason: SettleReason) => {
-      if (carded) return; carded = true;
-      enqueueUrgentCard(this.d.store, { chat_id: this.d.chatId, key: `settle_unverified:${t.req.run_id}`, text: UNVERIFIED_CARD(settleNote(reason, state).split("\n")[0] ?? reason) });
-    };
-    for (const r of finalAuditReasons(state)) { this.writeOutcome(t, "settle_unverified", r); card(r); }
-    const jev = await reaskAfterDelivery(this.settleDeps(t), state, SETTLE_JEV_MS);
-    if (jev) { this.writeOutcome(t, "settle_unverified", jev); card(jev); }
-  }
-```
+then `const ctx = this.settleCtx(); writeSettleOutcomes(ctx, this.settleView(turn));`; then, when the turn will finish
+successfully with a continuation (`!turn.failure && turn.sentBack && turn.continuationSeen && !turn.continuationFailed`),
+`const snap = await todoSnapshot(ctx);` BEFORE `finishSuccess` (one bounded 1 s RPC, so the audit's todo state is this
+turn's); then the finish calls; after `finishSuccess`:
+`if (snap !== undefined) void finalAudit(ctx, this.settleView(turn), snap).catch((e) => console.error(\`planner supervisor: final audit failed: ${message(e)}\`));`
+(`snap` is `undefined` when no audit is due, `null` when get_state failed: the audit then runs with the todo check off).
+`finishSuccess` and `finishFailure` pass `this.d` to `flushUnreported(store, t.active, this.d)` (Task 3's third argument).
 
 The `chat_id` for the card is the supervisor's chat (the turn's chat; `trust.ts` sends its hostile card the same way).
 
@@ -2811,7 +2982,7 @@ Expected: FAIL (`SETTLE_GOLDEN` missing; the settle row is not offered).
 
 ```ts
 import { SETTLE_BAR, SETTLE_BAR_P, TURN_SETTLE_ID } from "./entries/turn-settle.js";
-import { buildSettleState } from "./settle-state.js";
+import { buildSettleState, settleJevState } from "./settle-state.js";
 import { askSettle } from "../jev/settle-ask.js";
 
 /** turn.settle's golden set (2b-i §7): four replies that claim or promise without evidence, four clean ones; synthetic (the repo is public). */
@@ -2837,7 +3008,7 @@ export async function runSettleGoldenTick(i: Omit<GoldenTickInput, "items">): Pr
   for (const g of SETTLE_GOLDEN) { // sequential: the first failure ends the run, no further quota spent
     const state = buildSettleState({ run_id: "golden", text: g.reply, pass: 0, sentBack: false, trust: "clean", lastCallDenied: false, steerQueued: false, msLeft: 600_000, aborting: false,
       evidence: [], todoBefore: null, todoNow: null, pacoMessage: g.pacoMessage, attachmentsAccepted: 0 }, (x) => redactForJudge(x, { brokerRedact: (y) => i.store.redactSecretValues(y) }));
-    const r = await askSettle({ run_id: "golden", state, client: i.client, store: i.store });
+    const r = await askSettle({ run_id: "golden", state: settleJevState(state), client: i.client, store: i.store });
     if ("failed" in r) { failure = r.failed; break; }
     answers.push({ model: r.model, top: Math.max(...Object.values(r.answers)) });
   }
@@ -2936,6 +3107,8 @@ Body, in order: `parseArgs`; `copyDb(live → temp)`; `load()` of `run/run-store
 `omp/settle-judge.js`, `decisions/settle-state.js`, `decisions/egress.js`, `config/load-env.js`; open the copy with
 `RunStore.open(path)`; select replies with
 `SELECT c.run_id, c.text, c.created_at FROM chat_turns c JOIN runs r ON r.run_id = c.run_id WHERE c.role = 'assistant' AND r.source = 'telegram' AND c.created_at > ? ORDER BY c.created_at`
+— then keep only runs that dispatched a planner prompt (an `llm_attempt` ledger event with `role: "compose"`), so lane
+replies and ack nudges never enter the denominator (senior plan W)
 (through a read-only `DatabaseSync` on the copy, as 2a reads the outbox); for each, the user turn of the same run
 (`role = 'user'`, newest), evidence `store.getLedgerEvents(run_id)`, state via `buildSettleState` with
 `redactForJudge(x, { brokerRedact: (y) => store.redactSecretValues(y) })`, `msLeft: 600_000`, `todoBefore/todoNow: null`
@@ -2998,7 +3171,9 @@ git commit -m "feat(core): the live gate's hold seam; settle sanity script (ladd
 - [ ] **Step 1: Write `scripts/live-gate-ladder-2b-hooks.mjs`**
 
 Header, as the 2a gate: worktree guard, `--db`, `--keep`, exit 0 PASS / 1 FAIL / 2 setup / 3 INCONCLUSIVE; a skipped Jev
-call (`jev_decisions.skip_reason` in `timeout`, `parse`) in any gate turn is INCONCLUSIVE, never PASS. Every case runs
+call — a `turn.settle` row with `fallback_reason` in `timeout`, `parse` (settle writes no `jev_decisions` rows, D14), or
+a `tool.injection` row with those, or a `jev_decisions.skip_reason` of the injection point — in any gate turn is
+INCONCLUSIVE, never PASS. Every case runs
 on a fresh VACUUM copy under the gate's temp root, with `HOUGE_DAEMON_TMP_DIR` pointed at `<root>/daemon-tmp`, the real
 omp (`houge` profile), real Jev, Telegram tokens deleted from the env. The planted files live in the chat workspace
 (`chatWorkspace(dataDir, "-4200")`). Each case is a function returning the checks it made; a case that cannot be set up
@@ -3024,10 +3199,12 @@ The eleven cases (spec §7), each with its prompt and its PASS predicate:
    planner then called `schedule_task` once, the ledger has exactly one `tool_finished schedule_task` (never two).
    Also: the reply holds a `[[attach: r.txt]]` from pass 0 → `attachments` of the completion names it (write `r.txt`
    first and add "and attach r.txt with the attach marker" to the prompt).
-4. **Abort mid-pass-1.** Same prompt as 3; the gate polls the `decisions` table for the run's `turn.settle` row and,
-   once it appears (pass 1 has started), calls the worker's kill path (`abortAll("killed")` through the supervisor, as
-   the 2a gate's kill case does). PASS: the run failed `killed` with `partial` equal to pass 0's text; outcome
-   `settle_discarded signal`.
+4. **Abort mid-pass-1.** Same prompt as 3; the gate polls the run's ledger for the continuation (`llm_attempt`
+   request_key `<run>:2`, the second model request) and then kills through
+   `worker.plannerSupervisors()[0].abortAll("killed")` (core-worker.ts:2320; the 2a gate has no kill case, this is new).
+   PASS: the run failed `killed` with `partial` equal to pass 0's text (spec §7 case 4 asserts only this); the outcome
+   is `settle_sent_back` or `settle_discarded signal` depending on whether the kill landed after the continuation's
+   `agent_start` (a race the gate records but does not judge: senior plan W).
 5. **Once-only.** Prompt: "Reply with exactly: `Saved — I'll remember that.` Then, when asked to restate, reply again with
    exactly: `Saved — I'll remember that.`". PASS: one `turn.settle` row, outcome `settle_sent_back claim_saved`, outcome
    `settle_unverified claim_saved`, exactly one outbox row with key `urgent:settle_unverified:<run>`.
@@ -3036,8 +3213,9 @@ The eleven cases (spec §7), each with its prompt and its PASS predicate:
    incident. Prompt B (next turn, same child): "Reply `ok`." PASS: the `turn.settle` row is `settle` (the list did not
    change this turn), no send-back.
 7. **Guards.** Hostile: read `plant.md` then reply with the case-3 sentence → row `settle / hostile`. Queued steer: the
-   gate submits a schedule-born request while the telegram turn runs (it queues, never steers) → row `settle /
-   steer_queued`.
+   gate submits a Telegram request with `needsIngest: true` while the telegram turn runs (it queues, never steers:
+   `submit`, planner-supervisor.ts:326; a schedule-born request does not count, `steerQueued` reads `source === "telegram"`)
+   → row `settle / steer_queued`.
 8. **Budget.** `gateHold: { settleMs: 3_800 }` with the case-3 prompt: the `turn.settle` row is `fail / budget`
    (`latency_ms` under 4 250), no send-back, the completion text is pass 0's, and the extension's own timer did not
    fire first (the row exists, so Houge answered; `settle_discarded` is absent).
@@ -3080,10 +3258,13 @@ Pattern: `scripts/check-memory-write-rollback.mjs` (its `parseArgs` already defa
    `countLines` are id-driven); its invariant sweep runs.
 3. With `--session-dir`: the directory is copied under the temp root as `<data>/omp/sessions/chat--4200`, the old
    build's `CoreWorker` is constructed over the copy (`ompWorker`-style: `new CoreWorker(store, project, llm, …, { dataDir, distDir: <old-dist> })`,
-   as the 2a gate boots its worker) with `HOUGE_TELEGRAM_CHAT_ID=-4200`, and one intake run ("ok") is driven through
-   it on the real omp: the run completes (`runs.status = completed`, one assistant chat turn), proving the previous
-   extension and supervisor resume a transcript that holds `todo` calls and a continuation leg. INCONCLUSIVE (exit 3)
-   when omp is unavailable or no session dir was given.
+   as the 2a gate boots its worker) with `HOUGE_TELEGRAM_CHAT_ID=-4200` **and `HOUGE_LESSON_SESSION_RESET=0`** (else
+   `resetForLessonChange` sees another DB's lesson fingerprint and starts a fresh transcript, and the check proves
+   nothing: senior plan W), and one intake run ("ok") is driven through it on the real omp: the run completes
+   (`runs.status = completed`, one assistant chat turn) **and** the old supervisor's `open_session` reported
+   `resumed: true` (read from the old build's planner-session log line or the session file's mtime being unchanged
+   except for the appended turn), proving the previous extension and supervisor resume a transcript that holds `todo`
+   calls and a continuation leg. INCONCLUSIVE (exit 3) when omp is unavailable or no session dir was given.
 4. The new build reopens the copy afterwards.
 
 - [ ] **Step 3: Run both on a DB copy**
