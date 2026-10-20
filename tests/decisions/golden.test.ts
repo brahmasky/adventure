@@ -179,8 +179,29 @@ describe("turn.settle golden set", () => {
   it("a failed call is skipped (INCONCLUSIVE), never a miss; a model other than the bar's pages decision_bar_stale", async () => {
     const s = RunStore.openInMemory();
     expect(await runSettleGoldenTick({ store: s, client: async () => ({ ok: false, reason: "error", detail: "t", error_kind: "timeout" }), now: NOW, env: {} })).toEqual({ ran: true, outcome: "skipped" });
+    expect(open(s, "decision_golden_drift")).toEqual([]); expect(open(s, "decision_bar_stale")).toEqual([]);
     const t = RunStore.openInMemory();
     expect(await runSettleGoldenTick({ store: t, client: settleAnswering((e, q) => (e === "send_back" && q === "settle_claims_done" ? 0.9 : 0.05), "jev-2.0.0"), now: NOW, env: {} })).toEqual({ ran: true, outcome: "stale" });
     expect(open(t, "decision_bar_stale").filter((i) => i.subject === "turn.settle")).toHaveLength(1);
+  });
+  it("a clean item over the bar is the only miss: drift names it and no planted id", async () => {
+    const s = RunStore.openInMemory(); const clean = SETTLE_GOLDEN.find((g) => g.expect === "settle")!;
+    const client = vi.fn(async (req: JevRequest): Promise<JevResult> => {
+      const reply = (req.state as { reply: string }).reply; const item = SETTLE_GOLDEN.find((g) => reply.includes(g.reply.slice(0, 20)))!;
+      const hi = item.expect === "send_back" || item.id === clean.id;
+      return { ok: true, model: "jev-1.13.0", input_tokens: 1, latency_ms: 1, answers: Object.fromEntries(Object.keys(req.questions).map((id) => [id, { type: "noul" as const, noul: hi && id === "settle_promise" ? 0.9 : 0.05 }])) };
+    });
+    expect(await runSettleGoldenTick({ store: s, client, now: NOW, env: {} })).toEqual({ ran: true, outcome: "drift" });
+    const drift = open(s, "decision_golden_drift").filter((i) => i.subject === "turn.settle");
+    expect((JSON.parse(drift[0]!.detail_json) as { missed: string[] }).missed).toEqual([clean.id]);
+  });
+  it("the next clean run on a later date resolves the drift incident, and a bar-model run resolves the stale one", async () => {
+    const s = RunStore.openInMemory(); const good = (e: string, q: string) => (e === "send_back" && q === "settle_promise" ? 0.9 : 0.05);
+    await runSettleGoldenTick({ store: s, client: settleAnswering(() => 0.3), now: NOW, env: {} });
+    expect(open(s, "decision_golden_drift")).toHaveLength(1);
+    await runSettleGoldenTick({ store: s, client: settleAnswering(good, "jev-2.0.0"), now: "2026-10-14T10:00:00.000Z", env: {} });
+    expect(open(s, "decision_golden_drift")).toEqual([]); expect(open(s, "decision_bar_stale")).toHaveLength(1);
+    await runSettleGoldenTick({ store: s, client: settleAnswering(good), now: "2026-10-15T10:00:00.000Z", env: {} });
+    expect(open(s, "decision_bar_stale")).toEqual([]);
   });
 });
