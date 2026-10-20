@@ -15,7 +15,9 @@ const FIXTURES = [
   "[/tmp/c.txt#9F]\n7:# Netscape HTTP Cookie File\n8:.example\tTRUE\t/\tFALSE\t0\tsid\tv",
   "[/tmp/s.txt#1C]\n1:abandon ability able about above absent absorb abstract absurd abuse access accident",
   "[/tmp/e.env#2D]\n1:api_key: AKIAIOSFODNN7EXAMPLE\n2:password=hunter2hunter2\n3:token=ghp_abcdefghijklmnopqrstuvwxyz0123",
-  "[/tmp/n.txt#3E]\n1:notes: 12:30 meeting"
+  "[/tmp/n.txt#3E]\n1:notes: 12:30 meeting",
+  "[/tmp/c.txt#9F]\n7|# Netscape HTTP Cookie File\n8|.example\tTRUE\t/\tFALSE\t0\tsid\tv",
+  "[/tmp/e.env#2D]\n1-2|api_key: AKIAIOSFODNN7EXAMPLE\n3|password=hunter2hunter2\n4-5:token=ghp_abcdefghijklmnopqrstuvwxyz0123"
 ];
 
 describe("injection-floor (the extension's copy)", () => {
@@ -32,6 +34,8 @@ describe("injection-floor (the extension's copy)", () => {
     expect(applyFloor("[/tmp/s.txt#1C]\n1:abandon ability able about above absent absorb abstract absurd abuse access accident").withheld).toBe(true);
     expect(applyFloor("[/tmp/e.env#2D]\n1:A_TOKEN=abcdefgh1\n2:B_SECRET=abcdefgh2\n3:C_PASSWORD=abcdefgh3").withheld).toBe(true);
     expect(applyFloor("[/tmp/n.txt#3E]\n1:notes: 12:30 meeting").withheld).toBe(false);
+    expect(applyFloor("[/tmp/c.txt#9F]\n7|# Netscape HTTP Cookie File\n8|.example\tTRUE").withheld).toBe(true);
+    expect(applyFloor("[/tmp/e.env#2D]\n1|A_TOKEN=abcdefgh1\n2-3:B_SECRET=abcdefgh2\n4-5|C_PASSWORD=abcdefgh3").withheld).toBe(true);
   });
   it("withholds the whole text on any hit, with Houge's withheld note, and returns clean text unchanged", () => {
     const hit = `line one\n${PEM}\nline three`;

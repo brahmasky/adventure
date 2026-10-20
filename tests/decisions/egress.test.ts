@@ -385,6 +385,18 @@ describe("omp's read format: a hashline header and an `N:` prefix on every line 
     expect(redactForJudge("12:password=hunter2hunter2")).toBe(`12:password=${SECRET_MASK}`);
     expect(one("12:password=hunter2hunter2").planner).toBe(`12:password=${SECRET_MASK}`);
   });
+  it("omp's other prefix forms (`N|`, `N-M:`, `N-M|`, its own `\\d+(?:-\\d+)?[:|]`) mask too, in both copies", () => {
+    for (const pre of ["5|", "3-4:", "3-4|"]) {
+      expect(redactForJudge(`${pre}api_key: ABCDEFGHIJKLMNOPQRSTUVWX`)).toBe(`${pre}api_key: ${SECRET_MASK}`);
+      expect(one(`${pre}api_key: ABCDEFGHIJKLMNOPQRSTUVWX`).planner).toBe(`${pre}api_key: ${SECRET_MASK}`);
+    }
+    expect(passageBlock("[/tmp/c.txt#9F]\n7|# Netscape HTTP Cookie File\n8|.example.com\tTRUE")).toBe("cookie_jar");
+    expect(seedPhrase("2-3|legal winner thank year wave sausage worth useful legal winner thank yellow")).toBe(true);
+  });
+  it("a bare `3-4|api_key` with no value, or one mid-line, is no false positive", () => {
+    expect(redactForJudge("3-4|api_key")).toBe("3-4|api_key");
+    expect(redactForJudge("notakey:3-4|api_key: plain words here")).toBe("notakey:3-4|api_key: plain words here");
+  });
   it("the prefix counts only at line start: a mid-line `notakey:3:api_key` opens no key", () => {
     expect(redactForJudge("notakey:3:api_key: plain words here")).toBe("notakey:3:api_key: plain words here");
   });
