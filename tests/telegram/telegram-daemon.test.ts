@@ -1037,8 +1037,8 @@ describe("runTelegramDaemon — the audit chokepoint (slice 2)", () => {
           sendMessage: async ({ text }) => { sent.push(text); return { message_id: 1 }; }
         }
       });
-      // The daily golden-set ticks audit their own attempts (roles "injection" and "memory_kind", no run); this test is about the planner's run-scoped rows.
-      const attempts = store.getLedgerEvents().filter((e) => e.event_type === "llm_attempt" && e.payload.role !== "injection" && e.payload.role !== "memory_kind");
+      // The daily golden-set ticks audit their own attempts (roles "injection", "memory_kind" and "settle", no run); this test is about the planner's run-scoped rows.
+      const attempts = store.getLedgerEvents().filter((e) => e.event_type === "llm_attempt" && e.payload.role !== "injection" && e.payload.role !== "memory_kind" && e.payload.role !== "settle");
       expect(attempts.length).toBeGreaterThan(0);
       expect(attempts.every((e) => typeof e.run_id === "string")).toBe(true);
       expect(err.mock.calls.flat().some((l) => String(l).includes("memory.kind golden set skipped"))).toBe(true);

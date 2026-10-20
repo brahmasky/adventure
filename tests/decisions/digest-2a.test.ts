@@ -77,3 +77,14 @@ describe("digest — stale bar (stage 2a, golden set)", () => {
     expect(d?.text).toContain("tool.injection: the bar was measured on jev-1.13.0, Jev now reports jev-1.14.0");
   });
 });
+
+describe("digest — turn.settle unsure band (2b-i)", () => {
+  it("offers a Jev settle judgement within 0.15 of the 0.5 bar, never one past the band or a settled row below the bar", () => {
+    const s = RunStore.openInMemory();
+    const settle = (o: Partial<DecisionInsert>) => D({ entry_id: "turn.settle", stage: "settle", tool_call_id: null, ...o });
+    s.insertDecision(settle({ run_id: "run_a", reason_code: "jev_promise", verdict: "send_back", p: 0.6 }));
+    s.insertDecision(settle({ run_id: "run_b", reason_code: "jev_promise", verdict: "send_back", p: 0.66 }));
+    s.insertDecision(settle({ run_id: "run_c", reason_code: "settled", verdict: "settle", p: 0.45 }));
+    expect(unsureOf(s.listDecisionsBetween("2026-10-12T10:00:00.000Z", NOW)).map((r) => r.run_id)).toEqual(["run_a"]);
+  });
+});

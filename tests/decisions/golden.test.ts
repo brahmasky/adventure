@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { INJECTION_GOLDEN, MEMORY_KIND_GOLDEN, runGoldenSetTick, runMemoryKindGoldenTick } from "../../src/decisions/golden.js";
+import { INJECTION_GOLDEN, MEMORY_KIND_GOLDEN, runGoldenSetTick, runMemoryKindGoldenTick, runSettleGoldenTick, SETTLE_GOLDEN } from "../../src/decisions/golden.js";
 import { MEMORY_KIND_OPTIONS } from "../../src/jev/questions/tree.js";
 import type { JevRequest, JevResult } from "../../src/jev/jev-client.js";
 import { redactForJudge } from "../../src/decisions/egress.js";
@@ -153,5 +153,34 @@ describe("memory.kind golden set", () => {
     expect(await runMemoryKindGoldenTick({ store: s, client: kindAnswering(truth, "jev-1.14.0"), now: NOW, env: {} })).toEqual({ ran: true, outcome: "stale" });
     expect(s.listOpenIncidents().some((x) => x.kind === "decision_bar_stale" && x.subject === "memory.kind")).toBe(true);
     s.close();
+  });
+});
+
+const settleAnswering = (p: (expect: string, qid: string) => number, model = "jev-1.13.0") => vi.fn(async (req: JevRequest): Promise<JevResult> => {
+  const reply = (req.state as { reply: string }).reply; const item = SETTLE_GOLDEN.find((g) => reply.includes(g.reply.slice(0, 20)))!;
+  return { ok: true, model, input_tokens: 1, latency_ms: 1, answers: Object.fromEntries(Object.keys(req.questions).map((id) => [id, { type: "noul" as const, noul: p(item.expect, id) }])) };
+});
+describe("turn.settle golden set", () => {
+  it("holds four planted (an unsupported claim or a promise) and four clean replies, zh and en, sent one item per request in the live state shape", async () => {
+    expect(SETTLE_GOLDEN.filter((g) => g.expect === "send_back")).toHaveLength(4); expect(SETTLE_GOLDEN.filter((g) => g.expect === "settle")).toHaveLength(4);
+    expect(SETTLE_GOLDEN.filter((g) => /[\u4e00-\u9fff]/.test(g.reply))).toHaveLength(4);
+    const s = RunStore.openInMemory(); const client = settleAnswering((e, q) => (e === "send_back" && q === "settle_promise" ? 0.9 : 0.05));
+    expect(await runSettleGoldenTick({ store: s, client, now: NOW, env: {} })).toEqual({ ran: true, outcome: "ok" });
+    expect(client).toHaveBeenCalledTimes(8);
+    expect(Object.keys(client.mock.calls[0]![0].state as object)).toEqual(["reply", "paco_message", "tools"]);
+    expect(await runSettleGoldenTick({ store: s, client, now: NOW, env: {} })).toEqual({ ran: false });
+  });
+  it("a planted item with every p <= 0.5, or a clean item with any p > 0.5, pages decision_golden_drift for turn.settle once", async () => {
+    const s = RunStore.openInMemory();
+    expect(await runSettleGoldenTick({ store: s, client: settleAnswering(() => 0.3), now: NOW, env: {} })).toEqual({ ran: true, outcome: "drift" });
+    const drift = open(s, "decision_golden_drift").filter((i) => i.subject === "turn.settle"); expect(drift).toHaveLength(1);
+    expect((JSON.parse(drift[0]!.detail_json) as { missed: string[] }).missed).toHaveLength(4);
+  });
+  it("a failed call is skipped (INCONCLUSIVE), never a miss; a model other than the bar's pages decision_bar_stale", async () => {
+    const s = RunStore.openInMemory();
+    expect(await runSettleGoldenTick({ store: s, client: async () => ({ ok: false, reason: "error", detail: "t", error_kind: "timeout" }), now: NOW, env: {} })).toEqual({ ran: true, outcome: "skipped" });
+    const t = RunStore.openInMemory();
+    expect(await runSettleGoldenTick({ store: t, client: settleAnswering((e, q) => (e === "send_back" && q === "settle_claims_done" ? 0.9 : 0.05), "jev-2.0.0"), now: NOW, env: {} })).toEqual({ ran: true, outcome: "stale" });
+    expect(open(t, "decision_bar_stale").filter((i) => i.subject === "turn.settle")).toHaveLength(1);
   });
 });

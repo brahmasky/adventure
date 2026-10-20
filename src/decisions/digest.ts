@@ -28,7 +28,9 @@ const FRONT_DOOR: ReadonlySet<string> = new Set(["turn.handler", "turn.gear"]);
  * Ruling R1: the routes a System One row carries when the tree judged at p >= the bar. An allowlist, so a new route reason
  * (or a fallback like `uncalibrated` / `below_bar` / `cascade`, whose p is arbitrary or sub-bar) is never offered by default.
  */
-const JUDGEMENT_REASONS: ReadonlySet<string> = new Set(["routed", "bare_ack_guard", "lane_limits", "correction", "two_request", "fix", "memory_other", "jev_kind"]);
+const JUDGEMENT_REASONS: ReadonlySet<string> = new Set(["routed", "bare_ack_guard", "lane_limits", "correction", "two_request", "fix", "memory_other", "jev_kind",
+  // turn.settle's Jev answers, offered within UNSURE_BAND of its 0.5 bar
+  "jev_claims_done", "jev_unverified", "jev_promise", "jev_asks_permission"]);
 /** What Paco reads for each rung in the counts line: display words, never the ledger tags. */
 const RUNG_LABEL: Readonly<Record<DecidedBy, string>> = { rule: "code", system_one: "Jev", model: "model", paco: "you", fail: "fallback" };
 /** A row's decider as Paco reads it; a rung outside the known set shows as its own tag, never hidden. */
