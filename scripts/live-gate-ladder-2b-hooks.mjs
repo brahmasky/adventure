@@ -597,8 +597,10 @@ async function case10(e) {
   if (d.reason_code !== "jev_promise") return { pre: `Jev sent back for ${d.reason_code}, not the promise (p ${ps})` };
   const writes = finished(e, run, "builtin:write");
   if (writes.length === 0) return { pre: `pass 1 tried no write (${ledgerTrace(e.store, run)}; p ${ps})` };
-  if (end.state !== "completed") return { checks: [["10 the turn completed", false, endDetail(e, run, end)]] };
   const asks = e.approvals.filter((a) => a.run === run);
+  // "every ask carries SETTLE_REASON" is vacuously true over zero asks: with no bash attempt in pass 1 the case proves nothing
+  if (asks.length === 0) return { pre: `pass 1 attempted no bash command (${ledgerTrace(e.store, run)}; p ${ps})` };
+  if (end.state !== "completed") return { checks: [["10 the turn completed", false, endDetail(e, run, end)]] };
   return { info: [`Jev p: ${ps}; bash asks: ${asks.map((a) => a.why).join("; ") || "none"}`], checks: [
     ["10 row system_one / send_back / jev_promise", true, rowLine(d)],
     ["10 builtin:write denied settle_redirect", writes.some((x) => x.payload.status === "denied" && x.payload.reason === "settle_redirect"), writes.map((x) => `${x.payload.status}:${x.payload.reason ?? "–"}`).join(",")],
