@@ -15,6 +15,7 @@ import { resolveOmpConfig } from "../../src/omp/omp-config.js";
 import { toolApprovalWaiters } from "../../src/omp/tool-approval-sink.js";
 import { loadToolDeclarations, TOOL_DECLS_DIR } from "../../src/omp/tool-decls.js";
 import { RunStore } from "../../src/run/run-store.js";
+import { formatInstantInZone, resolveDisplayZone } from "../../src/run/schedule-spec.js";
 import { ToolRegistry, type ToolMetadata } from "../../src/tools/tool-registry.js";
 import { drainOutbox } from "../helpers/omp-worker.js";
 import { createQueuedTurnRun } from "../helpers/runs.js";
@@ -72,7 +73,9 @@ describe("settleAsk at the bridge (spec §3.3, 2b-R7)", () => {
     const cards = cardTexts(store);
     expect(cards).toHaveLength(3);
     for (const c of cards) expect(c).toContain(`Why: ${SETTLE_REASON}`);
-    expect(store.bumpTrustTapBudget("2026-10-20", "2026-10-20T00:00:00.000Z")).toBeGreaterThanOrEqual(4); // three taps counted before this bump
+    // the taps land on today's display-zone date (countTrustAsk); a hardcoded date failed once the calendar moved on
+    const now = new Date().toISOString(); const today = formatInstantInZone(now, resolveDisplayZone({})).slice(0, 10);
+    expect(store.bumpTrustTapBudget(today, now)).toBeGreaterThanOrEqual(4); // three taps counted before this bump
     expect(((await handle(call("bash", { command: "ls -la" }))) as CallResult).isError).toBe(false);
     expect(await handle(gate("read", "/tmp/a"))).toEqual({ decision: "allow" });
   });
