@@ -42,9 +42,12 @@ export function claimsCheck(text: string, evidence: readonly LedgerEvent[], atta
   return out;
 }
 
-/** Guard 3 (spec §3.2): the newest tool event of the run is a denied tool_finished or a gate deny. */
+/** The todo tool's row (bridge-handler handleReport): bookkeeping, not a tool call, for turn.settle (2b-i final review A5). */
+export const isBookkeeping = (e: LedgerEvent): boolean => e.event_type === "tool_finished" && e.payload.tool === "builtin:todo";
+
+/** Guard 3 (spec §3.2): the newest tool event of the run (bookkeeping aside) is a denied tool_finished or a gate deny. */
 export function lastCallDenied(evidence: readonly LedgerEvent[]): boolean {
-  const last = [...evidence].reverse().find((e) => e.event_type === "tool_finished" || e.event_type === "policy_decision");
+  const last = [...evidence].reverse().find((e) => (e.event_type === "tool_finished" || e.event_type === "policy_decision") && !isBookkeeping(e));
   if (!last) return false;
   return last.event_type === "tool_finished" ? last.payload.status === "denied" : last.payload.decision === "deny";
 }

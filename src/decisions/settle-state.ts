@@ -1,5 +1,6 @@
 import type { LedgerEvent } from "../run/run-ledger.js";
 import type { SettleState } from "./entries/turn-settle.js";
+import { isBookkeeping } from "./settle-checks.js";
 export type { SettleState, TodoSnapshot } from "./entries/turn-settle.js";
 
 /** 2b-i §3.1: Paco's message reaches the Jev copy capped; the reply's Jev copy is cut in settleJevState (head + tail). */
@@ -8,9 +9,9 @@ export const SETTLE_JEV_HEAD = 4_000;
 export const SETTLE_JEV_TAIL = 2_000;
 export type RawSettleState = Omit<SettleState, "redacted" | "toolSummary">;
 
-/** Tool names and outcomes this turn, in ledger order; code-built, never text (spec §3.3). */
+/** Tool names and outcomes this turn, in ledger order, todo bookkeeping left out (A5); code-built, never text (spec §3.3). */
 export function toolSummary(evidence: readonly LedgerEvent[]): string {
-  const rows = evidence.filter((e) => e.event_type === "tool_finished").map((e) => `${String(e.payload.tool ?? "unknown")}: ${String(e.payload.status ?? "unknown")}`);
+  const rows = evidence.filter((e) => e.event_type === "tool_finished" && !isBookkeeping(e)).map((e) => `${String(e.payload.tool ?? "unknown")}: ${String(e.payload.status ?? "unknown")}`);
   return rows.length === 0 ? "none" : rows.join("; ");
 }
 

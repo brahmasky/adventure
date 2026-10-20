@@ -88,4 +88,8 @@ describe("lastCallDenied", () => {
     expect(lastCallDenied([ev("tool_finished", { status: "denied" }, 1), ev("tool_finished", { status: "succeeded" }, 2)])).toBe(false);
     expect(lastCallDenied([])).toBe(false);
   });
+  it("A5: a todo update is bookkeeping, not a tool call: a denial followed by a todo row is still the last call denied", () => {
+    expect(lastCallDenied([ev("tool_finished", { tool: "bash", status: "denied" }, 1), ev("tool_finished", { tool: "builtin:todo", status: "succeeded" }, 2)])).toBe(true);
+    expect(lastCallDenied([ev("tool_finished", { tool: "builtin:todo", status: "failed" }, 1)])).toBe(false);
+  });
 });

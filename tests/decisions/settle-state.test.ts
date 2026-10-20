@@ -36,4 +36,9 @@ describe("buildSettleState", () => {
     expect(toolSummary([ev("tool_finished", { tool: "schedule_task", status: "succeeded", output_hash: "h" }), ev("tool_finished", { tool: "builtin:read", status: "failed" }), ev("loop_step", { action: "x" })]))
       .toBe("schedule_task: succeeded; builtin:read: failed");
   });
+  it("A5: todo rows are bookkeeping and never reach Jev's tool summary; only todo rows → 'none'", () => {
+    const todo = ev("tool_finished", { tool: "builtin:todo", status: "succeeded" });
+    expect(toolSummary([todo, ev("tool_finished", { tool: "schedule_task", status: "succeeded" }), todo])).toBe("schedule_task: succeeded");
+    expect(toolSummary([todo, todo])).toBe("none");
+  });
 });
