@@ -8,15 +8,25 @@ import type { RungAbstain, RungAnswer } from "./types.js";
  * without evidence and with negations. A sentence holding a negation never claims.
  */
 export type ClaimReason = "claim_scheduled" | "claim_saved" | "claim_attached" | "claim_sent";
-const NEGATED = /\b(?:not|never|cannot|can't|couldn't|didn't|haven't|hasn't|won't|wasn't|unable|yet to)\b|没有|没|未|无法|不能|不会|还没|尚未/i;
-const SENTENCE = /[.!?。！？\n]+/;
-const SUBJ = String.raw`\b(?:it|that|this|they|them|everything)(?:'s|’s| is| has been| was| are| were)\s+(?:now\s+)?`;
+const NEGATED = /\b(?:not|never|nothing|cannot|can't|couldn't|didn't|haven't|hasn't|won't|wasn't|unable|yet to)\b|没有|没|未|无法|不能|不会|还没|尚未/i;
+/** 2b-i final review A7: a sentence about an earlier turn or time reports, it does not claim. 已经 ("already") is no marker. */
+const EARLIER = /\b(?:earlier|yesterday|before|previous(?:ly)?|last\s+(?:week|month|time|turn))\b|之前|昨天|上次|上一轮|早些时候/i;
+/** Each sentence WITH its terminator, so a question (`?`, `？`) can be told apart (A7: a question never claims). */
+const SENTENCE = /[^.!?。！？\n]+[.!?。！？]*/g;
+const SUBJ_CORE = String.raw`(?:it|that|this|they|them|everything)(?:'s|’s| is| has been| was| are| were)\s+(?:now\s+)?`;
+const SUBJ = String.raw`\b${SUBJ_CORE}`;
+/**
+ * A7 ruling: the pronoun passive of sent/recorded claims only as the whole sentence ("It was sent.", "That's recorded now."):
+ * in context it is reported or located prose ("the invoice says it was sent on March 3", "everything's recorded in the table").
+ */
+const PASSIVE_ONLY = (verb: string): string => String.raw`^${SUBJ_CORE}${verb}(?:\s+(?:already|now|successfully))?[.!。！]*$`;
 const FIRST = String.raw`\bi(?:'ve|’ve| have| just)?\s+(?:just\s+|already\s+|now\s+)?`;
 const CLAIM_PATTERNS: ReadonlyArray<[ClaimReason, RegExp]> = [
   ["claim_scheduled", new RegExp(`${FIRST}scheduled|${SUBJ}scheduled|\\breminder\\s+(?:is|has been)\\s+set\\b|已安排|已设置提醒|安排好了|已经安排|已设好提醒`, "i")],
-  ["claim_saved", new RegExp(`${FIRST}(?:saved|remembered|recorded|noted (?:it|that) down)|${SUBJ}(?:saved|remembered|recorded)|已保存|记住了|记下来了|已经记下|已记录|保存好了`, "i")],
-  ["claim_attached", /\b(?:i(?:'ve| have|’ve)?\s+(?:just\s+|now\s+)?attached|attached\s+(?:below|above|here|is|are)|see\s+(?:the\s+)?attached)\b|(?<!请你|请|麻烦)附上|已附|见附件|附件如下/i],
-  ["claim_sent", new RegExp(`${FIRST}sent\\b|\\bi['’]ve\\b[^.]*\\band\\s+sent\\b|${SUBJ}sent\\b|已发送|发出去了|已经发出|发送成功|已发出`, "i")]
+  ["claim_saved", new RegExp(`${FIRST}(?:saved|remembered|recorded|noted (?:it|that) down)|${SUBJ}(?:saved|remembered)|${PASSIVE_ONLY("recorded")}|已保存|记住了|记下来了|已经记下|已记录|保存好了`, "i")],
+  // A7: zh 附上 claims only past (已附上, 附上了) or as the sentence's opening ("附上报告。" = "Attached: the report"), never as an offer
+  ["claim_attached", /\b(?:i(?:'ve| have|’ve)?\s+(?:just\s+|now\s+)?attached|attached\s+(?:below|above|here|is|are)|see\s+(?:the\s+)?attached)\b|^附上|附上了|已附|见附件|附件如下/i],
+  ["claim_sent", new RegExp(`${FIRST}sent\\b|\\bi['’]ve\\b[^.]*\\band\\s+sent\\b|${PASSIVE_ONLY("sent")}|已发送|发出去了|已经发出|发送成功|已发出`, "i")]
 ];
 /** A bare one-word confirmation ("Saved." / "Sent.") claims only as a short sentence: "Saved searches are listed below" is prose. */
 const BARE: ReadonlyArray<[ClaimReason, RegExp]> = [["claim_saved", /^\s*saved\b/i], ["claim_sent", /^\s*sent\b/i]];
@@ -34,9 +44,12 @@ const EVIDENCE: Readonly<Record<ClaimReason, (evidence: readonly LedgerEvent[], 
   claim_sent: (ev) => ev.some((e) => e.event_type === "external_work_published" || externalStep(e))
 };
 
+/** A sentence that can claim: not negated, not a question, not about an earlier turn or time (A7). */
+const mayClaim = (s: string): boolean => s.length > 0 && !NEGATED.test(s) && !/[?？]$/.test(s) && !EARLIER.test(s);
+
 /** The claims the reply makes (table order, each once) that the run's ledger does not support. */
 export function claimsCheck(text: string, evidence: readonly LedgerEvent[], attachmentsAccepted: number): ClaimReason[] {
-  const sentences = text.split(SENTENCE).map((s) => s.trim()).filter((s) => s.length > 0 && !NEGATED.test(s));
+  const sentences = (text.match(SENTENCE) ?? []).map((s) => s.trim()).filter(mayClaim);
   const out: ClaimReason[] = [];
   for (const [reason, re] of CLAIM_PATTERNS) if (sentences.some((s) => claims(s, reason, re)) && !EVIDENCE[reason](evidence, attachmentsAccepted)) out.push(reason);
   return out;

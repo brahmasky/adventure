@@ -36,6 +36,23 @@ describe("claimsCheck prose that is not a claim", () => {
   });
 });
 
+describe("2b-i final review A7: claims false positives", () => {
+  // each was a card on a compliant reply: an earlier turn's work, a question, "nothing", a zh offer, reported or located prose
+  it.each([
+    "The invoice says it was sent on March 3.", "They were sent by your bank last week.", "Everything's recorded in the table below.",
+    "Yes, I scheduled it yesterday for 9am.", "The email I sent you yesterday had the details.", "This was scheduled in an earlier turn.",
+    "It was sent in an earlier turn.", "Should I have sent it?", "I've updated the config and sent nothing.",
+    "我会附上截图。", "如果你愿意，我可以帮你附上文件。", "我昨天已经安排好了"
+  ])("%s raises nothing", (t) => expect(claimsCheck(t, [], 0)).toEqual([]));
+  it("the exemptions are per sentence: a question or an earlier-turn sentence never hides a present claim beside it", () => {
+    expect(claimsCheck("Should I send it? I've scheduled it.", [], 0)).toEqual(["claim_scheduled"]);
+    expect(claimsCheck("It was sent in an earlier turn. I've saved it.", [], 0)).toEqual(["claim_saved"]);
+    expect(claimsCheck("已经安排好了。", [], 0)).toEqual(["claim_scheduled"]); // 已经 is "already": a present claim, never a time marker
+    expect(claimsCheck("已附上报告。", [], 0)).toEqual(["claim_attached"]); expect(claimsCheck("附上了报告。", [], 0)).toEqual(["claim_attached"]);
+    expect(claimsCheck("It has been sent already.", [], 0)).toEqual(["claim_sent"]); expect(claimsCheck("That's recorded.", [], 0)).toEqual(["claim_saved"]);
+  });
+});
+
 describe("claimsCheck", () => {
   it.each(CLAIMS)("%s → %s without evidence; settles with each listed evidence", (text, reason, evidences) => {
     expect(claimsCheck(text, [], 0)).toEqual([reason]);

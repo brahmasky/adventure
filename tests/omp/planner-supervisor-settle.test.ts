@@ -246,7 +246,7 @@ describe("the settle request end to end (spec §3)", () => {
   it("A6: a short pass 1 (\"Done.\") delivers pass 0 + marker + pass 1, and the audit reads all of it", async () => {
     const { session, h } = held(); const { store, sup, outcome } = harness(session);
     const run_id = createQueuedTurnRun(store); sup.submit(req(run_id)); await running(sup, h);
-    const p0 = "I've saved it to your notes, along with the other preferences you listed earlier today.";
+    const p0 = "I've saved it to your notes, along with the other preferences you listed this morning.";
     h.say(p0); await session.request(settleReq(p0));
     h.emit({ type: "agent_start" }); h.say("Done."); h.emit({ type: "agent_end" }); await sup.whenIdle();
     expect((outcome.done[0] as { text: string }).text).toBe(`${p0}\n${RESTATED_MARKER}\nDone.`);
@@ -259,6 +259,15 @@ describe("the settle request end to end (spec §3)", () => {
     const run_id = createQueuedTurnRun(store); sup.submit(req(run_id)); await running(sup, h);
     h.say("I've saved it."); await session.request(settleReq("I've saved it."));
     h.emit({ type: "agent_start" }); h.say("Nothing is stored yet; tell me what to keep and I will store it now."); h.emit({ type: "agent_end" }); await sup.whenIdle();
+    await new Promise((r) => setTimeout(r, 100));
+    expect(unverified(store, run_id)).toEqual([]); expect(cardsOf(store)).toHaveLength(0);
+  });
+  it("A7: a send-back on claim_sent, then pass 1 \"It was sent in an earlier turn.\": the audit inherits the narrowed claims check, no card", async () => {
+    const { session, h } = held(); const { store, sup } = harness(session);
+    const run_id = createQueuedTurnRun(store); sup.submit(req(run_id)); await running(sup, h);
+    h.say("I've sent the email to the team."); expect(await session.request(settleReq("I've sent the email to the team."))).toMatchObject({ sendBack: true });
+    expect(rows(store, run_id)[0]).toMatchObject({ reason_code: "claim_sent" });
+    h.emit({ type: "agent_start" }); h.say("It was sent in an earlier turn."); h.emit({ type: "agent_end" }); await sup.whenIdle();
     await new Promise((r) => setTimeout(r, 100));
     expect(unverified(store, run_id)).toEqual([]); expect(cardsOf(store)).toHaveLength(0);
   });
