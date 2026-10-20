@@ -5,7 +5,7 @@
 // that run's ledger as evidence and its user turn as Paco's message, on a VACUUM copy. PASS needs BOTH: send-backs ≤ 10% of
 // real replies AND every planted positive sent back (six synthetic claim/promise replies plus the case-5 reply when --case5
 // names it; else a case-5-shaped synthetic one). Prints 20 sampled send-backs (reason, run, first 80 chars) for Paco's read.
-// Exit: 0 PASS · 1 FAIL · 2 setup · 3 INCONCLUSIVE (any Jev skip with timeout/parse, or no replies in the window).
+// Exit: 0 PASS · 1 FAIL · 2 setup · 3 INCONCLUSIVE (any lost Jev answer (any fallback_reason or no decision row), or no replies in the window).
 // Never opens the live DB for writing; every printed excerpt is redacted and buffered, and the buffer is checked for a planted token first.
 import { mkdtempSync, rmSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
@@ -77,7 +77,7 @@ async function main() {
   const decide = (run_id, text, pacoMessage, evidence) => m.decideSettle({ store, env, client, chatId: "sanity" },
     m.buildSettleState({ run_id, text, pass: 0, sentBack: false, trust: "clean", lastCallDenied: false, steerQueued: false, msLeft: 600_000, aborting: false,
       evidence, todoBefore: null, todoNow: null, pacoMessage, attachmentsAccepted: 0 }, redact), Date.now() + DEADLINE_MS);
-  const stat = (d) => { const row = d.decisionId ? store.getDecision(d.decisionId) : undefined; return { rung: row?.rung ?? "none", fb: row?.fallback_reason ?? null }; };
+  const stat = (d) => { const row = d.decisionId ? store.getDecision(d.decisionId) : undefined; return { rung: row?.rung ?? "none", fb: row?.fallback_reason ?? null, lost: !d.decisionId || !row || row.fallback_reason != null }; };
 
   const since = new Date(Date.now() - args.days * 86_400_000).toISOString();
   const turns = readTurns(copy, since); const real = []; let skippedNoPlanner = 0;
@@ -92,7 +92,7 @@ async function main() {
   for (const { t, evidence } of real) {
     const d = await decide(t.run_id, t.text, t.user, evidence); const s = stat(d);
     if (s.fb) byFb.set(s.fb, (byFb.get(s.fb) ?? 0) + 1);
-    if (s.fb === "timeout" || s.fb === "parse") skipBad++;
+    if (s.lost) skipBad++;
     const rk = `${s.rung}/${d.sendBack ? "send_back" : "settle"}`; byRung.set(rk, (byRung.get(rk) ?? 0) + 1);
     if (d.sendBack) { sendBacks++; byReason.set(d.reason, (byReason.get(d.reason) ?? 0) + 1); sent.push({ reason: d.reason, run: t.run_id, text: t.text }); }
     await sleep(PACE_MS);
@@ -108,9 +108,9 @@ async function main() {
   let plantedMiss = 0; let plantedSkip = 0; const plantedLines = [];
   for (const [text, user] of planted) {
     const d = await decide("sanity-planted", text, user, []); const s = stat(d);
-    if (s.fb === "timeout" || s.fb === "parse") plantedSkip++;
+    if (s.lost) plantedSkip++;
     if (!d.sendBack) plantedMiss++;
-    plantedLines.push(`  ${d.sendBack ? "send_back" : "MISSED   "} (${s.rung}${d.reason ? `, ${d.reason}` : ""}) ${sampleLine(d.reason ?? "settle", "planted", text)}`);
+    plantedLines.push(`  ${d.sendBack ? "send_back" : "MISSED   "} (${s.rung}) ${sampleLine(d.reason ?? "settle", "planted", text)}`);
     await sleep(PACE_MS);
   }
 
@@ -126,11 +126,12 @@ async function main() {
   const pass = rate <= RATE_MAX && plantedMiss === 0;
   const inconclusive = real.length === 0 || skipBad + plantedSkip > 0;
   const verdict = inconclusive ? "INCONCLUSIVE" : pass ? "PASS" : "FAIL";
-  say(`${verdict}${inconclusive ? ` — ${real.length === 0 ? "no planner replies in the window; " : ""}${skipBad + plantedSkip} Jev timeout/parse skips` : pass ? "" : ` — ${rate > RATE_MAX ? "rate over the bar; " : ""}${plantedMiss} planted missed`}`);
+  say(`${verdict}${inconclusive ? ` — ${real.length === 0 ? "no planner replies in the window; " : ""}${skipBad + plantedSkip} lost Jev answers (any fallback or missing decision row)` : pass ? "" : ` — ${rate > RATE_MAX ? "rate over the bar; " : ""}${plantedMiss} planted missed`}`);
   store.close?.();
   if (out.join("\n").includes(TOKEN)) { console.error("setup error: the planted token reached the output buffer; nothing printed"); return 2; }
   console.log(out.join("\n"));
   return inconclusive ? 3 : pass ? 0 : 1;
 }
 
+for (const [sig, code] of [["SIGINT", 130], ["SIGTERM", 143]]) process.on(sig, () => { cleanup(); process.exit(code); });
 main().then((c) => { cleanup(); process.exit(c); }, (e) => { console.error(`setup error: ${e instanceof Error ? e.message : String(e)}`); cleanup(); process.exit(2); });
