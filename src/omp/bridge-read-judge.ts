@@ -38,22 +38,28 @@ export async function handleJudgeRead(deps: BridgeHandlerDeps, turn: ActiveTurn,
   const outside = isOutside(deps, targets);
   const pending: JudgePending = { since: Date.now(), replied: false, outside, raised: false };
   pendingOf(turn).set(req.toolCallId, pending);
-  if (holdMs > 0) await new Promise((r) => setTimeout(r, holdMs)); // the live gate's hold (Task 10 `gateHold.judgeReadMs`): pending is registered, so the read is "slow", not missing
   const text = capResponse(req.text);
-  const run = judged(deps, turn, req.toolCallId, text, { outside, paths: [...targets], late: () => turn.trust?.ended() === true });
+  // the hold is part of the in-flight promise (the live gate's `gateHold.judgeReadMs`), so drainJudges waits for a held read too
+  const run = (async () => {
+    if (holdMs > 0) await new Promise((r) => setTimeout(r, holdMs));
+    return judged(deps, turn, req.toolCallId, text, { outside, paths: [...targets], late: () => turn.trust?.ended() === true });
+  })();
   inFlightOf(turn).set(req.toolCallId, run.then(() => undefined, () => undefined));
   try {
     const out = await run;
     // 2b-R5 (codex plan B3): after finalize() the judgement was recorded `late`; the turn is not touched and no note is added
-    if (turn.trust?.ended()) return { verdict: "unchanged" };
+    if (turn.trust?.ended()) return replyFor(req.text, out.text);
     if (!outside && out.masked > 0) {
       const masked = (turn.maskedPaths ??= new Set<string>());
       for (const t of targets) masked.add(maskedKey(t));
       out.text = `${out.text}\n${MASKED_NOTE(out.masked)}`;
     }
-    return out.text === text ? { verdict: "unchanged" } : { verdict: "rewritten", text: out.text };
+    return replyFor(req.text, out.text);
   } finally { pending.replied = true; inFlightOf(turn).delete(req.toolCallId); }
 }
+
+/** `unchanged` only when the judged text is exactly what the extension sent (an over-cap request is always rewritten). */
+const replyFor = (sent: string, judgedText: string): JudgeReadReply => (judgedText === sent ? { verdict: "unchanged" } : { verdict: "rewritten", text: judgedText });
 
 /** Any later bridge request from the turn: a read pending past the stale bound (and not yet raised) raises judge_timeout once. */
 export function raiseStalePending(turn: ActiveTurn, now: number): void {

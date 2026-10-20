@@ -358,10 +358,10 @@ async function judged(deps: BridgeHandlerDeps, turn: ActiveTurn, toolCallId: str
   return (await judgedOutcome(deps, turn, toolCallId, source, text, o)).text;
 }
 
-/** `judged` with the judgement's mirrored-mask count, for a local read (2b-R8). */
 /** The `read` source's adapter handed to handleJudgeRead (bridge-read-judge.ts holds no judge of its own). */
 const judgeAsRead: JudgedOutcome = (deps, turn, toolCallId, text, o) => judgedOutcome(deps, turn, toolCallId, "read", text, o);
 
+/** `judged` with the judgement's mirrored-mask count, for a local read (2b-R8). */
 async function judgedOutcome(deps: BridgeHandlerDeps, turn: ActiveTurn, toolCallId: string, source: InjectionSource, text: string, o: JudgeOpts): Promise<{ text: string; masked: number }> {
   const input: JudgeInput = { run_id: turn.run_id, tool_call_id: toolCallId, source, text, ...o, extracted: o.extracted ?? [...extractedFor(turn)], known: turn.secretValues ?? [] };
   const out = await judgeOrLocal(deps, turn, input);
@@ -549,7 +549,7 @@ function handleReport(deps: BridgeHandlerDeps, turn: ActiveTurn, req: ReportReq)
   return { ok: true };
 }
 
-/** No daemon temp dir: a flush without deps counts every never-judged read as local. */
+/** A flush without deps: `resolveDaemonTmpDir({}, "")` is a relative path no real target falls under, so every never-judged read counts as local. */
 const LOCAL_ONLY: PathDeps = { env: {}, ctx: { home: "", repo: "", data: "" } };
 
 /** Turn end: allowed-but-unreported built-ins (child died) count as failed so the breaker never undercounts. */
