@@ -38,8 +38,12 @@ export function looksInjectedLocal(text: string): boolean {
   return INSTRUCTION.test(text.normalize("NFKC").replace(INVISIBLE, "").replace(/[_-]+/g, " ").replace(/(?<=[a-z])(?=[A-Z])/g, " "));
 }
 
+/** `session` is secret only beside `id`, `key` or `token`, as egress's SESSION_PAIR. */
+const SESSION_PAIR = new Set(["id", "key", "token"]);
+/** A copy of egress's secretKey (2b-i final review A2): split on non-alphanumerics, then camelCase, THEN lowercase. */
 function secretNamed(key: string): boolean {
-  return key.toLowerCase().split(/[-_.]|(?<=[a-z])(?=[A-Z])/).some((seg) => SECRET_WORDS.has(seg));
+  const segs = key.split(/[^A-Za-z0-9]+/).flatMap((s) => s.split(/(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])/)).map((s) => s.toLowerCase()).filter(Boolean);
+  return segs.some((s, k) => SECRET_WORDS.has(s) || (s === "session" && SESSION_PAIR.has(segs[k + 1] ?? "")));
 }
 
 function seedPhrase(raw: string): boolean {
