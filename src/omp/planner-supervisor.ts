@@ -35,7 +35,7 @@ import type { RoleResolver } from "./role-resolver.js";
 import { writeSeatbeltProfiles } from "./seatbelt.js";
 import { resolveLessonSessionReset } from "./session-seed.js";
 import { decideSettle, SETTLE_BUDGET_MS } from "./settle-judge.js";
-import { finalAudit, settleStateFor, todoSnapshot, writeOutcome, writeSettleOutcomes, type Delivered, type SettleCtx, type SettleTurn, type Snapshot } from "./supervisor-settle.js";
+import { cardContinuationFailed, finalAudit, settleStateFor, todoSnapshot, writeOutcome, writeSettleOutcomes, type Delivered, type SettleCtx, type SettleTurn, type Snapshot } from "./supervisor-settle.js";
 import { verifyInstalledWrapper } from "./shell-wrapper.js";
 import { chatWorkspace } from "./workspace.js";
 import type { ToolDeclaration } from "./tool-decls.js";
@@ -817,6 +817,7 @@ export class PlannerSupervisor {
     if (turn.failure) { this.finishFailure(turn, turn.failure); return; }
     const delivered = this.delivered(turn);
     this.finishSuccess(turn, delivered);
+    cardContinuationFailed(ctx, this.settleView(turn), delivered); // R1: pass 0 delivered unaudited still tells Paco
     if (snap !== undefined) void finalAudit(ctx, this.settleView(turn), snap, delivered).catch((e) => console.error(`planner supervisor: final audit failed: ${message(e)}`));
   }
 

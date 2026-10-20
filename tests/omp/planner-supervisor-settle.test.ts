@@ -8,6 +8,7 @@ import { setSharedOmpVersionCacheForTest } from "../../src/omp/omp-version-cache
 import type { JevRequest, JevResult } from "../../src/jev/jev-client.js";
 import { RunStore } from "../../src/run/run-store.js";
 import { settleStateFor, type SettleCtx, type SettleTurn } from "../../src/omp/supervisor-settle.js";
+import { REASON_LINES } from "../../src/omp/settle-judge.js";
 import { SECRET_MASK } from "../../src/decisions/egress.js";
 import { loadToolDeclarations, TOOL_DECLS_DIR } from "../../src/omp/tool-decls.js";
 import { ToolRegistry } from "../../src/tools/tool-registry.js";
@@ -470,6 +471,25 @@ describe("the settle request end to end (spec §3)", () => {
     const killed = sup.abortAll("killed"); release(); await killed; await sup.whenIdle();
     expect(outcome.failed[0]).toMatchObject({ error_type: "killed" });
     expect(outcomes(store, run_id)).toEqual([["settle_discarded", "signal"]]);
+  });
+  it("R1: a continuation-failed turn (pass-1 model error) delivers pass 0 AND queues one card with the original send-back reason", async () => {
+    const { session, h } = held(); const { store, sup, outcome } = harness(session);
+    const run_id = createQueuedTurnRun(store); sup.submit(req(run_id)); await running(sup, h);
+    h.say("I've sent the email to the team."); expect(await session.request(settleReq("I've sent the email to the team."))).toMatchObject({ sendBack: true });
+    h.emit({ type: "agent_start" }); h.emit({ type: "error", error: "429 rate limit" }); h.emit({ type: "agent_end" }); await sup.whenIdle();
+    expect(outcome.done[0]).toMatchObject({ text: "I've sent the email to the team." });
+    const cards = cardsOf(store);
+    expect(cards).toHaveLength(1);
+    expect(String((cards[0]![1] as { text: string }).text)).toBe(`⚠️ Settled unverified: ${REASON_LINES.claim_sent}`);
+    expect(outcomes(store, run_id)).toEqual([["settle_discarded", "continuation_failed"]]); // no Jev re-ask, no settle_unverified row
+  });
+  it("R1: an A9-rescued turn (child exit in pass 1) queues the card too", async () => {
+    const { session, h } = held(); const { store, sup, outcome } = harness(session);
+    const run_id = createQueuedTurnRun(store); sup.submit(req(run_id)); await running(sup, h);
+    h.say("I've saved it."); expect(await session.request(settleReq("I've saved it."))).toMatchObject({ sendBack: true });
+    h.emit({ type: "agent_start" }); session.exit(1); await sup.whenIdle();
+    expect(outcome.done[0]).toMatchObject({ text: "I've saved it." });
+    expect(cardsOf(store).map(([, v]) => String((v as { text: string }).text))).toEqual([`⚠️ Settled unverified: ${REASON_LINES.claim_saved}`]);
   });
   it("past the 4 s budget (the gate hold eats 3.8 s of it) Houge answers sendBack: false inside the extension's 5 s and the row is fail/budget", async () => {
     const { session, h } = held(); const { store, sup } = harness(session, {}, { settleClient: () => jev([0.9, 0.9, 0.9, 0.9]), gateHold: { settleMs: 3_800 } });

@@ -98,9 +98,24 @@ export async function finalAudit(ctx: SettleCtx, t: SettleTurn, snap: Snapshot |
   const card = (reason: SettleReason) => {
     if (carded) return;
     carded = true;
-    enqueueUrgentCard(ctx.store, { chat_id: ctx.chatId, key: `settle_unverified:${t.run_id}`, text: UNVERIFIED_CARD(settleNote(reason, state).split("\n")[0] ?? reason) });
+    queueUnverifiedCard(ctx, t, reason, state);
   };
   for (const r of finalAuditReasons(state)) { writeOutcome(ctx, t, "settle_unverified", r); card(r); }
   const jev = await reaskAfterDelivery(ctx.settleDeps(t.run_id), state, SETTLE_JEV_MS);
   if (jev) { writeOutcome(ctx, t, "settle_unverified", jev); card(jev); }
+}
+
+/** The one "Settled unverified" card of a turn (keyed by run): its first line is the reason's note line. */
+function queueUnverifiedCard(ctx: SettleCtx, t: SettleTurn, reason: SettleReason, state: SettleState): void {
+  enqueueUrgentCard(ctx.store, { chat_id: ctx.chatId, key: `settle_unverified:${t.run_id}`, text: UNVERIFIED_CARD(settleNote(reason, state).split("\n")[0] ?? reason) });
+}
+
+/**
+ * 2b-i fix round 2 R1: a continuation-failed or A9-rescued turn delivers the pass 0 that was sent back, and the audit does
+ * not run; spec §3.5's promise still binds, so Paco gets the card with the ORIGINAL send-back reason (no Jev re-ask, no row).
+ */
+export function cardContinuationFailed(ctx: SettleCtx, t: SettleTurn, delivered: Delivered): void {
+  if (!t.continuationFailed || t.settleReason === undefined) return;
+  try { queueUnverifiedCard(ctx, t, t.settleReason, settleStateFor(ctx, t, delivered.text, Date.now(), null, delivered.attachments.length)); }
+  catch (e) { console.error(`settle: unverified card not queued for ${t.run_id}: ${safeReason(e)}`); }
 }
