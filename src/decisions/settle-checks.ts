@@ -8,9 +8,14 @@ import type { RungAbstain, RungAnswer } from "./types.js";
  * without evidence and with negations. A sentence holding a negation never claims.
  */
 export type ClaimReason = "claim_scheduled" | "claim_saved" | "claim_attached" | "claim_sent";
-const NEGATED = /\b(?:not|never|nothing|cannot|can't|couldn't|didn't|haven't|hasn't|won't|wasn't|unable|yet to)\b|没有|没|未|无法|不能|不会|还没|尚未/i;
-/** 2b-i final review A7: a sentence about an earlier turn or time reports, it does not claim. 已经 ("already") is no marker. */
-const EARLIER = /\b(?:earlier|yesterday|before|previous(?:ly)?|last\s+(?:week|month|time|turn))\b|之前|昨天|上次|上一轮|早些时候/i;
+/** N3: `nothing` negates only as the object of the claim verb ("sent nothing"), never "…, nothing else changed". */
+const NEGATED = /\b(?:not|never|cannot|can't|couldn't|didn't|haven't|hasn't|won't|wasn't|unable|yet to)\b|\b(?:sent|saved|scheduled|recorded|remembered|attached)\s+nothing\b|没有|没|未|无法|不能|不会|还没|尚未/i;
+/**
+ * 2b-i final review A7: a sentence about an earlier turn or time reports, it does not claim. 已经 ("already") is no marker.
+ * N3: `before` only as `before this|that|now|the last|previous turn` ("30 minutes before your meeting" still claims), and
+ * `last week` etc. only as the time, never possessive ("as last week's report").
+ */
+const EARLIER = /\b(?:earlier|yesterday|previous(?:ly)?|before\s+(?:this|that|now|the\s+(?:last|previous)\s+turn)|last\s+(?:week|month|time|turn)(?!['’]s))\b|之前|昨天|上次|上一轮|早些时候/i;
 /** Each sentence WITH its terminator, so a question (`?`, `？`) can be told apart (A7: a question never claims). */
 const SENTENCE = /[^.!?。！？\n]+[.!?。！？]*/g;
 const SUBJ_CORE = String.raw`(?:it|that|this|they|them|everything)(?:'s|’s| is| has been| was| are| were)\s+(?:now\s+)?`;

@@ -44,6 +44,15 @@ describe("2b-i final review A7: claims false positives", () => {
     "It was sent in an earlier turn.", "Should I have sent it?", "I've updated the config and sent nothing.",
     "我会附上截图。", "如果你愿意，我可以帮你附上文件。", "我昨天已经安排好了"
   ])("%s raises nothing", (t) => expect(claimsCheck(t, [], 0)).toEqual([]));
+  it("N3: `before`, a possessive `last week's` and a non-object `nothing` never hide a present claim", () => {
+    expect(claimsCheck("I've scheduled a reminder for 30 minutes before your meeting.", [], 0)).toEqual(["claim_scheduled"]);
+    expect(claimsCheck("I scheduled it for the day before the trip.", [], 0)).toEqual(["claim_scheduled"]);
+    expect(claimsCheck("I've sent the email to Bob, nothing else changed.", [], 0)).toEqual(["claim_sent"]);
+    expect(claimsCheck("I've saved it in the same folder as last week's report.", [], 0)).toEqual(["claim_saved"]);
+    // the narrowed markers still exempt a claim about an earlier turn
+    expect(claimsCheck("I scheduled it before the last turn.", [], 0)).toEqual([]);
+    expect(claimsCheck("I saved nothing.", [], 0)).toEqual([]);
+  });
   it("the exemptions are per sentence: a question or an earlier-turn sentence never hides a present claim beside it", () => {
     expect(claimsCheck("Should I send it? I've scheduled it.", [], 0)).toEqual(["claim_scheduled"]);
     expect(claimsCheck("It was sent in an earlier turn. I've saved it.", [], 0)).toEqual(["claim_saved"]);
