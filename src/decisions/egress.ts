@@ -56,11 +56,11 @@ export function secretKey(key: string): boolean {
  * A key followed by `:` or `=`; the key may be quoted (JSON). The value's extent is found by `namedValue`. At line start the key
  * may sit behind omp's read prefix `N:` (live gate 2b-i case 9: `2:api_key: …` masked nothing before); elsewhere any
  * non-word character may precede it (2b-i final review A3: `$db_password`, `--token`, `#password`, `|password`, `/*password`).
- * A `.`/`-` (key characters themselves) counts only as a run of one or two that starts a word (`.token`, `--token`): a bare
+ * A `.`/`-` (key characters themselves) counts only as a word-starting run of one to eight (`.token`, `--token`, `...password`, M1): a bare
  * `(?<![A-Za-z0-9_])` let a match start after every `.` of `a.a.a…` and rescanned the run each time, and an unbounded run in
  * the lookbehind rescanned `-----…` (both quadratic: the 100 ms tests).
  */
-const KEY_AT = /(?:(?<=^(?:\d{1,10}(?:-\d{1,10})?[:|])?)|(?<![A-Za-z0-9_.-])|(?<=(?:^|[^A-Za-z0-9_.-])[.-]{1,2}))(["']?)([A-Za-z][A-Za-z0-9_.-]*)\1\s*([:=])[ \t]*/gm;
+const KEY_AT = /(?:(?<=^(?:\d{1,10}(?:-\d{1,10})?[:|])?)|(?<![A-Za-z0-9_.-])|(?<=(?:^|[^A-Za-z0-9_.-])[.-]{1,8}))(["']?)([A-Za-z][A-Za-z0-9_.-]*)\1\s*([:=])[ \t]*/gm;
 /** A3: `<key>value</key>` on one line, for a secret-named key. */
 const XML_PAIR = /<([A-Za-z][A-Za-z0-9_.-]*)>([^<\n]+)<\/\1>/g;
 /**

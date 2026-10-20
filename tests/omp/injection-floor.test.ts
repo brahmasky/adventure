@@ -30,8 +30,9 @@ const SESSION = ["session_id=Zq81mVb6Lk2P", "session-id=xK9mQ2pL7vR4", "sessionI
 /** A3: every leak form, three to a text so each text is dense_secrets for Houge; with and without omp's `N:` prefix. */
 const GAPS = ["$db_password = 'Hunter2024!';", "  - --token=Tr0ub4dor&3x", "    <password>xK9mQ2pL7vR4</password>", "PGPASSWORD=xK9mQ2pL7vR4",
   "#password=xK9mQ2pL7vR4", "-api_key: xK9mQ2pL7vR4", ".token=xK9mQ2pL7vR4", "@password=xK9mQ2pL7vR4", "|password=xK9mQ2pL7vR4",
-  ">password=xK9mQ2pL7vR4", "//password=xK9mQ2pL7vR4", "/*password=xK9mQ2pL7vR4"];
-const GAP_TRIPLES = [0, 3, 6, 9].flatMap((k) => [dense(GAPS.slice(k, k + 3)), dense(GAPS.slice(k, k + 3), true)]);
+  ">password=xK9mQ2pL7vR4", "//password=xK9mQ2pL7vR4", "/*password=xK9mQ2pL7vR4",
+  "...password=xK9mQ2pL7vR4", "---token: xK9mQ2pL7vR4", "--------secret=xK9mQ2pL7vR4"]; // M1: runs of three to eight `.`/`-`
+const GAP_TRIPLES = [0, 3, 6, 9, 12].flatMap((k) => [dense(GAPS.slice(k, k + 3)), dense(GAPS.slice(k, k + 3), true)]);
 /** A3 (d): a ten-digit omp prefix on the line-anchored checks. */
 const LONG_PREFIX = ["1234567890:# Netscape HTTP Cookie File\n.example\tTRUE", "12345678:legal winner thank year wave sausage worth useful legal winner thank yellow",
   "1234567890:A_TOKEN=abcdefgh1\n1234567891:B_SECRET=abcdefgh2\n1234567892:C_PASSWORD=abcdefgh3"];

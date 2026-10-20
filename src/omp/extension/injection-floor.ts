@@ -31,8 +31,8 @@ const SEED_LINE = /^(?:\d{1,10}(?:-\d{1,10})?[:|])?[ \t]*((?:[a-z]{3,8}[ \t]+){1
 const SECRET_WORDS = new Set(["pass", "passwd", "password", "passphrase", "pwd", "secret", "token", "key", "auth", "authorization", "cookie", "credential", "credentials",
   "signature", "apikey", "accesstoken", "authtoken", "secretkey", "privatekey", "clientsecret", "refreshtoken", "accesskey", "sessiontoken", "sid", "csrf", "xsrf", "jwt", "bearer"]);
 // The line-start alternatives accept omp's read prefix `N:` (live gate 2b-i case 9), as egress's KEY_AT and SEED_LINE do;
-// elsewhere any non-word character, or a word-starting run of one or two `.`/`-`, may precede a key (2b-i final review A3).
-const KEY_VALUE = /(?:(?<=^(?:\d{1,10}(?:-\d{1,10})?[:|])?)|(?<![A-Za-z0-9_.-])|(?<=(?:^|[^A-Za-z0-9_.-])[.-]{1,2}))["']?([A-Za-z][A-Za-z0-9_.-]*)["']?\s*[:=][ \t]*["']?([^\s"',;&]{8,})/gm;
+// elsewhere any non-word character, or a word-starting run of one to eight `.`/`-` (A3, M1), may precede a key.
+const KEY_VALUE = /(?:(?<=^(?:\d{1,10}(?:-\d{1,10})?[:|])?)|(?<![A-Za-z0-9_.-])|(?<=(?:^|[^A-Za-z0-9_.-])[.-]{1,8}))["']?([A-Za-z][A-Za-z0-9_.-]*)["']?\s*[:=][ \t]*["']?([^\s"',;&]{8,})/gm;
 /** A3: `<key>value</key>` on one line, as egress's XML_PAIR. */
 const XML_VALUE = /<([A-Za-z][A-Za-z0-9_.-]*)>([^<\n]{8,})<\/\1>/g;
 /** A3: an all-caps env name ending in a secret word (`PGPASSWORD`), as egress's CAPS_SECRET (`MONKEY=ban4na` counts too). */

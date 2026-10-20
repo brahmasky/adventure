@@ -419,7 +419,8 @@ describe("2b-i final review A3: named-secret mask gaps", () => {
     ["14:$db_password = 'Hunter2024!';", "Hunter2024!"], ["5:  - --token=Tr0ub4dor&3x", "Tr0ub4dor&3x"], ["6:    <password>xK9mQ2pL7vR4</password>", "xK9mQ2pL7vR4"],
     ["8:PGPASSWORD=xK9mQ2pL7vR4 psql", "xK9mQ2pL7vR4"], ["9:#password=xK9mQ2pL7vR4", "xK9mQ2pL7vR4"], ["-api_key: xK9mQ2pL7vR4", "xK9mQ2pL7vR4"],
     [".token=xK9mQ2pL7vR4", "xK9mQ2pL7vR4"], ["@password=xK9mQ2pL7vR4", "xK9mQ2pL7vR4"], ["|password=xK9mQ2pL7vR4", "xK9mQ2pL7vR4"],
-    [">password=xK9mQ2pL7vR4", "xK9mQ2pL7vR4"], ["//password=xK9mQ2pL7vR4", "xK9mQ2pL7vR4"], ["/*password=xK9mQ2pL7vR4", "xK9mQ2pL7vR4"]
+    [">password=xK9mQ2pL7vR4", "xK9mQ2pL7vR4"], ["//password=xK9mQ2pL7vR4", "xK9mQ2pL7vR4"], ["/*password=xK9mQ2pL7vR4", "xK9mQ2pL7vR4"],
+    ["...password=x9K2", "x9K2"], ["---token: x9K2", "x9K2"], ["--------secret=x9K2", "x9K2"] // M1: a word-starting run of up to eight `.`/`-`
   ];
   it("masks the value for Jev and in the planner copy (I1)", () => {
     for (const [t, v] of LEAKS) {
