@@ -13,6 +13,9 @@ export const MAX_GATE_TARGETS = 256;
 const UNICODE_SPACES = /[  -   　]/g;
 /** Internal URLs and their single-slash aliases (`local:/x`), after any `@`/`:` prefix. */
 const SCHEME = /^[a-z][a-z0-9+.-]*:\//i;
+/** omp's read fetches a `www.` path over the network (pi-tui read.ts isReadableUrlPath): a URL read too (2b-i final review A4). */
+const WWW = /^www\./i;
+const isUrl = (p: string): boolean => SCHEME.test(p) || WWW.test(p);
 
 type Expanded = { abs: string } | { bad: "bad_path" | "url_read" };
 
@@ -23,12 +26,12 @@ function expand(raw: string, home: string, cwd: string): Expanded {
     if (!/^:(?=[/~]|\.\.?\/)/.test(p)) return { bad: "bad_path" };
     p = p.slice(1);
   } else if (p.startsWith("@")) {
-    if (SCHEME.test(p.slice(1))) return { bad: "url_read" }; // omp's `@` shorthand for an internal URL
+    if (isUrl(p.slice(1))) return { bad: "url_read" }; // omp's `@` shorthand for an internal URL
     if (!/^@(?=[/~])/.test(p)) return { bad: "bad_path" };
     p = p.slice(1);
   }
   if (p.startsWith("@") || p.startsWith(":")) return { bad: "bad_path" };
-  if (SCHEME.test(p)) return { bad: "url_read" };
+  if (isUrl(p)) return { bad: "url_read" };
   if (p === "~") p = home;
   else if (p.startsWith("~")) p = join(home, p.slice(p.startsWith("~/") ? 2 : 1));
   if (/^\/+$/.test(p)) return { abs: cwd };

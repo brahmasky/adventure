@@ -165,7 +165,8 @@ const exitRef = (i: ExitInfo) => (i.code !== null ? `exit ${i.code}` : `signal $
 const TODO_REMINDER_KIND: ReadonlySet<string> = new Set(["todo_reminder_seen"]);
 const HOUGE_CONFIG_YML = "tools:\n  xdev: false\nstartup:\n  checkUpdate: false\nmarketplace:\n  autoUpdate: false\ntelemetry:\n  otlpExportEnabled: false\n"
   + "retry:\n  maxRetries: 2\n  maxDelayMs: 60000\n" // S2b: omp's retry window stays under the 180 s frame watchdog
-  + "todo:\n  enabled: true\n  reminders: false\n  eager: default\n"; // 2b-i §5, P3b': the tool itself comes from --tools
+  + "todo:\n  enabled: true\n  reminders: false\n  eager: default\n" // 2b-i §5, P3b': the tool itself comes from --tools
+  + "fetch:\n  enabled: false\n"; // 2b-i final review A4: omp's read never fetches a URL; the daemon's own fetch path is the gated one
 /** The planner's omp config file, written atomically (0600); the contract probe writes the same file (spec §4.3). */
 export function writeHougeConfigFile(ctx: Pick<PathContext, "data">): string {
   const configFile = join(ctx.data, "omp", "houge-config.yml");

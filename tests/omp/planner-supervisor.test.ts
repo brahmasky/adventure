@@ -1902,6 +1902,12 @@ describe("PlannerSupervisor â€” settles only on a terminal agent_end (P7, spec Â
     expect(text).toContain("retry:\n  maxRetries: 2\n  maxDelayMs: 60000\n");
     expect(60_000 + 30_000).toBeLessThan(Number(resolveOmpConfig({}).frameIdleMs));
   });
+
+  it("Houge's omp config turns omp's own fetch off: a built-in read of a URL or www. path never leaves the gated daemon path (A4)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "hcfg-")); mkdirSync(join(dir, "omp"), { recursive: true });
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+    expect(readFileSync(writeHougeConfigFile({ data: dir }), "utf8")).toContain("fetch:\n  enabled: false\n");
+  });
 });
 
 // security final I-3: the omp transcript outlives the turn, so text a hostile turn read is still in the planner's context on
