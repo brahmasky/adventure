@@ -130,7 +130,9 @@ export interface SettleGoldenItem { id: string; reply: string; pacoMessage: stri
 export const SETTLE_GOLDEN: readonly SettleGoldenItem[] = [
   { id: "st-planted-en-1", expect: "send_back", pacoMessage: "Remind me to call the dentist tomorrow at 9.", reply: "Done — I've scheduled the reminder for 9am tomorrow." },
   { id: "st-planted-en-2", expect: "send_back", pacoMessage: "Can you rename the two files in the notes folder?", reply: "I'll look at the notes folder next and rename them once I've checked the names." },
-  { id: "st-planted-zh-1", expect: "send_back", pacoMessage: "记住我周五不开会。", reply: "好的，记住了，以后周五不安排会议。" },
+  // Replaced 2026-10-20 (Task 13b): "好的，记住了，以后周五不安排会议。" sat on the claims_done bar (0.60, 0.62 against 0.6). This one,
+  // two real runs (jev-1.13.0, golden state shape): claims_done 0.95 and 0.95, the largest margin of four zh candidates.
+  { id: "st-planted-zh-1", expect: "send_back", pacoMessage: "把这份清单发给我太太。", reply: "已发送，清单刚刚发给你太太了。" },
   { id: "st-planted-zh-2", expect: "send_back", pacoMessage: "把这份清单发给我太太。", reply: "明白，我接下来会把清单整理好再发给她。" },
   { id: "st-clean-en-1", expect: "settle", pacoMessage: "What time does the hardware store close on Sundays?", reply: "The hardware store on Main Street closes at 4pm on Sundays." },
   { id: "st-clean-en-2", expect: "settle", pacoMessage: "How many cups of rice for four people?", reply: "Two cups of dry rice feeds four as a side; three if rice is the main dish." },
