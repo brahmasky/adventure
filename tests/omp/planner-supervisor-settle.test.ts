@@ -7,6 +7,7 @@ import { chatWorkspace } from "../../src/omp/workspace.js";
 import { setSharedOmpVersionCacheForTest } from "../../src/omp/omp-version-cache.js";
 import type { JevRequest, JevResult } from "../../src/jev/jev-client.js";
 import { RunStore } from "../../src/run/run-store.js";
+import { settleStateFor, type SettleCtx, type SettleTurn } from "../../src/omp/supervisor-settle.js";
 import { ToolRegistry } from "../../src/tools/tool-registry.js";
 import { drainOutbox } from "../helpers/omp-worker.js";
 import { createQueuedTurnRun } from "../helpers/runs.js";
@@ -120,6 +121,8 @@ describe("the settle request end to end (spec §3)", () => {
     expect((outcome.done[0] as { text: string }).text).toBe("Tell me the time and I'll schedule it.");
     expect(outcomes(store, run_id)).toEqual([["settle_sent_back", "claim_scheduled"]]);
     expect(rows(store, run_id)).toHaveLength(1);
+    // a late fire after the turn finished gets an error reply on the wire, never a hang
+    await expect(session.request(settleReq("late", true))).rejects.toThrow("no_active_turn");
   });
   it("a Jev send-back sets settleAsk; a write in pass 1 takes the settle redirect at the gate", async () => {
     const { session, h } = held(); const { store, sup } = harness(session, {}, { settleClient: () => jev([0.1, 0.1, 0.9, 0.1]) });
@@ -141,6 +144,20 @@ describe("the settle request end to end (spec §3)", () => {
     const r2 = createQueuedTurnRun(B.store); B.sup.submit(req(r2)); await running(B.sup, b.h);
     b.h.say("I've saved it."); await b.session.request(settleReq("I've saved it.")); await B.sup.abortAll("killed");
     expect(outcomes(B.store, r2)).toEqual([["settle_discarded", "signal"]]);
+  });
+  it("a turn killed while the Jev settle call is in flight: the send_back row gets settle_discarded signal, never settle_sent_back", async () => {
+    let asked = false;
+    const slow = () => async (r: JevRequest) => { asked = true; await new Promise((res) => setTimeout(res, 800)); return jev([0.9, 0.9, 0.9, 0.9])(r); };
+    const { session, h } = held(); const { store, sup, outcome } = harness(session, {}, { settleClient: slow });
+    const run_id = createQueuedTurnRun(store); sup.submit(req(run_id)); await running(sup, h);
+    h.say("done"); const pending = session.request(settleReq("done")).catch(() => undefined);
+    await until(() => asked);
+    await sup.abortAll("killed");
+    await pending;
+    await until(() => outcomes(store, run_id).length > 0);
+    expect(rows(store, run_id).map((x) => [x.rung, x.verdict])).toEqual([["system_one", "send_back"]]);
+    expect(outcomes(store, run_id)).toEqual([["settle_discarded", "signal"]]);
+    expect(outcome.failed[0]).toMatchObject({ error_type: "killed" });
   });
   it("guards: a hostile turn and a queued steer never send back, with their reasons recorded; deadline arithmetic 61 s eligible, 59 s short", async () => {
     const { session, h } = held(); const { store, sup } = harness(session, {}, { settleClient: () => jev([0.9, 0.9, 0.9, 0.9]) });
@@ -207,6 +224,17 @@ describe("the settle request end to end (spec §3)", () => {
     expect(bodies[0]).toContain("Config read."); // the reply itself did reach Jev, masked
     h.emit({ type: "agent_end" }); await sup.whenIdle();
   });
+  it("the bridge token is masked by value (the known leg), even a short low-entropy one the shape masks would pass", () => {
+    const store = RunStore.openInMemory(); const run_id = createQueuedTurnRun(store);
+    const t: SettleTurn = { run_id, passes: [{ texts: [], final: "" }], sentBack: false, continuationSeen: false, aborting: false, deadline: undefined,
+      deadlineLeft: 600_000, deadlineAt: Date.now(), trustLevel: () => "clean", userText: "hi", todoBefore: null, settleDecisionId: null };
+    const ctx = (token: string | undefined): SettleCtx => ({ store, chatId: "42", workspace: "/nonexistent", session: () => undefined, queueHasTelegram: () => false,
+      bridgeToken: () => token, settleDeps: () => { throw new Error("unused"); } });
+    const text = "The token plainword is fine.";
+    expect(settleStateFor(ctx(undefined), t, text, Date.now(), null).redacted.text).toContain("plainword"); // the shape masks alone pass it
+    expect(settleStateFor(ctx("plainword"), t, text, Date.now(), null).redacted.text).not.toContain("plainword");
+    store.close();
+  });
   it("a retried leg (model error, RETRY_NOTE) gets its own settle decision, not the first leg's cached answer", async () => {
     const { session, h } = held(); const { store, sup } = harness(session);
     const run_id = createQueuedTurnRun(store); sup.submit(req(run_id)); await running(sup, h);
@@ -236,8 +264,11 @@ describe("the settle request end to end (spec §3)", () => {
     h.emit({ type: "agent_end" }); await sup.whenIdle();
   }, 10_000);
   it("a judge_read still in flight at the terminal agent_end is drained (bounded) before trust finalises: a local read lost → turn_trust_final untrusted", async () => {
-    const judge = async (i: { text: string }) => { await new Promise((r) => setTimeout(r, 4_000)); return { text: i.text, verdict: "pass" as const, withheld: 0, withheldUnjudged: 0, framed: 0, notChecked: 0, sent: 1, unanswered: 0, skipped: false, blocked: null, decisionId: null, masked: 0 }; };
+    let release: () => void = () => undefined;
+    const slow = new Promise<void>((r) => { release = r; }); const timer = setTimeout(() => release(), 4_000);
+    const judge = async (i: { text: string }) => { await slow; return { text: i.text, verdict: "pass" as const, withheld: 0, withheldUnjudged: 0, framed: 0, notChecked: 0, sent: 1, unanswered: 0, skipped: false, blocked: null, decisionId: null, masked: 0 }; };
     const { session, h } = held(); const { store, sup } = harness(session, {}, { buildTools: () => ({ registry: new ToolRegistry(), quarantine: async () => ({ digest: "", contains_instructions: false, source_meta: { tool: "x", bytes: 0 } }), judge }) });
+    cleanups.unshift(() => { clearTimeout(timer); release(); }); // the stub never outlives the test
     const run_id = createQueuedTurnRun(store); sup.submit(req(run_id)); await running(sup, h);
     expect(await session.request({ kind: "gate", tool: "read", input: { path: "/tmp/a.txt" }, toolCallId: "r1" })).toEqual({ decision: "allow" });
     void session.request({ kind: "judge_read", toolCallId: "r1", text: "slow file" }).catch(() => undefined);

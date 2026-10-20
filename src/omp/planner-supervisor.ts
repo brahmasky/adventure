@@ -35,7 +35,7 @@ import type { RoleResolver } from "./role-resolver.js";
 import { writeSeatbeltProfiles } from "./seatbelt.js";
 import { resolveLessonSessionReset } from "./session-seed.js";
 import { decideSettle, SETTLE_BUDGET_MS } from "./settle-judge.js";
-import { finalAudit, settleStateFor, todoSnapshot, writeSettleOutcomes, type SettleCtx, type SettleTurn, type Snapshot } from "./supervisor-settle.js";
+import { finalAudit, settleStateFor, todoSnapshot, writeOutcome, writeSettleOutcomes, type SettleCtx, type SettleTurn, type Snapshot } from "./supervisor-settle.js";
 import { verifyInstalledWrapper } from "./shell-wrapper.js";
 import { chatWorkspace } from "./workspace.js";
 import type { ToolDeclaration } from "./tool-decls.js";
@@ -828,6 +828,8 @@ export class PlannerSupervisor {
       if (decided === TIMED_OUT) { console.error(`planner supervisor: settle past its budget for ${t.run_id}`); return { sendBack: false }; }
       t.settleDecisionId = decided.decisionId;
       if (!decided.sendBack) return { sendBack: false };
+      // the turn ended (abort, kill, exit) while Jev answered: settle() saw no send-back, so the row's outcome is written here
+      if (t.finished || t.aborting) { writeOutcome(ctx, this.settleView(t), "settle_discarded", "signal"); return { sendBack: false }; }
       t.settleReason = decided.reason;
       return { sendBack: true, note: decided.note, kind: decided.kind };
     } catch (e) {
