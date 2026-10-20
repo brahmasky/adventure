@@ -89,6 +89,19 @@ describe("decideSettle", () => {
     expect(settleHealth(store, d.env, "2026-10-20T10:00:00.000Z")).toBe(0);
     expect(store.countDecisionsWithReasons("turn.settle", ["budget", "todo_unavailable"], "2026-10-20T09:00:00.000Z")).toBe(0);
   });
+  it("settleHealth counts exactly the budget and todo_unavailable rows inside the hour: a claim_saved, a settled and a 2 h old budget row are not counted", async () => {
+    const { d, store } = deps(answering([0, 0, 0, 0]));
+    const at = (now: string) => ({ ...d, now: () => now });
+    const run = (dd: SettleDeps, over: Partial<RawSettleState>, deadline: number) => decideSettle(dd, buildSettleState(raw(over), (x) => x), deadline);
+    await run(at("2026-10-20T08:00:00.000Z"), {}, Date.now() - 1); // budget, 2 h old
+    await run(at("2026-10-20T09:30:00.000Z"), {}, Date.now() - 1); // budget
+    await run(at("2026-10-20T09:40:00.000Z"), { todoNow: null }, Date.now() + SETTLE_BUDGET_MS); // todo_unavailable
+    await run(at("2026-10-20T09:50:00.000Z"), { text: "I've saved it." }, Date.now() + SETTLE_BUDGET_MS); // claim_saved
+    await run(at("2026-10-20T09:55:00.000Z"), {}, Date.now() + SETTLE_BUDGET_MS); // settled
+    expect(rows(store).map((x) => x.reason_code)).toEqual(["budget", "budget", "todo_unavailable", "claim_saved", "settled"]);
+    expect(settleHealth(store, d.env, "2026-10-20T10:00:00.000Z")).toBe(2);
+    expect(store.countDecisionsWithReasons("turn.settle", ["budget", "todo_unavailable"], "2026-10-20T09:00:00.000Z")).toBe(2);
+  });
   it("a row older than an hour is not counted", async () => {
     const { d, store } = deps(answering([0, 0, 0, 0]), "2026-10-20T08:00:00.000Z");
     await decideSettle(d, buildSettleState(raw(), (x) => x), Date.now() - 1);
