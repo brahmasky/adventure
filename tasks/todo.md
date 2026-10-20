@@ -1,4 +1,4 @@
-# 🧭 CURRENT SYSTEM STATE — 2026-10-20 (read this first)
+# 🧭 CURRENT SYSTEM STATE — 2026-10-21 (read this first)
 
 **Decision ladder stage 2b-i (extension hooks and `turn.settle`): BUILT on `feat/ladder-2b-hooks`, NOT merged; merge +
 rebuild `dist/` + kickstart pending.** Live only after Paco merges. The `feat/memory-write` block below is a separate branch,

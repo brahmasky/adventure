@@ -1683,7 +1683,7 @@ passed twice. ADR 0030 amended (Paco's hand). On branch, not merged; kickstart o
 Final-review wave (same day, 2026-10-20 to 2026-10-21). Six seats read `8bf2450..da22ef3` in parallel (whole-branch, security,
 correctness, testing, adversarial, codex whole-diff): 1 Critical (the settle egress rebuilt its own redactor and dropped
 `extracted`, so OTP codes and links in a reply reached TypeSafe in clear) and 14 Important findings (a codex blocker duplicated one), several reported
-independently by two seats (the final audit read pass 1 only while Paco can receive pass 0). Three fix waves and three
+independently by two seats (the final audit read pass 1 only while Paco can receive pass 0). Two fix waves and two
 fix rounds closed them (`97a3025..f3cc4c9`, 32 commits), each re-reviewed; the live gate on `9dc9f01` then showed `pass_errored` on every turn from case 3, which looked like a
 regression of the new errored-pass guard and was diagnosed as a planner-side outage window (circumstantial evidence, in the ADR). Gate runs in order: `b6a5679` PASS 14/14, `da22ef3` PASS 14/14 (case 10 vacuous),
 `9dc9f01` FAIL/INCONCLUSIVE, `0768dc3` 12/14 (cases 5 and 10 INCONCLUSIVE on planner choices), `f3cc4c9` PASS 14/14 with case

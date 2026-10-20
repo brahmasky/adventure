@@ -367,7 +367,7 @@ its §3.3 calibration note); plan: [2026-10-20-ladder-2b-hooks-settle.md](../sup
   with todo calls, a case-3 transcript with a continuation leg).
 
 **Final-review fixes (2026-10-20).** Six parallel reviewers (whole-branch, security, correctness, testing, adversarial and a
-codex whole-diff pass) found one Critical and a set of Important defects on `da22ef3`; three fix waves and three
+codex whole-diff pass) found one Critical and a set of Important defects on `da22ef3`; two fix waves and two
 fix rounds closed them (A `97a3025..7d13533`, B `1795dad..9dc9f01`, round 2 `8445916..0768dc3`, round 3 `3924471` and
 `f3cc4c9`), each re-reviewed. What changed, by file and by spec section:
 

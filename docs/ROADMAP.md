@@ -260,7 +260,7 @@ self-write test gate.
 masked-read redirect), `session_stop` gives `turn.settle` one bounded send-back (code rung, then Jev at per-question
 provisional bars 0.6/0.8/0.7/0.7 after a measured recalibration: first sanity 85.7 % sent back, probe 5.3 %, rerun 4.5 %,
 post-fix rerun 6/135 = 4.4 %, planted 9/9), and omp's todo tool is on. Final reviews (six seats) found one Critical
-(OTP codes and links in a reply reached Jev in clear) and a set of Importants; three fix waves and three rounds closed them
+(OTP codes and links in a reply reached Jev in clear) and a set of Importants; two fix waves (code, tests) and two fix rounds closed them
 (`97a3025..f3cc4c9`): the settle egress masks extracted codes and links, the final audit judges the delivered reply, `www.`
 reads are URL reads, a pass-1 failure delivers pass 0, an errored pass 0 is never sent back (`pass_errored`, counted in
 settle health and the digest). Live gate on real Jev and omp 18.12.3: PASS 14/14 on `b6a5679`, `da22ef3` and the final head
