@@ -1,8 +1,13 @@
 // Runs inside the omp planner process. Protected (self-write guard). Imports nothing from Houge but its sibling.
-import { getBridge, registered } from "./bridge-client.js";
+import { getBridge, HOOK_TIMEOUT_MS, registered } from "./bridge-client.js";
 import type { PiLike } from "./houge-tools.js";
+import { readResultHook } from "./read-hook.js";
+import { sessionStopHook } from "./settle-hook.js";
 
 export const BUILTIN_TOOLS = ["read", "edit", "write"] as const;
+/** 2b-i §2.5: omp's own todo list — no path, no body that leaves the machine; allowed without a gate, reported with counts only. */
+export const UNGATED_BUILTINS = ["todo"] as const;
+const isUngated = (n: string): n is (typeof UNGATED_BUILTINS)[number] => (UNGATED_BUILTINS as readonly string[]).includes(n);
 export const TOOL_NOT_ALLOWED = "tool_not_allowed";
 const isBuiltin = (n: string): n is (typeof BUILTIN_TOOLS)[number] => (BUILTIN_TOOLS as readonly string[]).includes(n);
 const startedAt = new Map<string, number>();
@@ -75,7 +80,8 @@ function pathsRefusal(input: Record<string, unknown> | undefined): string | null
   return paths.length > MAX_GATE_PATHS ? TOO_MANY_PATHS : null;
 }
 
-export async function hougePolicy(pi: PiLike): Promise<void> {
+export async function hougePolicy(pi: PiLike, opts: { hookTimeoutMs?: number } = {}): Promise<void> {
+  const hook = { timeoutMs: opts.hookTimeoutMs ?? HOOK_TIMEOUT_MS };
   let allowed: Set<string> | null = null;
   const bridgeTools = async () => {
     allowed ??= new Set((await getBridge().request({ kind: "manifest" }) as Array<{ name: string }>).map((d) => d.name));
@@ -83,6 +89,7 @@ export async function hougePolicy(pi: PiLike): Promise<void> {
   };
   pi.on("tool_call", async (e: { toolName: string; toolCallId: string; input: Record<string, unknown> }) => {
     try {
+      if (isUngated(e.toolName)) { startedAt.set(e.toolCallId, Date.now()); return undefined; }
       if (isBuiltin(e.toolName)) {
         const refused = pathsRefusal(e.input);
         if (refused) return { block: true, reason: refused };
@@ -100,10 +107,13 @@ export async function hougePolicy(pi: PiLike): Promise<void> {
       return { block: true, reason: `bridge_unavailable: ${(err as Error).message}` };
     }
   });
-  pi.on("tool_result", async (e: { toolName: string; toolCallId: string; isError?: boolean; content?: Array<{ text?: string }> }) => {
-    if (!isBuiltin(e.toolName)) return;
-    const bytes = (e.content ?? []).reduce((n, c) => n + Buffer.byteLength(c.text ?? "", "utf8"), 0);
+  pi.on("tool_result", async (e: { toolName: string; toolCallId: string; isError?: boolean; content?: Array<{ type: string; text?: string }>; details?: Record<string, unknown> }) => {
     const t0 = startedAt.get(e.toolCallId); startedAt.delete(e.toolCallId);
-    await getBridge().request({ kind: "report", toolCallId: e.toolCallId, outcome: e.isError ? "failed" : "succeeded", bytes_out: bytes, duration_ms: t0 === undefined ? 0 : Date.now() - t0 }).catch(() => undefined);
+    if (e.toolName === "read") return readResultHook(e, t0, hook);
+    if (!isBuiltin(e.toolName) && !isUngated(e.toolName)) return;
+    const bytes = (e.content ?? []).reduce((n, c) => n + Buffer.byteLength(c.text ?? "", "utf8"), 0);
+    await getBridge().request({ kind: "report", toolCallId: e.toolCallId, outcome: e.isError ? "failed" : "succeeded", bytes_out: bytes,
+      duration_ms: t0 === undefined ? 0 : Date.now() - t0, ...(isUngated(e.toolName) ? { tool: e.toolName } : {}) }).catch(() => undefined);
   });
+  pi.on("session_stop", (e) => sessionStopHook(e, hook));
 }

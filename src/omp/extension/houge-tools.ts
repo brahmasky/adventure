@@ -2,7 +2,7 @@
 import { getBridge, registered } from "./bridge-client.js";
 
 export const HEARTBEAT_MS = 30_000;
-export interface PiLike { registerTool(t: object): void; on(event: "tool_call" | "tool_result", h: (e: any, ctx?: any) => unknown): void }
+export interface PiLike { registerTool(t: object): void; on(event: "tool_call" | "tool_result" | "session_stop", h: (e: any, ctx?: any) => unknown): void }
 
 export async function hougeTools(pi: PiLike): Promise<void> {
   const decls: Array<{ name: string; description: string; parameters: object }> = await getBridge().request({ kind: "manifest" });
