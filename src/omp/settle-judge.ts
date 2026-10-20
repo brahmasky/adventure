@@ -47,6 +47,13 @@ export function settleNote(reason: SettleReason, s: SettleState): string {
   return `${line}\n${NOTE_TAIL}`;
 }
 
+/** Question ids over the bar with their p, highest first: the one rule for the rung and the re-ask. */
+function overBar(answers: Record<string, number>): Array<[string, number]> {
+  return SETTLE_QUESTIONS.map((q) => [q.id, answers[q.id] ?? 0] as [string, number]).filter(([, p]) => p > SETTLE_BAR_P).sort((a, b) => b[1] - a[1]);
+}
+/** The ids come from SETTLE_QUESTIONS, and SETTLE_QUESTION_REASON is keyed by the same ids: the lookup cannot miss. */
+const reasonOf = (id: string): SettleReason => SETTLE_QUESTION_REASON[id]!;
+
 /** The Jev rung: p > 0.5 on any question sends back with that question's reason; all below settles (ruling 6 for the reason). */
 function jevRung(d: SettleDeps, s: SettleState, deadline: number): () => Promise<RungResult<SettleVerdict, SettleDetail>> {
   return async () => {
@@ -56,9 +63,9 @@ function jevRung(d: SettleDeps, s: SettleState, deadline: number): () => Promise
     const r = await askSettle({ run_id: s.run_id, state: settleJevState(s), client: d.client, store: d.store, boundMs: bound });
     // a timeout the DEADLINE cut (the bound was shorter than the client's own 1.5 s) is a budget miss, not a Jev timeout
     if ("failed" in r) return r.failed === "timeout" && bound < SETTLE_JEV_MS ? { failed: "budget", reason: "budget" } : { failed: r.failed };
-    const over = SETTLE_QUESTIONS.map((q) => [q.id, r.answers[q.id] ?? 0] as const).filter(([, p]) => p > SETTLE_BAR_P).sort((a, b) => b[1] - a[1]);
+    const over = overBar(r.answers);
     const top = Math.max(...Object.values(r.answers));
-    if (over.length > 0) return { verdict: "send_back", reason: SETTLE_QUESTION_REASON[over[0]![0]] ?? "settled", p: over[0]![1], detail: { jev: r.answers } };
+    if (over.length > 0) return { verdict: "send_back", reason: reasonOf(over[0]![0]), p: over[0]![1], detail: { jev: r.answers } };
     // codex plan W2: either snapshot missing is the todo check's own verdict, not only todoNow
     return { verdict: "settle", reason: todoCheck(s.todoBefore, s.todoNow) === "todo_unavailable" ? "todo_unavailable" : "settled", p: top, detail: { jev: r.answers } };
   };
@@ -101,6 +108,6 @@ export function finalAuditReasons(s: SettleState): SettleReason[] {
 export async function reaskAfterDelivery(d: SettleDeps, s: SettleState, boundMs: number): Promise<SettleReason | null> {
   const r = await askSettle({ run_id: s.run_id, state: settleJevState(s), client: d.client, store: d.store, boundMs });
   if ("failed" in r) return null;
-  const first = SETTLE_QUESTIONS.find((q) => (r.answers[q.id] ?? 0) > SETTLE_BAR_P); // question order: the first over the bar
-  return first ? SETTLE_QUESTION_REASON[first.id] ?? null : null;
+  const over = overBar(r.answers);
+  return over.length > 0 ? reasonOf(over[0]![0]) : null;
 }

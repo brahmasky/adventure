@@ -26,6 +26,16 @@ const CLAIMS: Array<[string, string, string[]]> = [
 ];
 const evidenceOf = (d: string) => d === "attached" ? null : d.startsWith("ok:") ? ok(d.slice(3)) : d.startsWith("step:") ? ev("loop_step", { action: "bash", capability: d.slice(5), ok: true }) : ev(d, {});
 
+describe("claimsCheck prose that is not a claim", () => {
+  it.each(["Maintenance was scheduled for Tuesday.", "The saved file is in the folder.", "Saved searches are listed below.", "Your invoice was sent last week.", "He sent the email to the team.",
+    "A reminder set for 9 shows here.", "请附上发票。", "Sent items are in the folder."])("%s raises nothing", (t) => expect(claimsCheck(t, [], 0)).toEqual([]));
+  it("a mixed reply claims only the unnegated verb; a short bare confirmation and a pronoun passive still claim", () => {
+    expect(claimsCheck("I've saved it. I haven't sent it.", [], 0)).toEqual(["claim_saved"]);
+    expect(claimsCheck("Saved, thanks.", [], 0)).toEqual(["claim_saved"]);
+    expect(claimsCheck("It was sent.", [], 0)).toEqual(["claim_sent"]);
+  });
+});
+
 describe("claimsCheck", () => {
   it.each(CLAIMS)("%s → %s without evidence; settles with each listed evidence", (text, reason, evidences) => {
     expect(claimsCheck(text, [], 0)).toEqual([reason]);
