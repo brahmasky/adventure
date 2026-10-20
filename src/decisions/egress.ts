@@ -40,7 +40,7 @@ export interface RedactOptions {
 /** One piece of the text: masked (atomic; `mirror`: the planner gets the mask too), settled (kept by a rule) or open. */
 export interface Part { raw: string; out: string; mask: boolean; mirror?: boolean; settled?: true; oversize?: true; rewrite?: true; block?: EgressBlock }
 /** `raw`: the floor and content check; `out`: what leaves for Jev; `planner`: what the model reads (I1). */
-export interface EgressPassage { raw: string; out: string; planner: string; block?: EgressBlock }
+export interface EgressPassage { raw: string; out: string; planner: string; block?: EgressBlock; masked?: number }
 
 /** I2: a key is secret-named when one of its segments (split on `_ - .` and camelCase) is exactly one of these words. */
 const SECRET_WORDS = new Set(["pass", "passwd", "password", "passphrase", "pwd", "secret", "token", "key", "auth", "authorization",
@@ -446,16 +446,16 @@ export function splitEgress(text: string, size: number, o: RedactOptions = {}): 
 }
 
 function sliceParts(parts: readonly Part[], a: number, b: number): EgressPassage {
-  let pos = 0, raw = "", out = "", planner = "", block: EgressBlock | undefined;
+  let pos = 0, raw = "", out = "", planner = "", masked = 0, block: EgressBlock | undefined;
   for (const p of parts) {
     const s = pos, e = pos + p.out.length;
     pos = e;
     if (e <= a || s >= b) continue;
-    if (p.mask) { raw += p.raw; out += p.out; planner += p.mirror ? p.out : p.raw; block ??= p.block ?? (p.oversize ? "long_named" : undefined); continue; }
+    if (p.mask) { if (p.mirror) masked++; raw += p.raw; out += p.out; planner += p.mirror ? p.out : p.raw; block ??= p.block ?? (p.oversize ? "long_named" : undefined); continue; }
     const piece = p.raw.slice(Math.max(a, s) - s, Math.min(b, e) - s);
     raw += piece; out += piece; planner += piece;
   }
-  return { raw, out, planner, ...(block ? { block } : {}) };
+  return { raw, out, planner, masked, ...(block ? { block } : {}) };
 }
 
 function maskCutRun(left: EgressPassage, right: EgressPassage): void {

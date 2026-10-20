@@ -19,6 +19,8 @@ import type { BridgeRequest } from "./bridge-protocol.js";
 import { BUILTIN_CAPABILITY, capabilityFor, type RegistryEntry } from "./capability-map.js";
 import { classifyCommand } from "./command-matcher.js";
 import { gateTargets } from "./gate-path.js";
+import { handleJudgeRead, noteReportApplied, raisePendingAtFlush, raiseStalePending, type JudgedOutcome, type JudgePending, type PathDeps } from "./bridge-read-judge.js";
+import { capResponse, RESPONSE_CAP, TRUNCATION_NOTE } from "./response-cap.js";
 import { renderExternalRead, UNTRUSTED_READ_ENTRIES, type ExternalReadResult } from "./external-read.js";
 import type { OmpConfig } from "./omp-config.js";
 import { isDeniedRead, isDeniedWrite, type PathContext } from "./protected-paths.js";
@@ -58,6 +60,14 @@ export interface ActiveTurn {
   serial?: Promise<unknown>;
   /** Code checks before any approval card (memory_correct writes): a refusal never shows a card; else the card's detail. */
   preflight?: (entry: RegistryEntry, input: Record<string, unknown>) => Preflight | null;
+  /** Spec §4: the lexical targets of each allowed built-in read, set at its gate; judge_read refuses an id not in it (unknown_call). */
+  readTargets?: Map<string, string[]>;
+  /** Spec §4: masked keys (`maskedKey`) of local reads whose judgement mirrored a mask; an edit or write to one asks Paco. */
+  maskedPaths?: Set<string>;
+  /** Spec §4: each judged built-in read, keyed from the judge_read arrival, until its report or the flush reconciles it. */
+  judgePending?: Map<string, JudgePending>;
+  /** Spec §4: the judgements still running, so the flush can wait for them (bounded). */
+  judgeInFlight?: Map<string, Promise<void>>;
 }
 
 /** A preflight verdict: refuse with a code-owned reason, or go on with the card detail Paco approves. */
@@ -68,7 +78,10 @@ export interface BridgeHandlerDeps {
   /** The Telegram turn contract's allowed_actions: the manifest is fixed before any turn exists. */
   turnEnvelopeActions: string[];
   activeTurn: () => ActiveTurn | null;
+  /** Live-gate holds (spec §4/§5): how long the bridge sits on a judge_read or settle before answering. Nothing sets it in production. */
+  gateHold?: GateHold;
 }
+export interface GateHold { judgeReadMs?: number; settleMs?: number }
 
 export interface CallResult { content: string; isError: boolean }
 
@@ -88,7 +101,7 @@ const SHELL_ENTRIES: ReadonlySet<RegistryEntry> = new Set<RegistryEntry>(["shell
 /** Statuses whose text is code-built (no tool bytes): never judged, never a netread. */
 const NO_TOOL_BYTES: ReadonlySet<string> = new Set(["denied", "denied_on_revalidation", "requires_approval"]);
 export const POLICY_VERSION = "omp-1";
-export const RESPONSE_CAP = 32 * 1024;
+export { RESPONSE_CAP, TRUNCATION_NOTE };
 /** The approval card shows the command whole up to this many characters (security I1: never a silent cut). */
 export const CARD_DETAIL_CAP = 3000;
 export const cardTruncationNote = (cut: number): string => `…[truncated ${cut} chars]`;
@@ -99,15 +112,6 @@ function cardDetail(command: string): string {
 
 const sha = (s: string) => createHash("sha256").update(s).digest("hex");
 const bytes = (s: string) => Buffer.byteLength(s, "utf8");
-export const TRUNCATION_NOTE = "\n…[truncated at 32 KiB]";
-/** Cap in UTF-8 bytes, cut on a character boundary (never inside a multi-byte sequence). */
-function cap(s: string): string {
-  const buf = Buffer.from(s, "utf8");
-  if (buf.length <= RESPONSE_CAP) return s;
-  let end = RESPONSE_CAP;
-  while (end > 0 && ((buf[end] ?? 0) & 0xc0) === 0x80) end--;
-  return `${buf.subarray(0, end).toString("utf8")}${TRUNCATION_NOTE}`;
-}
 type CallReq = Extract<BridgeRequest, { kind: "call" }>;
 type GateReq = Extract<BridgeRequest, { kind: "gate" }>;
 type ReportReq = Extract<BridgeRequest, { kind: "report" }>;
@@ -123,7 +127,9 @@ function wellFormed(req: BridgeRequest): boolean {
   const r = req as unknown as Record<string, unknown>;
   if (r.kind === "call") return nonEmpty(r.toolCallId) && typeof r.tool === "string" && isObject(r.input);
   if (r.kind === "gate") return nonEmpty(r.toolCallId) && typeof r.tool === "string" && isObject(r.input);
-  if (r.kind === "report") return typeof r.toolCallId === "string";
+  if (r.kind === "judge_read") return nonEmpty(r.toolCallId) && typeof r.text === "string";
+  if (r.kind === "settle") return typeof r.stop_hook_active === "boolean" && typeof r.text === "string";
+  if (r.kind === "report") return typeof r.toolCallId === "string" && (r.applied === undefined || typeof r.applied === "boolean") && (r.tool === undefined || typeof r.tool === "string");
   return true;
 }
 
@@ -133,6 +139,8 @@ export function createBridgeHandler(deps: BridgeHandlerDeps): (req: BridgeReques
     if (req.kind === "manifest") return manifestFor(deps);
     const turn = deps.activeTurn();
     if (!turn) throw new Error("no_active_turn");
+    raiseStalePending(turn, Date.now());
+    if (req.kind === "judge_read") return memo(turn, `judge:${req.toolCallId}`, () => handleJudgeRead(deps, turn, req, judgeAsRead, deps.gateHold?.judgeReadMs ?? 0));
     if (req.kind === "call") return memo(turn, `call:${req.toolCallId}`, () => serialise(turn, () => handleCall(deps, turn, req)));
     if (req.kind === "gate") return memo(turn, `gate:${req.toolCallId}`, async () => handleGate(deps, turn, req));
     if (req.kind === "report") return handleReport(deps, turn, req);
@@ -308,25 +316,25 @@ async function render(deps: BridgeHandlerDeps, turn: ActiveTurn, req: CallReq, e
     return r.status === "succeeded" ? renderRead(deps, turn, req.toolCallId, entry, r.output) : { content: `${READ_TOOL_FAILED_TEXT} ${r.status}`, digest: r.status };
   }
   if (SHELL_ENTRIES.has(entry)) return renderShell(deps, turn, req, r);
-  if (r.status !== "succeeded") return { content: cap(failureText(r)), digest: r.status };
+  if (r.status !== "succeeded") return { content: capResponse(failureText(r)), digest: r.status };
   if (PLAIN_TEXT_ENTRIES.has(entry) && typeof r.output.answer === "string") {
     const text = r.output.answer;
-    return { content: cap(text), digest: `${bytes(text)} bytes` };
+    return { content: capResponse(text), digest: `${bytes(text)} bytes` };
   }
   const json = JSON.stringify(r.output);
-  return { content: cap(json), digest: `${bytes(json)} bytes` };
+  return { content: capResponse(json), digest: `${bytes(json)} bytes` };
 }
 
 /** Shell output, success and failure (failureText renders output from error_ref), judged after its 32 KiB cap (spec §7.1). */
 async function renderShell(deps: BridgeHandlerDeps, turn: ActiveTurn, req: CallReq, r: CapabilityResult): Promise<Rendered> {
-  if (r.status !== "succeeded" && NO_TOOL_BYTES.has(r.status)) return { content: cap(failureText(r)), digest: r.status };
+  if (r.status !== "succeeded" && NO_TOOL_BYTES.has(r.status)) return { content: capResponse(failureText(r)), digest: r.status };
   const command = typeof req.input.command === "string" ? req.input.command : "";
   const network = raiseNetread(deps, turn, req.toolCallId, command);
   const paths = pathOperands(command, turn.cwd, deps.ctx.home);
-  if (r.status !== "succeeded") return { content: await judged(deps, turn, req.toolCallId, "shell", cap(failureText(r)), { outside: network, paths }), digest: r.status };
+  if (r.status !== "succeeded") return { content: await judged(deps, turn, req.toolCallId, "shell", capResponse(failureText(r)), { outside: network, paths }), digest: r.status };
   const out = typeof r.output.output === "string" ? r.output.output : "";
   const code = String(r.output.exit_code ?? "none");
-  return { content: `${await judged(deps, turn, req.toolCallId, "shell", cap(out), { outside: network, paths })}\n[exit ${code}]`, digest: `exit ${code}, ${bytes(out)} bytes` };
+  return { content: `${await judged(deps, turn, req.toolCallId, "shell", capResponse(out), { outside: network, paths })}\n[exit ${code}]`, digest: `exit ${code}, ${bytes(out)} bytes` };
 }
 
 /** tool.shell_netread decides; a network read makes the turn untrusted (spec §7.2). Returns whether the output came from outside. */
@@ -336,9 +344,9 @@ function raiseNetread(deps: BridgeHandlerDeps, turn: ActiveTurn, toolCallId: str
   return r.verdict === "network";
 }
 
-type Judged = Pick<JudgeOutcome, "text" | "withheld" | "withheldUnjudged" | "framed" | "notChecked" | "unanswered" | "skipped">;
+type Judged = Pick<JudgeOutcome, "text" | "withheld" | "withheldUnjudged" | "framed" | "notChecked" | "unanswered" | "skipped" | "masked">;
 
-type JudgeOpts = Pick<JudgeInput, "outside" | "paths" | "extracted" | "linkTokens">;
+type JudgeOpts = Pick<JudgeInput, "outside" | "paths" | "extracted" | "linkTokens" | "late">;
 
 /**
  * tool.injection on bytes that reach a model (spec §7.1). `outside`: the text came from a wall tool or network shell output.
@@ -347,10 +355,18 @@ type JudgeOpts = Pick<JudgeInput, "outside" | "paths" | "extracted" | "linkToken
  * not checked); if that throws too, the whole result is withheld unjudged (fail closed).
  */
 async function judged(deps: BridgeHandlerDeps, turn: ActiveTurn, toolCallId: string, source: InjectionSource, text: string, o: JudgeOpts): Promise<string> {
+  return (await judgedOutcome(deps, turn, toolCallId, source, text, o)).text;
+}
+
+/** `judged` with the judgement's mirrored-mask count, for a local read (2b-R8). */
+/** The `read` source's adapter handed to handleJudgeRead (bridge-read-judge.ts holds no judge of its own). */
+const judgeAsRead: JudgedOutcome = (deps, turn, toolCallId, text, o) => judgedOutcome(deps, turn, toolCallId, "read", text, o);
+
+async function judgedOutcome(deps: BridgeHandlerDeps, turn: ActiveTurn, toolCallId: string, source: InjectionSource, text: string, o: JudgeOpts): Promise<{ text: string; masked: number }> {
   const input: JudgeInput = { run_id: turn.run_id, tool_call_id: toolCallId, source, text, ...o, extracted: o.extracted ?? [...extractedFor(turn)], known: turn.secretValues ?? [] };
   const out = await judgeOrLocal(deps, turn, input);
   raiseFor(turn, toolCallId, out);
-  return out.text;
+  return { text: out.text, masked: out.masked };
 }
 
 async function judgeOrLocal(deps: BridgeHandlerDeps, turn: ActiveTurn, input: JudgeInput): Promise<Judged> {
@@ -364,7 +380,7 @@ async function judgeOrLocal(deps: BridgeHandlerDeps, turn: ActiveTurn, input: Ju
   catch (e2) {
     // fail closed: the whole result is withheld unjudged; the code says the local checks did not decide either
     console.error(`bridge: injection_local_failed (${e2 instanceof Error ? e2.name : "unknown"}); result withheld unjudged`);
-    return { text: WITHHELD_UNJUDGED_TEXT, withheld: 1, withheldUnjudged: 1, framed: 0, notChecked: 0, unanswered: 1, skipped: true };
+    return { text: WITHHELD_UNJUDGED_TEXT, withheld: 1, withheldUnjudged: 1, framed: 0, notChecked: 0, unanswered: 1, skipped: true, masked: 0 };
   }
 }
 
@@ -408,7 +424,7 @@ async function renderRead(deps: BridgeHandlerDeps, turn: ActiveTurn, toolCallId:
   try { read = await turn.quarantine(entry, judgedOutput); } catch {
     return { content: QUARANTINE_FAILED_TEXT, digest: "quarantine_failed", failed: "quarantine_failed" };
   }
-  const text = cap(renderExternalRead(read));
+  const text = capResponse(renderExternalRead(read));
   // The ledger never holds read text: the rendered result may carry a code-extracted OTP or link.
   return { content: text, digest: `sha256:${sha(text)} bytes:${bytes(text)}` };
 }
@@ -491,8 +507,15 @@ function handleGate(deps: BridgeHandlerDeps, turn: ActiveTurn, req: GateReq): { 
     return { decision: "deny", reason: reason === HOSTILE_REDIRECT_CODE ? HOSTILE_WRITE_REDIRECT : reason };
   }
   turn.unreported.set(req.toolCallId, entry);
+  if (entry === "fs_read") retainReadTargets(deps, turn, req);
   namesFor(turn).set(req.toolCallId, tool);
   return { decision: "allow" };
+}
+
+/** Spec §4: every lexical target of an allowed read, kept so judge_read can name what it judges (and tell outside from local). */
+function retainReadTargets(deps: BridgeHandlerDeps, turn: ActiveTurn, req: GateReq): void {
+  const targets = gatePaths(req.input ?? {}).flatMap((raw) => { const t = gateTargets(raw, deps.ctx.home, turn.cwd); return t.ok ? t.targets : []; });
+  (turn.readTargets ??= new Map()).set(req.toolCallId, targets);
 }
 
 function namesFor(turn: ActiveTurn): Map<string, string> {
@@ -518,6 +541,7 @@ function writeBuiltinOutcome(store: RunStore, turn: ActiveTurn, toolCallId: stri
 
 /** The hook's tool_result for an allowed built-in: counts only, never content. A duplicate report is a no-op. */
 function handleReport(deps: BridgeHandlerDeps, turn: ActiveTurn, req: ReportReq): { ok: true } {
+  noteReportApplied(deps, turn, req.toolCallId, req.applied === true);
   const entry = turn.unreported.get(req.toolCallId);
   if (!entry) return { ok: true };
   writeBuiltinOutcome(deps.store, turn, req.toolCallId, entry,
@@ -525,8 +549,12 @@ function handleReport(deps: BridgeHandlerDeps, turn: ActiveTurn, req: ReportReq)
   return { ok: true };
 }
 
+/** No daemon temp dir: a flush without deps counts every never-judged read as local. */
+const LOCAL_ONLY: PathDeps = { env: {}, ctx: { home: "", repo: "", data: "" } };
+
 /** Turn end: allowed-but-unreported built-ins (child died) count as failed so the breaker never undercounts. */
-export function flushUnreported(store: RunStore, turn: ActiveTurn): void {
+export function flushUnreported(store: RunStore, turn: ActiveTurn, deps: PathDeps = LOCAL_ONLY): void {
+  raisePendingAtFlush(deps, turn);
   for (const [toolCallId, entry] of [...turn.unreported]) {
     writeBuiltinOutcome(store, turn, toolCallId, entry, { ok: false, bytes_out: 0, duration_ms: 0, reason: "unreported" });
   }

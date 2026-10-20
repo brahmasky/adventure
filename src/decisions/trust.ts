@@ -31,6 +31,9 @@ export class TurnTrust {
 
   level(): TrustLevel { return this.#current; }
 
+  /** True once finalize() ran: a judgement completing after this is recorded late and raises nothing. */
+  ended(): boolean { return this.#ended; }
+
   /** True when the level rose. Locked code decides (turn.trust); the row is recorded through the store recorder. */
   raise(cause: TrustCause, tool_call_id: string | null = null): boolean {
     if (this.#ended || rankOf(CAUSE_LEVEL[cause]) <= rankOf(this.#current)) return false;

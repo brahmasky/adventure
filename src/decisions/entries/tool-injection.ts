@@ -74,6 +74,8 @@ export function looksInjected(text: string): boolean {
  */
 export interface InjectionState {
   passages: readonly string[]; redacted: readonly string[]; planner: readonly string[]; floorHits: readonly number[]; blocked: readonly number[]; blockKind: EgressBlock | null; outside: boolean;
+  /** Mirrored masks in the planner copies (2b-R8): a local read with masked > 0 makes its paths ask on edit. */
+  masked: number;
 }
 /** `withheld`: the passages the rung withheld; `asked`: a request went to Jev. */
 export interface InjectionDetail { withheld: readonly number[]; asked: boolean }

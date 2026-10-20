@@ -11,7 +11,7 @@ import {
 } from "./entries/tool-injection.js";
 import { bandFor, nearBar, NOISE_BANDS, type NoiseBand } from "./noise-band.js";
 import { storeRecorder } from "./record.js";
-import type { DecideResult, FallbackReason, Reask, RungResult } from "./types.js";
+import type { DecideResult, DecisionRecorder, FallbackReason, Reask, RungResult } from "./types.js";
 
 /**
  * The judge for one tool result (spec §7.1): mask the whole text (§7.0), split into passages on the masked text, mark the
@@ -20,10 +20,10 @@ import type { DecideResult, FallbackReason, Reask, RungResult } from "./types.js
  * may read. A clean result comes back byte-identical; only a withheld passage (a note) or a framed local one (its masked
  * form) changes (plan Ruling 2).
  */
-export type InjectionSource = "shell" | "web_search" | "http_fetch" | "gmail_read" | "google_api";
+export type InjectionSource = "shell" | "web_search" | "http_fetch" | "gmail_read" | "google_api" | "read";
 /** Where the text came from, said in words to the judge (mu's `source`). */
 const SOURCE_LABEL: Readonly<Record<InjectionSource, string>> = { shell: "the output of a shell command", web_search: "web search results",
-  http_fetch: "a fetched web page", gmail_read: "an email", google_api: "a calendar or Google API response" };
+  http_fetch: "a fetched web page", gmail_read: "an email", google_api: "a calendar or Google API response", read: "a file the assistant read" };
 /** A re-ask needs at least this much of the 3 s budget left (Addition B: never past the bound). */
 const REASK_MIN_MS = 1_500;
 
@@ -34,6 +34,8 @@ export interface JudgeInput {
   known?: readonly string[];
   /** The mail extract channel: a link's token-like path segments are masked too (Ruling 25). */
   linkTokens?: boolean;
+  /** 2b-i (ruling 9): true when the turn's trust already finalised; the row is then armed_mode "late". */
+  late?: () => boolean;
 }
 export interface JudgeOutcome {
   /** `withheld` counts every withheld passage; `withheldUnjudged` those withheld only because, from outside, they held credential material. */
@@ -42,6 +44,8 @@ export interface JudgeOutcome {
   notChecked: number;
   /** Passages that went to Jev, and how many of them got no answer (a lost judgement: Task 12 raises judge_timeout). */
   sent: number; unanswered: number; skipped: boolean; blocked: EgressBlock | null; decisionId: string | null;
+  /** Mirrored masks in the planner copy (2b-R8): a local read with masked > 0 makes its paths ask on edit. */
+  masked: number;
 }
 export type InjectionJudge = (i: JudgeInput) => Promise<JudgeOutcome>;
 export interface JudgeDeps { store: RunStore; client: (r: JevRequest) => Promise<JevResult>; home: string; bands?: readonly NoiseBand[]; env?: NodeJS.ProcessEnv; clock?: () => number }
@@ -63,14 +67,20 @@ function stateOf(d: LocalDeps, i: JudgeInput): InjectionState {
   const kinds = pieces.map((p) => all ?? p.block ?? passageBlock(p.raw));
   const passages = pieces.map((p) => p.raw);
   return { passages, redacted: pieces.map((p) => p.out), planner: pieces.map((p) => p.planner), floorHits: passages.flatMap((p, k) => (looksInjected(p) ? [k] : [])),
-    blocked: kinds.flatMap((b, k) => (b ? [k] : [])), blockKind: kinds.find((b) => b !== null) ?? null, outside: i.outside };
+    blocked: kinds.flatMap((b, k) => (b ? [k] : [])), blockKind: kinds.find((b) => b !== null) ?? null, outside: i.outside,
+    masked: split === null ? pieces.length : pieces.reduce((n, p) => n + (p.masked ?? 0), 0) };
+}
+
+/** Ruling 9: a row written after the turn finalised is `late` (the one producer of RecordedArmedMode "late"). */
+function lateAware(inner: DecisionRecorder, late: (() => boolean) | undefined): DecisionRecorder {
+  return { record: (entry, r, ctx) => inner.record(entry, late?.() ? { ...r, armedMode: "late" } : r, ctx) };
 }
 
 export function createInjectionJudge(d: JudgeDeps): InjectionJudge {
   return async (i) => {
     const state = stateOf(d, i);
     const track: Track = { attempted: 0, batches: [] };
-    const r = await decide(TOOL_INJECTION, state, { run_id: i.run_id, tool_call_id: i.tool_call_id, recorder: storeRecorder(d.store, d.env ? { env: d.env } : {}),
+    const r = await decide(TOOL_INJECTION, state, { run_id: i.run_id, tool_call_id: i.tool_call_id, recorder: lateAware(storeRecorder(d.store, d.env ? { env: d.env } : {}), i.late),
       exec: { system_one: () => askPassages(d, i, state, track) } });
     persistRows(d, track.batches, r.decisionId);
     const out = outcomeOf(i.text, state, r, track);
@@ -89,7 +99,7 @@ export function localOutcome(d: LocalDeps, i: JudgeInput): JudgeOutcome {
   const s = stateOf(d, i);
   const v = deliver(i.text, s, new Set(s.floorHits), new Set(unasked(s)));
   const verdict: InjectionVerdict = v.withheld > 0 ? "withhold" : v.framed > 0 ? "frame" : "pass";
-  return { ...v, verdict, sent: 0, unanswered: s.passages.length, skipped: true, blocked: s.blockKind, decisionId: null };
+  return { ...v, verdict, sent: 0, unanswered: s.passages.length, skipped: true, blocked: s.blockKind, decisionId: null, masked: s.masked };
 }
 
 const trailing = (p: string): string => /\s*$/.exec(p)?.[0] ?? "";
@@ -198,5 +208,5 @@ function outcomeOf(raw: string, s: InjectionState, r: DecideResult<InjectionVerd
   // the passages Jev never answered: every one sent when the rung failed (or never finished), else the lost batches'
   const lost = skipped ? unasked(s).slice(0, track.attempted) : track.batches.flatMap((b) => (b.ps === null ? [...b.indices] : []));
   return { ...deliver(raw, s, new Set([...s.floorHits, ...fromJev]), new Set(lost)), verdict: r.verdict, sent: track.attempted,
-    unanswered: lost.length, skipped, blocked: s.blockKind, decisionId: r.decisionId };
+    unanswered: lost.length, skipped, blocked: s.blockKind, decisionId: r.decisionId, masked: s.masked };
 }

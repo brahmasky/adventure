@@ -67,7 +67,7 @@ export function fakeLog(file: string): Array<Record<string, unknown>> {
  * fails closed (security final M-3), so a bare test turn would read outside text framed as not checked.
  */
 export const passThroughJudge: InjectionJudge = async (i) => ({ text: i.text, verdict: "pass", withheld: 0, withheldUnjudged: 0, framed: 0, notChecked: 0,
-  sent: 0, unanswered: 0, skipped: false, blocked: null, decisionId: null });
+  sent: 0, unanswered: 0, skipped: false, blocked: null, decisionId: null, masked: 0 });
 
 /**
  * Drive the omp tool path in-process: claim the run, build the turn's registry with

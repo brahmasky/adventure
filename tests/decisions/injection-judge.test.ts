@@ -289,4 +289,14 @@ describe("tool.injection judge", () => {
       expect(localOutcome({ store: odd, home: "/h" }, input(CLEAN))).toMatchObject({ verdict: "withhold", withheldUnjudged: 1, blocked: "unaligned" });
     });
   });
+  it("a read source tells Jev it is a file the assistant read; masked counts the mirrored masks (a key=value secret 1, a bare hex run 0)", async () => {
+    const store = RunStore.openInMemory(); const client = judging(screen);
+    const judge = createInjectionJudge({ store, client, home: "/h" });
+    const secret = await judge(input("api_key: ABCDEFGHIJKLMNOPQRSTUVWX\n", { source: "read", outside: false }));
+    expect(secret.masked).toBe(1);
+    expect(sentStates(client)[0]).toContain("a file the assistant read");
+    const hex = await judge(input(`sha ${"a".repeat(40)}`, { source: "read", outside: false }));
+    expect(hex.masked).toBe(0);
+    store.close();
+  });
 });
