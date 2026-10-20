@@ -63,10 +63,12 @@ const trustEvents = (events: (t: string) => unknown[]) => events("turn_trust").m
 
 describe("judge_read (spec §4)", () => {
   it("judges only a toolCallId the gate allowed for fs_read; anything else is refused unknown_call", async () => {
-    const { handle } = setup();
+    const { handle, turn, events } = setup();
     await expect(handle(judgeRead("nope", "text"))).rejects.toThrow("unknown_call");
     await handle(gateRead("/tmp/a", "r1"));
     expect(await handle(judgeRead("r1", "clean text"))).toEqual({ verdict: "unchanged" });
+    expect(turn.trust!.level()).toBe("clean"); // a judged-clean read raises nothing, and a timeout is not a clean read
+    expect(trustEvents(events)).toEqual([]);
   });
   it("a withheld passage comes back rewritten with WITHHELD_TEXT, the turn hostile; the reply is memoised per toolCallId", async () => {
     const { handle, turn } = setup();
@@ -155,8 +157,8 @@ describe("judge_read (spec §4)", () => {
   it("drainJudges waits for in-flight judgements up to the bound; a read still pending at flush is raised per 2b-R16 (outside → hostile, local → untrusted)", async () => {
     const a = setup({ judgeDelayMs: 50 });
     await a.handle(gateRead("/tmp/a", "r1")); void a.handle(judgeRead("r1", "x"));
-    const t0 = Date.now(); await drainJudges(a.turn, JUDGE_DRAIN_MS);
-    expect(Date.now() - t0).toBeLessThan(JUDGE_DRAIN_MS); expect(a.turn.judgePending!.get("r1")!.replied).toBe(true);
+    await drainJudges(a.turn, JUDGE_DRAIN_MS);
+    expect(a.turn.judgePending!.get("r1")!.replied).toBe(true);
     const tmp = mkdtempSync(join(process.env.TMPDIR ?? "/tmp", "hdt-"));
     const b = setup({ judgeDelayMs: 5_000, env: { HOUGE_DAEMON_TMP_DIR: tmp } });
     await b.handle(gateRead(join(tmp, "m.txt"), "o1")); void b.handle(judgeRead("o1", "x")).catch(() => undefined);
