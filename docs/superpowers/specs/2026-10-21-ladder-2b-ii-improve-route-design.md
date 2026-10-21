@@ -1,6 +1,6 @@
 # Decision ladder stage 2b-ii: `improve.route` — design
 
-**Status:** Rev 5, 2026-10-21 (Rev 1 + the senior review's probes + codex rounds 1–3, §12). Parent spec: [2026-10-12-decision-ladder-design.md](2026-10-12-decision-ladder-design.md) §7.4 (the
+**Status:** Rev 6, 2026-10-21 (Rev 1 + the senior review's probes + codex rounds 1–4, §12). Parent spec: [2026-10-12-decision-ladder-design.md](2026-10-12-decision-ladder-design.md) §7.4 (the
 entry), §8 (the surface), §13 (stage 2b). Sibling: [2026-10-19-ladder-2b-hooks-settle-design.md](2026-10-19-ladder-2b-hooks-settle-design.md)
 (2b-i, merged 2026-10-21 at `139b501`). ADR 0030 decision 8 ("Improvement as a decision"). Facts below were read at
 `61b8a5e`.
@@ -123,7 +123,7 @@ decision of its group (`source: "code"`), so every signal ends as an outcome row
 | `rating` | **at rating capture** in the gateway (`gateway.ts:372-379`, before `processRatingSignal`, which returns early for ratings above 1 and receives no run id): `about_run_id` = `latestJevVerdictForChat(chat_id, now).run_id`; none → an `improve_signal_skipped` event, no row | the chat's latest planner run | 0–3 (exists) |
 | `approval_denied` | `gateway.handleApproval` after `processApprovalTrigger` resolved `denied` | the run | `CAPABILITY_NAME` = `/^[a-z][a-z0-9_]{0,39}$/` (the tool registry name) |
 | `approval_expired` | `bridge-handler.ts:361` **only when `outcome === "expired"`** (an abort is not Paco's silence) | the run | same |
-| `planner_failed` | **inside `RunStore.finishRun`** when `next === "failed"`, the run's `source` is `telegram`, and the run is a **planner run** (`worker_id LIKE 'planner:%'`, the discriminator lease recovery already uses at `run-store.ts:2293,2325`; codex round 3 N3): the store inserts the inbox row in the same statement batch as the `run_failed` ledger event, so every failure path (`ompFail`, `recoverPlannerLeases`, `failStrandedTurns`, `refuseOmpTurn` at `core-worker.ts:2343`, any later one) is covered without a seam list (codex F4, round 2) | the run | `PLANNER_FAILED_VALUES` = the `error_type` strings `finishRun` is called with: the `PlannerFailure` union plus `model_error`, `killed` (P1: 30 days show `planner_exit`, `merged_parent_failed`, `model_error`, `killed`); unknown → `other`; pinned by a test that greps every `finishRun({next: "failed"` call's literal |
+| `planner_failed` | **inside the store, beside every `run_failed` ledger write**: a private `RunStore.noteFailedPlannerRun(run_id, error_type)` inserts the inbox row when the run's `source` is `telegram` and the run is a **planner run** (`worker_id LIKE 'planner:%'`, the discriminator lease recovery already uses at `run-store.ts:2293,2325`; codex round 3 N3). It is called by each writer of `run_failed` (three today: `run-store.ts:1939`, `finishRun` at `:1968`, `failExpiredPlannerRow` at `:2338`, which lease recovery uses without `finishRun`; codex round 4), in the same statement batch as the event; a test greps `run-store.ts` for `"run_failed"` and asserts the helper call follows each occurrence, so every failure path (`ompFail`, `recoverPlannerLeases`, `failStrandedTurns`, `refuseOmpTurn`, any later one) is covered without a seam list in the worker (codex F4) | the run | `PLANNER_FAILED_VALUES` = the `error_type` strings `finishRun` is called with: the `PlannerFailure` union plus `model_error`, `killed` (P1: 30 days show `planner_exit`, `merged_parent_failed`, `model_error`, `killed`); unknown → `other`; pinned by a test that greps every `finishRun({next: "failed"` call's literal |
 | `recurrence` | the tick (§3.3) | the cluster's newest run | 1–10 000 (exists) |
 | `abandoned` | the tick (§3.4) | A's run | `DIG_DEEPER_VALUES` (lanes; exists as a list) |
 | `review_unsure` | none (the digest no longer offers ✅/❌; R1) | — | entry id (exists) |
@@ -388,12 +388,13 @@ no state, no file (its pre-write check fails), and no card; a `_pending` file wr
 moved is orphaned and swept by `reconcileJobs` (a pending file with no `pending_review` or `collision` job →
 `_retired`). At boot,
 `reconcileJobs` marks every `running` job `failed` / `daemon_restart` (the lane is an in-memory singleton; nothing
-survives a restart) and enqueues the failed card; the cluster may author again only through a new job (same 30-day
-turn-overlap rule, §3.3). `deliver` enqueues the card through `enqueueNotification` with `idempotency_key:
-improve_job:<job_id>:<attempt>:<state>` (not `enqueueEvolutionReportNotification`, which needs a run with a chat; the
-chat is the operator chat) and sets `offered_at` in the same transaction when the card carries buttons (§5.1's offer
-rule; codex D9). Every transition writes a ledger event `improvement_job{job_id, from, to, attempt, result_code?}`
-(`run_id` null).
+survives a restart) and enqueues the failed card in that same transaction; the cluster may author again only through a
+new job (same 30-day turn-overlap rule, §3.3). The cards are enqueued **by the fenced transactions, never by the lane**
+(codex round 4): `enqueueNotification` with `idempotency_key: improve_job:<job_id>:<attempt>:<state>` to the operator
+chat (not `enqueueEvolutionReportNotification`, which needs a run with a chat), and `offered_at` set in the same
+transaction when the card carries buttons (§5.1's offer rule; codex D9); the lane's `deliver` always receives the no-op
+outcome. Every transition writes a ledger event `improvement_job{job_id, from, to, attempt, result_code?}` (`run_id`
+null).
 
 `authorPendingSkill(job, attempt)` (new, `src/core/skill-job.ts`, claim-less):
 - objective = Paco's request texts of the cluster joined (≤ 6 turns, `THREAD_USER_TURN_CAP`; `JOB_OBJECTIVE_CHAR_CAP =
@@ -688,3 +689,10 @@ consumed signals → every `DecisionSignal`, pinned; N3 `source = telegram` is o
 'planner:%'` (§2); N4 collision taps after Accept → `collision` state and `promote_mode`, each tap on its named state
 (§5.2). Round 3 note on D9: the offer uses the queue's inserted status, never `duplicate` (the current helper treats
 `duplicate` as sent): carried into §6.1's wording "reported the row inserted".
+
+### Round 4, codex scoped verification (2026-10-21, over Rev 5 at `da10b49`; Rev 5 → Rev 6)
+
+Closed 5 of 7, no new blockers. Fixed in Rev 6: D5/N2 a leftover sentence still had the lane's `deliver` enqueue the
+card → the fenced transactions enqueue, `deliver` is always a no-op (§5.2); N3 lease recovery writes `run_failed`
+through `failExpiredPlannerRow`, not `finishRun` → the producer is a store helper beside every `run_failed` write
+(three writers today), grep-pinned (§2).
