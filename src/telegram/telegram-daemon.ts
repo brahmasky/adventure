@@ -22,6 +22,8 @@ import { stableHash } from "../domain/canonical.js";
 import type { RoleResolver } from "../omp/role-resolver.js";
 import { runGoldenSetTick, runMemoryKindGoldenTick, runSettleGoldenTick } from "../decisions/golden.js";
 import { errorCode } from "../domain/error-code.js";
+import { IMPROVE_JEV_MS } from "../decisions/entries/improve-route.js";
+import { runImproveTick } from "../improve/tick.js";
 import { createJevClient } from "../jev/jev-client.js";
 import { evolutionLaneSettled, evolutionLaneSnapshot } from "../core/evolution-lane.js";
 import type { TelegramAllowlist } from "../domain/types.js";
@@ -510,6 +512,7 @@ async function runSignalPathTick(
     await runGoldenTick(options, now);
     await runMemoryKindGolden(options, now);
     await runSettleGolden(options, now);
+    await runImproveTickSafe(options, worker, now, chatId);
     runDigestTick(options.store, chatId, now);
     // ADR 0024: the deterministic self-sensing sweep. Runs LAST among the state-changing
     // ticks so it observes this cycle's work, self-throttles to 5 min, and alerts at most
@@ -519,6 +522,22 @@ async function runSignalPathTick(
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[telegram-daemon] signal-path tick failed: ${message}`);
+  }
+}
+
+/** 2b-ii §3.1: the daily improvement tick, before the digest (the digest shows what it proposed). Its own catch: never skips the digest or the sweep. */
+async function runImproveTickSafe(options: RunTelegramDaemonOptions, worker: CoreWorker, now: string, chatId: string | null): Promise<void> {
+  try {
+    const roles = worker.modelRoles();
+    const client = createJevClient({ apiKey: options.broker ? options.broker.typesafeKey() : process.env.TYPESAFE_API_KEY,
+      audit: options.store.llmAuditSink({ correlation_id: "improve-tick", role: "improve" }), meteredBreached: () => options.store.meteredFuseLatched(), retries: 0, timeoutMs: IMPROVE_JEV_MS });
+    const cfg = resolveEmbedConfig(process.env);
+    await runImproveTick({ store: options.store, env: process.env, now, signal: options.stopSignal, chatId, client,
+      llm: { pick: tickLlm(options, "improve_pick", "improve_pick", roles), distill: tickLlm(options, "improve_distill", "distill", roles), classify: tickLlm(options, "improve_gate_a", "classify", roles),
+        compose: tickLlm(options, "improve_author", "compose", roles), verify: tickLlm(options, "improve_gate_b", "verify", roles) },
+      embed: (text) => embedText(text, cfg), embedModel: cfg.model, skills: new SkillStore({ root: join(options.projectRoot, "skills") }) });
+  } catch (error) {
+    console.error(`[telegram-daemon] improve tick failed: ${errorCode(error)}`);
   }
 }
 
