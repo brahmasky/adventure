@@ -1,7 +1,7 @@
 # 🧭 CURRENT SYSTEM STATE — 2026-10-22 (read this first)
 
-**Decision ladder stage 2b-ii (`improve.route`): BUILT on `feat/ladder-2b-ii`, not merged.** Merge, `dist/` rebuild, kickstart
-of `com.houge.daemon`, the `HOUGE_DECISION_DIGEST_AT` flip (the tick and the digest share the time; the digest has been
+**Decision ladder stage 2b-ii (`improve.route`): MERGED to main and pushed (2026-10-22), `dist/` rebuilt; not live until
+Paco's kickstart.** Kickstart of `com.houge.daemon`, the `HOUGE_DECISION_DIGEST_AT` flip (the tick and the digest share the time; the digest has been
 `off` since 2026-10-14) and the sign-off on the bar and the ADR 0030 amendment (2026-10-22) are Paco's. Spec
 `docs/superpowers/specs/2026-10-21-ladder-2b-ii-improve-route-design.md` Rev 7, plan `docs/superpowers/plans/2026-10-21-ladder-2b-ii-improve-route.md`.
 What it does: signals from corrections, ratings, denials and expiries, planner failures and recurrence land in one inbox; a
@@ -13,7 +13,7 @@ days); the rest are proposals, taps on the digest. The digest has three sections
 with failed-tick counts) and is scoped to its chat; `/status` keeps the counts plus the settle health line and Jev skips.
 Evidence: 372 files / 5086 tests passed, typecheck and build clean; improve-sanity on a 30-day copy PASS (planted 10/10, real
 window 7 groups, about 0.13 proposals a day, suggested bar 0.67); live gate `scripts/live-gate-improve-route.mjs`: cases 1–9 PASS on the final head; case 10 (memory-write gate): no branch effect, the gate is flaky on main too (pointer case rides the k3 distill retry).
-- [ ] Paco: sign off the bar (0.6 provisional vs 0.67 suggested) and the ADR 0030 amendment; merge; `dist/` rebuild; kickstart (check for a run in flight).
+- [ ] Paco: sign off the bar (0.6 provisional vs 0.67 suggested) and the ADR 0030 amendment; kickstart (check for a run in flight); with the digest `off` the 21:00 tick still drafts proposals that are never offered and expire, so flip `HOUGE_DECISION_DIGEST_AT` on to see them.
 - Known gap: the digest offers no review taps, so no new `review_bad` signals until a review surface returns.
 - Deferred: wiki handler (R5), model-route proposals (R10), `lesson_unfollowed` (R4). Next: stage 3.
 - Protected files touched: `src/decisions/` (outcomes, entry-ids, registry, egress, digest, status-view, improve-signals,
