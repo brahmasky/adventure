@@ -212,6 +212,12 @@ function draftSummary(store: RunStore, p: ImprovementProposalRow, chars: number)
   return clip(redactForImprove(store, raw), chars);
 }
 
+/** Final fix A2: a lesson's AVOID enters every planner prompt, so the waiting line shows it, redacted then clipped like the text. */
+function avoidSummary(store: RunStore, p: ImprovementProposalRow, chars: number): string {
+  const avoid = p.target === "lesson" ? str(parsed(p.draft_json).avoid) : "";
+  return avoid ? ` · AVOID: ${clip(redactForImprove(store, avoid), chars)}` : "";
+}
+
 function jobLine(job: ImprovementJobRow): string | null {
   const turns = parsed(job.origin_json).turn_ids;
   const n = `${Array.isArray(turns) ? turns.length : 0} requests`;
@@ -268,7 +274,7 @@ export function improvementsToday(store: RunStore, since: string, chatId?: strin
 export function proposalsWaiting(store: RunStore, chatId?: string): Section & { ids: string[] } {
   const open = store.listOpenProposals().filter((p) => chatId === undefined || p.chat_id === chatId);
   const shown = open.slice(0, DIGEST_PROPOSALS_MAX);
-  const lines = shown.map((p, k) => `${k + 1}. ${p.target} · ${draftSummary(store, p, DRAFT_LINE_CHARS)} · ${p.evidence}`);
+  const lines = shown.map((p, k) => `${k + 1}. ${p.target} · ${draftSummary(store, p, DRAFT_LINE_CHARS)}${avoidSummary(store, p, DRAFT_LINE_CHARS)} · ${p.evidence}`);
   if (open.length > shown.length) lines.push(`+${open.length - shown.length} more`);
   const button_rows = shown.map((p, k) => [button(`✅ ${k + 1}`, `${DIGEST_PR_PREFIX}${p.proposal_id}:acc`), button(`🗑 ${k + 1}`, `${DIGEST_PR_PREFIX}${p.proposal_id}:dis`)]);
   return { lines, button_rows, ids: shown.map((p) => p.proposal_id) };

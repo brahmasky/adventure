@@ -1,4 +1,7 @@
-import { buildMemoryDistillQuestion, MEMORY_DISTILL_DISCIPLINE, parseMemoryDistillResult } from "../capabilities/distill.js";
+import { buildMemoryDistillQuestion, MEMORY_DISTILL_DISCIPLINE, parseMemoryDistillResult, type MemoryDistill } from "../capabilities/distill.js";
+import type { TranscriptLine } from "../capabilities/episodic-evidence.js";
+import { checkFactSide, checkLessonSide } from "../capabilities/memory-backstops.js";
+import { PENDING_TURN_PREFIX } from "../capabilities/memory-sources.js";
 import { LOCKED_ENTRY_IDS } from "../decisions/entry-ids.js";
 import type { ImproveState, ImproveTarget } from "../decisions/entries/improve-route.js";
 import type { ProposalTarget, RunStore } from "../run/run-store.js";
@@ -54,15 +57,34 @@ function priorOf(store: RunStore, run_id: string | null, redact: (t: string) => 
 async function distillDraft(target: "lesson" | "fact", g: SignalGroup, s: ImproveState, d: DraftDeps, evidence: string): Promise<Draft | null> {
   const instruction = s.redacted.pacoText;
   if (instruction.trim().length === 0) return null;
-  const question = buildMemoryDistillQuestion({ thread: [instruction], prior: priorOf(d.store, g.newest.about_run_id, d.redact), instruction, scope: lessonScopeFor(s.category), kind: target === "lesson" ? "rule" : "fact" });
+  const prior = priorOf(d.store, g.newest.about_run_id, d.redact);
+  const question = buildMemoryDistillQuestion({ thread: [instruction], prior, instruction, scope: lessonScopeFor(s.category), kind: target === "lesson" ? "rule" : "fact" });
   const r = await d.distill({ question, system: MEMORY_DISTILL_DISCIPLINE });
   if (!r.ok) return null;
   const m = parseMemoryDistillResult(r.answer);
   if (m.failed || m.kind === "none") return null;
+  return target === "lesson" ? lessonDraft(m, instruction, prior, s, d, evidence) : factDraft(m, instruction, prior, g, d, evidence);
+}
+
+/** Final fix A1: the memory lane's own lesson backstop (a rule lifted from the prior is refused, a lifted AVOID dropped). */
+function lessonDraft(m: MemoryDistill, instruction: string, prior: string, s: ImproveState, d: DraftDeps, evidence: string): Draft | null {
+  const side = checkLessonSide(m, instruction, prior);
+  if (!side?.ok) return null;
   // the model's output is durable data too: every stored field goes through the redactor (codex B10)
-  if (target === "lesson") return m.lesson ? { target, draft_json: JSON.stringify({ scope: lessonScopeFor(s.category), text: d.redact(m.lesson), ...(m.avoid ? { avoid: d.redact(m.avoid) } : {}) }), evidence } : null;
-  if (!m.fact || !m.evidence || !instruction.includes(m.evidence.quote)) return null; // codex D12: the quote must be Paco's words
+  return { target: "lesson", draft_json: JSON.stringify({ scope: lessonScopeFor(s.category), text: d.redact(side.lesson), ...(side.avoid ? { avoid: d.redact(side.avoid) } : {}) }), evidence };
+}
+
+/**
+ * Final fix A1: the memory lane's own fact backstop over the two numbered lines the distill saw (thread [1] and the
+ * instruction [2], both Paco's correcting message): quote length, line check, sanitise, reject, support.
+ */
+function factDraft(m: MemoryDistill, instruction: string, prior: string, g: SignalGroup, d: DraftDeps, evidence: string): Draft | null {
+  const runId = g.newest.run_id ?? undefined;
+  const turnId = (runId && d.store.userTurnIdForRun(runId)) || `${PENDING_TURN_PREFIX}${runId ?? "none"}`;
+  const lines: TranscriptLine[] = [1, 2].map((n) => ({ n, turn: { role: "user" as const, text: instruction, turn_id: turnId, ...(runId ? { run_id: runId } : {}) }, text: instruction }));
+  const side = checkFactSide(m, lines, (id) => d.store.runSource(id), { text: instruction, prior });
+  if (!side?.ok || !m.evidence) return null;
   // source_turn_ids are chat turn ids (the correcting user turns), never run ids (codex B9)
   const source = g.rows.map((r) => (r.run_id ? d.store.userTurnIdForRun(r.run_id) : undefined)).filter((x): x is string => x !== undefined);
-  return { target, draft_json: JSON.stringify({ text: d.redact(m.fact), evidence: { line: m.evidence.line, quote: d.redact(m.evidence.quote) }, source_turn_ids: source }), evidence };
+  return { target: "fact", draft_json: JSON.stringify({ text: d.redact(side.fact), evidence: { line: m.evidence.line, quote: d.redact(m.evidence.quote) }, source_turn_ids: source }), evidence };
 }

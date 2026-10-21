@@ -53,6 +53,14 @@ describe("buildDecisionDigest (2b-ii)", () => {
     expect(d.offered.proposal_ids).toEqual(ids.slice(0, DIGEST_PROPOSALS_MAX));
     for (const b of buttons(d)) expect(Buffer.byteLength(b, "utf8")).toBeLessThanOrEqual(64);
   });
+  it("a lesson proposal's waiting line shows its AVOID (redacted and clipped like the text): every line that would enter the planner is in front of Paco (final fix A2)", () => {
+    const s = RunStore.openInMemory();
+    s.insertImprovementProposal({ decision_id: s.insertDecision(D), target: "lesson", scope: "answer", chat_id: "555", draft_json: JSON.stringify({ scope: "ask", text: "Answer in one line.", avoid: `asking before shell sk-liveSECRETvalue000000000 ${"y".repeat(300)}` }), evidence: "correction on 2026-10-21, scope answer", created_at: "2026-10-21T01:00:00.000Z" });
+    const line = buildDecisionDigest(s, NOW, ENV)!.text.split("\n").find((l) => l.startsWith("1. "))!;
+    expect(line).toContain("Answer in one line. · AVOID: asking before shell");
+    expect(line).not.toContain("sk-liveSECRET");
+    expect(Array.from(line.split(" · AVOID: ")[1]!.split(" · ")[0]!)).toHaveLength(120);
+  });
   it("Improvements today: a drafted skill with Accept/Dismiss, a suggested job without buttons, a promoted skill, a shifted schedule with Revert, a ladder move with Revoke", () => {
     const s = RunStore.openInMemory();
     const job = (state: "pending_review" | "suggested" | "promoted", name: string) => {
