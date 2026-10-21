@@ -1706,7 +1706,12 @@ digest shrank to three sections and `/status` took over the counts. The pre-merg
 read it as a behaviour rule (a lesson at p 0.93), so the mapping moved into the rule rung: that was a design gap, not
 model variance. After the fix: sanity PASS, planted 10/10, real window 7 groups, about 0.13 proposals a day, suggested bar
 0.67 (from `jev_choice` wins only; `IMPROVE_BAR_P` stays 0.6 until Paco signs off). Live gate on a copy with live Jev and real
-seats: cases 1–9 PASS; case 10: PENDING. Suite 372 files / 5086 tests, typecheck and build clean. Review rounds found, among
-others, a quadratic code-word regex (17 s on 64k spaces), a tick that latched failed on one bad group, and a digest that
-leaked cards across chats; all fixed in-branch. Known gap: the digest offers no review taps, so no new `review_bad`
-signals until a review surface returns. Still Paco's: sign-off, merge, `dist/` rebuild, kickstart, the digest time.
+seats: cases 1–9 PASS on the final head. Case 10 (memory-write gate): kept-copy runs on main and branch showed the same
+mechanism — the pointer case's first distill (kimi k3) is refused `no_evidence` on both builds and passes only when the
+retry cites the first opinion — so the gate is flaky, not the branch. Four parallel reviewers and a codex whole-diff pass
+then found what per-task reviews could not (drafts skipping the memory backstops, forgeable skill frontmatter, outages
+consuming signals, Undo mislabelling `turn.handler`, an evening poll stall); three fix rounds closed them. Final suite
+373 files / 5121 tests, typecheck and build clean. Earlier review rounds found a quadratic code-word regex (17 s on 64k
+spaces), a tick that latched failed on one bad group, and a digest that leaked cards across chats. Known gaps: the digest
+offers no review taps, so no new `review_bad` signals until a review surface returns; a Jev timeout opens no incident.
+Still Paco's: ADR sign-off, the bar (0.6 or 0.67), kickstart, the digest time, DISARM_FLAGS / PROTECTED_FILES additions.

@@ -515,8 +515,11 @@ plan: [2026-10-21-ladder-2b-ii-improve-route.md](../superpowers/plans/2026-10-21
   clean turn's reply as the distill's reference.
 - **Evidence.** The pre-merge sanity run (`scripts/improve-sanity.mjs`, a 30-day copy, real Jev): PASS, planted 10/10, the
   real window 7 groups, about 0.13 proposals a day, suggested bar 0.67. `IMPROVE_BAR_P` stays the provisional 0.6 until
-  Paco signs off. Live gate `scripts/live-gate-improve-route.mjs` on a copy with live Jev and real seats: cases 1–9 PASS;
-  case 10 (the memory-write gate is unchanged): PENDING.
+  Paco signs off. Live gate `scripts/live-gate-improve-route.mjs` on a copy with live Jev and real seats: cases 1–9 PASS on
+  the final head (`abaa2e8`). Case 10 (the memory-write gate is unchanged): no branch effect found, but the gate itself is
+  flaky on main and branch alike — its pointer case depends on the distill seat's (kimi k3) retry citing the first opinion
+  (main 4/4, branch 2/6 over the runs, same seat and input size, the same first-attempt `no_evidence` on both), and its
+  agreement case on planner wording (failed once on each). Nothing on the memory path differs between the builds.
 - **Final fixes** (after the whole-diff review; commits `417f705`..`d6de183`):
   - *Drafts and the digest.* A lesson or fact draft passes the memory lane's own backstops before it can be a proposal
     (`checkLessonSide` on the rule and its AVOID, `checkFactSide` on a fact); a refused draft records `nothing` /

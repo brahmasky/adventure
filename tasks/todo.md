@@ -12,7 +12,7 @@ automatic effect is a `_pending` skill draft after a recurrence (one job starts 
 days); the rest are proposals, taps on the digest. The digest has three sections (improvements, proposals waiting, watch
 with failed-tick counts) and is scoped to its chat; `/status` keeps the counts plus the settle health line and Jev skips.
 Evidence: 372 files / 5086 tests passed, typecheck and build clean; improve-sanity on a 30-day copy PASS (planted 10/10, real
-window 7 groups, about 0.13 proposals a day, suggested bar 0.67); live gate `scripts/live-gate-improve-route.mjs`: cases 1–9 PASS; case 10: PENDING.
+window 7 groups, about 0.13 proposals a day, suggested bar 0.67); live gate `scripts/live-gate-improve-route.mjs`: cases 1–9 PASS on the final head; case 10 (memory-write gate): no branch effect, the gate is flaky on main too (pointer case rides the k3 distill retry).
 - [ ] Paco: sign off the bar (0.6 provisional vs 0.67 suggested) and the ADR 0030 amendment; merge; `dist/` rebuild; kickstart (check for a run in flight).
 - Known gap: the digest offers no review taps, so no new `review_bad` signals until a review surface returns.
 - Deferred: wiki handler (R5), model-route proposals (R10), `lesson_unfollowed` (R4). Next: stage 3.
