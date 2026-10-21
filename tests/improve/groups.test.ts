@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { buildImproveState, groupSignals, scopeOf, skillMentioned, toolSummaryOf, type RecurrenceInfo } from "../../src/improve/groups.js";
 import { RunStore, type ImproveSignalRow, type JevVerdictRow } from "../../src/run/run-store.js";
-import { SkillStore } from "../../src/skills/skill-store.js"; // drop the names a file does not use
-import { createTelegramTurn } from "../helpers/runs.js"; // drop whichever a file does not use
+import { SkillStore } from "../../src/skills/skill-store.js";
+import { createTelegramTurn } from "../helpers/runs.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -42,6 +42,10 @@ describe("groupSignals", () => {
     expect(g[3]!.recurrence).toBe(rec);
     expect(g[1]!.recurrence).toBeNull();
   });
+  it("two stale rows of the same signal stay two groups keyed by signal id, never merged", () => {
+    const g = groupSignals([row({ signal_id: 7, created_at: "2026-01-01T00:00:00.000Z" }), row({ signal_id: 8, created_at: "2026-01-02T00:00:00.000Z" })], () => verdict("answer"), new Map(), "2026-09-21T00:00:00.000Z");
+    expect(g.map((x) => [x.key, x.rows.length, x.stale])).toEqual([["stale|7", 1, true], ["stale|8", 1, true]]);
+  });
   it("a recurrence row whose cluster is not in today's set is stale (the window moved on)", () => {
     const g = groupSignals([row({ signal: "recurrence", value: "3", source_outcome_id: "rec:rec_gone:3" })], () => undefined, new Map(), "2026-01-01T00:00:00.000Z");
     expect(g[0]).toMatchObject({ stale: true, recurrence: null });
@@ -72,9 +76,15 @@ describe("buildImproveState", () => {
     s.insertMemorySaveTrigger(correcting, ["rule"], NOW);
     const r1 = row({ signal_id: 1, run_id: correcting, about_run_id: about });
     const r2 = row({ signal_id: 2, run_id: null, about_run_id: about, created_at: "2026-10-15T10:00:00.000Z" });
+    // neither of these shares r1's (signal, scope): a different signal, and a correction on a lookup-category run
+    const other = createTelegramTurn(s, "who won the match").run_id;
+    s.insertJevVerdict({ run_id: other, category: "lookup", breadth: null, reasoning: null, actions: null, sets_rule: null, rule_scope: null, lane: "answer", role: "default", effort: null, cascade: null,
+      save_outcome: "none", route_outcome: "fallback", reason: "jev_skipped", skip_reason: null, quoted_turn_id: null });
+    const r3 = row({ signal_id: 3, signal: "rating", value: "0", run_id: null, about_run_id: about });
+    const r4 = row({ signal_id: 4, run_id: null, about_run_id: other });
     const skills = new SkillStore({ root: mkdtempSync(join(tmpdir(), "hg-skills-")) });
     const g = groupSignals([r1], (id) => s.getJevVerdictForRun(id), new Map(), "2026-01-01T00:00:00.000Z")[0]!;
-    const state = buildImproveState(g, { store: s, env: { HOUGE_WIKI_ENABLED: "false" }, now: NOW, skills, redact: (t) => t.replace("483920", "‹secret›"), scheduleHints: new Map(), since14: [r1, r2] });
+    const state = buildImproveState(g, { store: s, env: { HOUGE_WIKI_ENABLED: "false" }, now: NOW, skills, redact: (t) => t.replace("483920", "‹secret›"), scheduleHints: new Map(), since14: [r1, r2, r3, r4] });
     expect(state).toMatchObject({ signal: "correction", value: "answer", scope: "answer", count: 1, count14d: 2, category: "answer", lane: "answer", capability: null, toolSummary: "none",
       lastImprovement: null, recurrence: null, alreadyAuthored: false, skillExists: false, wikiArmed: false, scheduleHint: null, stale: false, statedRuleSaved: true });
     expect(state.pacoText).not.toContain("483920");
@@ -93,5 +103,14 @@ describe("buildImproveState", () => {
     const rec: RecurrenceInfo = { clusterId: "rec_abc", turnIds: ["t1", "t2", "t3"], idempotencyKey: "answer:t1", texts: ["make the weekly-report", "weekly-report please", "weekly-report again"], category: "answer", spanDays: 1 };
     const gr = groupSignals([row({ signal: "recurrence", value: "3", source_outcome_id: "rec:rec_abc:3", about_run_id: null })], () => undefined, new Map([["rec:rec_abc", rec]]), "2026-01-01T00:00:00.000Z")[0]!;
     expect(buildImproveState(gr, { store: s, env: {}, now: NOW, skills, redact: (t) => t, scheduleHints: new Map(), since14: [] })).toMatchObject({ recurrence: { clusterId: "rec_abc", turnIds: ["t1", "t2", "t3"], idempotencyKey: "answer:t1" }, skillExists: true, alreadyAuthored: false, category: "answer" });
+  });
+  it("caps Paco's text at 500 code points, never splitting a surrogate pair", () => {
+    const s = RunStore.openInMemory();
+    const correcting = createTelegramTurn(s, `ok ${"😀".repeat(600)}`).run_id;
+    const skills = new SkillStore({ root: mkdtempSync(join(tmpdir(), "hg-skills-")) });
+    const g = groupSignals([row({ run_id: correcting, about_run_id: null })], () => undefined, new Map(), "2026-01-01T00:00:00.000Z")[0]!;
+    const state = buildImproveState(g, { store: s, env: {}, now: NOW, skills, redact: (t) => t, scheduleHints: new Map(), since14: [] });
+    expect(Array.from(state.pacoText)).toHaveLength(500);
+    expect(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(state.pacoText)).toBe(false);
   });
 });
