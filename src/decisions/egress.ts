@@ -83,10 +83,10 @@ const SHAPES: readonly RegExp[] = [/\b(?:sk|pk|rk)-[A-Za-z0-9_-]{16,}/g, /\b(?:g
 /**
  * 2b-ii §7: a standalone 6–8 digit run (dates such as 20261021 are over-masked, accepted) and a code after one or two code
  * words ("Verification code X1Y2Z3", senior B3); the value must carry a digit, so "code review" stays. `(?<![A-Za-z0-9])`
- * keeps "barcode" from matching.
+ * keeps "barcode" from matching, and leaves "passcode"/"passcodes" unmasked on purpose (not in the word list; spec scope).
  */
-const CODE_RUN = /(?<![\w.-])\d{6,8}(?![\w.-])/g;
-const CODE_WORD = /((?<![A-Za-z0-9])(?:code|OTP|verification|验证码|校验码|码)(?:\s+(?:code|OTP|verification))?(?:\s+is)?\s*[:：]?\s*)((?=[A-Za-z0-9]{0,7}\d)[A-Za-z0-9]{4,8})(?![A-Za-z0-9])/gi;
+const CODE_RUN = /(?<![\w.-])\d{6,8}(?![\w-]|\.\d)/g;
+const CODE_WORD = /((?<![A-Za-z0-9])(?:code|OTP|verification|验证码|校验码|码)(?:\s+(?:code|OTP|verification))?(?:\s+is)?\s*(?:[:：]\s*)?)((?=[A-Za-z0-9]{0,7}\d)[A-Za-z0-9]{4,8})(?![A-Za-z0-9])/gi;
 /** The scheme is bounded ({0,31}): unbounded, a long `[a-z0-9+.-]` run backtracked quadratically (security final M-1). */
 const URL_RE = /\b([a-z][a-z0-9+.-]{0,31}:\/\/)([^\s/?#@]+@)?([^\s/?#\]]+)([^\s?#\]]*)(\?[^\s#\]]*)?(#[^\s\]]*)?/gi;
 const PATH_RE = /(?<![\w+/=-])(?:~|\.\.?)?\/[\w.@%+:=-]+(?:\/[\w.@%+:=-]+)*/g;

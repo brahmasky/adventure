@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { brokerSpans, countNamedSecrets, isProse, KEY_MASK, linkWord, passageBlock, pathBlocked, pathOperands, proseRun, redactForImprove, redactForJudge, SECRET_MASK, secretKey, seedPhrase, splitEgress, splitPassages } from "../../src/decisions/egress.js";
+import { brokerSpans, countNamedSecrets, isProse, KEY_MASK, linkWord, passageBlock, pathBlocked, pathOperands, outOf, plannerOf, proseRun, redactForImprove, redactParts, redactForJudge, SECRET_MASK, secretKey, seedPhrase, splitEgress, splitPassages } from "../../src/decisions/egress.js";
 
 // Spec §7.0 (R11): every judged byte goes to TypeSafe after THIS redactor. Two halves, both binding: no seeded secret, nor
 // any 8-character fragment of one, may leave; and (invariant I1, Rev 5) the planner never receives, as judged, text Jev did
@@ -499,6 +499,12 @@ describe("egress scans stay linear on adversarial input", () => {
       expect(performance.now() - t).toBeLessThan(100);
     });
   }
+  it("codeShapes: a code word followed by 64 000 spaces finishes in < 100 ms (the separator must not backtrack quadratically)", () => {
+    redactForJudge("warm code 123456", { codeShapes: true });
+    const t = performance.now();
+    redactForJudge(`code${" ".repeat(64_000)}x`, { codeShapes: true });
+    expect(performance.now() - t).toBeLessThan(100);
+  });
 });
 
 // Spec 2b-ii §7 (codex D10): Paco's own words reach Jev, Tiny, the distill and the digest from durable data, so the turn's
@@ -519,14 +525,23 @@ describe("codeShapes", () => {
     expect(redactForJudge("v1.234567 build-654321x", o)).toBe("v1.234567 build-654321x");
     expect(redactForJudge("code review tomorrow", o)).toBe("code review tomorrow");
     expect(redactForJudge("your code is 483920", {})).toBe("your code is 483920");
+    expect(redactForJudge("rate 482913.5 today", o)).toBe("rate 482913.5 today");
+  });
+  it("masks a code that ends a sentence (a trailing period does not protect it)", () => {
+    expect(redactForJudge("Use 482913. It expires", { codeShapes: true })).toBe(`Use ${SECRET_MASK}. It expires`);
+  });
+  it("the planner copy carries the code mask too (mirrored, I1)", () => {
+    const parts = redactParts("your code is 483920 today", { codeShapes: true })!;
+    expect(outOf(parts)).toBe(`your code is ${SECRET_MASK} today`);
+    expect(plannerOf(parts)).toBe(outOf(parts));
   });
   it("a date-like run is over-masked (accepted in the spec)", () => {
     expect(redactForJudge("on 20261021 we met", { codeShapes: true })).toBe(`on ${SECRET_MASK} we met`);
   });
   it("redactForImprove = broker values + link tokens + code shapes over durable text", () => {
-    const store = { redactSecretValues: broker(["sk-liveSECRETvalue000000000"]) };
-    const out = redactForImprove(store, "key sk-liveSECRETvalue000000000, code 112233, see https://x.example/p/aB3dE5fG7hJ9kL1m?t=zz");
-    expect(out).not.toContain("sk-liveSECRET"); expect(out).not.toContain("112233"); expect(out).not.toContain("aB3dE5fG7hJ9kL1m");
+    const store = { redactSecretValues: broker(["hunter2pass"]) };
+    const out = redactForImprove(store, "key hunter2pass, code 112233, see https://x.example/p/aB3dE5fG7hJ9kL1m?t=zz");
+    expect(out).not.toContain("hunter2pass"); expect(out).not.toContain("112233"); expect(out).not.toContain("aB3dE5fG7hJ9kL1m");
     expect(out.startsWith("key ")).toBe(true); expect(out).toContain(", code "); expect(out).toContain(", see https://x.example/p/"); // the prose survives: not one whole-text mask (senior W18)
   });
 });
