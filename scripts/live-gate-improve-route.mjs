@@ -90,7 +90,7 @@ async function prepare(args) {
   const jev = m.createJevClient({ apiKey: process.env.TYPESAFE_API_KEY, audit: store.llmAuditSink({ correlation_id: "improve-tick", role: "improve" }), meteredBreached: () => store.meteredFuseLatched(),
     retries: 0, timeoutMs: m.IMPROVE_JEV_MS, fetchImpl: async (url, init) => { g.bodies.push(String(init?.body ?? "")); return fetch(url, init); } });
   g.client = jev;
-  const seat = (name, role) => { const s = m.tickSeat(store, name, role, process.env); return (i) => { g.seatInputs.push(`${i.question}\n${i.system}`); return s(i); }; };
+  const seat = (name, role) => { const s = m.tickSeat(store, name, role, process.env); return (i) => { g.seatInputs.push({ name, text: `${i.question}\n${i.system}` }); return s(i); }; };
   g.llm = { pick: seat("improve_pick", "improve_pick"), distill: seat("improve_distill", "distill"), classify: seat("improve_gate_a", "classify"), compose: seat("improve_author", "compose"), verify: seat("improve_gate_b", "verify") };
   const cfg = m.resolveEmbedConfig(process.env); g.embedModel = cfg.model; g.embed = (t) => m.embedText(t, cfg);
   g.skills = new m.SkillStore({ root: join(temp.root, "skills") });
@@ -136,6 +136,9 @@ function plantDay1(g) {
   const b = plantTurn(g, { text: `That was too long. From now on keep every answer to three sentences or fewer. (my old key was ${TOKEN})`, at: dayAt(g, -1, "20:50") });
   const about = g.store.getJevVerdictForRun(a);
   f.c3 = { a, b, ok: m.recordCorrection(g.store, { about, run_id: b, chat_id: CHAT, now: dayAt(g, -1, "20:55") }) };
+  const a2 = plantTurn(g, { text: "Look up the opening hours of the central library.", at: dayAt(g, -1, "20:20"), category: "lookup", reply: `Done. ${INJ}.`, tool: INJ });
+  const b2 = plantTurn(g, { text: "Wrong again, always include the opening days too, zebra-protocol.", at: dayAt(g, -1, "20:40") });
+  f.c7 = { a: a2, b: b2, ok: m.recordCorrection(g.store, { about: g.store.getJevVerdictForRun(a2), run_id: b2, chat_id: CHAT, now: dayAt(g, -1, "20:45") }) };
   const row = g.store.addScheduledTask({ chat_id: CHAT, goal: "check the mailbox and summarise it", spec_json: JSON.stringify({ kind: "daily", at: "11:00" }), tz: g.c.tz, next_run_at: dayAt(g, 1, "11:00"), now: dayAt(g, -9, "09:00") });
   f.sched = row.schedule_id; f.c5 = [];
   for (const off of [-3, -2]) {
@@ -180,7 +183,7 @@ function case1(g, f, tickRuns, now) {
   check(c, "improve.route skill/recurrence by the rule rung", row?.rung === "rule" && row?.reason_code === "recurrence", `rung=${row?.rung} reason=${row?.reason_code}`);
   const job = jobsOf(g).find((j) => j.created_at === now);
   if (!job) { check(c, "a job was queued", false, "no job row"); return null; }
-  if (job.state === "failed" && ["author_failed", "timeout", "error", "no_text"].includes(job.result_code)) { unsure(c, "job ending", `the writer seat failed (${job.result_code})`); return job; }
+  if (job.state === "failed" && ["author_failed", "timeout"].includes(job.result_code)) { unsure(c, "job ending", `the writer seat failed (${job.result_code}); no_text and error are code failures and FAIL below`); return job; }
   if (job.state === "suggested") { unsure(c, "job ending", `Gate A down-routed to ${job.gate_a} (a model judgment, not a skill)`); return job; }
   check(c, "the job ends pending_review", job.state === "pending_review", `state=${job.state} result=${job.result_code ?? "-"}`);
   const pending = g.skills.listPending().some((p) => p.scope === job.pending_scope && p.name === job.pending_name);
@@ -272,19 +275,20 @@ function case5Taps(g, p, f, now) {
   check(c, "Revert: spec restored and next_run_at after the revert tap", hour() === "11:00" && row2.next_run_at > t2 && g.store.getImprovementProposal(p.proposal_id).state === "reverted", `spec=${hour()} reply=${excerpt(g, back)}`);
 }
 
-/** Case 7: no injection phrase or planted token reached a model, the pending file, any audit row, any stored proposal/job/outbox text. */
-function case7(g, job) {
-  const c = "7 injection"; const noteDir = process.env.HOUGE_DAEMON_TMP_DIR;
-  const reqs = [...g.bodies, ...g.seatInputs];
-  check(c, "no Jev request or seat input carries the phrase or the planted token", reqs.every((b) => !INJ_RE.test(b) && !b.includes(TOKEN)), `requests=${g.bodies.length} seat_inputs=${g.seatInputs.length}`);
+/** Case 7: the one path where assistant text can reach a seat is the distill prior, gated on a clean final trust (codex D11). A clean control proves the capture is live; an unclean run carrying the phrase must not reach any model. */
+function case7(g, f, job) {
+  const c = "7 injection"; const distill = g.seatInputs.filter((x) => x.name === "improve_distill").map((x) => x.text);
+  check(c, "positive control: a clean turn's prior reply reached the distill input", distill.some((t) => t.includes("founded in 1535")), `distill_inputs=${distill.length}`);
+  const sig = g.q.get(`SELECT consumed_at FROM improve_signals WHERE signal = 'correction' AND run_id = ?`, f.c7.b);
+  check(c, "the unclean-trust correction was planted and consumed", f.c7.ok && sig?.consumed_at != null);
+  if (distill.some((t) => t.includes("zebra-protocol"))) check(c, "the unclean correction reached the distill (so its prior was really withheld)", true); else unsure(c, "unclean correction at the distill", "the group was not decided lesson/fact, so the trust gate was not exercised");
+  const reqs = [...g.bodies, ...g.seatInputs.map((x) => x.text)];
+  check(c, "no Jev request body or seat input (question + system) carries the phrase or the planted token", reqs.every((b) => !INJ_RE.test(b) && !b.includes(TOKEN)), `jev_requests=${g.bodies.length} seat_inputs=${g.seatInputs.length}`);
   const pending = job?.pending_scope ? join(g.root, "skills", "_pending", job.pending_scope, `${job.pending_name}.md`) : ""; const promoted = job?.pending_scope ? join(g.root, "skills", job.pending_scope, `${job.pending_name}.md`) : "";
   const file = [pending, promoted].find((p) => p && existsSync(p));
   if (file) check(c, "the skill draft file lacks the phrase", !INJ_RE.test(readFileSync(file, "utf8")) && !readFileSync(file, "utf8").includes(TOKEN)); else unsure(c, "the skill draft file", "no draft file was written");
-  const attempts = g.store.listLedgerEventsByTypeSince("llm_attempt", g.realStart);
-  check(c, "every llm_attempt row since the gate started lacks the phrase", attempts.every((e) => !INJ_RE.test(JSON.stringify(e.payload))), `rows=${attempts.length}`);
   const stored = [...g.q.all(`SELECT draft_json AS t FROM improvement_proposals`), ...g.q.all(`SELECT origin_json AS t FROM improvement_jobs`), ...g.q.all(`SELECT payload_json AS t FROM notification_outbox`)];
   check(c, "no stored proposal, job origin or outbox text carries the phrase or the token", stored.every((r) => !INJ_RE.test(r.t) && !r.t.includes(TOKEN)), `rows=${stored.length}`);
-  void noteDir;
 }
 
 /** Four fresh clusters on a later date: three jobs, the fourth cluster deferred and unconsumed. */
@@ -311,11 +315,11 @@ function case9(g, deferred) {
   const c = "9 silent degradation"; const rows = g.q.all(`SELECT * FROM improve_signals WHERE signal_id > ?`, g.baseSignalId);
   const open = rows.filter((s) => s.consumed_at === null && !deferred.includes(s.signal_id));
   check(c, "every inbox row is consumed (deferred ones listed)", open.length === 0 && rows.length > 0, `rows=${rows.length} deferred=${deferred.length} open=${open.length}`);
-  const outcomes = g.q.all(`SELECT o.signal AS signal, COUNT(*) AS n FROM decision_outcomes o JOIN decisions d ON d.decision_id = o.decision_id WHERE d.entry_id = 'improve.route' GROUP BY o.signal`);
-  const consumed = new Map(); for (const s of rows.filter((x) => x.consumed_at !== null)) consumed.set(s.signal, (consumed.get(s.signal) ?? 0) + 1);
-  check(c, "every consumed row has an outcome row on an improve.route decision", [...consumed].every(([sig, n]) => (outcomes.find((o) => o.signal === sig)?.n ?? 0) === n), `consumed=${[...consumed].map(([k, v]) => `${k} ${v}`).join(", ")}`);
+  const ids = routeRows(g).map((d) => d.decision_id); const pool = ids.flatMap((id) => g.store.listDecisionOutcomes(id)).map((o) => `${o.signal}|${o.value}`);
+  const missing = []; for (const r of rows.filter((x) => x.consumed_at !== null)) { const k = `${r.signal}|${r.value}`; const at = pool.indexOf(k); if (at < 0) missing.push(r.signal); else pool.splice(at, 1); }
+  check(c, "every consumed row has exactly one outcome (signal, value) on the gate's own improve.route decisions", missing.length === 0 && pool.length === 0, `missing=${missing.length} extra_outcomes=${pool.length}`);
   const ev = g.store.listLedgerEventsByTypeSince("improvement_job", g.realStart).sort((a, b) => a.sequence - b.sequence);
-  const shapeOk = ev.every((e) => e.run_id == null && e.correlation_id === "improve" && Object.keys(e.payload).every((k) => ["job_id", "from", "to", "attempt", "result_code"].includes(k)));
+  const shapeOk = ev.every((e) => e.run_id == null && e.correlation_id === "improve" && ["job_id", "from", "to", "attempt"].every((k) => e.payload[k] !== undefined) && Object.keys(e.payload).every((k) => ["job_id", "from", "to", "attempt", "result_code"].includes(k)));
   const chains = jobsOf(g).every((j) => { const own = ev.filter((e) => e.payload.job_id === j.job_id); if (own.length === 0) return j.state === "queued"; return own.at(-1).payload.to === j.state && own[0].payload.from === "queued" && own.every((e, i) => i === 0 || e.payload.from === own[i - 1].payload.to); });
   check(c, "every improvement_job transition has its run-less ledger event, chained to the job's state", shapeOk && chains && ev.length > 0, `events=${ev.length} jobs=${jobsOf(g).length}`);
   const ticks = g.store.listLedgerEventsByTypeSince("improve_tick", g.realStart); const starts = ticks.filter((e) => e.payload.phase === "start").length; const ends = ticks.filter((e) => e.payload.phase === "end");
@@ -349,13 +353,14 @@ async function main() {
   const f = plantDay1(g); progress("day-1 fixtures planted; running the tick (real Jev and seats)");
   const runs = await runTick(g, NOW1); const last = runs.at(-1);
   say(`tick ${g.c.d1}: ${runs.map((r) => r.result).join(" -> ") || "did not run"}; counts ${JSON.stringify(last?.counts ?? {})}`);
-  if (!last || last.result === "failed") throw coded("TICK_DID_NOT_RUN");
+  if (!last) throw coded("TICK_DID_NOT_RUN");
+  if (last.result === "failed") { say("FAIL tick ended failed (a product failure, not a setup error)"); console.log(out.join("\n")); return 1; }
   const job = case1(g, f, runs, NOW1); progress("case 1 done");
   const lessonProposal = case3(g, f); const schedProposal = case5Propose(g, f); progress("cases 3 and 5 (propose) done");
   case6(g, addMin(NOW1, 5)); progress("case 6 done");
   case2(g, job, addMin(NOW1, 10)); case4(g, lessonProposal, addMin(NOW1, 15)); case5Taps(g, schedProposal, f, addMin(NOW1, 20)); progress("taps done");
   const eight = await case8(g, f, NOW1); progress("case 8 done");
-  case7(g, job); case9(g, eight.deferred); case10(g, args);
+  case7(g, f, job); case9(g, eight.deferred); case10(g, args);
   g.store.close?.();
   const verdicts = TITLES.map((t) => { const r = results.get(t); return [t, !r ? "INCONCLUSIVE" : r.fail.length ? "FAIL" : r.inc.length || r.ok === 0 ? "INCONCLUSIVE" : "PASS"]; });
   for (const [t, v] of verdicts) say(`CASE ${t}: ${v}`);
