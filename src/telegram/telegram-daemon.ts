@@ -26,6 +26,7 @@ import { IMPROVE_JEV_MS } from "../decisions/entries/improve-route.js";
 import { runImproveTick } from "../improve/tick.js";
 import { createJevClient } from "../jev/jev-client.js";
 import { evolutionLaneSettled, evolutionLaneSnapshot } from "../core/evolution-lane.js";
+import { reconcileJobsAtBoot, skillJobHooks } from "../core/skill-job.js";
 import type { TelegramAllowlist } from "../domain/types.js";
 import { Gateway } from "../gateway/gateway.js";
 import { warnUnknownJevLanesOff } from "../jev/jev-flags.js";
@@ -264,6 +265,12 @@ export async function runTelegramDaemon(
   const marker = consumeReloadMarkerAtBoot(options.store);
   notifyReloadOnBoot(options, marker);
   const bootId = recordBoot(options, marker, startedAt);
+  try { // the evolution lane is in-memory: a job left running by the last process can never finish (2b-ii §5.2)
+    reconcileJobsAtBoot(options.store, new SkillStore({ root: join(options.projectRoot, "skills") }),
+      options.allowlist.chats[0] ? String(options.allowlist.chats[0].telegram_chat_id) : null, startedAt);
+  } catch (error) {
+    console.error(`[telegram-daemon] improvement job boot reconcile failed: ${errorCode(error)}`);
+  }
   // the retry step first: a reply that went stale while the daemon was down is abandoned before this flush can send it
   await flushLogged({ retry: true }); // best-effort: the poll loop re-dispatches queued notifications anyway
 
@@ -535,7 +542,7 @@ async function runImproveTickSafe(options: RunTelegramDaemonOptions, worker: Cor
     await runImproveTick({ store: options.store, env: process.env, now, signal: options.stopSignal, chatId, client,
       llm: { pick: tickLlm(options, "improve_pick", "improve_pick", roles), distill: tickLlm(options, "improve_distill", "distill", roles), classify: tickLlm(options, "improve_gate_a", "classify", roles),
         compose: tickLlm(options, "improve_author", "compose", roles), verify: tickLlm(options, "improve_gate_b", "verify", roles) },
-      embed: (text) => embedText(text, cfg), embedModel: cfg.model, skills: new SkillStore({ root: join(options.projectRoot, "skills") }) });
+      embed: (text) => embedText(text, cfg), embedModel: cfg.model, skills: new SkillStore({ root: join(options.projectRoot, "skills") }), jobs: skillJobHooks });
   } catch (error) {
     console.error(`[telegram-daemon] improve tick failed: ${errorCode(error)}`);
   }
