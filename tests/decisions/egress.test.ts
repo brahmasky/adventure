@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { brokerSpans, countNamedSecrets, isProse, KEY_MASK, linkWord, passageBlock, pathBlocked, pathOperands, proseRun, redactForJudge, SECRET_MASK, secretKey, seedPhrase, splitEgress, splitPassages } from "../../src/decisions/egress.js";
+import { brokerSpans, countNamedSecrets, isProse, KEY_MASK, linkWord, passageBlock, pathBlocked, pathOperands, proseRun, redactForImprove, redactForJudge, SECRET_MASK, secretKey, seedPhrase, splitEgress, splitPassages } from "../../src/decisions/egress.js";
 
 // Spec §7.0 (R11): every judged byte goes to TypeSafe after THIS redactor. Two halves, both binding: no seeded secret, nor
 // any 8-character fragment of one, may leave; and (invariant I1, Rev 5) the planner never receives, as judged, text Jev did
@@ -499,4 +499,34 @@ describe("egress scans stay linear on adversarial input", () => {
       expect(performance.now() - t).toBeLessThan(100);
     });
   }
+});
+
+// Spec 2b-ii §7 (codex D10): Paco's own words reach Jev, Tiny, the distill and the digest from durable data, so the turn's
+// extracted codes are gone; `codeShapes` masks what an extracted code looks like — a standalone 6–8 digit run, or 4–8
+// alphanumerics after a code word — mirrored like every mask; off by default so no existing caller changes.
+describe("codeShapes", () => {
+  it("masks a standalone 6–8 digit run and a code after a code word (en, zh), case-insensitive", () => {
+    const o = { codeShapes: true };
+    expect(redactForJudge("your code is 483920 today", o)).toBe(`your code is ${SECRET_MASK} today`);
+    expect(redactForJudge("OTP: A7K9QZ sent", o)).toBe(`OTP: ${SECRET_MASK} sent`);
+    expect(redactForJudge("验证码 918273 已发送", o)).toBe(`验证码 ${SECRET_MASK} 已发送`);
+    expect(redactForJudge("Verification code X1Y2Z3", o)).toBe(`Verification code ${SECRET_MASK}`);   // two code words in a row (senior B3)
+    expect(redactForJudge("the code: ab12cd", o)).toBe(`the code: ${SECRET_MASK}`);
+  });
+  it("leaves a 5-digit and a 9-digit run, a run inside a word or a version, a word after a code word (no digit), and everything when the option is off", () => {
+    const o = { codeShapes: true };
+    expect(redactForJudge("room 12345 and 123456789", o)).toBe("room 12345 and 123456789");
+    expect(redactForJudge("v1.234567 build-654321x", o)).toBe("v1.234567 build-654321x");
+    expect(redactForJudge("code review tomorrow", o)).toBe("code review tomorrow");
+    expect(redactForJudge("your code is 483920", {})).toBe("your code is 483920");
+  });
+  it("a date-like run is over-masked (accepted in the spec)", () => {
+    expect(redactForJudge("on 20261021 we met", { codeShapes: true })).toBe(`on ${SECRET_MASK} we met`);
+  });
+  it("redactForImprove = broker values + link tokens + code shapes over durable text", () => {
+    const store = { redactSecretValues: broker(["sk-liveSECRETvalue000000000"]) };
+    const out = redactForImprove(store, "key sk-liveSECRETvalue000000000, code 112233, see https://x.example/p/aB3dE5fG7hJ9kL1m?t=zz");
+    expect(out).not.toContain("sk-liveSECRET"); expect(out).not.toContain("112233"); expect(out).not.toContain("aB3dE5fG7hJ9kL1m");
+    expect(out.startsWith("key ")).toBe(true); expect(out).toContain(", code "); expect(out).toContain(", see https://x.example/p/"); // the prose survives: not one whole-text mask (senior W18)
+  });
 });

@@ -1,6 +1,7 @@
 import { resolve } from "node:path";
 import { REDACTED_PLACEHOLDER } from "../config/secret-broker.js";
 import { isCredentialPath } from "../omp/protected-paths.js";
+import type { RunStore } from "../run/run-store.js";
 
 /**
  * The judge redactor (spec §7.0), in the spec's order on the WHOLE text before any split (controller ruling 1, Rev 4):
@@ -36,6 +37,8 @@ export interface RedactOptions {
   extracted?: readonly string[];
   /** The extract channel (I4): every link path segment and query value that is not a plain word or file name is masked. */
   linkTokens?: boolean;
+  /** 2b-ii §7 codeShapes: a one-time code in free text — a standalone run of 6–8 digits, or 4–8 alphanumerics after a code word. Mirrored. */
+  codeShapes?: boolean;
 }
 /** One piece of the text: masked (atomic; `mirror`: the planner gets the mask too), settled (kept by a rule) or open. */
 export interface Part { raw: string; out: string; mask: boolean; mirror?: boolean; settled?: true; oversize?: true; rewrite?: true; block?: EgressBlock }
@@ -77,6 +80,13 @@ const COOKIE_LINE = /^((?:[^\t\n]*\t){6})([^\t\n]+)$/gm;
 const AUTH_SCHEME = /\b(Bearer\s+|Basic\s+)([A-Za-z0-9._~+/=-]{8,})/gi;
 const SHAPES: readonly RegExp[] = [/\b(?:sk|pk|rk)-[A-Za-z0-9_-]{16,}/g, /\b(?:ghp|gho|ghu|ghs|ghr|github_pat)_[A-Za-z0-9_]{20,}/g,
   /\bxox[abprs]-[A-Za-z0-9-]{10,}/g, /\bAKIA[0-9A-Z]{16}\b/g, /\bAIza[0-9A-Za-z_-]{35}\b/g, /\bwhsec_[A-Za-z0-9]{16,}/g];
+/**
+ * 2b-ii §7: a standalone 6–8 digit run (dates such as 20261021 are over-masked, accepted) and a code after one or two code
+ * words ("Verification code X1Y2Z3", senior B3); the value must carry a digit, so "code review" stays. `(?<![A-Za-z0-9])`
+ * keeps "barcode" from matching.
+ */
+const CODE_RUN = /(?<![\w.-])\d{6,8}(?![\w.-])/g;
+const CODE_WORD = /((?<![A-Za-z0-9])(?:code|OTP|verification|验证码|校验码|码)(?:\s+(?:code|OTP|verification))?(?:\s+is)?\s*[:：]?\s*)((?=[A-Za-z0-9]{0,7}\d)[A-Za-z0-9]{4,8})(?![A-Za-z0-9])/gi;
 /** The scheme is bounded ({0,31}): unbounded, a long `[a-z0-9+.-]` run backtracked quadratically (security final M-1). */
 const URL_RE = /\b([a-z][a-z0-9+.-]{0,31}:\/\/)([^\s/?#@]+@)?([^\s/?#\]]+)([^\s?#\]]*)(\?[^\s#\]]*)?(#[^\s\]]*)?/gi;
 const PATH_RE = /(?<![\w+/=-])(?:~|\.\.?)?\/[\w.@%+:=-]+(?:\/[\w.@%+:=-]+)*/g;
@@ -299,12 +309,19 @@ function shapeSpans(k: Marks, link: boolean): void {
   k.scan(B64_RUN, (m) => [opaqueRun(m[0], 32) ? shaped(m[0]) : keep(m[0])], { skipClaimed: true });
 }
 
+/** `codeShapes` (2b-ii §7): every mask mirrored, so the planner copy never carries a code Jev did not see. */
+function codeSpans(k: Marks): void {
+  k.scan(CODE_RUN, (m) => [masked(m[0], true)]);
+  k.scan(CODE_WORD, (m) => [keep(m[1]!), masked(m[2]!, true)]); // two groups: the code word(s) + separator, the value (senior N1)
+}
+
 /** The whole text as parts, masks atomic, in the spec's order. Null: alignment with the broker failed (fail closed). */
 export function redactParts(text: string, o: RedactOptions = {}): Part[] | null {
   const k = new Marks(text);
   if (!knownSpans(k, o)) return null;
   namedSpans(k);
   shapeSpans(k, o.linkTokens === true);
+  if (o.codeShapes === true) codeSpans(k);
   const parts = toParts(text, k.spans).map((p) => (p.rewrite ? maskDecoded(p, o) : p));
   return o.linkTokens === true ? linkFieldRaw(text, parts) : parts;
 }
@@ -356,6 +373,15 @@ export const plannerOf = (parts: readonly Part[]): string => parts.map((p) => (p
 export function redactForJudge(text: string, o: RedactOptions = {}): string {
   const parts = redactParts(text, o);
   return parts === null ? SECRET_MASK : outOf(parts);
+}
+
+/**
+ * 2b-ii §7 (codex D10): the one redactor for improvement text read from durable rows (a turn's extracted codes and links
+ * live only on the live turn): the broker's values, link tokens and code shapes. Jev, the Tiny pick, the distill's
+ * prior, and every draft and evidence line the digest or a card shows go through it.
+ */
+export function redactForImprove(store: Pick<RunStore, "redactSecretValues">, text: string): string {
+  return redactForJudge(text, { brokerRedact: (s) => store.redactSecretValues(s), linkTokens: true, codeShapes: true });
 }
 
 /** A path: standard-alphabet base64 runs first (route words trimmed off both ends), then opaque segment runs. */
