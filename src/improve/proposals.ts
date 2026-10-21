@@ -14,6 +14,9 @@ import { scheduleDraft, type ScheduleHint } from "./schedule-shift.js";
 /** 2b-ii §5.1: proposals are drafted at proposal time, code-built or distilled from Paco's words; the digest shows the draft beside its evidence. */
 export const PROPOSAL_TTL_DAYS = 14;
 export interface Draft { target: ProposalTarget; draft_json: string; evidence: string }
+/** Final fix D1: the distill seat call itself failed (an outage), as opposed to a parsed answer with nothing usable (null). */
+export const DRAFT_SEAT_FAILED = "seat_failed" as const;
+export type DraftResult = Draft | null | typeof DRAFT_SEAT_FAILED;
 export interface DraftDeps { store: RunStore; env: NodeJS.ProcessEnv; now: string; tz: string; distill: TickLlm; redact: (t: string) => string; scheduleHints?: ReadonlyMap<string, ScheduleHint> }
 const LOCKED: ReadonlySet<string> = new Set(LOCKED_ENTRY_IDS);
 const RESEARCH: ReadonlySet<string> = new Set(["lookup", "research"]);
@@ -30,7 +33,7 @@ export function evidenceOf(g: SignalGroup, s: ImproveState, tz: string): string 
   return `${s.count14d} ${s.signal} on ${s.scope} in 14 days`;
 }
 
-export async function draftFor(target: ImproveTarget, g: SignalGroup, s: ImproveState, d: DraftDeps): Promise<Draft | null> {
+export async function draftFor(target: ImproveTarget, g: SignalGroup, s: ImproveState, d: DraftDeps): Promise<DraftResult> {
   const evidence = evidenceOf(g, s, d.tz);
   switch (target) {
     case "lesson": case "fact": return distillDraft(target, g, s, d, evidence);
@@ -55,13 +58,13 @@ function priorOf(store: RunStore, run_id: string | null, redact: (t: string) => 
   return clean ? Array.from(redact(store.assistantTurnTextForRun(run_id) ?? "")).slice(0, PACO_TEXT_CAP).join("") : ""; // capped like Paco's text
 }
 
-async function distillDraft(target: "lesson" | "fact", g: SignalGroup, s: ImproveState, d: DraftDeps, evidence: string): Promise<Draft | null> {
+async function distillDraft(target: "lesson" | "fact", g: SignalGroup, s: ImproveState, d: DraftDeps, evidence: string): Promise<DraftResult> {
   const instruction = s.redacted.pacoText;
   if (instruction.trim().length === 0) return null;
   const prior = priorOf(d.store, g.newest.about_run_id, d.redact);
   const question = buildMemoryDistillQuestion({ thread: [instruction], prior, instruction, scope: lessonScopeFor(s.category), kind: target === "lesson" ? "rule" : "fact" });
   const r = await d.distill({ question, system: MEMORY_DISTILL_DISCIPLINE });
-  if (!r.ok) return null;
+  if (!r.ok) return DRAFT_SEAT_FAILED;
   const m = parseMemoryDistillResult(r.answer);
   if (m.failed || m.kind === "none") return null;
   return target === "lesson" ? lessonDraft(m, instruction, prior, s, d, evidence) : factDraft(m, instruction, prior, g, d, evidence);

@@ -5,6 +5,7 @@ import { TRIAGE_OVERRIDE_LIMIT, TRIAGE_OVERRIDE_WINDOW_DAYS, triageOverrideSince
 import { openAlertedIncident } from "../run/incident-alert.js";
 import type { RunStore } from "../run/run-store.js";
 import { recordSaveUndone, savedMemoryKindOf, recordTapOutcome } from "../decisions/tap-outcomes.js";
+import { revertImproveSave } from "./improve-undo.js";
 import { recordCorrection, skipImproveSignal } from "../decisions/improve-signals.js";
 
 /** Lane card taps (ADR 0029 §5.6, stage B §6). Undo is compare-and-set; "Dig deeper" is the override label. */
@@ -27,7 +28,8 @@ export function handleMemLaneUndo(store: RunStore, event: TypedTaskEvent): Gatew
       return { ok: false, error: { code: LESSON_CHANGE_NOT_FOUND, message: "No such lesson change in this chat" } };
     }
     const r = store.undoLessonChange(change_id); // writes lesson_change_undone inside its own transaction
-    if (r.status === "undone" && change.run_id) recordSaveUndone(store, change.run_id); // Addition A; spec 2026-10-15 §9
+    // final fix D4: an improve-sourced lesson moves its proposal to reverted; turn.handler never saved it, so it gets no label
+    if (r.status === "undone" && !revertImproveSave(store, change_id) && change.run_id) recordSaveUndone(store, change.run_id); // Addition A; spec 2026-10-15 §9
     const text = r.status === "undone"
       ? `↩️ Undone: lesson #${change.new_id} retired, restored #${r.restored.join(", #") || "—"}${r.skipped.length ? ` (left as is: #${r.skipped.join(", #")})` : ""}.`
       : r.status === "changed_since" ? LESSON_CHANGED_SINCE_TEXT : LESSON_ALREADY_UNDONE_TEXT;

@@ -183,7 +183,8 @@ export const DIGEST_WAIT_FOR_TICK_MS = 30 * 60_000;
 export const DIGEST_PR_PREFIX = "dec:pr:";
 export const DIGEST_LM_PREFIX = "dec:lm:";
 const LESSON_NOT_HOLDING = "lesson did not hold";
-const SILENT_FAMILIES = ["review_unsure", "lesson_unfollowed", "dig_deeper"] as const;
+// final fix D7: review_bad has no producer since the ✅/❌ surface left the digest; Watch names it while it stays dark
+const SILENT_FAMILIES = ["review_unsure", "lesson_unfollowed", "dig_deeper", "review_bad"] as const;
 
 export interface Digest { text: string; button_rows: NotificationButton[][]; offered: { proposal_ids: string[]; job_ids: string[] } }
 interface Section { lines: string[]; button_rows: NotificationButton[][] }
@@ -306,6 +307,7 @@ export function watchLines(store: RunStore, now: string): string[] {
     [c.corrections + c.abandoned + c.rate, `· corrections ${c.corrections} · abandoned ${c.abandoned} · clarify rate ${c.rate}%`],
     [skipped.size, `· unattached: ${[...skipped].sort(([a], [b]) => a.localeCompare(b)).map(([k, n]) => `${k} ${n}`).join(", ")}`],
     [sumDetail(ticks, "deferred"), `· deferred ${sumDetail(ticks, "deferred")}`],
+    [sumDetail(ticks, "deferred_outage"), `· deferred on an outage ${sumDetail(ticks, "deferred_outage")}`], // final fix D1: kept for retry, never dropped
     [silent.length, `· silent: ${silent.join(", ")}`],
     [reasons("wiki_disarmed"), `· wiki disarmed: ${reasons("wiki_disarmed")} topics`],
     [embedDays, `· embeddings unavailable: ${embedDays} days`],

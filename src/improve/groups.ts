@@ -1,4 +1,5 @@
 import { resolveWikiEnabled } from "../capabilities/wiki.js";
+import { cosineSimilarity } from "../llm/embeddings.js";
 import type { ImproveState } from "../decisions/entries/improve-route.js";
 import type { DecisionSignal } from "../decisions/types.js";
 import type { Category } from "../jev/questions/tree.js";
@@ -9,6 +10,8 @@ import type { SkillStore } from "../skills/skill-store.js";
 /** 2b-ii §3.2 grouping and §4.2 the state. Everything here is code-built; the only text is Paco's, through the redactor. */
 export const PACO_TEXT_CAP = 500;
 export const JOB_OVERLAP_DAYS = 30;
+/** Final fix D6: a habit re-drafted every two weeks is the same theme; a job of the category this recent with a like origin turn counts. */
+export const JOB_THEME_DAYS = 90;
 export const RECURRENCE_WINDOW_DAYS = 14;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const CATEGORY_SCOPED: ReadonlySet<DecisionSignal> = new Set(["correction", "think_harder", "dig_deeper", "lesson_undone"]);
@@ -59,8 +62,20 @@ export function skillMentioned(metas: readonly { name: string }[], texts: readon
   return metas.some((m) => { const re = new RegExp(`(^|[^a-z0-9_-])${m.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^a-z0-9_-]|$)`); return lowered.some((t) => re.test(t)); });
 }
 
+/** Final fix D6: any origin turn of a same-category job in JOB_THEME_DAYS embeds at or over the gate with any turn of the cluster. */
+function likeRecentJob(d: StateDeps, rec: RecurrenceInfo): boolean {
+  if (d.recurrenceGate === undefined) return false;
+  const since = new Date(Date.parse(d.now) - JOB_THEME_DAYS * DAY_MS).toISOString();
+  const past = [...d.store.getTurnEmbeddings(d.store.jobOriginTurnIds(rec.category, since)).values()];
+  if (past.length === 0) return false;
+  const mine = [...d.store.getTurnEmbeddings(rec.turnIds).values()];
+  return mine.some((v) => past.some((p) => p.length === v.length && cosineSimilarity(v, p) >= d.recurrenceGate!));
+}
+
 export interface StateDeps { store: RunStore; env: NodeJS.ProcessEnv; now: string; skills: SkillStore; redact: (text: string) => string;
-  scheduleHints: ReadonlyMap<string, { schedule_id: string; hour: number }>; since14: readonly ImproveSignalRow[] }
+  scheduleHints: ReadonlyMap<string, { schedule_id: string; hour: number }>; since14: readonly ImproveSignalRow[];
+  /** The recurrence cosine gate; with it, a cluster like a recent job's origin is already authored (final fix D6). Unset: turn-id overlap only. */
+  recurrenceGate?: number }
 
 const capPoints = (s: string, n: number): string => Array.from(s).slice(0, n).join("");
 
@@ -81,7 +96,7 @@ export function buildImproveState(g: SignalGroup, d: StateDeps): ImproveState {
     pacoText, toolSummary: about ? toolSummaryOf(d.store.getLedgerEvents(about)) : "none",
     lastImprovement: last ? { target: last.target, ageDays: Math.floor((Date.parse(d.now) - Date.parse(last.at)) / DAY_MS) } : null,
     recurrence: g.recurrence ? { clusterId: g.recurrence.clusterId, turnIds: g.recurrence.turnIds, idempotencyKey: g.recurrence.idempotencyKey, spanDays: g.recurrence.spanDays } : null,
-    alreadyAuthored: g.recurrence ? d.store.jobOverlapsTurns(g.recurrence.turnIds, overlapSince) : false,
+    alreadyAuthored: g.recurrence ? d.store.jobOverlapsTurns(g.recurrence.turnIds, overlapSince) || likeRecentJob(d, g.recurrence) : false,
     skillExists: g.recurrence ? skillMentioned(d.skills.list(), g.recurrence.texts) : false,
     wikiArmed: resolveWikiEnabled(d.env),
     scheduleHint: g.signal === "approval_expired" ? d.scheduleHints.get(g.value) ?? null : null,

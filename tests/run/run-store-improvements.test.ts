@@ -15,15 +15,15 @@ describe("improvement_proposals", () => {
     const s = RunStore.openInMemory();
     const id = proposal(s);
     expect(id).toMatch(/^pr_/);
-    expect(s.openProposalExists("lesson", "answer")).toBe(true);
-    expect(s.openProposalExists("fact", "answer")).toBe(false);
+    expect(s.proposalBlocks("lesson", "answer", NOW)).toBe(true);
+    expect(s.proposalBlocks("fact", "answer", NOW)).toBe(false);
     s.markProposalsOffered([id], NOW);
     s.markProposalsOffered([id], "2026-10-22T10:00:00.000Z");
     expect(s.getImprovementProposal(id)?.offered_at).toBe(NOW);
     expect(s.transitionProposal({ proposal_id: id, from: ["accepted"], to: "reverted", now: NOW })).toBe(false);
     expect(s.transitionProposal({ proposal_id: id, from: ["open"], to: "accepted", now: NOW, result_json: JSON.stringify({ change_id: "lc_1" }) })).toBe(true);
     expect(s.getImprovementProposal(id)).toMatchObject({ state: "accepted", resolved_at: NOW, result_json: JSON.stringify({ change_id: "lc_1" }) });
-    expect(s.openProposalExists("lesson", "answer")).toBe(false);
+    expect(s.proposalBlocks("lesson", "answer", NOW)).toBe(false);
     expect(s.listProposalsResolvedSince("2026-10-21T00:00:00.000Z").map((p) => p.proposal_id)).toEqual([id]);
     expect(s.lastAcceptedImprovement("answer")).toEqual({ target: "lesson", at: NOW });
     expect(s.countProposalsByState("2026-10-01T00:00:00.000Z")).toMatchObject({ open: 0, accepted: 1, dismissed: 0, expired: 0, reverted: 0 });

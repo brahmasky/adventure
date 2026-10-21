@@ -5199,8 +5199,14 @@ export class RunStore {
   listOpenProposals(): ImprovementProposalRow[] {
     return this.db.prepare(`SELECT * FROM improvement_proposals WHERE state = 'open' ORDER BY created_at ASC, rowid ASC`).all<ImprovementProposalRow>();
   }
-  openProposalExists(target: ProposalTarget, scope: string): boolean {
-    return this.db.prepare(`SELECT 1 AS hit FROM improvement_proposals WHERE target = ? AND scope = ? AND state = 'open' LIMIT 1`).get<{ hit: number }>(target, scope) !== undefined;
+  /** Final fix D3: an open proposal on (target, scope), or one Paco dismissed or that expired after `sinceIso`, blocks a new one (Dismiss sticks). */
+  proposalBlocks(target: ProposalTarget, scope: string, sinceIso: string): boolean {
+    return this.db.prepare(`SELECT 1 AS hit FROM improvement_proposals WHERE target = ? AND scope = ? AND (state = 'open' OR (state IN ('dismissed', 'expired') AND resolved_at > ?)) LIMIT 1`)
+      .get<{ hit: number }>(target, scope, sinceIso) !== undefined;
+  }
+  /** Final fix D4: the improvement proposal whose Accept made this lesson/memory change (its result_json names the change), if any. */
+  proposalByChange(change_id: string): ImprovementProposalRow | undefined {
+    return this.db.prepare(`SELECT * FROM improvement_proposals WHERE state IN ('accepted', 'reverted') AND json_extract(result_json, '$.change_id') = ? LIMIT 1`).get<ImprovementProposalRow>(change_id);
   }
   /** Fenced on the from states (§5.1: a tap acts only on the state named for it); the result (ids the digest shows) is kept with the state. */
   transitionProposal(i: { proposal_id: string; from: readonly ProposalState[]; to: ProposalState; now: string; result_json?: string }): boolean {
@@ -5257,6 +5263,11 @@ export class RunStore {
     return this.db.prepare(`
       SELECT 1 AS hit FROM improvement_jobs j, json_each(j.origin_json, '$.turn_ids') t WHERE j.created_at > ? AND t.value IN (${turn_ids.map(() => "?").join(", ")}) LIMIT 1
     `).get<{ hit: number }>(sinceIso, ...turn_ids) !== undefined;
+  }
+  /** Final fix D6: the origin turn ids of the jobs of one category created after `sinceIso` (any state). */
+  jobOriginTurnIds(category: string, sinceIso: string): string[] {
+    return this.db.prepare(`SELECT DISTINCT t.value AS turn_id FROM improvement_jobs j, json_each(j.origin_json, '$.turn_ids') t WHERE j.created_at > ? AND json_extract(j.origin_json, '$.category') = ?`)
+      .all<{ turn_id: string }>(sinceIso, category).map((r) => r.turn_id);
   }
   listJobsByState(states: readonly JobState[]): ImprovementJobRow[] {
     if (states.length === 0) return [];

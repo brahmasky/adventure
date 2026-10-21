@@ -9,6 +9,8 @@ import { RunStore, type DecisionInsert } from "../../src/run/run-store.js";
 import { parseSkillFile, setFrontmatterFields, SkillStore } from "../../src/skills/skill-store.js"; // drop the names a file does not use
 import { createQueuedTurnRun, createTelegramTurn } from "../helpers/runs.js"; // drop whichever a file does not use
 import { reconcileJobs } from "../../src/core/skill-job.js";
+import { handleMemLaneUndo } from "../../src/gateway/memlane-commands.js";
+import { handleMemoryUndo } from "../../src/gateway/memory-commands.js";
 import { LESSON_CAPPED_HINT } from "../../src/capabilities/lesson-write.js";
 import { drainOutbox } from "../helpers/omp-worker.js";
 
@@ -283,6 +285,26 @@ describe("a failed promote from a tap (final fix C4)", () => {
     sk.promotePending = real;
     handleImprovementTap(s, sk, tap("sk", id, "accept"), LATER);
     expect(s.getImprovementJob(id)?.state).toBe("promoted");
+  });
+});
+
+describe("Undo of an improve-sourced save (final fix D4)", () => {
+  const undo = (type: "memlane_undo" | "memory_undo", change_id: string) => { const k = `undo${++cb}`; return buildTypedTaskEvent({ source: "telegram", type, requested_by: { kind: "user", id: "paco" },
+    notify: { kind: "telegram", chat_id: "555" }, idempotency_key: k, source_reference: k, metadata: { telegram_update_id: 1, telegram_callback_id: k, change_id } }); };
+  it("a lesson or fact Undo moves its proposal to reverted and labels nothing on the corrected turn's turn.handler (it never saved anything)", () => {
+    for (const [target, draft, handle] of [
+      ["lesson", { scope: "ask", text: "Answer in one line." }, (s: RunStore, id: string) => handleMemLaneUndo(s, undo("memlane_undo", id))],
+      ["fact", { text: "Paco's sister lives in Lima.", evidence: { line: 1, quote: "sister lives in lima" }, source_turn_ids: [] }, (s: RunStore, id: string) => handleMemoryUndo(s, undo("memory_undo", id))]
+    ] as const) {
+      const s = RunStore.openInMemory();
+      const { id, run_id } = proposal(s, target, draft);
+      const handler = s.insertDecision({ ...D, entry_id: "turn.handler", run_id, verdict: "answer" });
+      handleImprovementTap(s, skills(), tap("pr", id, "acc"), NOW);
+      const change_id = String(JSON.parse(s.getImprovementProposal(id)!.result_json!).change_id);
+      expect(handle(s, change_id).ok).toBe(true);
+      expect(s.getImprovementProposal(id)?.state).toBe("reverted");
+      expect(s.listDecisionOutcomes(handler)).toEqual([]);
+    }
   });
 });
 

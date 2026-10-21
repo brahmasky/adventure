@@ -94,14 +94,15 @@ describe("buildDecisionDigest (2b-ii)", () => {
     s.insertImproveSignal({ signal: "abandoned", value: "lookup", run_id, chat_id: "555", about_run_id: run_id, created_at: "2026-10-20T10:00:00.000Z" });
     s.insertImproveSignal({ signal: "dig_deeper", value: "lookup", run_id, chat_id: "555", about_run_id: run_id, created_at: "2026-10-20T10:00:00.000Z" });
     s.recordMemoryEvent("improve_signal_skipped", { signal: "rating", code: "no_run" }, "improve");
-    s.beginImproveTick("2026-10-20", "2026-10-20T10:00:00.000Z"); s.finishImproveTick("2026-10-20", "done", { deferred: 2, embed_unavailable: 3 }, "2026-10-20T10:00:00.000Z");
+    s.beginImproveTick("2026-10-20", "2026-10-20T10:00:00.000Z"); s.finishImproveTick("2026-10-20", "done", { deferred: 2, deferred_outage: 4, embed_unavailable: 3 }, "2026-10-20T10:00:00.000Z");
     s.insertDecision({ ...D, verdict: "knowledge", rung: "rule", reason_code: "wiki_disarmed", p: null });
     s.insertDecision({ ...D, verdict: "nothing", reason_code: "inapplicable_top", p: 0.8 });
     s.insertImprovementProposal({ decision_id: s.insertDecision(D), target: "lesson", scope: "answer", chat_id: "555", draft_json: JSON.stringify({ scope: "ask", text: "Shorter." }), evidence: "lesson did not hold: 2 corrections since (9 d)", created_at: "2026-10-21T10:00:00.000Z" });
     const lines = buildDecisionDigest(s, NOW, ENV)!.text.split("\n");
-    expect(lines).toEqual(expect.arrayContaining(["· corrections 1 · abandoned 1 · clarify rate 50%", "· unattached: rating 1", "· deferred 2", "· silent: review_unsure, lesson_unfollowed", "· wiki disarmed: 1 topics",
+    expect(lines).toEqual(expect.arrayContaining(["· corrections 1 · abandoned 1 · clarify rate 50%", "· unattached: rating 1", "· deferred 2", "· deferred on an outage 4", "· silent: review_unsure, lesson_unfollowed, review_bad", "· wiki disarmed: 1 topics",
       "· embeddings unavailable: 1 days", "· inapplicable top 1", "· lessons not holding 1"]));
     expect(lines.some((l) => l.includes("dig_deeper"))).toBe(false); // it had a row in 7 days, so it is not silent
+    // final fix D7: nothing produces review_bad since the ✅/❌ surface left the digest, so Watch names it while it is dark
   });
   it("the offer transaction: offered_at is set for exactly the rendered ids after a queued enqueue; a duplicate or conflicting enqueue sets nothing; an already-offered id keeps its first value", () => {
     const s = RunStore.openInMemory();

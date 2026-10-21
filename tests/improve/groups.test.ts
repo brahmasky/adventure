@@ -113,4 +113,18 @@ describe("buildImproveState", () => {
     expect(Array.from(state.pacoText)).toHaveLength(500);
     expect(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(state.pacoText)).toBe(false);
   });
+  it("D6: a recurrence cluster whose turns embed like an origin turn of a job of the same category in the last 90 days is already authored; an unlike, other-category or older job is not", () => {
+    const s = RunStore.openInMemory();
+    const skills = new SkillStore({ root: mkdtempSync(join(tmpdir(), "hg-skills-")) });
+    const dec = s.insertDecision({ entry_id: "improve.route", entry_version: 1, run_id: null, tool_call_id: null, stage: "after_turn", rung: "rule", verdict: "skill", p: null, reason_code: "recurrence", fallback_reason: null, fallback_rung: null, armed_mode: "on", latency_ms: 1, created_at: NOW });
+    const job = (key: string, turn: string, category: string, created_at: string) => s.insertImprovementJob({ decision_id: dec, proposal_id: null, chat_id: "555", origin_json: JSON.stringify({ turn_ids: [turn], run_ids: [], category, text_hashes: [] }), idempotency_key: key, created_at });
+    s.putTurnEmbedding("old1", "m", Float32Array.from([1, 0]), NOW); s.putTurnEmbedding("new1", "m", Float32Array.from([0.95, 0.05]), NOW); s.putTurnEmbedding("unlike", "m", Float32Array.from([0, 1]), NOW);
+    const rec: RecurrenceInfo = { clusterId: "rec_n", turnIds: ["new1", "new2", "new3"], idempotencyKey: "answer:new1", texts: ["a", "b", "c"], category: "answer", spanDays: 2 };
+    const gr = groupSignals([row({ signal: "recurrence", value: "3", source_outcome_id: "rec:rec_n:3", about_run_id: null })], () => undefined, new Map([["rec:rec_n", rec]]), "2026-01-01T00:00:00.000Z")[0]!;
+    const authored = () => buildImproveState(gr, { store: s, env: {}, now: NOW, skills, redact: (t) => t, scheduleHints: new Map(), since14: [], recurrenceGate: 0.6 }).alreadyAuthored;
+    job("k_unlike", "unlike", "answer", NOW); job("k_cat", "old1", "lookup", NOW); job("k_old", "old1", "answer", "2026-07-01T00:00:00.000Z");
+    expect(authored()).toBe(false);
+    job("k_like", "old1", "answer", "2026-09-01T00:00:00.000Z");
+    expect(authored()).toBe(true);
+  });
 });

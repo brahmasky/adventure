@@ -153,7 +153,8 @@ async function scorePlanted(c) {
 async function previewOf(c, g, s, r, tz) {
   const evidence = c.m.evidenceOf(g, s, tz);
   const none = async () => ({ ok: false });
-  const d = await c.m.draftFor(r.verdict, g, s, { store: c.store, env: process.env, now: new Date().toISOString(), tz, distill: none, redact: c.redact, scheduleHints: new Map() });
+  const d0 = await c.m.draftFor(r.verdict, g, s, { store: c.store, env: process.env, now: new Date().toISOString(), tz, distill: none, redact: c.redact, scheduleHints: new Map() });
+  const d = d0 === "seat_failed" ? null : d0; // the stubbed distill always fails: the preview falls back to Paco's redacted words
   const raw = d ? d.draft_json : s.redacted.pacoText.trim() ? `(distill) ${s.redacted.pacoText}` : "";
   return { evidence, draft: Array.from(c.redact(raw).replace(/\s+/g, " ")).slice(0, EXCERPT).join(""), hasDraft: d !== null || s.redacted.pacoText.trim().length > 0 };
 }
@@ -168,7 +169,7 @@ async function scoreReal(c, args, now0, produced) {
   const since14 = store.listImproveSignalsSince(new Date(now0 - 14 * DAY_MS).toISOString());
   const r = { rows: rows.length, groups: groups.length, byTarget: new Map(), byRule: new Map(), byRung: new Map(), byFb: new Map(), hist: new Array(10).fill(0), withP: 0, proposals: [], lost: 0, byFamily: new Map(), pickFailed: 0, failRung: 0, jobs: 0 };
   for (const g of groups) {
-    const s = m.buildImproveState(g, { store, env: process.env, now: nowIso, skills: c.skills, redact: c.redact, scheduleHints: hints, since14 });
+    const s = m.buildImproveState(g, { store, env: process.env, now: nowIso, skills: c.skills, redact: c.redact, scheduleHints: hints, since14, recurrenceGate: m.resolveRecurrenceGate(process.env) });
     const { r: d, pickFailed } = await decideOne(c, s, g.newest.about_run_id ?? g.newest.run_id);
     if (pickFailed) r.pickFailed++;
     if (d.rung === "fail") r.failRung++;

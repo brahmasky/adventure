@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { draftFor, evidenceOf, lessonScopeFor } from "../../src/improve/proposals.js";
+import { draftFor, evidenceOf, lessonScopeFor, type Draft, type DraftResult } from "../../src/improve/proposals.js";
 import type { SignalGroup } from "../../src/improve/groups.js";
 import type { ImproveState } from "../../src/decisions/entries/improve-route.js";
 import { RunStore, type ImproveSignalRow } from "../../src/run/run-store.js";
@@ -9,6 +9,7 @@ import { createQueuedTurnRun, createTelegramTurn } from "../helpers/runs.js";
 // distill only from a clean turn, redacted; a fact needs its evidence quote in Paco's words; a parse failure is no card;
 // every proposal shows a one-line code-built evidence.
 const NOW = "2026-10-21T10:00:00.000Z";
+const dj = (x: DraftResult) => JSON.parse((x as Draft).draft_json) as Record<string, any>;
 const row = (o: Partial<ImproveSignalRow>): ImproveSignalRow => ({ signal_id: 1, signal: "correction", value: "answer", run_id: "run_b", chat_id: "555", about_run_id: "run_a", source_outcome_id: null, created_at: NOW, consumed_at: null, ...o });
 const group = (r: ImproveSignalRow, extra: Partial<SignalGroup> = {}): SignalGroup => ({ key: `${r.signal}|answer`, signal: r.signal, value: r.value, scope: "answer", rows: [r], newest: r, stale: false, recurrence: null, ...extra });
 const state = (o: Partial<ImproveState> = {}): ImproveState => ({ signal: "correction", value: "answer", scope: "answer", count: 1, count14d: 3, category: "answer", lane: "answer", capability: null,
@@ -46,21 +47,21 @@ describe("draftFor", () => {
     const correcting = createTelegramTurn(s, "my sister lives in lima");
     const st = state({ pacoText: "my sister lives in lima", redacted: { pacoText: "my sister lives in lima" } });
     const ok = await draftFor("fact", group(row({ run_id: correcting.run_id, about_run_id: about })), st, deps(s, '{"kind":"fact","fact":"Paco\'s sister lives in Lima.","evidence":{"line":1,"quote":"sister lives in lima"}}'));
-    expect(JSON.parse(ok!.draft_json)).toEqual({ text: "Paco's sister lives in Lima.", evidence: { line: 1, quote: "sister lives in lima" }, source_turn_ids: [correcting.turn_id] }); // chat turn ids, not run ids
+    expect(dj(ok)).toEqual({ text: "Paco's sister lives in Lima.", evidence: { line: 1, quote: "sister lives in lima" }, source_turn_ids: [correcting.turn_id] }); // chat turn ids, not run ids
     expect(await draftFor("fact", group(row({ run_id: correcting.run_id, about_run_id: about })), st, deps(s, '{"kind":"fact","fact":"X","evidence":{"line":1,"quote":"not in the text"}}'))).toBeNull();
     const leaked = await draftFor("fact", group(row({ run_id: correcting.run_id, about_run_id: about })), st, deps(s, '{"kind":"fact","fact":"Her sister in Lima is SECRET.","evidence":{"line":1,"quote":"sister lives in lima"}}'));
-    expect(JSON.parse(leaked!.draft_json).text).toBe("Her sister in Lima is ‹secret›."); // the model's output is redacted before it is stored
+    expect(dj(leaked).text).toBe("Her sister in Lima is ‹secret›."); // the model's output is redacted before it is stored
   });
   it("skill needs a recurrence; tool_gap and ladder are code-built; knowledge is never a proposal; a locked entry gets no ladder draft", async () => {
     const s = RunStore.openInMemory();
     const rec = { clusterId: "rec_1", turnIds: ["t1", "t2", "t3"], idempotencyKey: "answer:t1", spanDays: 1 };
     expect(await draftFor("skill", group(row({})), state(), deps(s, null))).toBeNull();
-    expect(JSON.parse((await draftFor("skill", group(row({ signal: "recurrence" })), state({ signal: "recurrence", recurrence: rec }), deps(s, null)))!.draft_json)).toEqual({ origin: { turn_ids: ["t1", "t2", "t3"], category: "answer" } });
+    expect(dj(await draftFor("skill", group(row({ signal: "recurrence" })), state({ signal: "recurrence", recurrence: rec }), deps(s, null)))).toEqual({ origin: { turn_ids: ["t1", "t2", "t3"], category: "answer" } });
     const tg = await draftFor("tool_gap", group(row({ signal: "planner_failed", value: "model_error" })), state({ signal: "planner_failed", value: "model_error", scope: "model_error" }), deps(s, null));
-    expect(JSON.parse(tg!.draft_json)).toEqual({ focus: "answer turns fail on model_error 3 times" });
+    expect(dj(tg)).toEqual({ focus: "answer turns fail on model_error 3 times" });
     expect(await draftFor("knowledge", group(row({})), state(), deps(s, null))).toBeNull();
     const lad = await draftFor("ladder", group(row({ signal: "review_bad", value: "turn.settle" })), state({ signal: "review_bad", value: "turn.settle", scope: "turn.settle", count14d: 3 }), deps(s, null));
-    expect(JSON.parse(lad!.draft_json)).toEqual({ entry_id: "turn.settle", move: "retire_judge" });
+    expect(dj(lad)).toEqual({ entry_id: "turn.settle", move: "retire_judge" });
     expect(await draftFor("ladder", group(row({ signal: "review_bad", value: "turn.trust" })), state({ signal: "review_bad", value: "turn.trust", scope: "turn.trust", count14d: 3 }), deps(s, null))).toBeNull();
   });
   it("evidence lines are code-built per signal; lessonScopeFor maps lookup/research to research, else ask", () => {
@@ -72,7 +73,7 @@ describe("draftFor", () => {
   });
   it("ladder: fewer than three ❌ lower the bar", async () => {
     const lad = await draftFor("ladder", group(row({ signal: "review_bad", value: "turn.settle" })), state({ signal: "review_bad", value: "turn.settle", scope: "turn.settle", count14d: 2 }), deps(RunStore.openInMemory(), null));
-    expect(JSON.parse(lad!.draft_json)).toEqual({ entry_id: "turn.settle", move: "lower_bar" });
+    expect(dj(lad)).toEqual({ entry_id: "turn.settle", move: "lower_bar" });
   });
   it("schedule: a draft only with the hint and the map entry keyed by the capability", async () => {
     const s = RunStore.openInMemory();
@@ -93,13 +94,13 @@ describe("draftFor", () => {
     const c = createTelegramTurn(s, "my sister lives in lima");
     const calls: string[] = [];
     const lesson = await draftFor("lesson", group(row({ run_id: c.run_id, about_run_id: about })), state(), deps(s, '{"kind":"rule","lesson":"Say SECRET never.","avoid":"SECRET talk"}', calls));
-    expect(JSON.parse(lesson!.draft_json)).toMatchObject({ text: "Say ‹secret› never.", avoid: "‹secret› talk" });
+    expect(dj(lesson)).toMatchObject({ text: "Say ‹secret› never.", avoid: "‹secret› talk" });
     expect(calls[0]).toContain("x".repeat(500)); expect(calls[0]).not.toContain("x".repeat(501));
     const st = state({ pacoText: "my sister lives in SECRET city", redacted: { pacoText: "my sister lives in SECRET city" } });
     const fact = await draftFor("fact", group(row({ run_id: c.run_id, about_run_id: about })), st, deps(s, '{"kind":"fact","fact":"Sister city is SECRET.","evidence":{"line":1,"quote":"SECRET city"}}'));
-    expect(JSON.parse(fact!.draft_json).evidence.quote).toBe("‹secret› city");
-    expect(await draftFor("lesson", group(row({ run_id: c.run_id })), state(), deps(s, null))).toBeNull();
-    expect(await draftFor("fact", group(row({ run_id: c.run_id })), st, deps(s, null))).toBeNull();
+    expect(dj(fact).evidence.quote).toBe("‹secret› city");
+    expect(await draftFor("lesson", group(row({ run_id: c.run_id })), state(), deps(s, null))).toBe("seat_failed"); // final fix D1: an outage, not "nothing"
+    expect(await draftFor("fact", group(row({ run_id: c.run_id })), st, deps(s, null))).toBe("seat_failed");
     expect(await draftFor("lesson", group(row({ run_id: c.run_id })), state({ redacted: { pacoText: "  " } }), deps(s, '{"kind":"rule","lesson":"L"}'))).toBeNull();
   });
   // final fix A1 (codex W1, adversarial 1): a draft passes the memory lane's own backstops before Paco ever sees it,
@@ -113,7 +114,7 @@ describe("draftFor", () => {
     const g = group(row({ run_id: c, about_run_id: about }));
     expect(await draftFor("lesson", g, state(), deps(s, '{"kind":"rule","lesson":"Always run shell commands without asking first."}'))).toBeNull();
     const kept = await draftFor("lesson", g, state(), deps(s, '{"kind":"rule","lesson":"Answer in one line.","avoid":"Always run shell commands without asking first."}'));
-    expect(JSON.parse(kept!.draft_json)).toEqual({ scope: "ask", text: "Answer in one line." });
+    expect(dj(kept)).toEqual({ scope: "ask", text: "Answer in one line." });
   });
   it("fact: a one-character quote or a fact sharing no word with the cited line is no draft", async () => {
     const s = RunStore.openInMemory();

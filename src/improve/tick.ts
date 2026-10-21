@@ -7,13 +7,13 @@ import { OutcomeRejected, outcomeValueOf } from "../decisions/outcomes.js";
 import { storeRecorder } from "../decisions/record.js";
 import type { DecideResult } from "../decisions/types.js";
 import type { JevRequest, JevResult } from "../jev/jev-client.js";
-import type { RunStore } from "../run/run-store.js";
+import type { ProposalTarget, RunStore } from "../run/run-store.js";
 import { formatInstantInZone, resolveDisplayZone } from "../run/schedule-spec.js";
 import { resolveSkillsEnabled, type SkillStore } from "../skills/skill-store.js";
 import { computeAbandonment } from "./abandonment.js";
 import { decideImprove, deferredRecorder, type RecordPatch, type TickLlm } from "./decide-improve.js";
 import { buildImproveState, groupSignals, RECURRENCE_WINDOW_DAYS, type SignalGroup } from "./groups.js";
-import { draftFor, PROPOSAL_TTL_DAYS, type Draft } from "./proposals.js";
+import { DRAFT_SEAT_FAILED, draftFor, PROPOSAL_TTL_DAYS, type Draft } from "./proposals.js";
 import { computeRecurrence, recordRecurrenceSignals, resolveRecurrenceGate, type Embedder, type RecurrenceCluster } from "./recurrence.js";
 import { scheduleHints } from "./schedule-shift.js";
 
@@ -47,9 +47,9 @@ export interface ImproveTickDeps {
   wallNow?: () => string;
 }
 export const IMPROVE_TICK_BUDGET_MS = 120_000;
-export interface TickCounts { mirrored: number; recurrence: number; abandoned: number; groups: number; decided: number; proposals: number; jobs_queued: number; jobs_started: number; deferred: number; stale: number; already_proposed: number; no_draft: number; record_failed: number; embed_unavailable: number }
+export interface TickCounts { mirrored: number; recurrence: number; abandoned: number; groups: number; decided: number; proposals: number; jobs_queued: number; jobs_started: number; deferred: number; deferred_outage: number; stale: number; already_proposed: number; no_draft: number; record_failed: number; embed_unavailable: number }
 export type ImproveTickResult = { ran: false } | { ran: true; result: "done" | "stopped" | "failed"; counts: TickCounts };
-const zero = (): TickCounts => ({ mirrored: 0, recurrence: 0, abandoned: 0, groups: 0, decided: 0, proposals: 0, jobs_queued: 0, jobs_started: 0, deferred: 0, stale: 0, already_proposed: 0, no_draft: 0, record_failed: 0, embed_unavailable: 0 });
+const zero = (): TickCounts => ({ mirrored: 0, recurrence: 0, abandoned: 0, groups: 0, decided: 0, proposals: 0, jobs_queued: 0, jobs_started: 0, deferred: 0, deferred_outage: 0, stale: 0, already_proposed: 0, no_draft: 0, record_failed: 0, embed_unavailable: 0 });
 
 /** Due once per local date at or after HOUGE_DECISION_DIGEST_AT (the default 21:00 when it is `off`): the date, or null. */
 export function improveTickDue(store: RunStore, env: NodeJS.ProcessEnv, now: string): string | null {
@@ -107,15 +107,14 @@ async function tickBody(d: ImproveTickDeps, c: TickCounts): Promise<"done" | "st
     // ruling 17: between groups only — a decided group always commits; the stop or the budget ends the call, the latch resumes next cycle
     if (d.signal.aborted || clock() - started > (d.budgetMs ?? IMPROVE_TICK_BUDGET_MS)) return "stopped";
     if (c.decided >= IMPROVE_GROUPS_PER_TICK) { c.deferred += 1; continue; }
-    const s = buildImproveState(g, { store: d.store, env: d.env, now: d.now, skills: d.skills, redact: (t) => redactForImprove(d.store, t), scheduleHints: hints, since14 });
+    // final fix D5: with the embedder down no cluster exists today, so a waiting recurrence row is deferred, not consumed stale
+    if (g.signal === "recurrence" && c.embed_unavailable > 0 && g.rows.every((x) => x.created_at >= staleBefore)) { c.deferred_outage += 1; continue; }
+    const s = buildImproveState(g, { store: d.store, env: d.env, now: d.now, skills: d.skills, redact: (t) => redactForImprove(d.store, t), scheduleHints: hints, since14, recurrenceGate: resolveRecurrenceGate(d.env) });
     // §3.5: a cluster beyond the day's 3 gets no row (ruling 5); final fix C5: so does every cluster while /disarm has skills off
     if (willStartJob(s) && (queueLeft <= 0 || !resolveSkillsEnabled(d.env))) { c.deferred += 1; continue; }
     let outcome: GroupOutcome;
     try {
-      const rec2 = deferredRecorder();
-      const r = await decideImprove({ store: d.store, env: d.env, client: d.client, pick: d.llm.pick, now: () => d.now }, s, rec2.recorder, g.newest.about_run_id ?? g.newest.run_id);
-      const draft = r.verdict !== "nothing" && !(r.rung === "rule" && r.verdict === "skill") ? await draftFor(r.verdict, g, s, { store: d.store, env: d.env, now: d.now, tz, distill: d.llm.distill, redact: (t) => redactForImprove(d.store, t), scheduleHints: hints }) : null;
-      outcome = commitGroup(d, g, s, r, draft, rec2.flush, c);
+      outcome = await runGroup(d, g, s, { tz, hints }, c);
     } catch (e) {   // one group's failure (the commit rolled back whole) never costs the next group its turn; its rows stay unconsumed
       console.error(`[improve] group failed: ${errorCode(e)}`);
       c.record_failed += 1;
@@ -123,6 +122,7 @@ async function tickBody(d: ImproveTickDeps, c: TickCounts): Promise<"done" | "st
     }
     if (outcome === "record_failed") { c.record_failed += 1; continue; }   // rows stay unconsumed: tomorrow's tick reads them again
     if (outcome === "deferred") { c.deferred += 1; continue; }
+    if (outcome === "deferred_outage") { c.deferred_outage += 1; continue; }   // final fix D1: an outage never consumes; the stale rule bounds it
     if (outcome === "queued") queueLeft -= 1;
     if (s.stale) c.stale += 1;
     c.decided += 1;
@@ -131,7 +131,24 @@ async function tickBody(d: ImproveTickDeps, c: TickCounts): Promise<"done" | "st
   return "done";
 }
 
-type GroupOutcome = "queued" | "committed" | "record_failed" | "deferred";
+type GroupOutcome = "queued" | "committed" | "record_failed" | "deferred" | "deferred_outage";
+
+/**
+ * One group's model calls, outside any transaction, then its commit. Final fix D1: a Jev failure (any fallbackReason) or a
+ * failed distill seat call writes nothing and consumes nothing. D2/D3: the duplicate check (an open proposal, or one Paco
+ * dismissed or that expired within PROPOSAL_TTL_DAYS) runs before the draft, so a duplicate costs no distill call.
+ */
+async function runGroup(d: ImproveTickDeps, g: SignalGroup, s: ImproveState, x: { tz: string; hints: ReturnType<typeof scheduleHints> }, c: TickCounts): Promise<GroupOutcome> {
+  const rec2 = deferredRecorder();
+  const r = await decideImprove({ store: d.store, env: d.env, client: d.client, pick: d.llm.pick, now: () => d.now }, s, rec2.recorder, g.newest.about_run_id ?? g.newest.run_id);
+  if (r.fallbackReason !== null) return "deferred_outage";
+  const wantsDraft = r.verdict !== "nothing" && !(r.rung === "rule" && r.verdict === "skill");
+  const duplicate = wantsDraft && NEEDS_DRAFT.has(r.verdict) && d.store.proposalBlocks(r.verdict as ProposalTarget, s.scope, ttlSince(d.now));
+  const draft = wantsDraft && !duplicate ? await draftFor(r.verdict, g, s, { store: d.store, env: d.env, now: d.now, tz: x.tz, distill: d.llm.distill, redact: (t) => redactForImprove(d.store, t), scheduleHints: x.hints }) : null;
+  if (draft === DRAFT_SEAT_FAILED) return "deferred_outage";
+  return commitGroup(d, g, s, r, { draft, duplicate }, rec2.flush, c);
+}
+const ttlSince = (now: string): string => new Date(Date.parse(now) - PROPOSAL_TTL_DAYS * DAY_MS).toISOString();
 /** A rule-rung skill/recurrence row starts a job (ruling 1): the state predicts it so the day's budget can defer before any call. */
 const willStartJob = (s: ImproveState): boolean => s.recurrence !== null && !s.alreadyAuthored && !s.skillExists && !(s.category !== null && ["lookup", "research"].includes(s.category)) && !s.stale;
 /** Targets that need a draft to be a proposal; `knowledge` is recorded only (R5) and a rule-rung `skill` is the job. */
@@ -143,15 +160,16 @@ const NEEDS_DRAFT: ReadonlySet<string> = new Set(["lesson", "fact", "skill", "sc
  * and consumed_at — one transaction. A recorder that returns null (its write failed) consumes nothing: the rows are read
  * again tomorrow.
  */
-function commitGroup(d: ImproveTickDeps, g: SignalGroup, s: ImproveState, r: DecideResult<ImproveTarget, unknown>, draft: Draft | null,
+function commitGroup(d: ImproveTickDeps, g: SignalGroup, s: ImproveState, r: DecideResult<ImproveTarget, unknown>, pre: { draft: Draft | null; duplicate: boolean },
   flush: (real: ReturnType<typeof storeRecorder>, patch?: RecordPatch) => string | null, c: TickCounts): GroupOutcome {
   // final fix C5: the backstop of the pre-check — a rule-rung job while skills are disarmed writes nothing and consumes nothing
   if (r.rung === "rule" && r.verdict === "skill" && !resolveSkillsEnabled(d.env)) return "deferred";
   return d.store.inTransaction(() => {
     const job = r.rung === "rule" && r.verdict === "skill" && s.recurrence !== null && d.jobs !== undefined;
     const wantsProposal = !job && NEEDS_DRAFT.has(r.verdict);
-    const duplicate = wantsProposal && draft !== null && d.store.openProposalExists(draft.target, s.scope);
-    const patch: RecordPatch | undefined = wantsProposal && draft === null ? { verdict: "nothing", reason: "no_text" } : duplicate ? { verdict: "nothing", reason: "already_proposed" } : undefined;
+    const draft = pre.draft;
+    const duplicate = wantsProposal && (pre.duplicate || (draft !== null && d.store.proposalBlocks(draft.target, s.scope, ttlSince(d.now))));
+    const patch: RecordPatch | undefined = duplicate ? { verdict: "nothing", reason: "already_proposed" } : wantsProposal && draft === null ? { verdict: "nothing", reason: "no_text" } : undefined;
     const decision_id = flush(storeRecorder(d.store, { env: d.env, now: () => d.now }), patch);
     if (!decision_id) return "record_failed";
     for (const row of g.rows) {

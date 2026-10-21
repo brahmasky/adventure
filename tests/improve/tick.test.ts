@@ -221,4 +221,45 @@ describe("runImproveTick", () => {
     expect(s.listDecisionsBetween("2026-01-01T00:00:00.000Z", "2027-01-01T00:00:00.000Z").filter((x) => x.entry_id === "improve.route")).toEqual([]);
     expect(s.listUnconsumedSignals(10).map((x) => x.signal)).toEqual(["recurrence"]);
   });
+  it("D1: a Jev outage or a failed distill call never consumes: no decision row, the rows stay unconsumed, counted deferred_outage; a parsed empty draft is still no_text", async () => {
+    const s = RunStore.openInMemory();
+    correction(s);
+    const down = async (): Promise<JevResult> => ({ ok: false, reason: "error", detail: "429" });
+    const r = await runImproveTick(deps(s, { client: down }));
+    expect(r).toMatchObject({ ran: true, result: "done", counts: { decided: 0, deferred_outage: 1, no_draft: 0 } });
+    expect(s.listDecisionsBetween("2026-01-01T00:00:00.000Z", "2027-01-01T00:00:00.000Z").filter((x) => x.entry_id === "improve.route")).toEqual([]);
+    expect(s.listUnconsumedSignals(10)).toHaveLength(1);
+    const failed = vi.fn(async () => ({ ok: false as const }));
+    const r2 = await runImproveTick(deps(s, { now: "2026-10-22T11:00:00.000Z", embed: async () => null, llm: { ...deps(s).llm, distill: failed } }));
+    expect(failed).toHaveBeenCalledTimes(1);
+    expect(r2).toMatchObject({ ran: true, counts: { decided: 0, deferred_outage: 1, no_draft: 0 } });
+    expect(s.listUnconsumedSignals(10)).toHaveLength(1);
+    expect(s.listDecisionsBetween("2026-01-01T00:00:00.000Z", "2027-01-01T00:00:00.000Z").filter((x) => x.entry_id === "improve.route")).toEqual([]);
+  });
+  it("D2/D3: the duplicate check runs before the draft (no distill call), and a proposal Paco dismissed (or that expired) within 14 days on the same (target, scope) counts as already proposed", async () => {
+    const s = RunStore.openInMemory();
+    correction(s);
+    await runImproveTick(deps(s));
+    const [p] = s.listOpenProposals();
+    s.transitionProposal({ proposal_id: p!.proposal_id, from: ["open"], to: "dismissed", now: "2026-10-21T12:00:00.000Z" });
+    correction(s, "one line answers please, always");
+    const distill = vi.fn(async () => ({ ok: true as const, answer: '{"kind":"rule","lesson":"Answer in one line."}' }));
+    const next = await runImproveTick(deps(s, { now: "2026-10-22T11:00:00.000Z", embed: async () => null, llm: { ...deps(s).llm, distill } }));
+    expect(next).toMatchObject({ ran: true, counts: { proposals: 0, already_proposed: 1 } });
+    expect(distill).not.toHaveBeenCalled();
+    correction(s, "answer in one line, for real");   // 15 days after the dismissal: the scope is open again
+    const later = await runImproveTick(deps(s, { now: "2026-11-06T11:00:00.000Z", embed: async () => null, llm: { ...deps(s).llm, distill } }));
+    expect(later).toMatchObject({ ran: true, counts: { proposals: 1, already_proposed: 0 } });
+  });
+  it("D5: on a day the embedder is down, a waiting recurrence row stays unconsumed (deferred), never consumed stale", async () => {
+    const s = RunStore.openInMemory();
+    s.insertImproveSignal({ signal: "recurrence", value: 3, run_id: null, chat_id: "555", about_run_id: null, source_outcome_id: "rec:rec_abc:3", created_at: "2026-10-20T10:00:00.000Z" });
+    const fresh = turn(s, "a turn with no stored embedding yet, long enough").run_id;
+    s.insertJevVerdict({ run_id: fresh, category: "answer", breadth: null, reasoning: null, actions: null, sets_rule: null, rule_scope: null, lane: "answer", role: "default", effort: null, cascade: null,
+      save_outcome: "none", route_outcome: "fallback", reason: "jev_skipped", skip_reason: null, quoted_turn_id: null });
+    const r = await runImproveTick(deps(s, { embed: async () => null }));
+    expect(r).toMatchObject({ ran: true, counts: { stale: 0, deferred_outage: 1 } });
+    expect(s.listUnconsumedSignals(10).map((x) => x.signal)).toEqual(["recurrence"]);
+    expect(s.listDecisionsBetween("2026-01-01T00:00:00.000Z", "2027-01-01T00:00:00.000Z").filter((x) => x.entry_id === "improve.route")).toEqual([]);
+  });
 });
