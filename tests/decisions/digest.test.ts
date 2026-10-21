@@ -7,6 +7,8 @@ import { buildDecisionDigest, DIGEST_PROPOSALS_MAX, resolveDigestAt, runDecision
 import { RunStore, type DecisionInsert } from "../../src/run/run-store.js";
 import { createTelegramTurn } from "../helpers/runs.js";
 import { drainOutbox } from "../helpers/omp-worker.js";
+import { parseImprovementCallback } from "../../src/triggers/telegram-command-parser.js";
+import { skillButtons } from "../../src/skills/promote.js";
 
 const ENV = { HOUGE_DISPLAY_TZ: "Australia/Sydney" };
 const NOW = "2026-10-21T11:00:00.000Z"; // 22:00 AEDT
@@ -60,6 +62,23 @@ describe("buildDecisionDigest (2b-ii)", () => {
     expect(line).toContain("Answer in one line. · AVOID: asking before shell");
     expect(line).not.toContain("sk-liveSECRET");
     expect(Array.from(line.split(" · AVOID: ")[1]!.split(" · ")[0]!)).toHaveLength(120);
+  });
+  it("every improvement button the digest and the job cards build parses back through parseImprovementCallback to its own kind, id and action (final fix F2: the prefixes are duplicated constants)", () => {
+    const s = RunStore.openInMemory();
+    const [pr] = open(s, 1);
+    const job = s.insertImprovementJob({ decision_id: s.insertDecision(D), proposal_id: null, chat_id: "555", origin_json: JSON.stringify({ turn_ids: ["t1"], run_ids: [], category: "answer", text_hashes: [] }), idempotency_key: "f2", created_at: "2026-10-21T01:00:00.000Z" })!;
+    s.transitionJob({ job_id: job, from: ["queued"], to: "running", now: "2026-10-21T09:00:00.000Z", bumpAttempt: true });
+    s.transitionJob({ job_id: job, from: ["running"], to: "pending_review", now: "2026-10-21T09:30:00.000Z", attempt: 1, patch: { pending_scope: "ask", pending_name: "weekly-report", gate_a: "skill" } });
+    const sched = s.insertImprovementProposal({ decision_id: s.insertDecision(D), target: "schedule", scope: "shell_external", chat_id: "555", draft_json: JSON.stringify({ schedule_id: "s1", hour_from: 11, hour_to: 20, before: {}, after: {} }), evidence: "e", created_at: "2026-10-21T01:00:00.000Z" });
+    s.transitionProposal({ proposal_id: sched, from: ["open"], to: "accepted", now: "2026-10-21T09:00:00.000Z" });
+    const lad = s.insertImprovementProposal({ decision_id: s.insertDecision(D), target: "ladder", scope: "turn.settle", chat_id: "555", draft_json: JSON.stringify({ entry_id: "turn.settle", move: "retire_judge" }), evidence: "e", created_at: "2026-10-21T01:00:00.000Z" });
+    const move = s.insertLadderMove({ entry_id: "turn.settle", scope: "turn.settle", from_rung: "system_one", to_rung: "model", evidence: [lad], granted_by: "paco", granted_via: "improve.route", paco_callback_id: "cb1", revocable: true, created_at: "2026-10-21T09:00:00.000Z" });
+    s.transitionProposal({ proposal_id: lad, from: ["open"], to: "accepted", now: "2026-10-21T09:00:00.000Z", result_json: JSON.stringify({ move_id: move }) });
+    const data = [...buttons(buildDecisionDigest(s, NOW, ENV)!), ...skillButtons(job, "collision").map((b) => b.data)];
+    expect(data.map((x) => parseImprovementCallback(x))).toEqual([
+      { kind: "sk", id: job, action: "accept" }, { kind: "sk", id: job, action: "dismiss" }, { kind: "pr", id: sched, action: "rev" }, { kind: "lm", id: move, action: "revoke" },
+      { kind: "pr", id: pr, action: "acc" }, { kind: "pr", id: pr, action: "dis" },
+      { kind: "sk", id: job, action: "replace" }, { kind: "sk", id: job, action: "keep" }, { kind: "sk", id: job, action: "dismiss" }]);
   });
   it("Improvements today: a drafted skill with Accept/Dismiss, a suggested job without buttons, a promoted skill, a shifted schedule with Revert, a ladder move with Revoke", () => {
     const s = RunStore.openInMemory();

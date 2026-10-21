@@ -64,6 +64,17 @@ describe("the skill job", () => {
     expect(String(compose.mock.calls[0]![0].question)).toContain("weekly report");
     void id;
   });
+  it("a secret in Paco's request text is redacted before the objective reaches Gate A or the writer (final fix F3: the job's egress path)", async () => {
+    const { store, d, decision_id, classify, compose } = setup();
+    const t = createTelegramTurn(store, "make the weekly report with key sk-liveSECRETvalue000000000 please");
+    startSkillJob(store, { decision_id, proposal_id: null, chat_id: "555", origin: origin([t.turn_id], [t.run_id]), idempotency_key: "f3", now: NOW });
+    await runQueuedJobs(d, 1); await evolutionLaneSettled();
+    expect(classify).toHaveBeenCalled(); expect(compose).toHaveBeenCalled();
+    for (const fn of [classify, compose]) for (const call of fn.mock.calls) {
+      expect(JSON.stringify(call[0])).not.toContain("sk-liveSECRET");
+      expect(JSON.stringify(call[0])).toContain("weekly report");
+    }
+  });
   it("the objective keeps the newest 6 turns, then the newest that fit in 3 000 characters", async () => {
     const mk = () => setup();
     const turnsOf = (store: RunStore, texts: string[]) => texts.map((t) => {
