@@ -507,7 +507,7 @@ async function caseDigest(g) {
   const status = g.m.decisionStatusLines(g.store, now);
   if (!status.some((l) => l.startsWith("Injection:"))) return cannotRun("C9 status", "no decisions on the copy (C1/C3 did not run)");
   check("C9 /status carries the injection counts", status.some((l) => /^Injection: withheld \d+ · framed \d+ · not checked \d+$/.test(l)), status.find((l) => l.startsWith("Injection:")));
-  const d = g.m.buildDecisionDigest(g.store, now, process.env);
+  const d = g.m.buildDecisionDigest(g.store, now, process.env, "-4200");
   const headers = new Set(["**Improvements today**", "**Proposals waiting**", "**Watch (7 d)**"]);
   check("C9 the digest is no message or the header and only the three new sections", d === null || (d.text.startsWith("🪜 **Decisions — ") && d.text.split("\n").slice(1).filter((l) => l.startsWith("**")).every((l) => headers.has(l))), d ? d.text.split("\n")[0] : "null (empty day)");
   if (!d) return;

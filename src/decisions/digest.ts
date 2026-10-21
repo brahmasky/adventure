@@ -261,8 +261,10 @@ export function improvementsToday(store: RunStore, since: string, chatId?: strin
   return { lines, button_rows, job_ids };
 }
 
-/** The open proposals, oldest first, at most DIGEST_PROPOSALS_MAX, each with Accept / Dismiss; `ids` are the rendered ones only. */
-/** Taps are bound to the originating chat (ruling 19), so a row of another chat (or none) is neither shown nor offered. */
+/**
+ * The open proposals, oldest first, at most DIGEST_PROPOSALS_MAX, each with Accept / Dismiss; `ids` are the rendered ones only.
+ * Taps are bound to the originating chat (ruling 19), so a row of another chat (or none) is neither shown nor offered.
+ */
 export function proposalsWaiting(store: RunStore, chatId?: string): Section & { ids: string[] } {
   const open = store.listOpenProposals().filter((p) => chatId === undefined || p.chat_id === chatId);
   const shown = open.slice(0, DIGEST_PROPOSALS_MAX);

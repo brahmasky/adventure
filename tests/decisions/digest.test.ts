@@ -190,3 +190,23 @@ describe("buildDecisionDigest (2b-ii fix round 1)", () => {
     expect(s.getImprovementProposal(ids[0]!)!.offered_at).toBeNull();
   });
 });
+
+describe("finished jobs are scoped to the digest chat", () => {
+  it("a pending_review job of another chat, or of none, is neither rendered nor marked offered", () => {
+    const s = RunStore.openInMemory();
+    const job = (chat_id: string | null, name: string): string => {
+      const id = s.insertImprovementJob({ decision_id: s.insertDecision(D), proposal_id: null, chat_id, origin_json: JSON.stringify({ turn_ids: ["t1"], run_ids: [], category: "answer", text_hashes: [] }), idempotency_key: name, created_at: "2026-10-21T01:00:00.000Z" })!;
+      s.transitionJob({ job_id: id, from: ["queued"], to: "running", now: "2026-10-21T09:00:00.000Z", bumpAttempt: true });
+      s.transitionJob({ job_id: id, from: ["running"], to: "pending_review", now: "2026-10-21T09:30:00.000Z", attempt: 1, patch: { pending_scope: "ask", pending_name: name, gate_a: "skill" } });
+      return id;
+    };
+    const mine = job("555", "mine-skill"); const other = job("777", "other-skill"); const none = job(null, "none-skill");
+    const d = buildDecisionDigest(s, NOW, ENV, "555")!;
+    expect(d.offered.job_ids).toEqual([mine]);
+    expect(d.text).toContain("mine-skill"); expect(d.text).not.toContain("other-skill"); expect(d.text).not.toContain("none-skill");
+    runDecisionDigestTick({ store: s, chatId: "555", now: NOW, env: ENV });
+    expect(s.getImprovementJob(mine)!.offered_at).toBe(NOW);
+    expect(s.getImprovementJob(other)!.offered_at).toBeNull();
+    expect(s.getImprovementJob(none)!.offered_at).toBeNull();
+  });
+});

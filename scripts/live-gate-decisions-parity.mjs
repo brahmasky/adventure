@@ -379,7 +379,7 @@ async function checkDigest(g) {
   const now = new Date().toISOString();
   const status = g.newMods.decisionStatusLines(g.newSide.store, now);
   check("/status decisions: the counts show turn.handler", status.some((l) => l.startsWith("· turn.handler ")), status[1] ?? "no decision section");
-  const digest = g.newMods.buildDecisionDigest(g.newSide.store, now, process.env);
+  const digest = g.newMods.buildDecisionDigest(g.newSide.store, now, process.env, "p6op");
   check("digest: no message on an empty day, else the header and only the three new sections", digestShapeOk(digest), digest ? digest.text.split("\n")[0] : "null (empty day)");
   const env = { ...process.env, HOUGE_DECISION_DIGEST_AT: "00:00" };
   const first = g.newMods.runDecisionDigestTick({ store: g.newSide.store, chatId: "p6op", now, env });
