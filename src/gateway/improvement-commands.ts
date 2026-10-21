@@ -156,11 +156,16 @@ function jobTap(store: RunStore, skills: SkillStore, tap: Tap, chat_id: string, 
   return promote(store, skills, { ...job, state: "promoting", promote_mode: mode }, chat_id, now);
 }
 
+export const DISMISS_FILE_DEFERRED_TEXT = "🗑 Dismissed. The draft file could not be moved now; it is retired at the next tick.";
+
+/** Final fix B4: the fenced transition first, then the file; a failed move leaves the file for the sweep (a dismissed job's stamped draft). */
 function dismissJob(store: RunStore, skills: SkillStore, job: ImprovementJobRow, now: string): string {
   if (job.state !== "pending_review" && job.state !== "collision") return TAP_HANDLED_TEXT;
+  if (!store.transitionJob({ job_id: job.job_id, from: [job.state], to: "dismissed", now })) return TAP_HANDLED_TEXT;
   const r = skills.dismissPending(job.pending_scope!, job.pending_name!, now.slice(0, 10));
-  if (!r.ok && r.error !== "not_found") return `Dismiss failed (${r.error}).`;
-  return store.transitionJob({ job_id: job.job_id, from: [job.state], to: "dismissed", now }) ? "🗑 Draft retired." : TAP_HANDLED_TEXT;
+  if (r.ok || r.error === "not_found") return "🗑 Draft retired.";
+  console.error(`[improve] dismiss file move failed: ${r.error}`);
+  return DISMISS_FILE_DEFERRED_TEXT;
 }
 
 /** Ruling 19: a move's chat is its proposal's (`evidence_json[0]` is the proposal id, Task 13 acceptLadder). */

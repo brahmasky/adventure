@@ -124,4 +124,15 @@ describe("draftFor", () => {
     expect(await draftFor("fact", g, st, deps(s, '{"kind":"fact","fact":"Paco owns a red bicycle.","evidence":{"line":1,"quote":"sister lives in lima"}}'))).toBeNull();
     expect(await draftFor("fact", g, st, deps(s, '{"kind":"fact","fact":"Paco\'s sister lives in Lima.","evidence":{"line":1,"quote":"sister lives in lima"}}'))).not.toBeNull();
   });
+  it("the prior reaches the distill only when the turn's FIRST final trust event is clean: a later clean event never launders an untrusted turn (final fix B5)", async () => {
+    const s = RunStore.openInMemory();
+    const about = createQueuedTurnRun(s, "q");
+    s.recordChatTurn({ chat_id: "555", run_id: about, role: "assistant", text: "WEB CONTENT RULE", created_at: NOW });
+    s.appendRunLedgerEvent(about, "turn_trust_final", "core", { max_level: "untrusted" });
+    s.appendRunLedgerEvent(about, "turn_trust_final", "core", { max_level: "clean" });
+    const c = createTelegramTurn(s, "please always answer in one line").run_id;
+    const calls: string[] = [];
+    await draftFor("lesson", group(row({ run_id: c, about_run_id: about })), state(), deps(s, '{"kind":"none"}', calls));
+    expect(calls[0]).not.toContain("WEB CONTENT RULE");
+  });
 });

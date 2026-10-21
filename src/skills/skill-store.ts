@@ -568,12 +568,13 @@ export function setFrontmatterFields(
   const m = /^(---\n[\s\S]*?\n)(---\n[\s\S]*)$/.exec(file.replace(/\r\n/g, "\n"));
   if (!m) return file;
   let frontmatter = m[1]!;
+  // final fix B1: the parser keeps a repeated key's LAST line, so every existing line of the key goes and one is written
   const set = (key: string, value: string): void => {
     const line = `${key}: ${value}`;
     const re = new RegExp(`^${key}:.*$`, "m");
-    frontmatter = re.test(frontmatter)
-      ? frontmatter.replace(re, line)
-      : frontmatter.replace(/\n$/, `\n${line}\n`);
+    if (!re.test(frontmatter)) { frontmatter = frontmatter.replace(/\n$/, `\n${line}\n`); return; }
+    let written = false;
+    frontmatter = frontmatter.split("\n").flatMap((l) => (!l.startsWith(`${key}:`) ? [l] : written ? [] : ((written = true), [line]))).join("\n");
   };
   if (typeof fields.score === "number") set("score", fields.score.toFixed(2));
   if (fields.last_verified) set("last_verified", fields.last_verified);
@@ -583,6 +584,20 @@ export function setFrontmatterFields(
   if (fields.name) set("name", fields.name);
   if (fields.origin) set("origin", fields.origin);
   return frontmatter + m[2]!;
+}
+
+/** Final fix B1: the top-level keys a skill file's frontmatter repeats (a forged second `name:` or `origin:` line). */
+export function duplicateFrontmatterKeys(file: string): string[] {
+  const m = /^---\n([\s\S]*?)\n---\n/.exec(file.replace(/\r\n/g, "\n"));
+  if (!m) return [];
+  const seen = new Set<string>(); const dup = new Set<string>();
+  for (const line of m[1]!.split("\n")) {
+    const key = /^([A-Za-z_]+):/.exec(line)?.[1];
+    if (key === undefined) continue;
+    if (seen.has(key)) dup.add(key);
+    seen.add(key);
+  }
+  return [...dup];
 }
 
 /** Remove the named `key: …` lines from the leading frontmatter block (restore un-stamps). */

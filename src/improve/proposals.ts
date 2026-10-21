@@ -3,6 +3,7 @@ import type { TranscriptLine } from "../capabilities/episodic-evidence.js";
 import { checkFactSide, checkLessonSide } from "../capabilities/memory-backstops.js";
 import { PENDING_TURN_PREFIX } from "../capabilities/memory-sources.js";
 import { LOCKED_ENTRY_IDS } from "../decisions/entry-ids.js";
+import { turnTrustFinal } from "../decisions/trust.js";
 import type { ImproveState, ImproveTarget } from "../decisions/entries/improve-route.js";
 import type { ProposalTarget, RunStore } from "../run/run-store.js";
 import { formatInstantInZone } from "../run/schedule-spec.js";
@@ -50,7 +51,7 @@ function ladderDraft(s: ImproveState, evidence: string): Draft | null {
 /** The prior reply reaches the distill only from a turn whose final trust was clean (codex D11), through the redactor. */
 function priorOf(store: RunStore, run_id: string | null, redact: (t: string) => string): string {
   if (!run_id) return "";
-  const clean = store.getLedgerEvents(run_id).some((e) => e.event_type === "turn_trust_final" && e.payload.max_level === "clean");
+  const clean = turnTrustFinal(store, run_id) === "clean"; // final fix B5: the canonical first final event, never any clean one
   return clean ? Array.from(redact(store.assistantTurnTextForRun(run_id) ?? "")).slice(0, PACO_TEXT_CAP).join("") : ""; // capped like Paco's text
 }
 

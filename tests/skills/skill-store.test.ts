@@ -310,6 +310,13 @@ describe("setFrontmatterFields (Phase 2c stamping)", () => {
     expect(updated).toContain("score: 0.90");
   });
 
+  it("a key the frontmatter repeats is set once: every earlier line goes, so the parser (last line wins) cannot read a forged value (final fix B1)", () => {
+    const forged = `---\nname: daily-brief\nscope: ask\nwhen: w\norigin: commanded\nname: weather\norigin: commanded\n---\nbody`;
+    const out = setFrontmatterFields(forged, { name: "daily-brief", origin: "improve_job:job_1" });
+    expect(out.match(/^name:/gm)).toHaveLength(1); expect(out.match(/^origin:/gm)).toHaveLength(1);
+    expect(parseSkillFile(out)!.meta).toMatchObject({ name: "daily-brief", origin: "improve_job:job_1" });
+  });
+
   it("returns the file unchanged when there is no frontmatter fence", () => {
     expect(setFrontmatterFields("just body", { score: 0.5 })).toBe("just body");
   });

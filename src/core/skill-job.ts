@@ -9,7 +9,7 @@ import type { ImproveTickDeps, JobHooks } from "../improve/tick.js";
 import type { NotificationButton } from "../notifications/notification-types.js";
 import type { ImprovementJobRow, JobPatch, JobState, RunStore } from "../run/run-store.js";
 import { jobCollisionCard, promote, SK_PREFIX, skillButtons } from "../skills/promote.js";
-import { sanitizeSlug, setFrontmatterFields, type SkillStore } from "../skills/skill-store.js";
+import { duplicateFrontmatterKeys, sanitizeSlug, setFrontmatterFields, type SkillStore } from "../skills/skill-store.js";
 import { errorCode } from "../domain/error-code.js";
 import { evolutionLaneSnapshot, tryStartEvolutionPipeline } from "./evolution-lane.js";
 
@@ -109,6 +109,8 @@ export async function authorPendingSkill(d: JobDeps, job: ImprovementJobRow, att
   // ruling 20: slugged scope and name on the row (the writer's raw "Ask" would never match the file), the draft stamped with the job id,
   // and a pending path another job holds takes the first free -N suffix so two jobs never overwrite each other's draft (codex B19)
   const scope = sanitizeSlug(parsed.scope);
+  // final fix B1/B2: a repeated frontmatter key (a forged name/origin the parser would read) or a `_` scope/name (the store's own dirs) is refused
+  if (!draftShapeOk(parsed.file, scope, sanitizeSlug(parsed.name))) { endJob(d, job, attempt, "failed", { result_code: "author_failed" }, jobFailedCard("author_failed")); return; }
   const name = freePendingName(d.skills, scope, sanitizeSlug(parsed.name), job.job_id);
   const stamped = setFrontmatterFields(withFrontmatterVersion(parsed.file, 1), { name, origin: `improve_job:${job.job_id}`, ...(score === null ? {} : { score, last_verified: d.now.slice(0, 10) }) });
   if (d.store.getImprovementJob(job.job_id)?.state !== "running") return; // the fence moved (a timeout won): write no file (§5.2)
@@ -116,6 +118,9 @@ export async function authorPendingSkill(d: JobDeps, job: ImprovementJobRow, att
   if (!written.ok) { endJob(d, job, attempt, "failed", { result_code: "write_failed" }, jobFailedCard("write_failed")); return; }
   endJob(d, job, attempt, "pending_review", { gate_a: "skill", pending_scope: scope, pending_name: name }, jobDraftedCard(n, origin.category, name, score), skillButtons(job.job_id, "review"));
 }
+
+const draftShapeOk = (file: string, scope: string, name: string): boolean =>
+  duplicateFrontmatterKeys(file).length === 0 && scope.length > 0 && name.length > 0 && !scope.startsWith("_") && !name.startsWith("_");
 
 /** `<name>` when free or already this job's; else the first `<name>-N` (N ≥ 2) no other job's draft holds. */
 function freePendingName(skills: SkillStore, scope: string, name: string, job_id: string): string {
@@ -176,15 +181,19 @@ export function reconcileJobs(d: Pick<JobDeps, "store" | "skills" | "now" | "cha
 }
 
 /**
- * A draft STAMPED `origin: improve_job:<id>` that no pending_review / collision / promoting job owns (a write just before a
- * timeout fence moved, a dismissed job's leftover) → _retired. Unstamped drafts belong to the commanded path's parking lot
- * (`/skills pending`, core-worker.ts parkBlockedSkill) and are never touched (ruling 20).
+ * Final fix B3: a `_pending` draft is retired only when it is STAMPED `origin: improve_job:<id>`, that job row exists, the job
+ * has ended without owning a draft (dismissed, expired, failed), and the job's recorded pending path is this file (or the job
+ * recorded none: a crash between the write and the ending). Unstamped drafts (the commanded path's parking lot, ruling 20), a
+ * stamp no job row matches, and a stamp of a PROMOTED job (a commanded refine of that skill, parked with the origin line the
+ * writer copied) are never touched; neither is a file a live job (running, pending_review, collision, promoting) holds.
  */
+const SWEEPABLE: ReadonlySet<JobState> = new Set(["dismissed", "expired", "failed"]);
 function sweepOrphans(store: RunStore, skills: SkillStore, now: string): void {
-  const owned = new Set(store.listJobsByState(["pending_review", "collision", "promoting"]).map((j) => `${j.pending_scope}/${j.pending_name}`));
+  const held = new Set(store.listJobsByState(["running", "pending_review", "collision", "promoting"]).map((j) => `${j.pending_scope}/${j.pending_name}`));
   for (const m of skills.listPending()) {
-    if (!m.origin?.startsWith("improve_job:") || owned.has(`${m.scope}/${m.name}`)) continue;
-    if (store.getImprovementJob(m.origin.slice("improve_job:".length))?.state === "running") continue; // its body is still on the lane
+    const job = m.origin?.startsWith("improve_job:") ? store.getImprovementJob(m.origin.slice("improve_job:".length)) : undefined;
+    if (!job || !SWEEPABLE.has(job.state) || held.has(`${m.scope}/${m.name}`)) continue;
+    if (job.pending_scope !== null && `${job.pending_scope}/${job.pending_name}` !== `${m.scope}/${m.name}`) continue;
     const r = skills.dismissPending(m.scope, m.name, now.slice(0, 10));
     if (!r.ok) console.error(`[skill-job] sweep failed: ${r.error}`);
   }
@@ -192,7 +201,7 @@ function sweepOrphans(store: RunStore, skills: SkillStore, now: string): void {
 
 /** §5.1: an accepted skill proposal with no job (a crash between the state change and the insert) gets its queued job, idempotent on the proposal. */
 export function reconcileAccepted(d: Pick<JobDeps, "store" | "now">): void {
-  const withJob = new Set(d.store.listJobsByState(["queued", "running", "pending_review", "suggested", "collision", "promoting", "promoted", "dismissed", "failed"]).map((j) => j.proposal_id));
+  const withJob = new Set(d.store.listJobsByState(["queued", "running", "pending_review", "suggested", "collision", "promoting", "promoted", "dismissed", "failed", "expired"]).map((j) => j.proposal_id));
   for (const p of d.store.listProposalsResolvedSince(new Date(Date.parse(d.now) - 30 * DAY_MS).toISOString())) {
     if (p.target !== "skill" || p.state !== "accepted" || withJob.has(p.proposal_id)) continue;
     let draft: { origin: { turn_ids: string[]; category: string } };

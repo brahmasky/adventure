@@ -244,6 +244,28 @@ describe("skill job taps", () => {
   });
 });
 
+describe("skill Dismiss ordering (final fix B4)", () => {
+  it("Dismiss moves the job first; when the file move then fails the job stays dismissed, the reply says so, and the next reconcile retires the file", () => {
+    const s = RunStore.openInMemory(); const sk = skills();
+    sk.writePending("ask", "weekly-report", GOOD);
+    const id = s.insertImprovementJob({ decision_id: s.insertDecision(D), proposal_id: null, chat_id: "555", origin_json: JSON.stringify({ turn_ids: ["t1"], run_ids: ["r1"], category: "answer", text_hashes: ["h"] }), idempotency_key: `b4:${++cb}`, created_at: NOW })!;
+    sk.writePending("ask", "weekly-report", setFrontmatterFields(GOOD, { origin: `improve_job:${id}` }));
+    s.transitionJob({ job_id: id, from: ["queued"], to: "running", now: NOW, bumpAttempt: true });
+    s.transitionJob({ job_id: id, from: ["running"], to: "pending_review", now: NOW, attempt: 1, patch: { pending_scope: "ask", pending_name: "weekly-report", gate_a: "skill" } });
+    s.markJobsOffered([id], NOW);
+    const real = sk.dismissPending.bind(sk);
+    sk.dismissPending = () => ({ ok: false, error: "write_failed" });
+    handleImprovementTap(s, sk, tap("sk", id, "dismiss"), NOW);
+    expect(s.getImprovementJob(id)?.state).toBe("dismissed");
+    expect(reply(s).at(-1)).toMatch(/dismissed.*next tick/i);
+    expect(sk.listPending().map((m) => m.name)).toEqual(["weekly-report"]);
+    sk.dismissPending = real;
+    reconcileJobs({ store: s, skills: sk, now: NOW, chatId: "555" });
+    expect(sk.listPending()).toEqual([]);
+    expect(sk.listRetired().map((m) => m.name)).toEqual(["weekly-report"]);
+  });
+});
+
 describe("ladder move taps", () => {
   it("Revoke ends an active move once; the move is chat-bound through its proposal", () => {
     const s = RunStore.openInMemory();

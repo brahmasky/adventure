@@ -179,11 +179,35 @@ describe("the skill job", () => {
     expect(store.getImprovementJob(id)).toMatchObject({ state: "failed", result_code: "daemon_restart" });
     expect([...drainOutbox(store).keys()]).toEqual([`improve_job:${id}:1:failed`]);
     // ruling 20: only a draft STAMPED by a job is swept; a draft the commanded path parked for /skills pending is never touched
-    skills.writePending("ask", "orphan", setFrontmatterFields(GOOD.replace("weekly-report", "orphan"), { origin: "improve_job:job_gone" }));
+    skills.writePending("ask", "orphan", setFrontmatterFields(GOOD.replace("weekly-report", "orphan"), { origin: `improve_job:${id}` })); // the crashed job's leftover
     skills.writePending("ask", "parked-by-paco", GOOD.replace("weekly-report", "parked-by-paco"));
     reconcileJobs(d);
     expect(skills.listPending().map((m) => m.name)).toEqual(["parked-by-paco"]);
     expect(skills.listRetired().map((m) => m.name)).toEqual(["orphan"]);
+  });
+  it("the sweep never touches a stamped draft no job row matches, nor a commanded refine parked with an origin copied from a promoted job (final fix B3)", async () => {
+    const { store, skills, d, runs, turn_ids, decision_id } = setup();
+    const id = startSkillJob(store, { decision_id, proposal_id: null, chat_id: "555", origin: origin(turn_ids, runs), idempotency_key: "k", now: NOW })!;
+    store.transitionJob({ job_id: id, from: ["queued"], to: "running", now: NOW, bumpAttempt: true });
+    store.transitionJob({ job_id: id, from: ["running"], to: "pending_review", now: NOW, attempt: 1, patch: { pending_scope: "ask", pending_name: "weekly-report" } });
+    store.transitionJob({ job_id: id, from: ["pending_review"], to: "promoting", now: NOW, patch: { promote_mode: "refuse" } });
+    store.transitionJob({ job_id: id, from: ["promoting"], to: "promoted", now: NOW });
+    // Paco's commanded refine of the promoted skill, blocked by Gate B and parked: the writer copied the origin line
+    skills.writePending("ask", "weekly-report", setFrontmatterFields(GOOD, { origin: `improve_job:${id}` }));
+    skills.writePending("ask", "no-row", setFrontmatterFields(GOOD.replace("weekly-report", "no-row"), { origin: "improve_job:job_gone" }));
+    reconcileJobs(d);
+    expect(skills.listPending().map((m) => m.name).sort()).toEqual(["no-row", "weekly-report"]);
+    expect(skills.listRetired()).toEqual([]);
+  });
+  it("a draft whose frontmatter repeats a key, or whose scope or name starts with _, fails the job author_failed and writes no file (final fix B1, B2)", async () => {
+    for (const compose of [GOOD.replace("version: 1", "version: 1\nname: weather"), GOOD.replace("scope: ask", "scope: _retired"), GOOD.replace("name: weekly-report", "name: _pending")]) {
+      resetEvolutionLaneForTests();
+      const { store, skills, d, runs, turn_ids, decision_id } = setup({ compose });
+      const id = startSkillJob(store, { decision_id, proposal_id: null, chat_id: "555", origin: origin(turn_ids, runs), idempotency_key: "k", now: NOW })!;
+      await runQueuedJobs(d, 1); await evolutionLaneSettled();
+      expect(store.getImprovementJob(id)).toMatchObject({ state: "failed", result_code: "author_failed" });
+      expect(skills.listPending()).toEqual([]);
+    }
   });
   it("the draft file is stamped with the job id and uses slugged scope and name; a pending path another job holds gets a free suffix", async () => {
     const { store, skills, d, runs, turn_ids, decision_id } = setup({ compose: GOOD.replace("scope: ask", "scope: Ask") });

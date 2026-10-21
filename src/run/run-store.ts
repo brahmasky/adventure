@@ -1028,7 +1028,7 @@ export interface ScheduleExpiryRow { approval_id: string; run_id: string; capabi
 export type ProposalTarget = "lesson" | "fact" | "skill" | "schedule" | "knowledge" | "tool_gap" | "ladder";
 export type ProposalState = "open" | "accepted" | "reverted" | "dismissed" | "expired";
 export interface ImprovementProposalRow { proposal_id: string; decision_id: string; target: ProposalTarget; scope: string; chat_id: string | null; draft_json: string; evidence: string; state: ProposalState; result_json: string | null; created_at: string; offered_at: string | null; resolved_at: string | null }
-export type JobState = "queued" | "running" | "pending_review" | "suggested" | "collision" | "promoting" | "promoted" | "dismissed" | "failed";
+export type JobState = "queued" | "running" | "pending_review" | "suggested" | "collision" | "promoting" | "promoted" | "dismissed" | "failed" | "expired";
 export interface ImprovementJobRow { job_id: string; kind: "skill_author"; decision_id: string; proposal_id: string | null; chat_id: string | null; origin_json: string; idempotency_key: string; attempt: number; state: JobState; result_code: string | null; gate_a: string | null; pending_scope: string | null; pending_name: string | null; promote_mode: string | null; created_at: string; started_at: string | null; finished_at: string | null; offered_at: string | null; resolved_at: string | null }
 export interface ImprovementTapRow { tap_id: string; subject_kind: "proposal" | "job" | "move"; subject_id: string; action: string; telegram_callback_id: string; result: string; created_at: string }
 export type JobPatch = Partial<Pick<ImprovementJobRow, "result_code" | "gate_a" | "pending_scope" | "pending_name" | "promote_mode">>;
@@ -1046,7 +1046,7 @@ export class DecisionRejected extends Error {
 
 const JOB_PATCH_COLUMNS = ["result_code", "gate_a", "pending_scope", "pending_name", "promote_mode"] as const;
 const JOB_FINISHED: ReadonlySet<JobState> = new Set(["pending_review", "suggested", "failed"]);
-const JOB_RESOLVED: ReadonlySet<JobState> = new Set(["promoted", "dismissed"]);
+const JOB_RESOLVED: ReadonlySet<JobState> = new Set(["promoted", "dismissed", "expired"]);
 /** The SET list of one job transition: the patch columns, the attempt bump, and the timestamp each target state stamps. */
 function jobTransitionSets(i: { to: JobState; now: string; patch?: JobPatch; bumpAttempt?: boolean }): { sets: string[]; values: Array<string | number | null> } {
   const sets = ["state = ?"]; const values: Array<string | number | null> = [i.to];
@@ -1207,7 +1207,7 @@ const IMPROVE_ROUTE_DDL = `
     origin_json TEXT NOT NULL,
     idempotency_key TEXT NOT NULL UNIQUE,
     attempt INTEGER NOT NULL DEFAULT 0,
-    state TEXT NOT NULL CHECK (state IN ('queued', 'running', 'pending_review', 'suggested', 'collision', 'promoting', 'promoted', 'dismissed', 'failed')),
+    state TEXT NOT NULL CHECK (state IN ('queued', 'running', 'pending_review', 'suggested', 'collision', 'promoting', 'promoted', 'dismissed', 'failed', 'expired')),
     result_code TEXT,
     gate_a TEXT,
     pending_scope TEXT,
