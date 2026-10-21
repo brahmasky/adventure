@@ -154,7 +154,9 @@ function plantDay1(g) {
   return f;
 }
 
-const deps = (g, now) => ({ store: g.store, env: process.env, now, signal: g.ac.signal, chatId: CHAT, client: g.client, llm: g.llm, embed: g.embed, embedModel: g.embedModel, skills: g.skills, jobs: g.m.skillJobHooks });
+// job endings are stamped with the wall clock (final fix C1): on the gate that is the gate's clock plus the real time since the tick began
+const deps = (g, now) => { const t0 = Date.now(); return { store: g.store, env: process.env, now, signal: g.ac.signal, chatId: CHAT, client: g.client, llm: g.llm, embed: g.embed, embedModel: g.embedModel, skills: g.skills, jobs: g.m.skillJobHooks,
+  wallNow: () => new Date(Date.parse(now) + Date.now() - t0).toISOString() }; };
 
 /** One local date's tick, resumed while it stops on the cycle budget; the evolution lane is awaited after each run so job end states are final. */
 async function runTick(g, now) {

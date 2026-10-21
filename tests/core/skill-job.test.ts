@@ -27,7 +27,7 @@ function setup(o: { classify?: string | null; compose?: string | null; verify?: 
   const classify = llm(o.classify === undefined ? '{"verdict":"skill","reason":"a procedure"}' : o.classify);
   const compose = llm(o.compose === undefined ? GOOD : o.compose);
   const verify = llm(o.verify === undefined ? "" : o.verify);
-  const d: JobDeps = { store, env: { HOUGE_GATE_B_ENABLED: "false" }, now: NOW, chatId: "555", skills, signal: new AbortController().signal, llm: { classify, compose, verify } };
+  const d: JobDeps = { store, env: { HOUGE_GATE_B_ENABLED: "false" }, now: NOW, chatId: "555", skills, signal: new AbortController().signal, llm: { classify, compose, verify }, wallNow: () => NOW };
   const decision_id = store.insertDecision(D);
   return { store, skills, d, runs, turn_ids, decision_id, classify, compose, verify };
 }
@@ -226,5 +226,75 @@ describe("the skill job", () => {
     reconcileAccepted(d);
     expect(store.listJobsByState(["queued"])).toHaveLength(1);
     void runs;
+  });
+});
+
+const LATER = "2026-10-21T10:07:00.000Z";
+const DAY = 24 * 60 * 60 * 1000;
+const at = (base: string, days: number) => new Date(Date.parse(base) + days * DAY).toISOString();
+/** A job parked in pending_review with a stamped draft, offered at `offered`. */
+function reviewJob(store: RunStore, skills: SkillStore, decision_id: string, offered: string, key = "k"): string {
+  const id = startSkillJob(store, { decision_id, proposal_id: null, chat_id: "555", origin: origin(["t1"], ["r1"]), idempotency_key: key, now: offered })!;
+  skills.writePending("ask", "weekly-report", setFrontmatterFields(GOOD, { origin: `improve_job:${id}` }));
+  store.transitionJob({ job_id: id, from: ["queued"], to: "running", now: offered, bumpAttempt: true });
+  store.transitionJob({ job_id: id, from: ["running"], to: "pending_review", now: offered, attempt: 1, patch: { pending_scope: "ask", pending_name: "weekly-report", gate_a: "skill" } });
+  store.markJobsOffered([id], offered);
+  return id;
+}
+
+describe("job lifecycle (final fix C)", () => {
+  it("C1: a job's ending is stamped with the wall clock at the transition, not the tick's start instant, so the next digest window sees it", async () => {
+    const { store, d, runs, turn_ids, decision_id } = setup();
+    const id = startSkillJob(store, { decision_id, proposal_id: null, chat_id: "555", origin: origin(turn_ids, runs), idempotency_key: "k", now: NOW })!;
+    await runQueuedJobs({ ...d, wallNow: () => LATER }, 1); await evolutionLaneSettled();
+    expect(store.getImprovementJob(id)).toMatchObject({ state: "pending_review", finished_at: LATER, offered_at: LATER });
+  });
+  it("C2: a Gate A call that fails ends the job failed gate_a_unavailable with a card that says the check could not run, never suggested", async () => {
+    const { store, skills, d, runs, turn_ids, decision_id, compose } = setup({ classify: null });
+    const id = startSkillJob(store, { decision_id, proposal_id: null, chat_id: "555", origin: origin(turn_ids, runs), idempotency_key: "k", now: NOW })!;
+    await runQueuedJobs(d, 1); await evolutionLaneSettled();
+    expect(store.getImprovementJob(id)).toMatchObject({ state: "failed", result_code: "gate_a_unavailable", gate_a: null });
+    expect(String(drainOutbox(store).get(`improve_job:${id}:1:failed`)!.text)).toMatch(/could not run/);
+    expect(compose).not.toHaveBeenCalled(); expect(skills.listPending()).toEqual([]);
+  });
+  it("C3: a pending_review job offered more than 14 days ago expires: draft retired, one card; a younger one stays", () => {
+    const { store, skills, d, decision_id } = setup();
+    const old = reviewJob(store, skills, decision_id, at(NOW, -15));
+    reconcileJobs(d); reconcileJobs(d);
+    expect(store.getImprovementJob(old)).toMatchObject({ state: "expired" });
+    expect(skills.listPending()).toEqual([]);
+    expect(skills.listRetired().map((m) => m.name)).toEqual(["weekly-report"]);
+    expect([...drainOutbox(store).keys()]).toEqual([`improve_job:${old}:1:expired`]);
+    const young = reviewJob(store, skills, decision_id, at(NOW, -13), "k2");
+    reconcileJobs(d);
+    expect(store.getImprovementJob(young)?.state).toBe("pending_review");
+  });
+  it("C3: a promoting job whose retry throws three times ends failed promote_failed with a card; a retry that completes sends the promoted card", () => {
+    const { store, skills, d, decision_id } = setup();
+    const id = reviewJob(store, skills, decision_id, NOW);
+    store.transitionJob({ job_id: id, from: ["pending_review"], to: "promoting", now: NOW, patch: { promote_mode: "refuse" } });
+    const real = skills.promotePending.bind(skills);
+    skills.promotePending = () => { throw new Error("EIO"); };
+    reconcileJobs(d); reconcileJobs(d);
+    expect(store.getImprovementJob(id)?.state).toBe("promoting");
+    reconcileJobs(d);
+    expect(store.getImprovementJob(id)).toMatchObject({ state: "failed", result_code: "promote_failed" });
+    expect([...drainOutbox(store).keys()]).toEqual([`improve_job:${id}:1:failed`]);
+    skills.promotePending = real;
+    const { store: s2, skills: k2, d: d2, decision_id: dec2 } = setup();
+    const id2 = reviewJob(s2, k2, dec2, NOW);
+    s2.transitionJob({ job_id: id2, from: ["pending_review"], to: "promoting", now: NOW, patch: { promote_mode: "refuse" } });
+    reconcileJobs(d2);
+    expect(s2.getImprovementJob(id2)?.state).toBe("promoted");
+    expect(String(drainOutbox(s2).get(`improve_job:${id2}:1:promoted`)?.text)).toMatch(/weekly-report is active/);
+  });
+  it("C5: with skills disarmed (/disarm sets HOUGE_SKILLS_ENABLED=false) a queued job stays queued: no seat call, no file, no card", async () => {
+    const { store, skills, d, runs, turn_ids, decision_id, classify, compose } = setup();
+    const id = startSkillJob(store, { decision_id, proposal_id: null, chat_id: "555", origin: origin(turn_ids, runs), idempotency_key: "k", now: NOW })!;
+    expect(await runQueuedJobs({ ...d, env: { ...d.env, HOUGE_SKILLS_ENABLED: "false" } }, 3)).toBe(0);
+    await evolutionLaneSettled();
+    expect(store.getImprovementJob(id)).toMatchObject({ state: "queued", attempt: 0 });
+    expect(classify).not.toHaveBeenCalled(); expect(compose).not.toHaveBeenCalled();
+    expect(skills.listPending()).toEqual([]); expect(drainOutbox(store).size).toBe(0);
   });
 });

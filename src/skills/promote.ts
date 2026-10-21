@@ -7,6 +7,8 @@ import type { SkillStore } from "./skill-store.js";
  * tick's retry of a `promoting` job (core/skill-job.ts). Lives here so neither imports the other.
  */
 export const SK_PREFIX = "dec:sk:";
+/** A tap acts within this many days of its offer (gateway/improvement-commands.ts); an unreviewed drafted skill expires after it (core/skill-job.ts). */
+export const TAP_STALE_DAYS = 14;
 
 function button(text: string, data: string): NotificationButton {
   if (Buffer.byteLength(data, "utf8") > 64) throw new Error("improvement callback_data exceeds 64 bytes");

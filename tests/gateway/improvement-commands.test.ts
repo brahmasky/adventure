@@ -266,6 +266,26 @@ describe("skill Dismiss ordering (final fix B4)", () => {
   });
 });
 
+describe("a failed promote from a tap (final fix C4)", () => {
+  it("a promote that throws returns the job to pending_review with its offered_at, so Paco's retap works", () => {
+    const s = RunStore.openInMemory(); const sk = skills();
+    sk.writePending("ask", "weekly-report", GOOD);
+    const id = s.insertImprovementJob({ decision_id: s.insertDecision(D), proposal_id: null, chat_id: "555", origin_json: JSON.stringify({ turn_ids: ["t1"], run_ids: ["r1"], category: "answer", text_hashes: ["h"] }), idempotency_key: `c4:${++cb}`, created_at: NOW })!;
+    s.transitionJob({ job_id: id, from: ["queued"], to: "running", now: NOW, bumpAttempt: true });
+    s.transitionJob({ job_id: id, from: ["running"], to: "pending_review", now: NOW, attempt: 1, patch: { pending_scope: "ask", pending_name: "weekly-report", gate_a: "skill" } });
+    s.markJobsOffered([id], NOW);
+    const real = sk.promotePending.bind(sk);
+    sk.promotePending = () => { throw new Error("EIO"); };
+    const LATER = "2026-10-22T10:00:00.000Z";
+    handleImprovementTap(s, sk, tap("sk", id, "accept"), LATER);
+    expect(reply(s)).toEqual([TAP_FAILED_TEXT]);
+    expect(s.getImprovementJob(id)).toMatchObject({ state: "pending_review", offered_at: NOW });
+    sk.promotePending = real;
+    handleImprovementTap(s, sk, tap("sk", id, "accept"), LATER);
+    expect(s.getImprovementJob(id)?.state).toBe("promoted");
+  });
+});
+
 describe("ladder move taps", () => {
   it("Revoke ends an active move once; the move is chat-bound through its proposal", () => {
     const s = RunStore.openInMemory();

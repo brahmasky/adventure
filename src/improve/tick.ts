@@ -9,7 +9,7 @@ import type { DecideResult } from "../decisions/types.js";
 import type { JevRequest, JevResult } from "../jev/jev-client.js";
 import type { RunStore } from "../run/run-store.js";
 import { formatInstantInZone, resolveDisplayZone } from "../run/schedule-spec.js";
-import type { SkillStore } from "../skills/skill-store.js";
+import { resolveSkillsEnabled, type SkillStore } from "../skills/skill-store.js";
 import { computeAbandonment } from "./abandonment.js";
 import { decideImprove, deferredRecorder, type RecordPatch, type TickLlm } from "./decide-improve.js";
 import { buildImproveState, groupSignals, RECURRENCE_WINDOW_DAYS, type SignalGroup } from "./groups.js";
@@ -43,6 +43,8 @@ export interface ImproveTickDeps {
   /** Tests only: overrides IMPROVE_TICK_BUDGET_MS, and the wall clock the budget is measured on (a flake-free budget test). */
   budgetMs?: number;
   clock?: () => number;
+  /** The instant a job's ending is stamped with (final fix C1). Unset in the daemon (the wall clock); the live gate passes its shifted clock. */
+  wallNow?: () => string;
 }
 export const IMPROVE_TICK_BUDGET_MS = 120_000;
 export interface TickCounts { mirrored: number; recurrence: number; abandoned: number; groups: number; decided: number; proposals: number; jobs_queued: number; jobs_started: number; deferred: number; stale: number; already_proposed: number; no_draft: number; record_failed: number; embed_unavailable: number }
@@ -106,8 +108,9 @@ async function tickBody(d: ImproveTickDeps, c: TickCounts): Promise<"done" | "st
     if (d.signal.aborted || clock() - started > (d.budgetMs ?? IMPROVE_TICK_BUDGET_MS)) return "stopped";
     if (c.decided >= IMPROVE_GROUPS_PER_TICK) { c.deferred += 1; continue; }
     const s = buildImproveState(g, { store: d.store, env: d.env, now: d.now, skills: d.skills, redact: (t) => redactForImprove(d.store, t), scheduleHints: hints, since14 });
-    if (willStartJob(s) && queueLeft <= 0) { c.deferred += 1; continue; }   // §3.5: a cluster beyond the day's 3 gets no row (ruling 5)
-    let outcome: "queued" | "committed" | "record_failed";
+    // §3.5: a cluster beyond the day's 3 gets no row (ruling 5); final fix C5: so does every cluster while /disarm has skills off
+    if (willStartJob(s) && (queueLeft <= 0 || !resolveSkillsEnabled(d.env))) { c.deferred += 1; continue; }
+    let outcome: GroupOutcome;
     try {
       const rec2 = deferredRecorder();
       const r = await decideImprove({ store: d.store, env: d.env, client: d.client, pick: d.llm.pick, now: () => d.now }, s, rec2.recorder, g.newest.about_run_id ?? g.newest.run_id);
@@ -119,6 +122,7 @@ async function tickBody(d: ImproveTickDeps, c: TickCounts): Promise<"done" | "st
       continue;
     }
     if (outcome === "record_failed") { c.record_failed += 1; continue; }   // rows stay unconsumed: tomorrow's tick reads them again
+    if (outcome === "deferred") { c.deferred += 1; continue; }
     if (outcome === "queued") queueLeft -= 1;
     if (s.stale) c.stale += 1;
     c.decided += 1;
@@ -127,6 +131,7 @@ async function tickBody(d: ImproveTickDeps, c: TickCounts): Promise<"done" | "st
   return "done";
 }
 
+type GroupOutcome = "queued" | "committed" | "record_failed" | "deferred";
 /** A rule-rung skill/recurrence row starts a job (ruling 1): the state predicts it so the day's budget can defer before any call. */
 const willStartJob = (s: ImproveState): boolean => s.recurrence !== null && !s.alreadyAuthored && !s.skillExists && !(s.category !== null && ["lookup", "research"].includes(s.category)) && !s.stale;
 /** Targets that need a draft to be a proposal; `knowledge` is recorded only (R5) and a rule-rung `skill` is the job. */
@@ -139,7 +144,9 @@ const NEEDS_DRAFT: ReadonlySet<string> = new Set(["lesson", "fact", "skill", "sc
  * again tomorrow.
  */
 function commitGroup(d: ImproveTickDeps, g: SignalGroup, s: ImproveState, r: DecideResult<ImproveTarget, unknown>, draft: Draft | null,
-  flush: (real: ReturnType<typeof storeRecorder>, patch?: RecordPatch) => string | null, c: TickCounts): "queued" | "committed" | "record_failed" {
+  flush: (real: ReturnType<typeof storeRecorder>, patch?: RecordPatch) => string | null, c: TickCounts): GroupOutcome {
+  // final fix C5: the backstop of the pre-check — a rule-rung job while skills are disarmed writes nothing and consumes nothing
+  if (r.rung === "rule" && r.verdict === "skill" && !resolveSkillsEnabled(d.env)) return "deferred";
   return d.store.inTransaction(() => {
     const job = r.rung === "rule" && r.verdict === "skill" && s.recurrence !== null && d.jobs !== undefined;
     const wantsProposal = !job && NEEDS_DRAFT.has(r.verdict);

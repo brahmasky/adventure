@@ -206,4 +206,19 @@ describe("runImproveTick", () => {
     expect(s.listOpenProposals()).toHaveLength(1);
     expect(s.listUnconsumedSignals(10)).toHaveLength(1);
   });
+  it("with skills disarmed a recurrence group the rule rung would turn into a job is deferred: no decision row, no job, its row stays unconsumed (final fix C5)", async () => {
+    const s = RunStore.openInMemory();
+    const hooks: JobHooks = { reconcile: vi.fn(), reconcileAccepted: vi.fn(), runQueued: vi.fn(async () => 0),
+      enqueueFromRecurrence: vi.fn((store, i) => store.insertImprovementJob({ decision_id: i.decision_id, proposal_id: null, chat_id: i.chat_id, origin_json: JSON.stringify(i.origin), idempotency_key: i.idempotency_key, created_at: i.now })) };
+    for (let k = 0; k < 3; k += 1) {
+      const run_id = turn(s, `alpha request number ${k} for the weekly thing`).run_id;
+      s.insertJevVerdict({ run_id, category: "answer", breadth: null, reasoning: null, actions: null, sets_rule: null, rule_scope: null, lane: "answer", role: "default", effort: null, cascade: null,
+        save_outcome: "none", route_outcome: "fallback", reason: "jev_skipped", skip_reason: null, quoted_turn_id: null });
+    }
+    const r = await runImproveTick(deps(s, { env: { ...ENV, HOUGE_SKILLS_ENABLED: "false" }, jobs: hooks }));
+    expect(r).toMatchObject({ ran: true, counts: { recurrence: 1, jobs_queued: 0, deferred: 1 } });
+    expect(hooks.enqueueFromRecurrence).not.toHaveBeenCalled();
+    expect(s.listDecisionsBetween("2026-01-01T00:00:00.000Z", "2027-01-01T00:00:00.000Z").filter((x) => x.entry_id === "improve.route")).toEqual([]);
+    expect(s.listUnconsumedSignals(10).map((x) => x.signal)).toEqual(["recurrence"]);
+  });
 });

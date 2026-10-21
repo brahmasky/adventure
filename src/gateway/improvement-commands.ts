@@ -4,7 +4,7 @@ import type { TypedTaskEvent } from "../domain/types.js";
 import { startSkillJob } from "../core/skill-job.js";
 import { errorCode } from "../domain/error-code.js";
 import { computeNextRunAt, parseScheduleSpec } from "../run/schedule-spec.js";
-import { promote } from "../skills/promote.js";
+import { promote, TAP_STALE_DAYS } from "../skills/promote.js";
 import type { ImprovementJobRow, ImprovementProposalRow, RunStore } from "../run/run-store.js";
 import { LadderMoveRefused } from "../run/run-store.js";
 import type { SkillStore } from "../skills/skill-store.js";
@@ -16,11 +16,13 @@ import { oncePerTrigger, replyTo } from "./memory-commands.js";
  * redelivered callback id. Every handled tap is one improvement_taps row; an action acts only on the state named for it,
  * on an offered subject, within TAP_STALE_DAYS; anything else answers TAP_HANDLED_TEXT and writes only the tap row.
  */
-export const TAP_STALE_DAYS = 14;
+export { TAP_STALE_DAYS };
 export const TAP_HANDLED_TEXT = "Already handled.";
 /** A transient failure (a store error mid-effect): the trigger is processed, but the text says so and a NEW tap (a new callback id) retries (codex B20). */
 export const TAP_FAILED_TEXT = "That did not go through; tap it again.";
 export const JOB_EXISTS_TEXT = "A job for this already exists; nothing new queued.";
+/** Final fix C4: the promote failed and the job could not be put back on offer; the tick's reconcile retries it. */
+export const PROMOTE_RETRY_TEXT = "That did not go through; it is retried at the next tick.";
 const DAY_MS = 24 * 60 * 60 * 1000;
 const tapped = (): GatewayIntakeResult => ({ ok: true, status: "improvement_tapped", run_id: "" });
 const chatOf = (e: TypedTaskEvent): string => (e.notify.kind === "telegram" ? e.notify.chat_id : "");
@@ -37,7 +39,7 @@ export function handleImprovementTap(store: RunStore, skills: SkillStore, event:
       console.error(`[improve] tap ${tap.kind}:${tap.action} failed: ${errorCode(e)}`);
     }
     try {
-      const result = text === TAP_HANDLED_TEXT ? "handled" : text === TAP_FAILED_TEXT ? "failed" : text === LESSON_CAPPED_HINT ? "capped" : "applied";
+      const result = text === TAP_HANDLED_TEXT ? "handled" : text === TAP_FAILED_TEXT || text === PROMOTE_RETRY_TEXT ? "failed" : text === LESSON_CAPPED_HINT ? "capped" : "applied";
       store.insertImprovementTap({ subject_kind: tap.kind === "pr" ? "proposal" : tap.kind === "sk" ? "job" : "move", subject_id: tap.id, action: tap.action, telegram_callback_id: tap.callback, result, created_at: now });
       replyTo(store, event, "improvement_tap", text);
     } catch (e) {
@@ -153,7 +155,26 @@ function jobTap(store: RunStore, skills: SkillStore, tap: Tap, chat_id: string, 
   if (tap.action === "dismiss") return dismissJob(store, skills, job, now);
   const mode = tap.action === "accept" && job.state === "pending_review" ? "refuse" : tap.action === "replace" && job.state === "collision" ? "replace" : tap.action === "keep" && job.state === "collision" ? "keep_both" : null;
   if (!mode || !store.transitionJob({ job_id: job.job_id, from: [job.state], to: "promoting", now, patch: { promote_mode: mode } })) return TAP_HANDLED_TEXT;
-  return promote(store, skills, { ...job, state: "promoting", promote_mode: mode }, chat_id, now);
+  try {
+    return promote(store, skills, { ...job, state: "promoting", promote_mode: mode }, chat_id, now);
+  } catch (e) {
+    console.error(`[improve] promote from tap failed: ${errorCode(e)}`);
+    return restoreOffer(store, job, now) ? TAP_FAILED_TEXT : PROMOTE_RETRY_TEXT;
+  }
+}
+
+/** Final fix C4: a promote that threw puts the job back on its offer (state and offered_at), so "tap it again" is true. */
+function restoreOffer(store: RunStore, job: ImprovementJobRow, now: string): boolean {
+  try {
+    return store.inTransaction(() => {
+      if (!store.transitionJob({ job_id: job.job_id, from: ["promoting"], to: job.state, now })) return false;
+      if (job.offered_at) store.markJobsOffered([job.job_id], job.offered_at);
+      return true;
+    });
+  } catch (e) {
+    console.error(`[improve] offer not restored: ${errorCode(e)}`);
+    return false;
+  }
 }
 
 export const DISMISS_FILE_DEFERRED_TEXT = "🗑 Dismissed. The draft file could not be moved now; it is retired at the next tick.";

@@ -8,8 +8,8 @@ import type { TickLlm } from "../improve/decide-improve.js";
 import type { ImproveTickDeps, JobHooks } from "../improve/tick.js";
 import type { NotificationButton } from "../notifications/notification-types.js";
 import type { ImprovementJobRow, JobPatch, JobState, RunStore } from "../run/run-store.js";
-import { jobCollisionCard, promote, SK_PREFIX, skillButtons } from "../skills/promote.js";
-import { duplicateFrontmatterKeys, sanitizeSlug, setFrontmatterFields, type SkillStore } from "../skills/skill-store.js";
+import { jobCollisionCard, promote, SK_PREFIX, skillButtons, TAP_STALE_DAYS } from "../skills/promote.js";
+import { duplicateFrontmatterKeys, resolveSkillsEnabled, sanitizeSlug, setFrontmatterFields, type SkillStore } from "../skills/skill-store.js";
 import { errorCode } from "../domain/error-code.js";
 import { evolutionLaneSnapshot, tryStartEvolutionPipeline } from "./evolution-lane.js";
 
@@ -25,7 +25,11 @@ export const JOB_TURN_CAP = 6;
 export const JOB_QUEUED_TTL_DAYS = 3;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const DOWN_ROUTES: ReadonlySet<string> = new Set(["retire", "restore", "lesson", "code", "unsure"]);
-export interface JobDeps { store: RunStore; env: NodeJS.ProcessEnv; now: string; chatId: string | null; skills: SkillStore; llm: { classify: TickLlm; compose: TickLlm; verify: TickLlm }; signal: AbortSignal }
+export interface JobDeps {
+  store: RunStore; env: NodeJS.ProcessEnv; now: string; chatId: string | null; skills: SkillStore; llm: { classify: TickLlm; compose: TickLlm; verify: TickLlm }; signal: AbortSignal;
+  /** Final fix C1: the wall clock an ending is stamped with (the job runs minutes after the tick's `now`); tests inject it. */
+  wallNow?: () => string;
+}
 interface Origin { turn_ids: string[]; run_ids: string[]; category: string; text_hashes: string[] }
 const originOf = (job: ImprovementJobRow): Origin => JSON.parse(job.origin_json) as Origin;
 
@@ -38,6 +42,10 @@ export const jobDraftedCard = (n: number, category: string, name: string, score:
   `🛠 Skill drafted from ${n} requests about ${category}: ${name}${score === null ? " (Gate B unscored)" : ` (Gate B ${score.toFixed(2)})`}. Accept promotes it; Dismiss retires the draft.`;
 export const jobSuggestedCard = (n: number, verdict: string): string => `🛠 ${n} similar requests, but Gate A says this is a ${verdict}, not a skill. Nothing was written.`;
 export const jobFailedCard = (code: string): string => `🛠 Skill drafting failed (${code}). Nothing was written.`;
+export const jobGateAUnavailableCard = (n: number): string => `🛠 ${n} similar requests, but the skill check (Gate A) could not run (gate_a_unavailable). Nothing was written.`;
+export const jobExpiredCard = (name: string): string => `🛠 The drafted skill ${name} was not reviewed within ${TAP_STALE_DAYS} days; the draft is retired.`;
+export const jobPromoteFailedCard = (name: string): string => `🛠 Promoting the skill ${name} failed ${PROMOTE_RETRY_MAX} times (promote_failed). The draft stays under _pending until the sweep retires it.`;
+export const PROMOTE_RETRY_MAX = 3;
 
 /** The card goes out from the fenced transition, keyed by job, attempt and state: a redelivered event never sends it twice (§5.2, codex round 4). */
 function enqueueJobCard(store: RunStore, chatId: string | null, job_id: string, attempt: number, state: JobState, text: string, buttons?: NotificationButton[]): void {
@@ -47,11 +55,12 @@ function enqueueJobCard(store: RunStore, chatId: string | null, job_id: string, 
 }
 
 /** One fenced ending: the transition and its card commit together; a loser (zero rows) enqueues nothing. */
-function endJob(d: Pick<JobDeps, "store" | "chatId" | "now">, job: ImprovementJobRow, attempt: number, to: JobState, patch: JobPatch, text: string, buttons?: NotificationButton[]): boolean {
+function endJob(d: Pick<JobDeps, "store" | "chatId" | "wallNow">, job: ImprovementJobRow, attempt: number, to: JobState, patch: JobPatch, text: string, buttons?: NotificationButton[]): boolean {
+  const now = d.wallNow?.() ?? new Date().toISOString(); // final fix C1: the instant of the ending, not the tick's start
   return d.store.inTransaction(() => {
-    if (!d.store.transitionJob({ job_id: job.job_id, from: ["running"], to, now: d.now, attempt, patch })) return false;
+    if (!d.store.transitionJob({ job_id: job.job_id, from: ["running"], to, now, attempt, patch })) return false;
     enqueueJobCard(d.store, job.chat_id ?? d.chatId, job.job_id, attempt, to, text, buttons); // the job's own chat (ruling 19; codex round 2)
-    if (buttons) d.store.markJobsOffered([job.job_id], d.now);
+    if (buttons) d.store.markJobsOffered([job.job_id], now);
     return true;
   });
 }
@@ -70,6 +79,7 @@ function safeEnd(...args: Parameters<typeof endJob>): void {
 }
 
 export async function runQueuedJobs(d: JobDeps, budget: number): Promise<number> {
+  if (!resolveSkillsEnabled(d.env)) return 0; // final fix C5: /disarm turns skills off; queued jobs wait, no seat call, no file
   let started = 0;
   for (const job of d.store.listJobsByState(["queued"])) {
     if (started >= budget || d.signal.aborted || evolutionLaneSnapshot().busy) break; // busy: no transition, no started_at, no card; the next tick retries
@@ -101,6 +111,8 @@ export async function authorPendingSkill(d: JobDeps, job: ImprovementJobRow, att
   const n = origin.turn_ids.length;
   if (objective.trim().length === 0) { endJob(d, job, attempt, "failed", { result_code: "no_text" }, jobFailedCard("no_text")); return; }
   const gateA = await gateAOf(d, objective);
+  // final fix C2: a failed classify call is not a verdict; the job fails so nothing claims Gate A said "not a skill"
+  if (gateA === null) { endJob(d, job, attempt, "failed", { result_code: "gate_a_unavailable" }, jobGateAUnavailableCard(n)); return; }
   if (DOWN_ROUTES.has(gateA.verdict)) { endJob(d, job, attempt, "suggested", { gate_a: gateA.verdict }, jobSuggestedCard(n, gateA.verdict)); return; }
   const fed = fedFileOf(d.skills, objective);
   const parsed = await authorDraft(objective, fed, async (q, system) => { const r = await d.llm.compose({ question: q, system }); return r.ok ? r.answer : undefined; });
@@ -130,9 +142,9 @@ function freePendingName(skills: SkillStore, scope: string, name: string, job_id
   return `${name}-${job_id.slice(4, 12)}`;
 }
 
-async function gateAOf(d: JobDeps, objective: string): Promise<GateAResult> {
+async function gateAOf(d: JobDeps, objective: string): Promise<GateAResult | null> {
   const r = await d.llm.classify({ question: buildGateAQuestion(objective), system: GATE_A_DISCIPLINE });
-  return r.ok ? parseGateAVerdict(r.answer) : { verdict: "unsure", reason: "Gate A classification call failed" };
+  return r.ok ? parseGateAVerdict(r.answer) : null;
 }
 
 /** Step 0 of authorAndWriteSkill: the ONE active skill the objective names, fed to the writer (its text is in-house, codex D11). */
@@ -165,8 +177,10 @@ export function reconcileJobsAtBoot(store: RunStore, skills: SkillStore, chatId:
   return n;
 }
 
-/** Tick-time reconcile: stale queued jobs fail lane_busy; promoting jobs retry (promote, shared with the tap); orphaned pending files retire. */
-export function reconcileJobs(d: Pick<JobDeps, "store" | "skills" | "now" | "chatId">): void {
+type ReconcileDeps = Pick<JobDeps, "store" | "skills" | "now" | "chatId">;
+
+/** Tick-time reconcile: stale queued jobs fail lane_busy; unreviewed offers expire; promoting jobs retry (promote, shared with the tap); orphaned pending files retire. */
+export function reconcileJobs(d: ReconcileDeps): void {
   const cut = new Date(Date.parse(d.now) - JOB_QUEUED_TTL_DAYS * DAY_MS).toISOString();
   for (const job of d.store.listJobsByState(["queued"])) {
     if (job.created_at >= cut) continue;
@@ -174,10 +188,46 @@ export function reconcileJobs(d: Pick<JobDeps, "store" | "skills" | "now" | "cha
       if (d.store.transitionJob({ job_id: job.job_id, from: ["queued"], to: "failed", now: d.now, patch: { result_code: "lane_busy" } })) enqueueJobCard(d.store, job.chat_id ?? d.chatId, job.job_id, job.attempt, "failed", jobFailedCard("lane_busy"));
     });
   }
-  for (const job of d.store.listJobsByState(["promoting"])) {
-    try { promote(d.store, d.skills, job, d.chatId, d.now); } catch (e) { console.error(`[skill-job] promote retry failed: ${errorCode(e)}`); }
-  }
+  expireOffers(d);
+  for (const job of d.store.listJobsByState(["promoting"])) retryPromote(d, job);
   sweepOrphans(d.store, d.skills, d.now);
+}
+
+/** Final fix C3: a drafted skill (or a collision) Paco has not tapped within TAP_STALE_DAYS expires with one card; its draft retires (the sweep retries a failed move). */
+function expireOffers(d: ReconcileDeps): void {
+  const cut = new Date(Date.parse(d.now) - TAP_STALE_DAYS * DAY_MS).toISOString();
+  for (const job of d.store.listJobsByState(["pending_review", "collision"])) {
+    if ((job.offered_at ?? job.finished_at ?? job.created_at) >= cut) continue;
+    const ended = d.store.inTransaction(() => {
+      if (!d.store.transitionJob({ job_id: job.job_id, from: [job.state], to: "expired", now: d.now, patch: { result_code: "offer_expired" } })) return false;
+      enqueueJobCard(d.store, job.chat_id ?? d.chatId, job.job_id, job.attempt, "expired", jobExpiredCard(job.pending_name ?? "draft"));
+      return true;
+    });
+    if (!ended || !job.pending_scope || !job.pending_name) continue;
+    const r = d.skills.dismissPending(job.pending_scope, job.pending_name, d.now.slice(0, 10));
+    if (!r.ok && r.error !== "not_found") console.error(`[skill-job] expired draft not moved: ${r.error}`);
+  }
+}
+
+/** Final fix C3: a retry that ends the job sends its card (the tap's reply is gone); a throw counts toward PROMOTE_RETRY_MAX, then promote_failed with a card. */
+function retryPromote(d: ReconcileDeps, job: ImprovementJobRow): void {
+  let text: string;
+  try { text = promote(d.store, d.skills, job, d.chatId, d.now); } catch (e) {
+    console.error(`[skill-job] promote retry failed: ${errorCode(e)}`);
+    try { promoteRetryFailed(d, job); } catch (e2) { console.error(`[skill-job] promote retry not recorded: ${errorCode(e2)}`); }
+    return;
+  }
+  const after = d.store.getImprovementJob(job.job_id)?.state;
+  if (after === "promoted" || after === "failed") enqueueJobCard(d.store, job.chat_id ?? d.chatId, job.job_id, job.attempt, after, text);
+}
+
+function promoteRetryFailed(d: ReconcileDeps, job: ImprovementJobRow): void {
+  const n = Number(/^promote_retry:(\d+)$/.exec(job.result_code ?? "")?.[1] ?? 0) + 1;
+  d.store.inTransaction(() => {
+    if (n < PROMOTE_RETRY_MAX) { d.store.transitionJob({ job_id: job.job_id, from: ["promoting"], to: "promoting", now: d.now, patch: { result_code: `promote_retry:${n}` } }); return; }
+    if (d.store.transitionJob({ job_id: job.job_id, from: ["promoting"], to: "failed", now: d.now, patch: { result_code: "promote_failed" } }))
+      enqueueJobCard(d.store, job.chat_id ?? d.chatId, job.job_id, job.attempt, "failed", jobPromoteFailedCard(job.pending_name ?? "draft"));
+  });
 }
 
 /**
@@ -220,4 +270,4 @@ export const skillJobHooks: JobHooks = {
   enqueueFromRecurrence: (store, i) => startSkillJob(store, i),
   runQueued: (d, budget) => runQueuedJobs(jobDeps(d), budget)
 };
-const jobDeps = (d: ImproveTickDeps): JobDeps => ({ store: d.store, env: d.env, now: d.now, chatId: d.chatId, skills: d.skills, llm: { classify: d.llm.classify, compose: d.llm.compose, verify: d.llm.verify }, signal: d.signal });
+const jobDeps = (d: ImproveTickDeps): JobDeps => ({ store: d.store, env: d.env, now: d.now, chatId: d.chatId, skills: d.skills, llm: { classify: d.llm.classify, compose: d.llm.compose, verify: d.llm.verify }, signal: d.signal, ...(d.wallNow ? { wallNow: d.wallNow } : {}) });
