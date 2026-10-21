@@ -22,3 +22,10 @@ export function createQueuedTurnRun(store: RunStore, message = "hello"): string 
   if (!intake.ok) throw new Error(`intake failed: ${JSON.stringify(intake)}`);
   return intake.run_id;
 }
+
+/** A telegram turn WITH its user chat_turns row (createQueuedTurnRun stops at intake; the planner writes the turn in production). Tests only. */
+export function createTelegramTurn(store: RunStore, message = "hello", created_at?: string): { run_id: string; turn_id: string } {
+  const run_id = createQueuedTurnRun(store, message);
+  store.recordChatTurn({ chat_id: "555", run_id, role: "user", text: message, ...(created_at ? { created_at } : {}) });
+  return { run_id, turn_id: store.userTurnIdForRun(run_id)! };
+}

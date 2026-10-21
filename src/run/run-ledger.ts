@@ -436,6 +436,16 @@ export function readLedgerEventsByCorrelation(db: LedgerDatabase, correlation_id
   `).all<LedgerEventRow>(correlation_id).map(ledgerEventFromRow);
 }
 
+/** 2b-ii §6.1 Watch: events of one type after `sinceIso` (run-less and run-bound alike), oldest first. */
+export function readLedgerEventsByTypeSince(db: LedgerDatabase, event_type: LedgerEventType, sinceIso: string): LedgerEvent[] {
+  return db.prepare(`
+    SELECT event_id, run_id, correlation_id, event_type, occurred_at, actor, sequence, payload_json
+    FROM ledger_events
+    WHERE event_type = ? AND occurred_at > ?
+    ORDER BY occurred_at ASC, sequence ASC, event_id ASC
+  `).all<LedgerEventRow>(event_type, sinceIso).map(ledgerEventFromRow);
+}
+
 function ledgerEventFromRow(row: LedgerEventRow): LedgerEvent {
   const event: LedgerEvent = {
     event_id: row.event_id,

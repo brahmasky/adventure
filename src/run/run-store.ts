@@ -30,6 +30,7 @@ import {
   createLedgerEvent,
   readLedgerEvents,
   readLedgerEventsByCorrelation,
+  readLedgerEventsByTypeSince,
   type LedgerActor,
   type LedgerEvent,
   type LedgerEventType
@@ -43,7 +44,8 @@ import { blobToFloat32, cosineSimilarity, float32ToBlob } from "../llm/embedding
 import { resolveWikiDecayDays } from "../capabilities/wiki.js";
 import { DECISION_STAGES, FALLBACK_REASONS, RUNG_KINDS } from "../decisions/types.js";
 import type { DecidedBy, DecisionSignal, DecisionStage, FallbackReason, RecordedArmedMode, RungKind } from "../decisions/types.js";
-import { checkOutcomeValue } from "../decisions/outcomes.js";
+import { checkOutcomeValue, OutcomeRejected, outcomeValueOf, PLANNER_FAILED_VALUES } from "../decisions/outcomes.js";
+import { errorCode } from "../domain/error-code.js";
 import { LOCKED_ENTRY_IDS } from "../decisions/entry-ids.js";
 import type { SkipReason } from "../jev/decide.js";
 import type { Category } from "../jev/questions/tree.js";
@@ -1016,6 +1018,15 @@ export interface LadderMoveInsert {
   entry_id: string; scope: string; from_rung: RungKind; to_rung: RungKind; evidence: string[]; granted_by: "paco" | "auto";
   granted_via: string | null; paco_callback_id: string | null; revocable: boolean; created_at?: string;
 }
+export interface ImproveSignalInsert { signal: DecisionSignal; value: string | number; run_id: string | null; chat_id: string | null; about_run_id: string | null; source_outcome_id?: string | null; created_at?: string }
+export interface ImproveSignalRow { signal_id: number; signal: DecisionSignal; value: string; run_id: string | null; chat_id: string | null; about_run_id: string | null; source_outcome_id: string | null; created_at: string; consumed_at: string | null }
+export interface ImproveCursor { outcome_created_at: string; outcome_rowid: number }
+export interface ImproveTickRow { local_date: string; started_at: string; finished_at: string | null; result: "running" | "done" | "stopped" | "failed"; detail: Record<string, unknown> }
+export interface RecurrenceCandidateRow { turn_id: string; run_id: string; chat_id: string; text: string; created_at: string; category: Category }
+export interface AbandonTurnRow { turn_id: string; run_id: string; chat_id: string; role: ChatTurnRole; text: string; created_at: string; lane: Lane | null }
+export interface ScheduleExpiryRow { approval_id: string; run_id: string; capability: string; resolved_at: string; schedule_id: string }
+/** The mirror's read of one outcome row with what the filter and the inbox need (never the decision's text: there is none). */
+interface MirrorOutcomeRow { outcome_id: string; rid: number; signal: DecisionSignal; value: string; created_at: string; entry_id: string; run_id: string | null; run_source: string | null; chat_id: string | null }
 export class LadderMoveRefused extends Error {
   constructor(readonly code: "locked_entry" | "auto_not_standing" | "paco_needs_callback") { super(`ladder move refused: ${code}`); }
 }
@@ -1114,6 +1125,87 @@ const MEMORY_CHANGES_ADD_DDL = `
     created_at TEXT NOT NULL,
     undone_at TEXT,
     pruned_ids TEXT NOT NULL DEFAULT '[]'
+  );`;
+/** 2b-ii §2, §3.1, §3.3, §5.1, §5.2: the inbox, the tick latch and cursor, turn embeddings, proposals, jobs, taps. Additive (R13). */
+const IMPROVE_ROUTE_DDL = `
+  CREATE TABLE IF NOT EXISTS improve_signals (
+    signal_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    signal TEXT NOT NULL,
+    value TEXT NOT NULL,
+    run_id TEXT,
+    chat_id TEXT,
+    about_run_id TEXT,
+    source_outcome_id TEXT UNIQUE,
+    created_at TEXT NOT NULL,
+    consumed_at TEXT
+  );
+  CREATE INDEX IF NOT EXISTS improve_signals_unconsumed_idx ON improve_signals(consumed_at, signal_id);
+  CREATE INDEX IF NOT EXISTS improve_signals_signal_idx ON improve_signals(signal, created_at);
+  CREATE INDEX IF NOT EXISTS improve_signals_about_idx ON improve_signals(about_run_id, signal);
+  CREATE TABLE IF NOT EXISTS improve_ticks (
+    local_date TEXT PRIMARY KEY,
+    started_at TEXT NOT NULL,
+    finished_at TEXT,
+    result TEXT NOT NULL CHECK (result IN ('running', 'done', 'stopped', 'failed')),
+    detail_json TEXT NOT NULL DEFAULT '{}'
+  );
+  CREATE TABLE IF NOT EXISTS improve_cursor (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    outcome_created_at TEXT NOT NULL,
+    outcome_rowid INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS turn_embeddings (
+    turn_id TEXT PRIMARY KEY,
+    model TEXT NOT NULL,
+    embedding BLOB NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS improvement_proposals (
+    proposal_id TEXT PRIMARY KEY,
+    decision_id TEXT NOT NULL REFERENCES decisions(decision_id),
+    target TEXT NOT NULL CHECK (target IN ('lesson', 'fact', 'skill', 'schedule', 'knowledge', 'tool_gap', 'ladder')),
+    scope TEXT NOT NULL,
+    chat_id TEXT,
+    draft_json TEXT NOT NULL,
+    evidence TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'open' CHECK (state IN ('open', 'accepted', 'reverted', 'dismissed', 'expired')),
+    result_json TEXT,
+    created_at TEXT NOT NULL,
+    offered_at TEXT,
+    resolved_at TEXT
+  );
+  CREATE INDEX IF NOT EXISTS improvement_proposals_state_idx ON improvement_proposals(state, created_at);
+  CREATE INDEX IF NOT EXISTS improvement_proposals_scope_idx ON improvement_proposals(target, scope, state);
+  CREATE TABLE IF NOT EXISTS improvement_jobs (
+    job_id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL CHECK (kind IN ('skill_author')),
+    decision_id TEXT NOT NULL,
+    proposal_id TEXT,
+    chat_id TEXT,
+    origin_json TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL UNIQUE,
+    attempt INTEGER NOT NULL DEFAULT 0,
+    state TEXT NOT NULL CHECK (state IN ('queued', 'running', 'pending_review', 'suggested', 'collision', 'promoting', 'promoted', 'dismissed', 'failed')),
+    result_code TEXT,
+    gate_a TEXT,
+    pending_scope TEXT,
+    pending_name TEXT,
+    promote_mode TEXT,
+    created_at TEXT NOT NULL,
+    started_at TEXT,
+    finished_at TEXT,
+    offered_at TEXT,
+    resolved_at TEXT
+  );
+  CREATE INDEX IF NOT EXISTS improvement_jobs_state_idx ON improvement_jobs(state, created_at);
+  CREATE TABLE IF NOT EXISTS improvement_taps (
+    tap_id TEXT PRIMARY KEY,
+    subject_kind TEXT NOT NULL CHECK (subject_kind IN ('proposal', 'job', 'move')),
+    subject_id TEXT NOT NULL,
+    action TEXT NOT NULL,
+    telegram_callback_id TEXT NOT NULL UNIQUE,
+    result TEXT NOT NULL,
+    created_at TEXT NOT NULL
   );`;
 /** Spec §10: runs an explicit save covered; the background episodic pass skips those whose kinds include `fact`. */
 const MEMORY_SAVE_TRIGGERS_DDL = `
@@ -1945,6 +2037,24 @@ export class RunStore {
       error_ref,
       recoverable
     });
+    this.noteFailedPlannerRun(run_id, error_type, null);
+  }
+
+  /**
+   * 2b-ii §2: the planner_failed producer, beside EVERY run_failed ledger write (the grep test pins it). A planner run
+   * (`worker_id` starts with `planner:`, the discriminator lease recovery uses) of a telegram turn gets one inbox row; the
+   * worker id is the one read BEFORE the state UPDATE cleared it (codex round 5). Never throws: the failure write must land.
+   */
+  private noteFailedPlannerRun(run_id: string, error_type: string, worker_id: string | null): void {
+    if (!worker_id?.startsWith("planner:")) return;
+    try {
+      const row = this.db.prepare(`SELECT source, json_extract(notify_json, '$.chat_id') AS chat_id FROM runs WHERE run_id = ?`).get<{ source: string; chat_id: string | null }>(run_id);
+      if (row?.source !== "telegram") return;
+      const value = (PLANNER_FAILED_VALUES as readonly string[]).includes(error_type) ? error_type : "other";
+      this.insertImproveSignal({ signal: "planner_failed", value, run_id, chat_id: row.chat_id, about_run_id: run_id });
+    } catch (e) {
+      console.error(`[improve] signal skipped: planner_failed (${errorCode(e)})`); // src/domain/error-code.ts: bounded, never raw text
+    }
   }
 
   /**
@@ -1974,6 +2084,7 @@ export class RunStore {
             error_ref: input.error_ref,
             recoverable: false
           });
+          this.noteFailedPlannerRun(input.run_id, input.error_type, input.expected_worker_id);
         }
       } else {
         console.warn(`[run-store] terminal_lost run=${input.run_id} owner=${input.expected_worker_id}`);
@@ -2334,13 +2445,21 @@ export class RunStore {
 
   /** Fail one expired planner run, keyed on the observed owner and expiry (one transaction per row). */
   private failExpiredPlannerRow(row: RunRow): boolean {
-    const failed = this.db.prepare(`
-      UPDATE runs SET state = 'failed', state_reason = 'lease_expired', worker_id = NULL, lease_expires_at = NULL, updated_at = ?
-      WHERE run_id = ? AND state = 'running' AND worker_id = ? AND lease_expires_at = ?
-    `).run(new Date().toISOString(), row.run_id, row.worker_id, row.lease_expires_at);
-    if (failed.changes !== 1) return false;
-    this.appendRunLedgerEvent(row.run_id, "run_failed", "system", { error_type: "lease_expired", error_ref: row.worker_id ?? "", recoverable: false });
-    return true;
+    return this.joinTransaction(() => {
+      const failed = this.db.prepare(`
+        UPDATE runs SET state = 'failed', state_reason = 'lease_expired', worker_id = NULL, lease_expires_at = NULL, updated_at = ?
+        WHERE run_id = ? AND state = 'running' AND worker_id = ? AND lease_expires_at = ?
+      `).run(new Date().toISOString(), row.run_id, row.worker_id, row.lease_expires_at);
+      if (failed.changes !== 1) return false;
+      this.appendRunLedgerEvent(row.run_id, "run_failed", "system", { error_type: "lease_expired", error_ref: row.worker_id ?? "", recoverable: false });
+      this.noteFailedPlannerRun(row.run_id, "lease_expired", row.worker_id);
+      return true;
+    });
+  }
+
+  /** Run `fn` inside the caller's transaction when one is open, else in its own (`inTransaction` is not re-entrant). */
+  private joinTransaction<T>(fn: () => T): T {
+    return this.outerTxDepth > 0 ? fn() : this.inTransaction(fn);
   }
 
   /** Turn runs still queued from before `before` (a boot): nothing will ever dispatch them (B1). */
@@ -4881,6 +5000,193 @@ export class RunStore {
     `).all<TapOutcomeRow>(sinceIso, ...entries);
   }
 
+  // ── Improvement (ADR 0030 stage 2b-ii): the inbox, cursor, tick latch, embeddings ──
+
+  /** 2b-ii §2: a producer's row; `checkOutcomeValue` keeps the value closed; a known `source_outcome_id` is ignored (0). */
+  insertImproveSignal(s: ImproveSignalInsert): number {
+    const value = checkOutcomeValue(s.signal, s.value);
+    const r = this.db.prepare(`
+      INSERT OR IGNORE INTO improve_signals (signal, value, run_id, chat_id, about_run_id, source_outcome_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(s.signal, value, s.run_id, s.chat_id, s.about_run_id, s.source_outcome_id ?? null, s.created_at ?? new Date().toISOString());
+    return Number(r.changes) === 1 ? Number(r.lastInsertRowid) : 0;
+  }
+
+  listImproveSignalsSince(sinceIso: string): ImproveSignalRow[] {
+    return this.db.prepare(`SELECT * FROM improve_signals WHERE created_at > ? ORDER BY created_at ASC, signal_id ASC`).all<ImproveSignalRow>(sinceIso);
+  }
+
+  listUnconsumedSignals(limit: number): ImproveSignalRow[] {
+    return this.db.prepare(`SELECT * FROM improve_signals WHERE consumed_at IS NULL ORDER BY signal_id ASC LIMIT ?`).all<ImproveSignalRow>(limit);
+  }
+
+  consumeSignals(ids: readonly number[], now: string): void {
+    if (ids.length === 0) return;
+    this.db.prepare(`UPDATE improve_signals SET consumed_at = ? WHERE signal_id IN (${ids.map(() => "?").join(", ")}) AND consumed_at IS NULL`).run(now, ...ids);
+  }
+
+  hasImproveSignal(signal: DecisionSignal, about_run_id: string): boolean {
+    return this.db.prepare(`SELECT 1 AS hit FROM improve_signals WHERE signal = ? AND about_run_id = ? LIMIT 1`).get<{ hit: number }>(signal, about_run_id) !== undefined;
+  }
+
+  getImproveCursor(): ImproveCursor {
+    return this.db.prepare(`SELECT outcome_created_at, outcome_rowid FROM improve_cursor WHERE id = 1`).get<ImproveCursor>() ?? { outcome_created_at: "", outcome_rowid: 0 };
+  }
+
+  private setImproveCursor(c: ImproveCursor): void {
+    this.db.prepare(`INSERT INTO improve_cursor (id, outcome_created_at, outcome_rowid) VALUES (1, ?, ?) ON CONFLICT(id) DO UPDATE SET outcome_created_at = excluded.outcome_created_at, outcome_rowid = excluded.outcome_rowid`)
+      .run(c.outcome_created_at, c.outcome_rowid);
+  }
+
+  /** @internal Tests only: a lost cursor write. */
+  setImproveCursorForTest(c: ImproveCursor): void { this.setImproveCursor(c); }
+
+  /** Rows after the cursor in (created_at, rowid) order (P7: outcome ids are random), joined to the decision and its run. */
+  private listDecisionOutcomesAfter(c: ImproveCursor, limit: number): MirrorOutcomeRow[] {
+    return this.db.prepare(`
+      SELECT o.outcome_id, o.rowid AS rid, o.signal, o.value, o.created_at, d.entry_id, d.run_id, r.source AS run_source, json_extract(r.notify_json, '$.chat_id') AS chat_id
+      FROM decision_outcomes o JOIN decisions d ON d.decision_id = o.decision_id LEFT JOIN runs r ON r.run_id = d.run_id
+      WHERE o.created_at > ? OR (o.created_at = ? AND o.rowid > ?)
+      ORDER BY o.created_at ASC, o.rowid ASC LIMIT ?
+    `).all<MirrorOutcomeRow>(c.outcome_created_at, c.outcome_created_at, c.outcome_rowid, limit);
+  }
+
+  /**
+   * 2b-ii §3.1 step 1, one transaction: copy every outcome row after the cursor into the inbox (INSERT OR IGNORE on
+   * source_outcome_id, so a re-run after a crash is idempotent), skipping improve.route's own rows and schedule-born rows
+   * other than approval_expired (R11), then advance the cursor past the last row READ (rows are read in order, nothing is
+   * grouped here, so the cursor never passes an unread row).
+   */
+  mirrorOutcomesIntoInbox(limit = 1000): { read: number; copied: number } {
+    return this.inTransaction(() => {
+      const rows = this.listDecisionOutcomesAfter(this.getImproveCursor(), limit);
+      let copied = 0;
+      for (const o of rows) {
+        if (o.entry_id === "improve.route" || (o.run_source === "schedule" && o.signal !== "approval_expired")) continue;
+        copied += this.mirrorOne(o) ? 1 : 0;
+      }
+      const last = rows.at(-1);
+      if (last) this.setImproveCursor({ outcome_created_at: last.created_at, outcome_rowid: last.rid });
+      return { read: rows.length, copied };
+    });
+  }
+
+  /** One mirrored row: the stored TEXT goes back through its check as the number it was (outcomeValueOf, Rev 2); a refused value is a skipped event, never a lost row nobody sees. */
+  private mirrorOne(o: MirrorOutcomeRow): boolean {
+    try {
+      return this.insertImproveSignal({ signal: o.signal, value: outcomeValueOf(o.signal, o.value), run_id: o.run_id, chat_id: o.chat_id, about_run_id: o.run_id, source_outcome_id: o.outcome_id, created_at: o.created_at }) > 0;
+    } catch (e) {
+      if (!(e instanceof OutcomeRejected)) throw e;
+      this.recordMemoryEvent("improve_signal_skipped", { signal: o.signal, code: "refused", ...(o.run_id ? { run_id: o.run_id } : {}) }, "improve");
+      return false;
+    }
+  }
+
+  getImproveTick(local_date: string): ImproveTickRow | undefined {
+    const r = this.db.prepare(`SELECT * FROM improve_ticks WHERE local_date = ?`).get<Omit<ImproveTickRow, "detail"> & { detail_json: string }>(local_date);
+    return r ? { local_date: r.local_date, started_at: r.started_at, finished_at: r.finished_at, result: r.result, detail: JSON.parse(r.detail_json) as Record<string, unknown> } : undefined;
+  }
+
+  /** The date latch (§3.1, ruling 17): a new date starts; a `running` (crash) or `stopped` (budget, shutdown) row resumes as running; a finished date is done. */
+  beginImproveTick(local_date: string, now: string): "started" | "resumed" | "done" {
+    const r = this.db.prepare(`INSERT OR IGNORE INTO improve_ticks (local_date, started_at, result) VALUES (?, ?, 'running')`).run(local_date, now);
+    if (Number(r.changes) === 1) return "started";
+    const resumed = this.db.prepare(`UPDATE improve_ticks SET result = 'running' WHERE local_date = ? AND result IN ('running', 'stopped')`).run(local_date);
+    return Number(resumed.changes) === 1 ? "resumed" : "done";
+  }
+
+  finishImproveTick(local_date: string, result: "done" | "stopped" | "failed", detail: Record<string, unknown>, now: string): void {
+    this.db.prepare(`UPDATE improve_ticks SET result = ?, detail_json = ?, finished_at = ? WHERE local_date = ?`).run(result, JSON.stringify(detail), now, local_date);
+  }
+
+  listImproveTicksSince(sinceIso: string): ImproveTickRow[] {
+    return this.db.prepare(`SELECT local_date FROM improve_ticks WHERE started_at > ? ORDER BY local_date ASC`).all<{ local_date: string }>(sinceIso)
+      .flatMap((r) => { const t = this.getImproveTick(r.local_date); return t ? [t] : []; });
+  }
+
+  getTurnEmbeddings(turn_ids: readonly string[]): Map<string, Float32Array> {
+    const out = new Map<string, Float32Array>();
+    if (turn_ids.length === 0) return out;
+    for (const r of this.db.prepare(`SELECT turn_id, embedding FROM turn_embeddings WHERE turn_id IN (${turn_ids.map(() => "?").join(", ")})`).all<{ turn_id: string; embedding: Uint8Array }>(...turn_ids)) {
+      out.set(r.turn_id, blobToFloat32(r.embedding));
+    }
+    return out;
+  }
+
+  putTurnEmbedding(turn_id: string, model: string, vector: Float32Array, now: string): void {
+    this.db.prepare(`INSERT OR REPLACE INTO turn_embeddings (turn_id, model, embedding, created_at) VALUES (?, ?, ?, ?)`).run(turn_id, model, float32ToBlob(vector), now);
+  }
+
+  /** §3.3 step 1: Paco's telegram user turns in the window, at least `minChars` long, whose run's newest verdict has a category outside `excluded`. */
+  listRecurrenceCandidates(sinceIso: string, minChars: number, excluded: readonly string[]): RecurrenceCandidateRow[] {
+    const notIn = excluded.length ? `AND v.category NOT IN (${excluded.map(() => "?").join(", ")})` : "";
+    return this.db.prepare(`
+      SELECT c.turn_id, c.run_id, c.chat_id, c.text, c.created_at, v.category
+      FROM chat_turns c JOIN runs r ON r.run_id = c.run_id
+      JOIN jev_verdicts v ON v.verdict_id = (SELECT verdict_id FROM jev_verdicts WHERE run_id = c.run_id ORDER BY created_at DESC, rowid DESC LIMIT 1)
+      WHERE c.role = 'user' AND r.source = 'telegram' AND c.created_at > ? AND length(c.text) >= ? AND v.category IS NOT NULL ${notIn}
+      ORDER BY c.created_at ASC, c.rowid ASC
+    `).all<RecurrenceCandidateRow>(sinceIso, minChars, ...excluded);
+  }
+
+  /** §3.4: user and assistant turns of telegram runs since `sinceIso`, each with its run's lane (null when no verdict). */
+  listAbandonTurns(sinceIso: string): AbandonTurnRow[] {
+    return this.db.prepare(`
+      SELECT c.turn_id, c.run_id, c.chat_id, c.role, c.text, c.created_at,
+        (SELECT lane FROM jev_verdicts WHERE run_id = c.run_id ORDER BY created_at DESC, rowid DESC LIMIT 1) AS lane
+      FROM chat_turns c JOIN runs r ON r.run_id = c.run_id
+      WHERE r.source = 'telegram' AND c.created_at > ? AND c.role IN ('user', 'assistant')
+      ORDER BY c.chat_id ASC, c.created_at ASC, c.rowid ASC
+    `).all<AbandonTurnRow>(sinceIso);
+  }
+
+  assistantTurnTextForRun(run_id: string): string | undefined {
+    return this.db.prepare(`SELECT text FROM chat_turns WHERE run_id = ? AND role = 'assistant' ORDER BY created_at DESC, rowid DESC LIMIT 1`).get<{ text: string }>(run_id)?.text;
+  }
+
+  /** §5.5: expired tool approvals of schedule-born runs with the schedule that fired them (`requested_by_json.id`, schedule-tick.ts:107). */
+  listExpiredApprovalsOnSchedules(sinceIso: string): ScheduleExpiryRow[] {
+    return this.db.prepare(`
+      SELECT a.approval_id, a.run_id, a.capability, a.resolved_at, json_extract(r.requested_by_json, '$.id') AS schedule_id
+      FROM tool_approvals a JOIN runs r ON r.run_id = a.run_id
+      WHERE a.state = 'expired' AND a.resolved_at > ? AND r.source = 'schedule' AND json_extract(r.requested_by_json, '$.kind') = 'schedule'
+      ORDER BY a.resolved_at ASC
+    `).all<ScheduleExpiryRow>(sinceIso);
+  }
+
+  /** §5.5 H2: when Paco's own telegram turns arrived (instants; the caller takes the local hour and the median). */
+  userTurnTimesSince(sinceIso: string): string[] {
+    return this.db.prepare(`SELECT c.created_at FROM chat_turns c JOIN runs r ON r.run_id = c.run_id WHERE c.role = 'user' AND r.source = 'telegram' AND c.created_at > ? ORDER BY c.created_at ASC`)
+      .all<{ created_at: string }>(sinceIso).map((r) => r.created_at);
+  }
+
+  /** §6.1 Watch: assistant turns with intent clarify over all assistant turns in the window. */
+  clarifyCounts(sinceIso: string): { clarify: number; total: number } {
+    return this.db.prepare(`SELECT COALESCE(SUM(CASE WHEN intent = 'clarify' THEN 1 ELSE 0 END), 0) AS clarify, COUNT(*) AS total FROM chat_turns WHERE role = 'assistant' AND created_at > ?`)
+      .get<{ clarify: number; total: number }>(sinceIso) ?? { clarify: 0, total: 0 };
+  }
+
+  listLedgerEventsByTypeSince(event_type: LedgerEventType, sinceIso: string): LedgerEvent[] {
+    return readLedgerEventsByTypeSince(this.db, event_type, sinceIso);
+  }
+
+  userTurnIdForRun(run_id: string): string | undefined {
+    return this.db.prepare(`SELECT turn_id FROM chat_turns WHERE run_id = ? AND role = 'user' ORDER BY created_at ASC LIMIT 1`).get<{ turn_id: string }>(run_id)?.turn_id;
+  }
+
+  /** The chat's latest verdict at or before `beforeIso` that is NOT `excludeRunId`'s (a correction labels the PREVIOUS turn; codex B6). */
+  latestJevVerdictForChatExcluding(chat_id: string, beforeIso: string, excludeRunId: string): JevVerdictRow | undefined {
+    return this.db.prepare(`
+      SELECT v.* FROM jev_verdicts v JOIN runs r ON r.run_id = v.run_id
+      WHERE json_extract(r.notify_json, '$.chat_id') = ? AND v.created_at <= ? AND v.run_id <> ?
+      ORDER BY v.created_at DESC, v.rowid DESC LIMIT 1
+    `).get<JevVerdictRow>(chat_id, beforeIso, excludeRunId);
+  }
+
+  /** @internal Tests only: move a stored turn in time (window math in the recurrence and abandonment suites). */
+  rewriteChatTurnTimeForTest(run_id: string, role: ChatTurnRole, created_at: string): void {
+    this.db.prepare(`UPDATE chat_turns SET created_at = ? WHERE run_id = ? AND role = ?`).run(created_at, run_id, role);
+  }
+
   /** The golden-set latch (plan S4): one run per local date and entry; false when the date already has one. */
   recordGoldenRun(r: { local_date: string; entry_id: string; outcome: GoldenOutcome; created_at?: string }): boolean {
     const res = this.db.prepare(`INSERT OR IGNORE INTO decision_golden_runs (local_date, entry_id, outcome, created_at) VALUES (?, ?, ?, ?)`)
@@ -7406,6 +7712,17 @@ export class RunStore {
     this.applyDecisionLadderMigration();
     this.applyDecisionLadder2aMigration();
     this.applyMemoryWriteMigration();
+    this.applyImproveRouteMigration();
+  }
+
+  /** Decision ladder stage 2b-ii (improve.route): seven additive tables, guarded by IF NOT EXISTS like the 2a migration. */
+  private applyImproveRouteMigration(): void {
+    const version = "2026-10-21-improve-route";
+    this.inTransaction(() => {
+      const applied = this.db.prepare(`SELECT version FROM schema_migrations WHERE version = ?`).get<{ version: string }>(version);
+      this.db.exec(IMPROVE_ROUTE_DDL);
+      if (!applied) this.db.prepare(`INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)`).run(version, new Date().toISOString());
+    });
   }
 
   /** Memory A1 §6: the lesson-set fingerprint each chat's omp session started on, persisted so a restart still compares. */
