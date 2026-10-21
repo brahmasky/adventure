@@ -63,9 +63,15 @@ describe("authorDraft", () => {
   it("returns the parsed skill, retrying once on malformed output; undefined after two bad answers or a failed call", async () => {
     const good = "---\nname: weekly-report\nscope: ask\nwhen: asked for the weekly report\nanchors:\n  - report\nversion: 1\n---\n1. gather\n2. write\n";
     const answers = ["not a skill", good];
-    const compose = async () => answers.shift();
+    let calls = 0;
+    const compose = async () => { calls += 1; return answers.shift(); };
     expect((await authorDraft("weekly report please", undefined, compose))?.name).toBe("weekly-report");
-    expect(await authorDraft("x", undefined, async () => "nope")).toBeUndefined();
-    expect(await authorDraft("x", undefined, async () => undefined)).toBeUndefined();
+    expect(calls).toBe(2);
+    calls = 0;
+    expect(await authorDraft("x", undefined, async () => { calls += 1; return "nope"; })).toBeUndefined();
+    expect(calls).toBe(2);
+    calls = 0;
+    expect(await authorDraft("x", undefined, async () => { calls += 1; return undefined; })).toBeUndefined();
+    expect(calls).toBe(1);
   });
 });

@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, existsSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -34,13 +34,13 @@ describe("promotePending", () => {
     expect(s.promotePending("ask", "weekly-report", { onCollision: "keep_both", now: NOW })).toMatchObject({ ok: true, name: "weekly-report-2" });
     expect(s.list().map((m) => m.name).sort()).toEqual(["weekly-report", "weekly-report-2"]);
   });
-  it("retry after a crash: an identical active copy counts as written; a missing pending copy with the active present counts as done; a draft that never existed is not_found; keep_both takes the first free suffix", () => {
+  it("retry after a crash: an identical active copy counts as written; a missing pending copy without an origin match is not_found; a draft that never existed is not_found; keep_both takes the first free suffix", () => {
     const s = fresh();
     s.writePending("ask", "x", file("x"));
     s.writeSkill("ask", "x", file("x")); // the crash happened after the active write
     expect(s.promotePending("ask", "x", { onCollision: "refuse", now: NOW })).toMatchObject({ ok: true, name: "x" });
     expect(s.pendingExists("ask", "x")).toBe(false);
-    expect(s.promotePending("ask", "x", { onCollision: "refuse", now: NOW })).toMatchObject({ ok: true, name: "x" }); // the retried step 4
+    expect(s.promotePending("ask", "x", { onCollision: "refuse", now: NOW })).toEqual({ ok: false, error: "not_found" }); // no origin: a vanished pending copy is not proof (fix round 1)
     expect(s.promotePending("ask", "never", { onCollision: "refuse", now: NOW })).toEqual({ ok: false, error: "not_found" });
     s.writeSkill("ask", "x-2", file("x-2"));
     s.writePending("ask", "x", file("x", "third"));
@@ -63,4 +63,35 @@ it("setFrontmatterFields writes name and origin, replacing an existing name line
   const out = setFrontmatterFields(file("old"), { name: "new-name", origin: "improve_job:job_1" });
   expect(parseSkillFile(out)?.meta).toMatchObject({ name: "new-name", origin: "improve_job:job_1" });
   expect(out.match(/^name:/gm)).toHaveLength(1);
+});
+
+describe("promotion and dismissal edge cases", () => {
+  it("origin-aware retry: after keep_both promoted x as x-2 and the pending copy vanished, the same origin finds x-2; another origin is not_found", () => {
+    const s = fresh();
+    s.writeSkill("ask", "x", file("x", "old"));
+    s.writePending("ask", "x", setFrontmatterFields(file("x", "new"), { origin: "improve_job:j1" }));
+    expect(s.promotePending("ask", "x", { onCollision: "keep_both", now: NOW, origin: "improve_job:j1" })).toMatchObject({ ok: true, name: "x-2" });
+    expect(s.promotePending("ask", "x", { onCollision: "keep_both", now: NOW, origin: "improve_job:j1" })).toMatchObject({ ok: true, name: "x-2" });
+    expect(s.promotePending("ask", "x", { onCollision: "keep_both", now: NOW, origin: "improve_job:j2" })).toEqual({ ok: false, error: "not_found" });
+    expect(s.promotePending("ask", "x", { onCollision: "keep_both", now: NOW })).toEqual({ ok: false, error: "not_found" });
+  });
+  it("dismissPending never overwrites an earlier retired record: the new one lands as y-2", () => {
+    const s = fresh();
+    s.writeSkill("ask", "y", file("y", "first"));
+    s.retireSkill("ask", "y", { date: "2026-01-01", by: "paco" });
+    s.writePending("ask", "y", file("y", "second"));
+    expect(s.dismissPending("ask", "y", NOW)).toMatchObject({ ok: true });
+    const retired = s.listRetired().map((m) => [m.name, m.when]).sort();
+    expect(retired).toEqual([["y", "first"], ["y-2", "second"]]);
+  });
+  it("dismissPending of a draft that does not exist is not_found", () => {
+    expect(fresh().dismissPending("ask", "ghost", NOW)).toEqual({ ok: false, error: "not_found" });
+  });
+  it("a failed active write keeps the pending file and returns a fixed code", () => {
+    const s = fresh();
+    s.writePending("ask", "z", file("z"));
+    mkdirSync(join(s["root"], "ask", "z.md"), { recursive: true }); // a directory where the file must go
+    expect(s.promotePending("ask", "z", { onCollision: "refuse", now: NOW })).toEqual({ ok: false, error: "write_failed" });
+    expect(s.pendingExists("ask", "z")).toBe(true);
+  });
 });

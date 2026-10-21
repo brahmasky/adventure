@@ -255,69 +255,90 @@ export class SkillStore {
 
   /**
    * 2b-ii §5.2, one promotion protocol (codex D7): (1) read the pending copy; (2) collision check on the active tree —
-   * refuse, replace (retire the active one with lineage, by paco), or keep_both (a -2 suffix); (3) write the active copy
-   * (registry regenerated); (4) unlink the pending copy. Retry-safe: an identical active copy is step 3 done, a missing
-   * pending copy with the active copy present is step 4 done.
+   * refuse, replace (retire the active one with lineage, by paco), or keep_both (a free -N suffix); (3) write the active
+   * copy (registry regenerated); (4) unlink the pending copy. Retry-safe: an identical active copy is step 3 done; a
+   * missing pending copy is step 4 done only when an active copy carries this job's `origin` (base name or -N suffix).
+   * Error strings are fixed codes, never fs text.
    */
   promotePending(
     scope: string,
     name: string,
-    o: { onCollision: "refuse" | "replace" | "keep_both"; now: string }
+    o: { onCollision: "refuse" | "replace" | "keep_both"; now: string; origin?: string }
   ): { ok: true; path: string; name: string } | { ok: false; error: string } {
     const safeScope = sanitizeSlug(scope), safeName = sanitizeSlug(name);
     const pendingPath = join(this.root, PENDING_DIR, safeScope, `${safeName}.md`);
     const body = this.readSafe(pendingPath);
+    if (body === undefined) return this.findPromoted(safeScope, safeName, o.origin);
     const active = this.readSafe(join(this.root, safeScope, `${safeName}.md`));
-    // a retry after a crash between steps (3) and (4): the pending copy is gone and an active copy exists → done (codex B15)
-    if (body === undefined) {
-      return active !== undefined ? { ok: true, path: join(this.root, safeScope, `${safeName}.md`), name: safeName } : { ok: false, error: "not_found" };
-    }
     let target = safeName;
     if (active !== undefined && active !== body) {
       if (o.onCollision === "refuse") return { ok: false, error: "collision" };
       if (o.onCollision === "replace") {
-        const r = this.retireSkill(safeScope, safeName, { date: o.now, by: "paco", supersededBy: safeName });
-        if (!r.ok) return r;
-      } else target = this.freeName(safeScope, safeName, body);
+        if (!this.retireSkill(safeScope, safeName, { date: o.now, by: "paco", supersededBy: safeName }).ok) return { ok: false, error: "retire_failed" };
+      } else {
+        const free = this.freeName(join(this.root, safeScope), safeName, (c) => setFrontmatterFields(body, { name: c }));
+        if (free === undefined) return { ok: false, error: "no_free_name" };
+        target = free;
+      }
     }
     // keep_both: the file's own `name:` must match its file name (list() and REGISTRY read the frontmatter; senior B7)
     const text = target === safeName ? body : setFrontmatterFields(body, { name: target });
-    const written = this.activeFileEquals(safeScope, target, text)
-      ? { ok: true as const, path: join(this.root, safeScope, `${target}.md`) }
-      : this.writeSkill(safeScope, target, text);
-    if (!written.ok) return written;
+    let path = join(this.root, safeScope, `${target}.md`);
+    if (!this.activeFileEquals(safeScope, target, text)) {
+      const written = this.writeSkill(safeScope, target, text);
+      if (!written.ok) return { ok: false, error: "write_failed" };
+      path = written.path;
+    }
+    return this.unlinkDone(pendingPath) ? { ok: true, path, name: target } : { ok: false, error: "unlink_failed" };
+  }
+
+  /** The pending copy is gone: the promotion is done only if an active copy (base or -2..-9) carries this job's origin. */
+  private findPromoted(scope: string, name: string, origin: string | undefined): { ok: true; path: string; name: string } | { ok: false; error: string } {
+    if (!origin) return { ok: false, error: "not_found" };
+    for (const candidate of [name, ...Array.from({ length: 8 }, (_, i) => `${name}-${i + 2}`)]) {
+      const text = this.readSafe(join(this.root, scope, `${candidate}.md`));
+      if (text !== undefined && parseSkillFile(text)?.meta.origin === origin) return { ok: true, path: join(this.root, scope, `${candidate}.md`), name: candidate };
+    }
+    return { ok: false, error: "not_found" };
+  }
+
+  /** unlink that treats an already-missing file as done (a completed move retried). */
+  private unlinkDone(path: string): boolean {
     try {
-      unlinkSync(pendingPath);
+      unlinkSync(path);
+      return true;
     } catch (error) {
-      return { ok: false, error: `active copy written but pending file not removed: ${errorCode(error)}` };
+      return errorCode(error) === "ENOENT";
     }
-    return { ok: true, path: written.path, name: target };
   }
 
-  /** The first free `<name>-N` (N >= 2) in the active scope; an existing file holding this very body (a retried keep_both) counts as free. */
-  private freeName(scope: string, name: string, body: string): string {
-    for (let n = 2; n < 100; n += 1) {
+  /** The first free `<name>-N` (N = 2..9) in `dir`; a file already holding this very candidate text (a retry) counts as free. */
+  private freeName(dir: string, name: string, textFor: (candidate: string) => string): string | undefined {
+    for (let n = 2; n <= 9; n += 1) {
       const candidate = `${name}-${n}`;
-      const existing = this.readSafe(join(this.root, scope, `${candidate}.md`));
-      if (existing === undefined || existing === setFrontmatterFields(body, { name: candidate })) return candidate;
+      const existing = this.readSafe(join(dir, `${candidate}.md`));
+      if (existing === undefined || existing === textFor(candidate)) return candidate;
     }
-    return `${name}-${Date.now()}`;
+    return undefined;
   }
 
-  /** Dismiss: the draft moves to `_retired/<scope>/` stamped by paco (inert, kept for the record). */
+  /** Dismiss: the draft moves to `_retired/<scope>/` stamped by paco; an earlier retired record is never overwritten (a free -N name). */
   dismissPending(scope: string, name: string, now: string): { ok: true; path: string } | { ok: false; error: string } {
     const safeScope = sanitizeSlug(scope), safeName = sanitizeSlug(name);
     const pendingPath = join(this.root, PENDING_DIR, safeScope, `${safeName}.md`);
     const text = this.readSafe(pendingPath);
     if (text === undefined) return { ok: false, error: "not_found" };
-    const written = this.writeContained([RETIRED_DIR, safeScope], safeName, setFrontmatterFields(text, { retired: now, retired_by: "paco" }));
-    if (!written.ok) return written;
-    try {
-      unlinkSync(pendingPath);
-    } catch (error) {
-      return { ok: false, error: `retired copy written but pending file not removed: ${errorCode(error)}` };
+    const stamped = setFrontmatterFields(text, { retired: now, retired_by: "paco" });
+    const dir = join(this.root, RETIRED_DIR, safeScope);
+    let target = safeName;
+    if (this.readSafe(join(dir, `${safeName}.md`)) !== undefined && this.readSafe(join(dir, `${safeName}.md`)) !== stamped) {
+      const free = this.freeName(dir, safeName, (c) => setFrontmatterFields(stamped, { name: c }));
+      if (free === undefined) return { ok: false, error: "no_free_name" };
+      target = free;
     }
-    return written;
+    const written = this.writeContained([RETIRED_DIR, safeScope], target, target === safeName ? stamped : setFrontmatterFields(stamped, { name: target }));
+    if (!written.ok) return { ok: false, error: "write_failed" };
+    return this.unlinkDone(pendingPath) ? written : { ok: false, error: "unlink_failed" };
   }
 
   /**
