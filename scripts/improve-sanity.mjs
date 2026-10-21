@@ -75,7 +75,8 @@ function backfill(c, sinceIso) {
   const ro = new DatabaseSync(c.copy, { readOnly: true });
   try {
     const fails = ro.prepare(`SELECT e.run_id, e.occurred_at, json_extract(e.payload_json, '$.error_type') AS et, json_extract(r.notify_json, '$.chat_id') AS chat_id
-      FROM ledger_events e JOIN runs r ON r.run_id = e.run_id WHERE e.event_type = 'run_failed' AND r.source = 'telegram' AND e.occurred_at > ?`).all(sinceIso);
+      FROM ledger_events e JOIN runs r ON r.run_id = e.run_id WHERE e.event_type = 'run_failed' AND r.source = 'telegram' AND e.occurred_at > ?
+      AND EXISTS (SELECT 1 FROM ledger_events w WHERE w.run_id = e.run_id AND w.event_type = 'worker_lease_acquired' AND json_extract(w.payload_json, '$.worker_id') LIKE 'planner:%')`).all(sinceIso);
     for (const f of fails) {
       const value = m.PLANNER_FAILED_VALUES.includes(f.et) ? f.et : "other";
       n.planner_failed += store.insertImproveSignal({ signal: "planner_failed", value, run_id: f.run_id, chat_id: f.chat_id, about_run_id: f.run_id, source_outcome_id: `pf:${f.run_id}`, created_at: f.occurred_at }) > 0 ? 1 : 0;
@@ -128,21 +129,23 @@ function plantedGroups(c) {
     ["stated rule saved", "nothing", mk({ statedRuleSaved: true }, "From now on always answer in British English.")],
     ["stale row", "nothing", mk({ stale: true }, "Please keep the replies shorter.")],
     ["inapplicable-top bait", "nothing", mk({ category: "schedule", lane: "planner", scope: "schedule", value: "schedule" }, "Move my morning briefing to 8am instead of 7.")],
+    // a leak probe, not a target check (intended null): vague on purpose so it tends to fall below the bar and reach the Tiny pick with the planted token in its text
+    ["below-bar probe (token)", null, mk({}, `Something about that answer was a bit off, or maybe fine, not sure it needs a change. (ref ${TOKEN})`)],
     ["recurrence naming a skill", "nothing", rec("b", "Run the weekly-report skill again for this week's numbers.", { skillExists: true })]
   ];
 }
 
 /** One decision, no write (the capturing recorder), with the Tiny pick's failure noted per decision. */
 async function decideOne(c, s, run_id) {
-  const rec = c.m.deferredRecorder(); const before = c.pickStat.failed;
+  const rec = c.m.deferredRecorder(); const before = c.pickStat.failed; const calls = c.pickStat.calls;
   const r = await c.m.decideImprove({ store: c.store, env: process.env, client: c.client, pick: c.pick, now: () => new Date().toISOString() }, s, rec.recorder, run_id);
   await sleep(PACE_MS);
-  return { r, pickFailed: c.pickStat.failed > before };
+  return { r, pickFailed: c.pickStat.failed > before, pickCalled: c.pickStat.calls > calls };
 }
 
 async function scorePlanted(c) {
   const res = [];
-  for (const [name, intended, s] of plantedGroups(c)) { const { r, pickFailed } = await decideOne(c, s, null); res.push({ name, intended, r, pickFailed, text: s.redacted.pacoText }); }
+  for (const [name, intended, s] of plantedGroups(c)) { const { r, pickFailed, pickCalled } = await decideOne(c, s, null); res.push({ name, intended, r, pickFailed, pickCalled, text: s.redacted.pacoText }); }
   return res;
 }
 
@@ -163,15 +166,18 @@ async function scoreReal(c, args, now0, produced) {
   const groups = m.groupSignals(rows, (id) => store.getJevVerdictForRun(id), produced.clusters, staleBefore);
   const hints = m.scheduleHints(store, nowIso, tz);
   const since14 = store.listImproveSignalsSince(new Date(now0 - 14 * DAY_MS).toISOString());
-  const r = { rows: rows.length, groups: groups.length, byTarget: new Map(), byRule: new Map(), byRung: new Map(), byFb: new Map(), hist: new Array(10).fill(0), withP: 0, proposals: [], lost: 0, byFamily: new Map() };
+  const r = { rows: rows.length, groups: groups.length, byTarget: new Map(), byRule: new Map(), byRung: new Map(), byFb: new Map(), hist: new Array(10).fill(0), withP: 0, proposals: [], lost: 0, byFamily: new Map(), pickFailed: 0, failRung: 0, jobs: 0 };
   for (const g of groups) {
     const s = m.buildImproveState(g, { store, env: process.env, now: nowIso, skills: c.skills, redact: c.redact, scheduleHints: hints, since14 });
-    const { r: d } = await decideOne(c, s, g.newest.about_run_id ?? g.newest.run_id);
+    const { r: d, pickFailed } = await decideOne(c, s, g.newest.about_run_id ?? g.newest.run_id);
+    if (pickFailed) r.pickFailed++;
+    if (d.rung === "fail") r.failRung++;
     bump(r.byFamily, g.signal); bump(r.byTarget, d.verdict); bump(r.byRung, `${d.rung}/${d.reason ?? "-"}`);
     if (d.rung === "rule") bump(r.byRule, d.reason ?? "-");
     if (d.fallbackReason) { bump(r.byFb, d.fallbackReason); r.lost++; }
     if (d.detail?.p !== undefined) { r.hist[Math.min(9, Math.floor(d.detail.p * 10))]++; r.withP++; }
-    if (d.verdict !== "nothing" && d.verdict !== "knowledge") {
+    if (d.rung === "rule" && d.verdict === "skill") r.jobs++; // a rule-rung skill starts a job, not a proposal
+    else if (d.verdict !== "nothing" && d.verdict !== "knowledge") {
       const p = await previewOf(c, g, s, d, tz);
       if (p.hasDraft) r.proposals.push({ verdict: d.verdict, scope: s.scope, rung: d.rung, ...p });
     }
@@ -187,7 +193,8 @@ function printReal(c, r, args) {
   say(`top-p histogram (${r.withP} groups that reached Jev):`);
   r.hist.forEach((n, i) => say(`  ${(i / 10).toFixed(1)}-${i === 9 ? "1.0" : ((i + 1) / 10).toFixed(1)} ${"#".repeat(n)} ${n}`));
   const perDay = r.proposals.length / args.days;
-  say(`proposals it would have made: ${r.proposals.length} (${perDay.toFixed(2)}/day, bar <= ${PROPOSALS_PER_DAY_MAX}/day; an upper bound: a lesson/fact draft that distill rejects is not made)`);
+  say(`proposals it would have made: ${r.proposals.length} (${perDay.toFixed(2)}/day, bar <= ${PROPOSALS_PER_DAY_MAX}/day; an upper bound: a lesson/fact draft that distill rejects is not made; ${r.jobs} rule-rung skill job(s) not counted)`);
+  say(`real groups: ${r.failRung} decided on rung fail (all rungs abstained), ${r.pickFailed} failed Tiny pick(s)`);
   const step = Math.max(1, Math.floor(r.proposals.length / SAMPLES));
   say(`${Math.min(SAMPLES, r.proposals.length)} sampled proposals (target · scope · evidence · draft<=${EXCERPT}, redacted):`);
   r.proposals.filter((_, i) => i % step === 0).slice(0, SAMPLES).forEach((p) => say(`  ${p.verdict} (${p.rung}) · ${c.redact(p.scope)} · ${c.redact(p.evidence)} · ${p.draft}`));
@@ -196,17 +203,19 @@ function printReal(c, r, args) {
 }
 
 function printPlanted(c, planted) {
-  let miss = 0; let winP = [];
+  let miss = 0; let unsure = 0; let winP = [];
   say(`planted groups: intended target vs got`);
   for (const p of planted) {
+    if (p.intended === null) { say(`  probe  ${p.name}: got ${p.r.verdict} (${p.r.rung}/${p.r.reason ?? "-"}); reached the Tiny pick: ${p.r.reason === "tiny_pick" || p.pickCalled ? "yes" : "no"}`); continue; }
     const ok = p.r.verdict === p.intended; if (!ok) miss++;
+    if (ok && (p.r.rung === "fail" || p.pickFailed)) { unsure++; }
     const pp = p.r.detail?.p ?? p.r.p;
-    if (ok && (p.r.reason === "jev_choice" || p.r.reason === "tiny_pick") && pp !== undefined) winP.push(pp);
+    if (ok && p.r.reason === "jev_choice" && pp !== undefined) winP.push(pp);
     say(`  ${ok ? "ok    " : "MISSED"} ${p.name}: want ${p.intended}, got ${p.r.verdict} (${p.r.rung}/${p.r.reason ?? "-"}) p=${pp === undefined ? "n/a" : pp.toFixed(3)}${p.r.fallbackReason ? ` fallback=${p.r.fallbackReason}` : ""}${p.pickFailed ? " tiny_pick_failed" : ""}`);
   }
   const suggested = winP.length ? Math.max(0.5, Math.round((Math.min(...winP) - 0.05) * 100) / 100) : null;
-  say(`IMPROVE_BAR p=${c.m.IMPROVE_BAR.p}; suggested bar: ${suggested === null ? "none (no planted winning answer came from Jev or the pick; keep the provisional bar)" : `${suggested} (lowest planted winning p ${Math.min(...winP).toFixed(3)} - 0.05, floored at 0.5)`}. Paco's sign-off sets it (R8).`);
-  return miss;
+  say(`IMPROVE_BAR p=${c.m.IMPROVE_BAR.p}; suggested bar: ${suggested === null ? "none (no planted answer was a jev_choice win; keep the provisional bar)" : `${suggested} (lowest planted jev_choice p ${Math.min(...winP).toFixed(3)} - 0.05, floored at 0.5)`}. Paco's sign-off sets it (R8).`);
+  return { miss, unsure };
 }
 
 async function main() {
@@ -217,13 +226,16 @@ async function main() {
   const produced = await produce(c, args, now0);
   say(`producers: recurrence rows ${produced.recorded} (${produced.clusters.size} clusters), abandonment rows ${produced.abandoned}, embedder unavailable ${produced.embedUnavailable} turn(s)`);
   const real = await scoreReal(c, args, now0, produced); const perDay = printReal(c, real, args);
-  const planted = await scorePlanted(c); const miss = printPlanted(c, planted);
+  const planted = await scorePlanted(c); const { miss, unsure } = printPlanted(c, planted);
   say(`tiny pick calls ${c.pickStat.calls}, failed ${c.pickStat.failed}`);
   const plantedFb = planted.filter((p) => p.r.fallbackReason).length;
-  const missWithPickFailure = planted.some((p) => p.r.verdict !== p.intended && p.pickFailed);
+  if (planted.some((p) => p.intended === null && p.r.rung === "fail")) say("probe decided on rung fail");
+  const missWithPickFailure = planted.some((p) => p.intended !== null && p.r.verdict !== p.intended && p.pickFailed);
   const reasons = [];
   if (produced.embedUnavailable > 0) reasons.push(`embedder unavailable for ${produced.embedUnavailable} turn(s) (recurrence and abandonment skipped)`);
   if (real.lost + plantedFb > 0) reasons.push(`${real.lost + plantedFb} decision(s) fell back (any fallbackReason)`);
+  if (unsure > 0) reasons.push(`${unsure} planted hit(s) decided on rung fail or after a failed Tiny pick (not a real hit)`);
+  if (real.failRung + real.pickFailed > 0) reasons.push(`real groups: ${real.failRung} on rung fail, ${real.pickFailed} failed Tiny pick(s)`);
   if (missWithPickFailure) reasons.push("a planted miss coincides with a failed Tiny pick");
   if (real.groups === 0) reasons.push("no real groups in the window");
   const rateOver = perDay > PROPOSALS_PER_DAY_MAX;
