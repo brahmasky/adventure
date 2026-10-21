@@ -129,7 +129,7 @@ const APPROVAL_ID_ECHO_MAX = 48;
 const LOW_RATING_MAX = 1;
 
 /** ADR 0018 + decision ladder plan ruling 16: commands the per-chat rate limit never delays (kill; digest review taps). */
-const RATE_LIMIT_EXEMPT: ReadonlySet<string> = new Set(["kill", "decision_review"]);
+const RATE_LIMIT_EXEMPT: ReadonlySet<string> = new Set(["kill", "decision_review", "improvement_tap"]);
 
 export class Gateway {
   private readonly caps: GlobalBudgetCaps;

@@ -98,7 +98,10 @@ export type LedgerEventType =
   | "lesson_render_failed"
   | "evidence_rejected"
   | "embedding_backfill"
-  | "memory_migration";
+  | "memory_migration"
+  | "improve_signal_skipped"
+  | "improve_tick"
+  | "improvement_job";
 
 export interface LedgerEvent {
   event_id: string;
@@ -344,7 +347,10 @@ const requiredPayloadFields = {
   // Resolved mode: a role that resolved empty ran on its static list instead (review fix F7; once per role per catalog read).
   model_roles_fallback: ["role"],
   // The contract probe's verdict per omp version (fixed outcome codes only, never omp's text).
-  omp_contract_probe: ["version", "result", "checks"]
+  omp_contract_probe: ["version", "result", "checks"],
+  improve_signal_skipped: ["signal", "code"],
+  improve_tick: ["phase", "local_date"],
+  improvement_job: ["job_id", "from", "to", "attempt"]
 } as const satisfies Record<LedgerEventType, readonly string[]>;
 
 export function createLedgerEvent(

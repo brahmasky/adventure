@@ -108,4 +108,16 @@ describe("entryProblems (R12 and R13 as data)", () => {
     expect(entryProblems(mk)).toEqual([]);
     expect(entryProblems({ ...mk, input: "tool" })).toContain(msg); // fail-open alone no longer admits it
   });
+  // Ruling 2: a judge that can only propose causes no direct effect, so a fail-open entry of proposals may carry a provisional bar
+  // (improve.route, 2b-ii). An `effect` or `reply` verdict still refuses it.
+  it("a fail-open entry whose judged verdicts are none or proposal is admitted on a provisional bar; an effect verdict is not", () => {
+    const provisional = { kind: "provisional" as const, question: "q", criteriaHash: "h", model: "jev-1.13.0", p: 0.6, source: "test" };
+    const jev = { kind: "system_one" as const, name: "j", questions: [], bars: provisional, timeoutMs: 1 };
+    // built whole, not from HANDLER: a spread would carry turn.handler's monotone order and effects into the shape check
+    const ok: AnyEntry = { id: "x.proposals", version: 1, stage: "after_turn", input: "mixed", question: "q", verdicts: ["nothing", "lesson"], ladder: [jev],
+      fail: "nothing", defaultVerdict: "nothing", outcomes: [], armed: { system_one: "on" }, effects: { nothing: fx("none", true, "none"), lesson: fx("proposal") }, reasonCodes: [] };
+    expect(entryProblems(ok)).toEqual([]);
+    const bad: AnyEntry = { ...ok, effects: { nothing: fx("none", true, "none"), lesson: fx("effect") } };
+    expect(entryProblems(bad).some((p) => p.startsWith("provisional bar"))).toBe(true);
+  });
 });

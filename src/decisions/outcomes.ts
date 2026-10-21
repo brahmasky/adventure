@@ -1,4 +1,5 @@
 import type { Lane, TurnRole } from "../jev/tree-policy.js";
+import type { PlannerFailure } from "../run/run-store.js"; // type-only: the store imports this file, no runtime cycle
 import { ENTRY_IDS } from "./entry-ids.js";
 import { DECISION_SIGNALS, type DecisionSignal } from "./types.js";
 
@@ -21,6 +22,15 @@ export const SETTLE_REASON_VALUES = ["hostile", "already_sent_back", "last_call_
   "claim_attached", "claim_sent", "todo_pending", "todo_unavailable", "jev_claims_done", "jev_unverified", "jev_promise", "jev_asks_permission", "budget", "settled"] as const;
 export const SETTLE_DISCARDED_VALUE_LIST = ["extension_timeout", "signal", "continuation_failed"] as const;
 
+/** 2b-ii §2: a tool registry name (the `tool_approvals.capability` column). */
+export const APPROVAL_CAPABILITY = /^[a-z][a-z0-9_]{0,39}$/;
+/** 2b-ii §2: every `error_type` `finishRun({next: "failed"})` is called with: the PlannerFailure union (which already holds the two literals P1 found, model_error and killed); `other` for anything else. */
+export const PLANNER_FAILED_VALUES = ["planner_exit", "lease_lost", "lease_expired", "killed", "no_planner_leg", "model_error", "turn_timeout", "frame_idle",
+  "merged_parent_failed", "media_failed", "other"] as const;
+/** Compile-time pin: a PlannerFailure member missing above fails typecheck (the list is the union's members, then `other`). */
+type PlannerFailedCoversUnion = Exclude<PlannerFailure, (typeof PLANNER_FAILED_VALUES)[number]> extends never ? true : never;
+export const PLANNER_FAILED_COVERS_UNION: PlannerFailedCoversUnion = true;
+
 export class OutcomeRejected extends Error {}
 
 type Check = (v: string | number) => boolean;
@@ -28,6 +38,12 @@ const ids: ReadonlySet<string> = new Set(ENTRY_IDS);
 const oneOf = (xs: readonly string[]): Check => (v) => typeof v === "string" && xs.includes(v);
 const intIn = (lo: number, hi: number): Check => (v) => typeof v === "number" && Number.isInteger(v) && v >= lo && v <= hi;
 const entryId: Check = (v) => typeof v === "string" && ids.has(v);
+const matches = (re: RegExp): Check => (v) => typeof v === "string" && re.test(v);
+const NUMERIC_SIGNALS: ReadonlySet<DecisionSignal> = new Set(["rating", "recurrence"]);
+/** The inbox stores every value as TEXT; a numeric signal's text comes back as the integer its check needs (a non-number stays text and is refused). */
+export function outcomeValueOf(signal: DecisionSignal, text: string): string | number {
+  return NUMERIC_SIGNALS.has(signal) && /^-?\d+$/.test(text) ? Number(text) : text;
+}
 
 /** `null`: no producer yet. The stage that adds one defines the set here (a protected edit) and its tests. */
 const VALUE_CHECKS: Readonly<Record<DecisionSignal, Check | null>> = {
@@ -36,7 +52,8 @@ const VALUE_CHECKS: Readonly<Record<DecisionSignal, Check | null>> = {
   review_ok: entryId, review_bad: entryId, review_unsure: entryId,
   settle_sent_back: oneOf(SETTLE_REASON_VALUES), settle_unverified: oneOf(SETTLE_REASON_VALUES), settle_discarded: oneOf(SETTLE_DISCARDED_VALUE_LIST),
   rating: intIn(0, 3), recurrence: intIn(1, 10_000),
-  approval_denied: null, approval_expired: null, planner_failed: null, abandoned: null, lesson_unfollowed: null
+  approval_denied: matches(APPROVAL_CAPABILITY), approval_expired: matches(APPROVAL_CAPABILITY), planner_failed: oneOf(PLANNER_FAILED_VALUES),
+  abandoned: oneOf(DIG_DEEPER_VALUES), lesson_unfollowed: oneOf(DIG_DEEPER_VALUES)
 };
 
 /** The stored text of a valid value; throws OutcomeRejected otherwise (the message names the signal, never the value). */

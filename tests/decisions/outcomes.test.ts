@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { checkOutcomeValue, CORRECTION_VALUES, DIG_DEEPER_VALUES, OutcomeRejected } from "../../src/decisions/outcomes.js";
+import { APPROVAL_CAPABILITY, checkOutcomeValue, CORRECTION_VALUES, DIG_DEEPER_VALUES, outcomeValueOf, OutcomeRejected, PLANNER_FAILED_VALUES } from "../../src/decisions/outcomes.js";
 import { SETTLE_DISCARDED_VALUES, SETTLE_REASONS } from "../../src/decisions/entries/turn-settle.js";
 import { SETTLE_DISCARDED_VALUE_LIST, SETTLE_REASON_VALUES } from "../../src/decisions/outcomes.js";
 import { CATEGORIES } from "../../src/jev/questions/tree.js";
@@ -22,10 +22,26 @@ describe("checkOutcomeValue", () => {
       try { checkOutcomeValue(s, v); } catch (e) { expect(String((e as Error).message)).not.toContain(String(v)); }
     }
   });
-  it("signals with no producer yet reject every value until their stage defines the set", () => {
-    for (const s of ["approval_denied", "approval_expired", "planner_failed", "abandoned", "lesson_unfollowed"]) {
-      expect(() => checkOutcomeValue(s, "shell_external")).toThrow(OutcomeRejected);
-    }
+  // Spec 2b-ii §2: the five dark signals get their closed sets. A capability is a registry name; a planner failure is the
+  // PlannerFailure union plus the two finishRun literals P1 found (model_error, killed) and `other` for anything else.
+  it("approval signals take a capability name; planner_failed the failure kinds; abandoned and lesson_unfollowed a lane", () => {
+    expect(checkOutcomeValue("approval_denied", "shell_external")).toBe("shell_external");
+    expect(checkOutcomeValue("approval_expired", "http_fetch")).toBe("http_fetch");
+    for (const v of ["planner_exit", "model_error", "killed", "other"]) expect(checkOutcomeValue("planner_failed", v)).toBe(v);
+    expect(checkOutcomeValue("abandoned", "answer")).toBe("answer");
+    expect(checkOutcomeValue("lesson_unfollowed", "lookup")).toBe("lookup");
+    for (const [s, v] of [["approval_denied", "Shell"], ["approval_denied", "rm -rf /"], ["approval_expired", "a".repeat(41)], ["planner_failed", "boom"],
+      ["abandoned", "planner_exit"], ["lesson_unfollowed", "x"]] as const) expect(() => checkOutcomeValue(s, v)).toThrow(OutcomeRejected);
+    expect(APPROVAL_CAPABILITY.test("a")).toBe(true);
+    expect(PLANNER_FAILED_VALUES).toContain("lease_expired");
+    expect(PLANNER_FAILED_VALUES.at(-1)).toBe("other");
+  });
+  // Rev 2 (both reviews): the inbox stores TEXT; rating and recurrence are checked as integers, so the stored text must come back as a number.
+  it("outcomeValueOf turns a stored rating or recurrence back into the integer its check needs and leaves the rest as text", () => {
+    expect(checkOutcomeValue("rating", outcomeValueOf("rating", "2"))).toBe("2");
+    expect(checkOutcomeValue("recurrence", outcomeValueOf("recurrence", "3"))).toBe("3");
+    expect(outcomeValueOf("correction", "answer")).toBe("answer");
+    expect(() => checkOutcomeValue("rating", outcomeValueOf("rating", "x"))).toThrow(OutcomeRejected);
   });
   it("the duplicated value lists match their sources (categories; turn.handler's lanes)", () => {
     expect([...CORRECTION_VALUES]).toEqual([...CATEGORIES]);

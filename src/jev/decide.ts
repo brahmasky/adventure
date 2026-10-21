@@ -17,7 +17,7 @@ export type SkipReason =
   | "state_too_large" | "disabled" | "posture" | "modality" | "override" | "error"
   // the §2.1 ack rule settled the turn in code: no Jev call, but the turn still has its one triage row
   | "ack_rule";
-export type DecisionPoint = "triage" | "injection" | "memory_kind" | "settle";
+export type DecisionPoint = "triage" | "injection" | "memory_kind" | "settle" | "improve";
 export type JevDecisionInsert = Parameters<RunStore["insertJevDecision"]>[0];
 
 export interface DecideInput {

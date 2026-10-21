@@ -83,6 +83,10 @@ export type LlmCallRole =
   | "memory_kind"
   // turn.settle's own Jev request (ladder 2b-i §3.3)
   | "settle"
+  // improve.route's own Jev request (ladder 2b-ii §4.3)
+  | "improve"
+  // improve.route's Tiny one-word pick on the ticks chain
+  | "improve_pick"
   // the tree's cascade pick between two categories (plan 2026-10-07 Decision 14): a Tiny-role one-shot on the turn's run
   | "cascade"
   // stage B lanes (spec §4–§5): the compose (Fast candidates) and the lookup's query rewrite (Tiny candidates); the planner stays "compose"
@@ -410,7 +414,7 @@ export interface ReplayTurnRow {
 }
 
 export type LessonStatus = "active" | "superseded" | "pruned";
-export type LessonSource = "user_feedback" | "loop" | "migration" | "consolidation" | "lane";
+export type LessonSource = "user_feedback" | "loop" | "migration" | "consolidation" | "lane" | "improve";
 
 /**
  * One durable lesson (⓪·3 S1, ADR 0012 §2/§3): a per-lesson row with eval metadata
@@ -2396,7 +2400,7 @@ export class RunStore {
       WHERE actor_id = ?
         AND chat_id = ?
         AND decision = 'accepted'
-        AND command <> 'decision_review' -- review taps are exempt and never count (ruling 16)
+        AND command NOT IN ('decision_review', 'improvement_tap') -- review and improvement taps are exempt and never count (ruling 16; 2b-ii §6.3)
         AND occurred_at > ?
     `).get<{ count: number }>(input.actor_id, input.chat_id, windowStart);
     if ((windowRow?.count ?? 0) >= TELEGRAM_MAX_COMMANDS_PER_WINDOW) {

@@ -46,9 +46,9 @@ function shapeProblems(e: AnyEntry): string[] {
   return p;
 }
 
-/** Fail-open counts only when no verdict causes a direct effect: each is `none` or `tighten` (orchestrator resolution 1, 2026-10-17). */
+/** Fail-open counts only when no verdict causes a direct effect: each is passive (none, tighten, or a proposal for Paco's tap; ruling 2, 2b-ii). */
 function noDirectEffect(e: AnyEntry): boolean {
-  return e.verdicts.every((v) => { const k = e.effects[v]?.kind; return k === "none" || k === "tighten"; });
+  return e.verdicts.every((v) => { const k = e.effects[v]?.kind; return k !== undefined && PASSIVE.has(k); });
 }
 
 /** ADR 0030 decision 9 as amended 2026-10-17: Paco's own message is the input and every verdict's effect is passive or reversible on a card. */
