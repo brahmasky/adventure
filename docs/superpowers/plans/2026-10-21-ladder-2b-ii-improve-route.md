@@ -1397,8 +1397,9 @@ const NOW = "2026-10-21T10:00:00.000Z";
 let seq = 0;
 const event = (type: "turn" | "deny", goal: string, extra: Record<string, unknown> = {}) => buildTypedTaskEvent({ source: "telegram", type, program: "turn", goal, requested_by: { kind: "user", id: "paco" },
   notify: { kind: "telegram", chat_id: "555" }, idempotency_key: `t:${++seq}`, source_reference: `telegram:update:${seq}:message:1`, ...extra } as never);
+// created_at fixed BEFORE NOW: latestJevVerdictForChat(chat, NOW) reads `created_at <= NOW` (run-store.ts:4708), and the real clock is past it (senior N3 / codex)
 const verdictOf = (s: RunStore, run_id: string) => s.insertJevVerdict({ run_id, category: "answer", breadth: null, reasoning: null, actions: null, sets_rule: null, rule_scope: null, lane: "answer",
-  role: "default", effort: null, cascade: null, save_outcome: "none", route_outcome: "fallback", reason: "jev_skipped", skip_reason: null, quoted_turn_id: null });
+  role: "default", effort: null, cascade: null, save_outcome: "none", route_outcome: "fallback", reason: "jev_skipped", skip_reason: null, quoted_turn_id: null, created_at: "2026-10-21T09:30:00.000Z" });
 const rows = (s: RunStore) => s.listUnconsumedSignals(10).map((r) => [r.signal, r.value, r.about_run_id]);
 const skipped = (s: RunStore) => s.listLedgerEventsByTypeSince("improve_signal_skipped", "2026-01-01T00:00:00.000Z").map((e) => e.payload);
 
@@ -1420,7 +1421,7 @@ describe("gateway producers", () => {
     const run_id = createTelegramTurn(s, "run the thing").run_id;
     const claim = s.claimRun(run_id, "planner:555", 60)!;
     const approval = s.createToolApproval({ run_id: claim.run_id, worker_id: "planner:555", tool_call_id: "c1", capability: "shell_external", input_hash: "h", action_fingerprint: "f",
-      requester: { kind: "user", id: "paco" }, summary: "ls", side_effect_level: "external", expires_at: "2026-10-21T11:00:00.000Z" });
+      requester: { kind: "user", id: "paco" }, summary: "ls", side_effect_level: "external", expires_at: "2099-01-01T00:00:00.000Z" }); // the event's created_at is the real clock; resolution refuses an expired approval (run-store.ts:7134)
     const r = new Gateway(s).intake(event("deny", "", { approval_id: approval.approval_id }), NOW);
     expect(r).toMatchObject({ ok: true, status: "approval_resolved" });
     expect(rows(s)).toEqual([["approval_denied", "shell_external", run_id]]);
@@ -3136,7 +3137,7 @@ describe("runImproveTick", () => {
     correction(s); correction(s, "find me the march invoice again", "lookup");
     let t = 0;
     const clock = () => (t += 5_000);   // every read of the clock is 5 s later: the first group fits a 10 s budget, the second does not (no real timing: flake-free)
-    const r = await runImproveTick(deps(s, { budgetMs: 10_000, clock }));
+    const r = await runImproveTick(deps(s, { budgetMs: 9_000, clock }));   // reads: 5 000 at start, 10 000 before group 1 (5 000 elapsed ≤ 9 000), 15 000 before group 2 (10 000 > 9 000 → stopped)
     expect(r).toMatchObject({ ran: true, result: "stopped", counts: { decided: 1 } });
     expect(await runImproveTick(deps(s))).toMatchObject({ ran: true, result: "done", counts: { decided: 1 } });
   });
@@ -4723,11 +4724,12 @@ count line appears in the digest text — Rev 7 removes those sections from the 
 count lines come from `countLines` over the same window as the digest's day" (assert `decisionStatusLines` lines equal
 `countLines(decisionWindow(store, now).rows)` prefixed, no digest text involved; codex B23 / senior W9).
 
-Three scripts assert the old digest sections and would break at their next run (senior W9/W17, verified at HEAD):
-`scripts/live-gate-decisions-parity.mjs:358-397`, `scripts/live-gate-decisions-2a.mjs:506` and
-`scripts/check-ladder-2b-hooks-rollback.mjs:124`. Change each digest check to the new contract: the header line, and
-either no message (an empty day) or only the three new section headers; a settle/injection count assertion moves to
-`decisionStatusLines`. (`grep -ln "Unsure\|Counts (24 h)\|\*\*Health\*\*" scripts/*.mjs` confirms the list.)
+Two live-gate scripts assert the old digest sections and would break at their next run (senior W9/W17, verified at HEAD):
+`scripts/live-gate-decisions-parity.mjs:358-397` and `scripts/live-gate-decisions-2a.mjs:506`. Change each digest check
+to the new contract: the header line, and either no message (an empty day) or only the three new section headers; a
+settle/injection count assertion moves to `decisionStatusLines`. `scripts/check-ladder-2b-hooks-rollback.mjs:116-127`
+also reads the old sections but runs the PREVIOUS build's `buildDecisionDigest` (it is a rollback check), so its old
+assertion is correct and stays (codex round 3). (`grep -ln "Unsure\|Counts (24 h)\|\*\*Health\*\*" scripts/*.mjs` confirms the list.)
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
@@ -4809,7 +4811,7 @@ Run: `npx vitest run tests/decisions/ tests/telegram/` — Expected: PASS.
 
 ```bash
 npm run typecheck && npx vitest run --reporter=dot
-git add src/decisions/digest.ts src/decisions/status-view.ts tests/decisions/digest.test.ts tests/decisions/digest-helpers.test.ts tests/decisions/digest-2a.test.ts tests/decisions/status-view.test.ts scripts/live-gate-decisions-2a.mjs scripts/live-gate-decisions-parity.mjs scripts/check-ladder-2b-hooks-rollback.mjs
+git add src/decisions/digest.ts src/decisions/status-view.ts tests/decisions/digest.test.ts tests/decisions/digest-helpers.test.ts tests/decisions/digest-2a.test.ts tests/decisions/status-view.test.ts scripts/live-gate-decisions-2a.mjs scripts/live-gate-decisions-parity.mjs
 git commit -m "feat(decisions): the digest as Improvements today / Proposals waiting / Watch with the offer transaction; proposal counts in /status; gate scripts follow (ladder 2b-ii Task 14)"
 ```
 
