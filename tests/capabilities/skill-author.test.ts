@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildSkillAuthorQuestion, parseAuthoredSkill } from "../../src/capabilities/skill-author.js";
+import { authorDraft, buildSkillAuthorQuestion, parseAuthoredSkill } from "../../src/capabilities/skill-author.js";
 
 const VALID_FILE = `---
 name: cross-check-figures
@@ -54,5 +54,18 @@ describe("parseAuthoredSkill", () => {
     expect(parseAuthoredSkill("sorry, I cannot do that").ok).toBe(false);
     expect(parseAuthoredSkill("").ok).toBe(false);
     expect(parseAuthoredSkill("---\nname: x\n---\nbody").ok).toBe(false); // missing scope/when
+  });
+});
+
+// 2b-ii §5.2: the writer step shared by the commanded path and the job: one attempt plus one retry on malformed output; a
+// failed compose is undefined (never garbage).
+describe("authorDraft", () => {
+  it("returns the parsed skill, retrying once on malformed output; undefined after two bad answers or a failed call", async () => {
+    const good = "---\nname: weekly-report\nscope: ask\nwhen: asked for the weekly report\nanchors:\n  - report\nversion: 1\n---\n1. gather\n2. write\n";
+    const answers = ["not a skill", good];
+    const compose = async () => answers.shift();
+    expect((await authorDraft("weekly report please", undefined, compose))?.name).toBe("weekly-report");
+    expect(await authorDraft("x", undefined, async () => "nope")).toBeUndefined();
+    expect(await authorDraft("x", undefined, async () => undefined)).toBeUndefined();
   });
 });

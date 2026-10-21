@@ -27,7 +27,7 @@ import { createWorktree, removeWorktree } from "../run/worktree.js";
 import { daemonTmpRoot, gitAncestor, setDaemonDataDir } from "../run/daemon-tmp.js";
 import { buildGateAQuestion, GATE_A_DISCIPLINE, parseGateAVerdict } from "../capabilities/skill-router.js";
 import type { GateAResult } from "../capabilities/skill-router.js";
-import { buildGuidedRefineQuestion, buildSkillAuthorQuestion, parseAuthoredSkill } from "../capabilities/skill-author.js";
+import { authorDraft, buildGuidedRefineQuestion, parseAuthoredSkill, withFrontmatterVersion } from "../capabilities/skill-author.js";
 import type { AuthoredSkill } from "../capabilities/skill-author.js";
 import {
   resolveGateBEnabled,
@@ -1915,14 +1915,12 @@ export class CoreWorker {
     // A feed that failed to read is NOT a fed-refine (no writer sight → no retire authority).
     const feed = fed && fedFile ? fed : undefined;
 
-    // 1) Author the initial draft — one attempt + one retry on malformed output.
-    let parsed: AuthoredSkill | undefined;
-    for (let attempt = 0; attempt < 2 && !parsed; attempt += 1) {
-      const authored = await this.runLlm(claim, buildSkillAuthorQuestion(message, fedFile), SKILL_AUTHOR_DISCIPLINE, budget, "compose");
-      if (!authored.ok) break; // capability failure (e.g. budget) → clean failure below
-      const p = parseAuthoredSkill(authored.answer);
-      if (p.ok) parsed = p.skill;
-    }
+    // 1) Author the initial draft — one attempt + one retry on malformed output (a capability failure
+    // such as budget → undefined → clean failure below).
+    let parsed = await authorDraft(message, fedFile, async (q, sys) => {
+      const a = await this.runLlm(claim, q, sys, budget, "compose");
+      return a.ok ? a.answer : undefined;
+    });
     if (!parsed) {
       return this.skillReport("couldn't author a valid skill", [
         originLine,
@@ -4489,21 +4487,6 @@ function buildSelfDiagnoseRelayQuestion(message: string, diagnosis: string): str
 // The old char-cap consolidation REWRITE (REWRITE_DISCIPLINE + buildRewriteQuestion) died
 // with the lesson block (⓪·3 S1): dedupe now happens at WRITE time via reconcile-on-write,
 // and the per-scope row cap (resolveLessonCapPerScope) prunes lowest reuse_value on overflow.
-
-/**
- * Set the `version:` field in a skill file's frontmatter to `version` (mechanical refine
- * bump — we don't trust the cheap writer to increment). Operates only on the leading
- * frontmatter block; replaces an existing version line or injects one before the closing
- * fence. Returns the file unchanged if no frontmatter fence is found.
- */
-function withFrontmatterVersion(file: string, version: number): string {
-  const m = /^(---\n[\s\S]*?\n)(---\n[\s\S]*)$/.exec(file.replace(/\r\n/g, "\n"));
-  if (!m) return file;
-  const frontmatter = /^version:.*$/m.test(m[1]!)
-    ? m[1]!.replace(/^version:.*$/m, `version: ${version}`)
-    : m[1]!.replace(/\n$/, `\nversion: ${version}\n`);
-  return frontmatter + m[2]!;
-}
 
 /**
  * Render the Gate B line for the gate-stack report. `unscored` (Gate B off or every pass

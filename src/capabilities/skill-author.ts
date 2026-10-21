@@ -1,3 +1,4 @@
+import { SKILL_AUTHOR_DISCIPLINE } from "../prompt/composer.js";
 import { parseSkillFile } from "../skills/skill-store.js";
 import type { SkillMeta } from "../skills/skill-store.js";
 
@@ -118,4 +119,38 @@ function stripFences(text: string): string {
   const trimmed = text.trim();
   const fence = /^```[a-zA-Z]*\n([\s\S]*?)\n```$/.exec(trimmed);
   return fence ? fence[1]! : trimmed;
+}
+
+/**
+ * Set the `version:` field in a skill file's frontmatter to `version` (mechanical refine
+ * bump — we don't trust the cheap writer to increment). Operates only on the leading
+ * frontmatter block; replaces an existing version line or injects one before the closing
+ * fence. Returns the file unchanged if no frontmatter fence is found.
+ */
+export function withFrontmatterVersion(file: string, version: number): string {
+  const m = /^(---\n[\s\S]*?\n)(---\n[\s\S]*)$/.exec(file.replace(/\r\n/g, "\n"));
+  if (!m) return file;
+  const frontmatter = /^version:.*$/m.test(m[1]!)
+    ? m[1]!.replace(/^version:.*$/m, `version: ${version}`)
+    : m[1]!.replace(/\n$/, `\nversion: ${version}\n`);
+  return frontmatter + m[2]!;
+}
+
+/**
+ * 2b-ii §5.2: the writer step both the commanded path (core-worker authorAndWriteSkill) and the improvement job share: one
+ * attempt plus one retry on malformed output, under SKILL_AUTHOR_DISCIPLINE, with the one named active skill as the feed.
+ * `compose` answers the question or returns undefined on a failed call (never garbage).
+ */
+export async function authorDraft(
+  request: string,
+  fedFile: string | undefined,
+  compose: (question: string, system: string) => Promise<string | undefined>
+): Promise<AuthoredSkill | undefined> {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const answer = await compose(buildSkillAuthorQuestion(request, fedFile), SKILL_AUTHOR_DISCIPLINE);
+    if (answer === undefined) return undefined;
+    const p = parseAuthoredSkill(answer);
+    if (p.ok) return p.skill;
+  }
+  return undefined;
 }

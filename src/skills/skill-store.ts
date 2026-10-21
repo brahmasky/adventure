@@ -1,5 +1,6 @@
 import { mkdirSync, readdirSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { errorCode } from "../domain/error-code.js";
 
 /**
  * The skill store (Phase 2a — ADR 0011 §1/§2): reusable *procedures* for a class of task
@@ -238,6 +239,87 @@ export class SkillStore {
     return out;
   }
 
+  /** The parked drafts as (scope, name) pairs: the job sweep's view (2b-ii §5.2 reconcileJobs). */
+  listPendingFiles(): Array<{ scope: string; name: string }> {
+    return this.listPending().map((m) => ({ scope: m.scope, name: m.name }));
+  }
+
+  pendingExists(scope: string, name: string): boolean {
+    return this.readSafe(join(this.root, PENDING_DIR, sanitizeSlug(scope), `${sanitizeSlug(name)}.md`)) !== undefined;
+  }
+
+  /** The active file's text equals `body` (a retried promotion counts an identical copy as written). */
+  activeFileEquals(scope: string, name: string, body: string): boolean {
+    return this.readSafe(join(this.root, sanitizeSlug(scope), `${sanitizeSlug(name)}.md`)) === body;
+  }
+
+  /**
+   * 2b-ii §5.2, one promotion protocol (codex D7): (1) read the pending copy; (2) collision check on the active tree —
+   * refuse, replace (retire the active one with lineage, by paco), or keep_both (a -2 suffix); (3) write the active copy
+   * (registry regenerated); (4) unlink the pending copy. Retry-safe: an identical active copy is step 3 done, a missing
+   * pending copy with the active copy present is step 4 done.
+   */
+  promotePending(
+    scope: string,
+    name: string,
+    o: { onCollision: "refuse" | "replace" | "keep_both"; now: string }
+  ): { ok: true; path: string; name: string } | { ok: false; error: string } {
+    const safeScope = sanitizeSlug(scope), safeName = sanitizeSlug(name);
+    const pendingPath = join(this.root, PENDING_DIR, safeScope, `${safeName}.md`);
+    const body = this.readSafe(pendingPath);
+    const active = this.readSafe(join(this.root, safeScope, `${safeName}.md`));
+    // a retry after a crash between steps (3) and (4): the pending copy is gone and an active copy exists → done (codex B15)
+    if (body === undefined) {
+      return active !== undefined ? { ok: true, path: join(this.root, safeScope, `${safeName}.md`), name: safeName } : { ok: false, error: "not_found" };
+    }
+    let target = safeName;
+    if (active !== undefined && active !== body) {
+      if (o.onCollision === "refuse") return { ok: false, error: "collision" };
+      if (o.onCollision === "replace") {
+        const r = this.retireSkill(safeScope, safeName, { date: o.now, by: "paco", supersededBy: safeName });
+        if (!r.ok) return r;
+      } else target = this.freeName(safeScope, safeName, body);
+    }
+    // keep_both: the file's own `name:` must match its file name (list() and REGISTRY read the frontmatter; senior B7)
+    const text = target === safeName ? body : setFrontmatterFields(body, { name: target });
+    const written = this.activeFileEquals(safeScope, target, text)
+      ? { ok: true as const, path: join(this.root, safeScope, `${target}.md`) }
+      : this.writeSkill(safeScope, target, text);
+    if (!written.ok) return written;
+    try {
+      unlinkSync(pendingPath);
+    } catch (error) {
+      return { ok: false, error: `active copy written but pending file not removed: ${errorCode(error)}` };
+    }
+    return { ok: true, path: written.path, name: target };
+  }
+
+  /** The first free `<name>-N` (N >= 2) in the active scope; an existing file holding this very body (a retried keep_both) counts as free. */
+  private freeName(scope: string, name: string, body: string): string {
+    for (let n = 2; n < 100; n += 1) {
+      const candidate = `${name}-${n}`;
+      const existing = this.readSafe(join(this.root, scope, `${candidate}.md`));
+      if (existing === undefined || existing === setFrontmatterFields(body, { name: candidate })) return candidate;
+    }
+    return `${name}-${Date.now()}`;
+  }
+
+  /** Dismiss: the draft moves to `_retired/<scope>/` stamped by paco (inert, kept for the record). */
+  dismissPending(scope: string, name: string, now: string): { ok: true; path: string } | { ok: false; error: string } {
+    const safeScope = sanitizeSlug(scope), safeName = sanitizeSlug(name);
+    const pendingPath = join(this.root, PENDING_DIR, safeScope, `${safeName}.md`);
+    const text = this.readSafe(pendingPath);
+    if (text === undefined) return { ok: false, error: "not_found" };
+    const written = this.writeContained([RETIRED_DIR, safeScope], safeName, setFrontmatterFields(text, { retired: now, retired_by: "paco" }));
+    if (!written.ok) return written;
+    try {
+      unlinkSync(pendingPath);
+    } catch (error) {
+      return { ok: false, error: `retired copy written but pending file not removed: ${errorCode(error)}` };
+    }
+    return written;
+  }
+
   /**
    * Retire an active skill: stamp `retired`/`retired_by`(/`superseded_by`) and MOVE the file to
    * `_retired/<scope>/` (write-then-unlink, so a failed write never loses the skill). Inert
@@ -460,7 +542,7 @@ export class SkillStore {
  */
 export function setFrontmatterFields(
   file: string,
-  fields: { score?: number; last_verified?: string; retired?: string; retired_by?: string; superseded_by?: string }
+  fields: { score?: number; last_verified?: string; retired?: string; retired_by?: string; superseded_by?: string; name?: string; origin?: string }
 ): string {
   const m = /^(---\n[\s\S]*?\n)(---\n[\s\S]*)$/.exec(file.replace(/\r\n/g, "\n"));
   if (!m) return file;
@@ -477,6 +559,8 @@ export function setFrontmatterFields(
   if (fields.retired) set("retired", fields.retired);
   if (fields.retired_by) set("retired_by", fields.retired_by);
   if (fields.superseded_by) set("superseded_by", fields.superseded_by);
+  if (fields.name) set("name", fields.name);
+  if (fields.origin) set("origin", fields.origin);
   return frontmatter + m[2]!;
 }
 
@@ -518,7 +602,7 @@ export function resolveSkillName(
 }
 
 /** Sanitize a scope/name to a filename-safe slug: lowercase, [a-z0-9_-] only, no path parts. */
-function sanitizeSlug(raw: string): string {
+export function sanitizeSlug(raw: string): string {
   return raw.trim().toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "");
 }
 
