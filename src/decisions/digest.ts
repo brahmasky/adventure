@@ -227,6 +227,7 @@ function acceptedLine(store: RunStore, p: ImprovementProposalRow): { line: strin
   const d = parsed(p.draft_json);
   const change = str(result.change_id);
   if (p.target === "lesson") return { line: `· lesson saved: ${draftSummary(store, p, 80)} · ${p.evidence}`, ...(change ? { button: memlaneUndoButton(change) } : {}) };
+  // draft.text, not evidence.quote: the quote is Paco's own words; the text is the redacted line the proposal drafted
   if (p.target === "fact") return { line: `· fact saved · ${draftSummary(store, p, 40)}`, ...(change ? { button: memoryUndoButton(change) } : {}) };
   if (p.target === "schedule") {
     const goal = store.getScheduledTask(str(d.schedule_id))?.goal;
@@ -242,15 +243,16 @@ function acceptedLine(store: RunStore, p: ImprovementProposalRow): { line: strin
 }
 
 /** Jobs finished since the last digest and proposals Paco accepted since, each with the tap that undoes it. */
-export function improvementsToday(store: RunStore, since: string): Section & { job_ids: string[] } {
+export function improvementsToday(store: RunStore, since: string, chatId?: string): Section & { job_ids: string[] } {
+  const mine = (row: { chat_id: string | null }): boolean => chatId === undefined || row.chat_id === chatId;
   const lines: string[] = []; const button_rows: NotificationButton[][] = []; const job_ids: string[] = [];
-  for (const job of store.listJobsFinishedSince(since)) {
+  for (const job of store.listJobsFinishedSince(since).filter(mine)) {
     const line = jobLine(job);
     if (!line) continue;
     lines.push(line);
     if (job.state === "pending_review") { button_rows.push(skillButtons(job.job_id, "review")); job_ids.push(job.job_id); }
   }
-  for (const p of store.listProposalsResolvedSince(since)) {
+  for (const p of store.listProposalsResolvedSince(since).filter(mine)) {
     const a = p.state === "accepted" ? acceptedLine(store, p) : null;
     if (!a) continue;
     lines.push(a.line);
@@ -260,8 +262,9 @@ export function improvementsToday(store: RunStore, since: string): Section & { j
 }
 
 /** The open proposals, oldest first, at most DIGEST_PROPOSALS_MAX, each with Accept / Dismiss; `ids` are the rendered ones only. */
-export function proposalsWaiting(store: RunStore): Section & { ids: string[] } {
-  const open = store.listOpenProposals();
+/** Taps are bound to the originating chat (ruling 19), so a row of another chat (or none) is neither shown nor offered. */
+export function proposalsWaiting(store: RunStore, chatId?: string): Section & { ids: string[] } {
+  const open = store.listOpenProposals().filter((p) => chatId === undefined || p.chat_id === chatId);
   const shown = open.slice(0, DIGEST_PROPOSALS_MAX);
   const lines = shown.map((p, k) => `${k + 1}. ${p.target} · ${draftSummary(store, p, DRAFT_LINE_CHARS)} · ${p.evidence}`);
   if (open.length > shown.length) lines.push(`+${open.length - shown.length} more`);
@@ -287,6 +290,8 @@ export function watchLines(store: RunStore, now: string): string[] {
   const made = new Map([...store.listOpenProposals(), ...store.listProposalsResolvedSince(since)].map((p) => [p.proposal_id, p] as const));
   const holding = [...made.values()].filter((p) => p.created_at > since && p.evidence.startsWith(LESSON_NOT_HOLDING)).length;
   const reasons = (code: string): number => route.filter((r) => r.reason_code === code).length;
+  const tickBad = { failed: ticks.filter((x) => x.result === "failed").length, stopped: ticks.filter((x) => x.result === "stopped").length, record: sumDetail(ticks, "record_failed") };
+  const tickParts = ([["ticks failed", tickBad.failed], ["stopped", tickBad.stopped], ["record failed", tickBad.record]] as const).filter(([, n]) => n > 0).map(([k, n]) => `${k} ${n}`);
   const embedDays = ticks.filter((t) => sumDetail([t], "embed_unavailable") > 0).length;
   const c = { corrections: countOf(signals, "correction"), abandoned: countOf(signals, "abandoned"), rate: total > 0 ? Math.round((100 * clarify) / total) : 0 };
   const lines: Array<[number, string]> = [
@@ -299,13 +304,15 @@ export function watchLines(store: RunStore, now: string): string[] {
     [reasons("inapplicable_top"), `· inapplicable top ${reasons("inapplicable_top")}`],
     [holding, `· lessons not holding ${holding}`]
   ];
+  // a failing tick must reach Paco (nothing else tells him), so this line alone keeps an otherwise empty day from being skipped
+  lines.push([tickParts.length, `· ${tickParts.join(" · ")}`]);
   return lines.filter(([n]) => n > 0).map(([, line]) => line);
 }
 
-export function buildDecisionDigest(store: RunStore, now: string, env: NodeJS.ProcessEnv = process.env): Digest | null {
+export function buildDecisionDigest(store: RunStore, now: string, env: NodeJS.ProcessEnv = process.env, chatId?: string): Digest | null {
   const tz = resolveDisplayZone(env);
-  const today = improvementsToday(store, new Date(Date.parse(now) - DIGEST_WINDOW_MS).toISOString());
-  const waiting = proposalsWaiting(store);
+  const today = improvementsToday(store, new Date(Date.parse(now) - DIGEST_WINDOW_MS).toISOString(), chatId);
+  const waiting = proposalsWaiting(store, chatId);
   const watch = watchLines(store, now);
   if (today.lines.length + waiting.lines.length + watch.length === 0) return null;
   const sections = [`🪜 **Decisions — ${formatInstantInZone(now, tz).slice(0, 10)}**`];
@@ -327,7 +334,7 @@ export function runDecisionDigestTick(i: DigestTickInput): DigestTickResult {
   if (time < resolveDigestAt(env) || i.store.getDecisionDigest(date)) return { ran: false };
   const tick = i.store.getImproveTick(date);
   if (tick && tick.result !== "done" && tick.result !== "failed" && Date.parse(i.now) - Date.parse(tick.started_at) < DIGEST_WAIT_FOR_TICK_MS) return { ran: false };
-  const digest = buildDecisionDigest(i.store, i.now, env);
+  const digest = buildDecisionDigest(i.store, i.now, env, chatId);
   return i.store.inTransaction((): DigestTickResult => {
     if (i.store.getDecisionDigest(date)) return { ran: false };
     const queued = digest !== null && enqueueDigest(i.store, chatId, date, digest) === "queued";

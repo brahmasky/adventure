@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { countLines, decisionWindow } from "../../src/decisions/digest.js";
 import { decisionListText, decisionStatusLines } from "../../src/decisions/status-view.js";
 import { RunStore, type DecisionInsert } from "../../src/run/run-store.js";
+import { createQueuedTurnRun } from "../helpers/runs.js";
 
 // Paco 2026-10-14: /status answers "what did the ladder do today" on demand, with the digest switchable off. The section
 // must count exactly as the digest does (one counting code, so the two never disagree), say how often Jev failed (logged
@@ -40,16 +40,34 @@ describe("/status decisions section", () => {
       "· turn.trust 3 — code 3",
       "Jev failures: 3 (timeout 2 · parse 1)",
       "Injection: withheld 1 · framed 1 · not checked 1",
-      "Hostile turns: 1"
+      "Hostile turns: 1",
+      "Jev skips 24 h: tool.injection 1/2"
     ]);
     s.close();
   });
-  it("the /status count lines are countLines over the same 24 h window the digest's day reads, with no digest text involved", () => {
-    const s = seeded();
-    const counts = countLines(decisionWindow(s, NOW).rows);
-    expect(counts.length).toBeGreaterThan(0);
-    expect(decisionStatusLines(s, NOW).filter((l) => l.startsWith("· "))).toEqual(counts);
+  it("a front-door row no verdict links (a turn that never settled) is neither counted nor offered in the /status counts", () => {
+    const s = RunStore.openInMemory();
+    const turn = (linked: boolean): void => {
+      const run_id = createQueuedTurnRun(s, "x");
+      const id = s.insertDecision(D({ entry_id: "turn.handler", stage: "pre_model", run_id, verdict: "planner", p: 0.9, reason_code: "routed" }));
+      if (linked) s.insertJevVerdict({ run_id, category: null, breadth: null, reasoning: null, actions: null, sets_rule: null, rule_scope: null, lane: "planner",
+        role: "default", effort: null, cascade: null, save_outcome: "none", route_outcome: "fallback", reason: "jev_skipped", skip_reason: null, quoted_turn_id: null, decision_id: id });
+    };
+    turn(false); turn(true);
+    expect(decisionStatusLines(s, NOW).filter((l) => l.startsWith("· turn.handler"))).toEqual(["· turn.handler 1 — Jev 1"]);
     s.close();
+  });
+  it("adds turn.settle's unfinished reasons and the per-entry Jev skips (failed/attempts); neither line when there is nothing to say", () => {
+    const s = RunStore.openInMemory();
+    const S = (o: Partial<DecisionInsert>) => D({ entry_id: "turn.settle", stage: "settle", verdict: "settle", rung: "system_one", p: 0.9, reason_code: "settled", ...o });
+    s.insertDecision(S({})); s.insertDecision(S({ rung: "fail", p: null, reason_code: "jev_skipped", fallback_reason: "timeout", fallback_rung: "system_one" }));
+    s.insertDecision(S({ rung: "rule", p: null, reason_code: "pass_errored" }));
+    const lines = decisionStatusLines(s, NOW);
+    expect(lines).toContain("· turn.settle unfinished: budget 0 · todo_unavailable 0 · pass_errored 1");
+    expect(lines).toContain("Jev skips 24 h: turn.settle 1/2");
+    const quiet = RunStore.openInMemory();
+    quiet.insertDecision(S({}));
+    expect(decisionStatusLines(quiet, NOW).some((l) => l.includes("unfinished") || l.startsWith("Jev skips"))).toBe(false);
   });
   it("adds the 30-day proposal counts when any proposal exists, and no line otherwise", () => {
     const s = seeded();

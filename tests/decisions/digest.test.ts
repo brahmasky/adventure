@@ -149,3 +149,44 @@ describe("runDecisionDigestTick latch and switches", () => {
     expect(runDecisionDigestTick({ store: s, chatId: "555", now: NOW, env: { ...ENV, HOUGE_DECISION_DIGEST_AT: "offf" } })).toEqual({ ran: true, sent: true });
   });
 });
+
+describe("buildDecisionDigest (2b-ii fix round 1)", () => {
+  it("a failing or stopped tick and record failures reach Paco even on a day with no signals, proposals or jobs", () => {
+    const s = RunStore.openInMemory();
+    s.beginImproveTick("2026-10-21", "2026-10-21T09:00:00.000Z"); s.finishImproveTick("2026-10-21", "failed", { record_failed: 2 }, "2026-10-21T09:01:00.000Z");
+    s.beginImproveTick("2026-10-20", "2026-10-20T09:00:00.000Z"); s.finishImproveTick("2026-10-20", "stopped", {}, "2026-10-20T09:01:00.000Z");
+    expect(buildDecisionDigest(s, NOW, ENV)!.text).toContain("· ticks failed 1 · stopped 1 · record failed 2");
+    expect(runDecisionDigestTick({ store: s, chatId: "555", now: NOW, env: ENV })).toEqual({ ran: true, sent: true });
+    const ok = RunStore.openInMemory();
+    ok.beginImproveTick("2026-10-21", "2026-10-21T09:00:00.000Z"); ok.finishImproveTick("2026-10-21", "done", {}, "2026-10-21T09:01:00.000Z");
+    expect(buildDecisionDigest(ok, NOW, ENV)).toBeNull();
+  });
+  it("only the digest chat's proposals and jobs are rendered and offered; another chat's get no offered_at", () => {
+    const s = RunStore.openInMemory();
+    const mine = open(s, 1);
+    const other = s.insertImprovementProposal({ decision_id: s.insertDecision(D), target: "lesson", scope: "other", chat_id: "777", draft_json: JSON.stringify({ scope: "ask", text: "Elsewhere." }), evidence: "e", created_at: "2026-10-21T00:00:00.000Z" });
+    const nochat = s.insertImprovementProposal({ decision_id: s.insertDecision(D), target: "lesson", scope: "none", chat_id: null, draft_json: JSON.stringify({ scope: "ask", text: "Nowhere." }), evidence: "e", created_at: "2026-10-21T00:00:00.000Z" });
+    const d = buildDecisionDigest(s, NOW, ENV, "555")!;
+    expect(d.offered.proposal_ids).toEqual(mine);
+    expect(d.text).not.toContain("Elsewhere"); expect(d.text).not.toContain("Nowhere");
+    runDecisionDigestTick({ store: s, chatId: "555", now: NOW, env: ENV });
+    expect(s.getImprovementProposal(other)!.offered_at).toBeNull();
+    expect(s.getImprovementProposal(nochat)!.offered_at).toBeNull();
+    expect(s.getImprovementProposal(mine[0]!)!.offered_at).toBe(NOW);
+  });
+  it("the 120 clip never splits an emoji at the boundary", () => {
+    const head = `${"abcdefghi ".repeat(11)}abcdefgh `; // 119 code points of plain words (a long run of one letter reads as a secret)
+    const s = RunStore.openInMemory();
+    s.insertImprovementProposal({ decision_id: s.insertDecision(D), target: "lesson", scope: "e", chat_id: "555", draft_json: JSON.stringify({ scope: "ask", text: `${head}😀tail` }), evidence: "e", created_at: "2026-10-21T00:00:00.000Z" });
+    expect(buildDecisionDigest(s, NOW, ENV)!.text).toContain(` · ${head}😀 · e`);
+  });
+  it("a duplicate enqueue (same key and payload) latches sent 0 and offers nothing", () => {
+    const s = RunStore.openInMemory();
+    const ids = open(s, 1);
+    const d = buildDecisionDigest(s, NOW, ENV, "555")!;
+    s.enqueueNotification({ target: { kind: "telegram", chat_id: "555" }, intent_type: "progress", idempotency_key: "decision_digest:2026-10-21", correlation_id: "decision-digest",
+      payload: { text: d.text, button_rows: d.button_rows } });
+    expect(runDecisionDigestTick({ store: s, chatId: "555", now: NOW, env: ENV })).toEqual({ ran: true, sent: false });
+    expect(s.getImprovementProposal(ids[0]!)!.offered_at).toBeNull();
+  });
+});

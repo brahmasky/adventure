@@ -1,7 +1,8 @@
 import type { DecisionRow, RunStore } from "../run/run-store.js";
 import { JEV_NOT_ATTEMPT_REASONS } from "../run/invariant-sweep.js";
 import { formatInstantInZone, resolveDisplayZone } from "../run/schedule-spec.js";
-import { countLines, decisionWindow, deciderLabel, injectionCounts, trustTops } from "./digest.js";
+import { countLines, decisionWindow, deciderLabel, injectionCounts, settleHealthLine, trustTops } from "./digest.js";
+import { REGISTRY } from "./registry.js";
 
 /**
  * The decision ladder in `/status` (Paco 2026-10-14): a short section over the digest's own counting code, so the two never
@@ -21,13 +22,13 @@ function jevFailureLine(store: RunStore, since: string, now: string): string {
  * tool.injection judgement whose Jev rung was lost (the digest's "judgement lost"; an outside passage is then framed).
  */
 export function decisionStatusLines(store: RunStore, now: string): string[] {
-  const { since, rows } = decisionWindow(store, now);
+  const { since, all, rows } = decisionWindow(store, now);
   const proposals = proposalsLine(store, now);
   if (rows.length === 0) return proposals ? ["", proposals] : [];
   const inj = injectionCounts(rows);
   const hostile = [...trustTops(rows).values()].filter((l) => l === "hostile").length;
   return ["", "🪜 DECISIONS (24h)", ...countLines(rows), jevFailureLine(store, since, now),
-    `Injection: withheld ${inj.withheld} · framed ${inj.framed} · not checked ${inj.lost}`, `Hostile turns: ${hostile}`, ...(proposals ? [proposals] : [])];
+    `Injection: withheld ${inj.withheld} · framed ${inj.framed} · not checked ${inj.lost}`, `Hostile turns: ${hostile}`, ...healthLines(store, all, since, now), ...(proposals ? [proposals] : [])];
 }
 
 const PROPOSAL_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
@@ -53,4 +54,14 @@ export function decisionListText(store: RunStore, env: NodeJS.ProcessEnv = proce
   const tz = resolveDisplayZone(env);
   const head = `🪜 Last ${RECENT_DECISIONS} decisions`;
   return rows.length === 0 ? `${head}\nNo decisions recorded yet.` : [head, ...rows.map((r) => recentLine(r, tz))].join("\n");
+}
+
+/** What the digest's Health section showed and nothing else pages: unfinished settles, and Jev failures per System One entry (failed/attempts). */
+function healthLines(store: RunStore, all: readonly DecisionRow[], since: string, now: string): string[] {
+  const settle = settleHealthLine(all);
+  const skips = REGISTRY.filter((e) => e.ladder.some((r) => r.kind === "system_one")).flatMap((e) => {
+    const c = store.countDecisionJevSkips(e.id, since, now);
+    return c.failed > 0 ? [`${e.id} ${c.failed}/${c.attempts}`] : [];
+  });
+  return [...(settle ? [settle] : []), ...(skips.length > 0 ? [`Jev skips 24 h: ${skips.join(" · ")}`] : [])];
 }

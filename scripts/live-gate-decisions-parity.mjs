@@ -384,16 +384,22 @@ async function checkDigest(g) {
   const env = { ...process.env, HOUGE_DECISION_DIGEST_AT: "00:00" };
   const first = g.newMods.runDecisionDigestTick({ store: g.newSide.store, chatId: "p6op", now, env });
   const again = g.newMods.runDecisionDigestTick({ store: g.newSide.store, chatId: "p6op", now, env });
-  // a young running improve tick on copy B defers the digest (ruling 21): then nothing ran, and that is not a failure here
-  check("digest tick: sends once per local date (or waits for today's improve tick)", (first.ran === false && again.ran === false) || (first.ran === true && first.sent === (digest !== null) && again.ran === false), JSON.stringify({ first, again }));
   const note = claimDigest(g.newSide.store);
-  if (digest === null || !first.ran) return;
+  if (!first.ran) {
+    // ruling 21: only a young (< 30 min) running or stopped improve tick on copy B may defer the digest
+    const date = g.newMods.formatInstantInZone(now, g.newMods.resolveDisplayZone(process.env)).slice(0, 10);
+    const tick = g.newSide.store.getImproveTick(date);
+    check("digest tick: deferred only by today's young running/stopped improve tick", again.ran === false && tick !== undefined && (tick.result === "running" || tick.result === "stopped") && Date.parse(now) - Date.parse(tick.started_at) < 30 * 60_000, JSON.stringify({ first, again, tick: tick?.result }));
+    return cannotRun("digest render", "the digest was deferred, no message to render");
+  }
+  check("digest tick: sends once per local date", again.ran === false && first.sent === (digest !== null), JSON.stringify({ first, again }));
+  if (digest === null) return cannotRun("digest render", "an empty day: no digest message to render");
   check("digest tick: one outbox message to the operator chat", note !== null && note.payload.text === digest.text, note ? note.idempotency_key : "none");
   if (note) await checkRender(g, note);
 }
 
 async function setup(args) {
-  const newMods = await loadBuild(NEW_DIST, ["config/load-env.js", "config/disarm-posture.js", "decisions/digest.js", "decisions/status-view.js", "triggers/telegram-trigger-adapter.js",
+  const newMods = await loadBuild(NEW_DIST, ["config/load-env.js", "config/disarm-posture.js", "decisions/digest.js", "decisions/status-view.js", "run/schedule-spec.js", "triggers/telegram-trigger-adapter.js",
     "jev/calibration.js", "notifications/telegram-notification-adapter.js"]);
   newMods.loadHougeEnv();
   if (!process.env.TYPESAFE_API_KEY) throw new Error("TYPESAFE_API_KEY is not set (HOUGE_ENV_FILE?)");
