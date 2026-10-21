@@ -2,9 +2,9 @@ import { describe, expect, it, vi } from "vitest";
 import { IMPROVE_GROUPS_PER_TICK, improveTickDue, runImproveTick, type ImproveTickDeps, type JobHooks } from "../../src/improve/tick.js";
 import { SETTLE_REASON_VALUES } from "../../src/decisions/outcomes.js";
 import { RunStore, type DecisionInsert } from "../../src/run/run-store.js";
-import { SkillStore } from "../../src/skills/skill-store.js"; // drop the names a file does not use
+import { SkillStore } from "../../src/skills/skill-store.js";
 import type { JevRequest, JevResult } from "../../src/jev/jev-client.js";
-import { createTelegramTurn } from "../helpers/runs.js"; // drop whichever a file does not use
+import { createTelegramTurn } from "../helpers/runs.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -81,9 +81,11 @@ describe("runImproveTick", () => {
       ...SETTLE_REASON_VALUES.map((v): ["settle_sent_back", string] => ["settle_sent_back", v]),
       ...SETTLE_REASON_VALUES.map((v): ["settle_unverified", string] => ["settle_unverified", v]),
       ["review_bad", "turn.handler"], ["review_bad", "turn.gear"]];
+    expect(pairs).toHaveLength(IMPROVE_GROUPS_PER_TICK + 2);
     pairs.forEach(([signal, value], k) => s.insertImproveSignal({ signal, value, run_id: null, chat_id: "555", about_run_id: null, source_outcome_id: `do_${k}`, created_at: `2026-10-21T0${k % 10}:${String(k).padStart(2, "0")}:00.000Z` }));
     const r = await runImproveTick(deps(s));
     expect(r).toMatchObject({ ran: true, counts: { deferred: 2 } });
+    expect(s.listDecisionsBetween("2026-01-01T00:00:00.000Z", "2027-01-01T00:00:00.000Z").filter((x) => x.entry_id === "improve.route")).toHaveLength(IMPROVE_GROUPS_PER_TICK);
     expect(s.listUnconsumedSignals(10)).toHaveLength(2);
     const next = await runImproveTick(deps(s, { now: "2026-10-22T11:00:00.000Z" }));
     expect(next).toMatchObject({ ran: true, counts: { groups: 2, deferred: 0 } });
@@ -101,13 +103,13 @@ describe("runImproveTick", () => {
   });
   it("a crash mid-tick resumes: the running latch is re-entered and only unconsumed rows are decided again", async () => {
     const s = RunStore.openInMemory();
-    correction(s);
-    const { about: about2 } = correction(s, "another one please shorter");
+    correction(s); correction(s, "find me the march invoice again", "lookup");   // two groups
     s.beginImproveTick("2026-10-21", NOW); // a previous attempt died after latching
     s.consumeSignals([1], NOW);           // and after committing the first group
     const r = await runImproveTick(deps(s));
-    expect(r).toMatchObject({ ran: true, result: "done", counts: { groups: 1 } });
-    void about2;
+    expect(r).toMatchObject({ ran: true, result: "done", counts: { groups: 1, decided: 1 } });   // a re-read of the consumed row would show as a second group
+    expect(s.listDecisionsBetween("2026-01-01T00:00:00.000Z", "2027-01-01T00:00:00.000Z").filter((x) => x.entry_id === "improve.route")).toHaveLength(1);
+    expect(s.listUnconsumedSignals(10)).toEqual([]);
   });
   it("the stop signal between groups ends the tick as stopped: the group whose calls finished commits, the rest wait; the stopped date resumes on the next cycle", async () => {
     const s = RunStore.openInMemory();
@@ -165,5 +167,32 @@ describe("runImproveTick", () => {
     expect(s.listUnconsumedSignals(10).map((x) => x.signal)).toEqual(["recurrence"]);
     expect(hooks.runQueued).toHaveBeenCalledWith(expect.anything(), 3);
     expect(hooks.reconcile).toHaveBeenCalledTimes(1);
+  });
+
+  it("a group whose commit throws rolls back whole (no decision row, rows unconsumed, record_failed 1) and the next group still commits; the tick is done, not failed", async () => {
+    const s = RunStore.openInMemory();
+    correction(s); correction(s, "find me the march invoice again", "lookup");
+    const real = s.insertImprovementProposal.bind(s);
+    let n = 0;
+    vi.spyOn(s, "insertImprovementProposal").mockImplementation((p) => { n += 1; if (n === 1) throw new Error("boom"); return real(p); });
+    const r = await runImproveTick(deps(s));
+    expect(r).toMatchObject({ ran: true, result: "done", counts: { decided: 1, proposals: 1, record_failed: 1 } });
+    expect(s.listDecisionsBetween("2026-01-01T00:00:00.000Z", "2027-01-01T00:00:00.000Z").filter((x) => x.entry_id === "improve.route")).toHaveLength(1);
+    expect(s.listUnconsumedSignals(10)).toHaveLength(1);
+    expect(s.listOpenProposals()).toHaveLength(1);
+  });
+  it("a decision row that cannot be written consumes nothing: no outcome rows, no proposal, record_failed 1; the next group commits", async () => {
+    const s = RunStore.openInMemory();
+    correction(s); correction(s, "find me the march invoice again", "lookup");
+    const real = s.insertDecision.bind(s);
+    let n = 0;
+    vi.spyOn(s, "insertDecision").mockImplementation((x) => { if (x.entry_id === "improve.route") { n += 1; if (n === 1) throw new Error("disk"); } return real(x); });
+    const r = await runImproveTick(deps(s));
+    expect(r).toMatchObject({ ran: true, result: "done", counts: { decided: 1, proposals: 1, record_failed: 1 } });
+    const rows = s.listDecisionsBetween("2026-01-01T00:00:00.000Z", "2027-01-01T00:00:00.000Z").filter((x) => x.entry_id === "improve.route");
+    expect(rows).toHaveLength(1);
+    expect(s.listDecisionOutcomes(rows[0]!.decision_id)).toHaveLength(1);
+    expect(s.listOpenProposals()).toHaveLength(1);
+    expect(s.listUnconsumedSignals(10)).toHaveLength(1);
   });
 });

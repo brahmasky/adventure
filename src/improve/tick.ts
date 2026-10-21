@@ -107,10 +107,17 @@ async function tickBody(d: ImproveTickDeps, c: TickCounts): Promise<"done" | "st
     if (c.decided >= IMPROVE_GROUPS_PER_TICK) { c.deferred += 1; continue; }
     const s = buildImproveState(g, { store: d.store, env: d.env, now: d.now, skills: d.skills, redact: (t) => redactForImprove(d.store, t), scheduleHints: hints, since14 });
     if (willStartJob(s) && queueLeft <= 0) { c.deferred += 1; continue; }   // §3.5: a cluster beyond the day's 3 gets no row (ruling 5)
-    const rec2 = deferredRecorder();
-    const r = await decideImprove({ store: d.store, env: d.env, client: d.client, pick: d.llm.pick, now: () => d.now }, s, rec2.recorder, g.newest.about_run_id ?? g.newest.run_id);
-    const draft = r.verdict !== "nothing" && !(r.rung === "rule" && r.verdict === "skill") ? await draftFor(r.verdict, g, s, { store: d.store, env: d.env, now: d.now, tz, distill: d.llm.distill, redact: (t) => redactForImprove(d.store, t), scheduleHints: hints }) : null;
-    const outcome = commitGroup(d, g, s, r, draft, rec2.flush, c);
+    let outcome: "queued" | "committed" | "record_failed";
+    try {
+      const rec2 = deferredRecorder();
+      const r = await decideImprove({ store: d.store, env: d.env, client: d.client, pick: d.llm.pick, now: () => d.now }, s, rec2.recorder, g.newest.about_run_id ?? g.newest.run_id);
+      const draft = r.verdict !== "nothing" && !(r.rung === "rule" && r.verdict === "skill") ? await draftFor(r.verdict, g, s, { store: d.store, env: d.env, now: d.now, tz, distill: d.llm.distill, redact: (t) => redactForImprove(d.store, t), scheduleHints: hints }) : null;
+      outcome = commitGroup(d, g, s, r, draft, rec2.flush, c);
+    } catch (e) {   // one group's failure (the commit rolled back whole) never costs the next group its turn; its rows stay unconsumed
+      console.error(`[improve] group failed: ${errorCode(e)}`);
+      c.record_failed += 1;
+      continue;
+    }
     if (outcome === "record_failed") { c.record_failed += 1; continue; }   // rows stay unconsumed: tomorrow's tick reads them again
     if (outcome === "queued") queueLeft -= 1;
     if (s.stale) c.stale += 1;
