@@ -66,9 +66,9 @@ describe("runImproveTick", () => {
     const r = await runImproveTick(deps(s));
     expect(r).toMatchObject({ ran: true, result: "done", counts: { mirrored: 1, groups: 2, decided: 2, proposals: 2, deferred: 0, stale: 0 } });
     const rows = s.listDecisionsBetween("2026-01-01T00:00:00.000Z", "2027-01-01T00:00:00.000Z").filter((x) => x.entry_id === "improve.route");
-    expect(rows.map((x) => [x.verdict, x.rung, x.run_id])).toEqual([["lesson", "system_one", about], ["lesson", "system_one", about]]);
+    expect(rows.map((x) => [x.verdict, x.rung, x.run_id])).toEqual([["lesson", "system_one", about], ["ladder", "rule", about]]);
     expect(s.listDecisionOutcomes(rows[0]!.decision_id).map((o) => `${o.signal}:${o.value}:${o.source}`)).toEqual(["correction:answer:code"]);
-    expect(s.listOpenProposals().map((p) => [p.target, p.scope])).toEqual([["lesson", "answer"], ["lesson", "turn.handler"]]);
+    expect(s.listOpenProposals().map((p) => [p.target, p.scope])).toEqual([["lesson", "answer"], ["ladder", "turn.handler"]]);
     expect(s.listUnconsumedSignals(10)).toEqual([]);
     expect(events(s)).toEqual(["start", "end"]);
     expect(s.getImproveTick("2026-10-21")).toMatchObject({ result: "done", detail: { groups: 2 } });
@@ -90,6 +90,17 @@ describe("runImproveTick", () => {
     const next = await runImproveTick(deps(s, { now: "2026-10-22T11:00:00.000Z" }));
     expect(next).toMatchObject({ ran: true, counts: { groups: 2, deferred: 0 } });
     expect(s.listUnconsumedSignals(10)).toEqual([]);
+  });
+  it("a review_bad x3 group is decided ladder/review_bad by the rule rung (no Jev call) and yields an open ladder proposal with move retire_judge", async () => {
+    const s = RunStore.openInMemory();
+    const client = vi.fn(jev({ lesson: 0.9 }));
+    for (const day of ["18", "19", "20"]) s.insertImproveSignal({ signal: "review_bad", value: "turn.settle", run_id: null, chat_id: "555", about_run_id: null, created_at: `2026-10-${day}T03:00:00.000Z` });
+    expect(await runImproveTick(deps(s, { client }))).toMatchObject({ ran: true, counts: { groups: 1, decided: 1, proposals: 1 } });
+    expect(client).not.toHaveBeenCalled();
+    const row = s.listDecisionsBetween("2026-01-01T00:00:00.000Z", "2027-01-01T00:00:00.000Z").find((x) => x.entry_id === "improve.route");
+    expect(row).toMatchObject({ verdict: "ladder", rung: "rule", reason_code: "review_bad" });
+    const [p] = s.listOpenProposals();
+    expect([p!.target, p!.scope, JSON.parse(p!.draft_json)]).toEqual(["ladder", "turn.settle", { entry_id: "turn.settle", move: "retire_judge" }]);
   });
   it("a stale row (30 days unconsumed) is consumed as nothing/stale by the rule rung with no Jev call", async () => {
     const s = RunStore.openInMemory();

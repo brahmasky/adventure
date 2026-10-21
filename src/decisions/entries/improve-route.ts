@@ -3,6 +3,7 @@ import { IMPROVE_TARGET } from "../../jev/questions/improve.js";
 import { criteriaHash } from "../../jev/questions/types.js";
 import type { Category } from "../../jev/questions/tree.js";
 import type { Lane } from "../../jev/tree-policy.js";
+import { LOCKED_ENTRY_IDS } from "../entry-ids.js";
 import { DECISION_SIGNALS, type DecisionSignal, type Entry, type ProvisionalBar, type RungAbstain, type RungAnswer, type VerdictEffect } from "../types.js";
 
 /**
@@ -16,7 +17,7 @@ export const IMPROVE_ROUTE_ID = "improve.route";
 export const IMPROVE_TARGETS = ["nothing", "lesson", "fact", "skill", "schedule", "knowledge", "tool_gap", "ladder"] as const;
 export type ImproveTarget = (typeof IMPROVE_TARGETS)[number];
 export const IMPROVE_REASONS = ["stale", "stated_rule_owned", "recurrence", "recurrence_lookup", "already_authored", "skill_exists", "expiry_pattern", "deferred_rate",
-  "wiki_disarmed", "jev_choice", "tiny_pick", "below_bar", "no_text", "lane_busy", "inapplicable_top", "already_proposed"] as const;
+  "wiki_disarmed", "jev_choice", "tiny_pick", "below_bar", "no_text", "lane_busy", "inapplicable_top", "already_proposed", "review_bad", "locked_entry"] as const;
 export type ImproveReason = (typeof IMPROVE_REASONS)[number];
 export const IMPROVE_BAR_P = 0.6;
 export const IMPROVE_JEV_MS = 1_500;
@@ -51,11 +52,14 @@ type Rule = RungAnswer<ImproveTarget, ImproveDetail> | RungAbstain<ImproveTarget
 const nothing = (reason: ImproveReason): Rule => ({ verdict: "nothing", reason });
 const LOOKUP: ReadonlySet<string> = new Set(["lookup", "research"]);
 const EPS = 1e-9;
+const LOCKED: ReadonlySet<string> = new Set(LOCKED_ENTRY_IDS);
 
 /** §4.3 rule 1, in this order; the first that fires decides. */
 export function improveRule(s: ImproveState): Rule {
   if (s.stale) return nothing("stale");
   if (s.signal === "correction" && s.statedRuleSaved) return nothing("stated_rule_owned");
+  // the rule rung owns review_bad (scope = the reviewed entry id, as draftFor reads it): an unlocked entry goes to a ladder proposal, a locked one to nothing
+  if (s.signal === "review_bad") return LOCKED.has(s.scope) ? nothing("locked_entry") : { verdict: "ladder", reason: "review_bad" };
   if (s.recurrence) return recurrenceRule(s);
   if (s.signal === "approval_expired" && s.scheduleHint) return { verdict: "schedule", reason: "expiry_pattern" };
   if (s.redacted.pacoText.trim().length === 0) return nothing("no_text");
@@ -71,7 +75,7 @@ function recurrenceRule(s: ImproveState): Rule {
 
 /** §4.3: the targets Houge can act on today (sent in the state, applied to the answer). */
 export function applicableTargets(s: ImproveState): ImproveTarget[] {
-  return IMPROVE_TARGETS.filter((t) => (t !== "knowledge" || s.wikiArmed) && (t !== "skill" || (s.recurrence !== null && !s.skillExists)) && (t !== "schedule" || s.scheduleHint !== null));
+  return IMPROVE_TARGETS.filter((t) => (t !== "knowledge" || s.wikiArmed) && (t !== "skill" || (s.recurrence !== null && !s.skillExists)) && (t !== "schedule" || s.scheduleHint !== null) && (t !== "ladder" || s.signal === "review_bad"));
 }
 
 export function improveJevState(s: ImproveState): ImproveJevState {

@@ -42,16 +42,26 @@ describe("the improve.route entry", () => {
     expect(improveRule({ ...base, signal: "planner_failed", pacoText: "", redacted: { pacoText: "" } })).toMatchObject({ verdict: "nothing", reason: "no_text" });
     expect(improveRule(base)).toEqual({ abstain: true });
   });
+  it("the rule rung owns review_bad: an unlocked entry is ladder/review_bad (no Jev call), a locked entry nothing/locked_entry; stale still comes first", () => {
+    const bad = { ...base, signal: "review_bad" as const, value: "turn.settle", scope: "turn.settle", category: null, lane: null };
+    expect(improveRule(bad)).toEqual({ verdict: "ladder", reason: "review_bad" });
+    expect(improveRule({ ...bad, value: "turn.trust", scope: "turn.trust" })).toMatchObject({ verdict: "nothing", reason: "locked_entry" });
+    expect(improveRule({ ...bad, stale: true })).toMatchObject({ verdict: "nothing", reason: "stale" });
+  });
+  it("ladder is applicable only to a review_bad group", () => {
+    expect(applicableTargets(base)).not.toContain("ladder");
+    expect(applicableTargets({ ...base, signal: "review_bad", scope: "turn.settle" })).toContain("ladder");
+  });
   it("applicable targets: knowledge only with the wiki armed, skill only with a recurrence and no existing skill, schedule only with a hint", () => {
-    expect(applicableTargets(base)).toEqual(["nothing", "lesson", "fact", "tool_gap", "ladder"]);
-    expect(applicableTargets({ ...base, wikiArmed: true, recurrence: rec, scheduleHint: { schedule_id: "s1", hour: 11 } })).toEqual([...IMPROVE_TARGETS]);
+    expect(applicableTargets(base)).toEqual(["nothing", "lesson", "fact", "tool_gap"]);
+    expect(applicableTargets({ ...base, signal: "review_bad", wikiArmed: true, recurrence: rec, scheduleHint: { schedule_id: "s1", hour: 11 } })).toEqual([...IMPROVE_TARGETS]);
     expect(applicableTargets({ ...base, recurrence: rec, skillExists: true })).not.toContain("skill");
   });
   it("the Jev copy carries the redacted text, never pacoText, plus the applicable list", () => {
     const s = improveJevState({ ...base, pacoText: "RAW", redacted: { pacoText: "MASKED" } });
     expect(s.paco_text).toBe("MASKED");
     expect(JSON.stringify(s)).not.toContain("RAW");
-    expect(s.applicable).toEqual(["nothing", "lesson", "fact", "tool_gap", "ladder"]);
+    expect(s.applicable).toEqual(["nothing", "lesson", "fact", "tool_gap"]);
   });
   it("masking after the answer: an applicable top over the bar decides with its p; an inapplicable top abstains inapplicable_top; an applicable top below the bar abstains with the two best applicable options", () => {
     expect(jevVerdictOf(answer({ lesson: 0.7, nothing: 0.2, fact: 0.1 }), base)).toMatchObject({ verdict: "lesson", reason: "jev_choice", p: 0.7 });
