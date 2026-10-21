@@ -3,7 +3,8 @@ import { buildTypedTaskEvent } from "../domain/types.js";
 import { MEDIA_MIME, MEDIA_PLACEHOLDER, type TelegramMediaRef } from "../media/media-config.js";
 import { authorizeTelegramUpdate } from "./telegram-auth.js";
 import type { ApprovalCallback, SelfWriteCallbackAction, TelegramCommand } from "./telegram-command-parser.js";
-import { parseApprovalCallback, parseDecisionReviewCallback, parseMemLaneCallback, parseMemoryUndoCallback, parseSelfWriteCallback, parseTelegramCommand } from "./telegram-command-parser.js";
+import type { ImprovementTap } from "./telegram-command-parser.js";
+import { parseApprovalCallback, parseDecisionReviewCallback, parseImprovementCallback, parseMemLaneCallback, parseMemoryUndoCallback, parseSelfWriteCallback, parseTelegramCommand } from "./telegram-command-parser.js";
 
 export interface TelegramUpdate {
   update_id: number;
@@ -273,6 +274,8 @@ function normalizeCallbackQuery(
   if (memlane) return { ok: true, event: buildMemLaneTapEvent(update, callback, message.chat.id, auth.identity, memlane) };
   const review = parseDecisionReviewCallback(callback.data);
   if (review) return { ok: true, event: buildDecisionReviewTapEvent(update, callback, message.chat.id, auth.identity, review) };
+  const improvement = parseImprovementCallback(callback.data);
+  if (improvement) return { ok: true, event: buildImprovementTapEvent(update, callback, message.chat.id, auth.identity, improvement) };
 
   const parsed = parseSelfWriteCallback(callback.data);
   if (!parsed) {
@@ -359,6 +362,21 @@ function buildDecisionReviewTapEvent(
     idempotency_key: `telegram:${update.update_id}:callback:${callback.id}`,
     source_reference: `telegram:update:${update.update_id}:callback:${callback.id}`,
     metadata: { telegram_update_id: update.update_id, telegram_callback_id: callback.id, decision_id: review.decision_id, label: review.label }
+  });
+}
+
+/** An improvement tap (2b-ii §6.3): proposal, skill-draft or ladder-move button; the kind, subject id and action ride in metadata. */
+function buildImprovementTapEvent(
+  update: TelegramUpdate, callback: TelegramCallbackQuery, chat_id: number, identity: Identity, tap: ImprovementTap
+): TypedTaskEvent {
+  return buildTypedTaskEvent({
+    source: "telegram",
+    type: "improvement_tap",
+    requested_by: identity,
+    notify: { kind: "telegram", chat_id: String(chat_id) },
+    idempotency_key: `telegram:${update.update_id}:callback:${callback.id}`,
+    source_reference: `telegram:update:${update.update_id}:callback:${callback.id}`,
+    metadata: { telegram_update_id: update.update_id, telegram_callback_id: callback.id, kind: tap.kind, id: tap.id, action: tap.action }
   });
 }
 

@@ -46,6 +46,7 @@ import { toolApprovalWaiters } from "../omp/tool-approval-sink.js";
 import { handleMemLaneUndo, memLaneAskTurnEvent, recordTriageOverride } from "./memlane-commands.js";
 import { resolveQuietTriageOverrides } from "../jev/jev-incidents.js";
 import { handleDecisionReview } from "./decision-commands.js";
+import { handleImprovementTap } from "./improvement-commands.js";
 import { decisionListText, decisionStatusLines } from "../decisions/status-view.js";
 import { recordApprovalDenied, recordCorrection, recordImproveSignal, skipImproveSignal } from "../decisions/improve-signals.js";
 import type { NotificationPayload } from "../notifications/notification-types.js";
@@ -75,6 +76,7 @@ export type GatewayIntakeResult =
   | { ok: true; status: "memory_undone"; run_id: string }
   | { ok: true; status: "lesson_change_undone"; run_id: string }
   | { ok: true; status: "decision_reviewed"; run_id: string }
+  | { ok: true; status: "improvement_tapped"; run_id: string }
   | { ok: true; status: "memories_returned"; run_id: string }
   | { ok: true; status: "memory_forgotten"; run_id: string }
   | { ok: true; status: "models_returned"; run_id: string }
@@ -195,6 +197,7 @@ export class Gateway {
     }
     if (event.type === "memlane_undo") return this.accepted(event, now, handleMemLaneUndo(this.runStore, event));
     if (event.type === "decision_review") return this.accepted(event, now, handleDecisionReview(this.runStore, event, now));
+    if (event.type === "improvement_tap") return this.accepted(event, now, handleImprovementTap(this.runStore, this.skillStore, event, now));
 
     if (event.type === "status") {
       return this.handleStatus(event, now);

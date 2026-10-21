@@ -8,6 +8,7 @@ import type { TickLlm } from "../improve/decide-improve.js";
 import type { ImproveTickDeps, JobHooks } from "../improve/tick.js";
 import type { NotificationButton } from "../notifications/notification-types.js";
 import type { ImprovementJobRow, JobPatch, JobState, RunStore } from "../run/run-store.js";
+import { jobCollisionCard, promote, SK_PREFIX, skillButtons } from "../skills/promote.js";
 import { sanitizeSlug, setFrontmatterFields, type SkillStore } from "../skills/skill-store.js";
 import { errorCode } from "../domain/error-code.js";
 import { evolutionLaneSnapshot, tryStartEvolutionPipeline } from "./evolution-lane.js";
@@ -18,10 +19,10 @@ import { evolutionLaneSnapshot, tryStartEvolutionPipeline } from "./evolution-la
  * own card, so the Promise.race loser writes nothing. Gate A down-routes end `suggested` with no file; the writer is
  * one-shot over Paco's request texts only; the draft goes to `_pending` whatever the gates said; Paco promotes by tap.
  */
+export { jobCollisionCard, SK_PREFIX, skillButtons };
 export const JOB_OBJECTIVE_CHAR_CAP = 3_000;
 export const JOB_TURN_CAP = 6;
 export const JOB_QUEUED_TTL_DAYS = 3;
-export const SK_PREFIX = "dec:sk:";
 const DAY_MS = 24 * 60 * 60 * 1000;
 const DOWN_ROUTES: ReadonlySet<string> = new Set(["retire", "restore", "lesson", "code", "unsure"]);
 export interface JobDeps { store: RunStore; env: NodeJS.ProcessEnv; now: string; chatId: string | null; skills: SkillStore; llm: { classify: TickLlm; compose: TickLlm; verify: TickLlm }; signal: AbortSignal }
@@ -32,20 +33,11 @@ export function startSkillJob(store: RunStore, i: { decision_id: string; proposa
   return store.insertImprovementJob({ decision_id: i.decision_id, proposal_id: i.proposal_id, chat_id: i.chat_id, origin_json: JSON.stringify(i.origin), idempotency_key: i.idempotency_key, created_at: i.now });
 }
 
-function button(text: string, data: string): NotificationButton {
-  if (Buffer.byteLength(data, "utf8") > 64) throw new Error("improvement callback_data exceeds 64 bytes");
-  return { text, data };
-}
-export function skillButtons(job_id: string, kind: "review" | "collision"): NotificationButton[] {
-  const b = (text: string, action: string) => button(text, `${SK_PREFIX}${job_id}:${action}`);
-  return kind === "review" ? [b("✅ Accept", "accept"), b("🗑 Dismiss", "dismiss")] : [b("🔁 Replace", "replace"), b("➕ Keep both", "keep"), b("🗑 Dismiss", "dismiss")];
-}
 export const jobStartedCard = (n: number, category: string): string => `🛠 Drafting a skill from ${n} requests about ${category}…`;
 export const jobDraftedCard = (n: number, category: string, name: string, score: number | null): string =>
   `🛠 Skill drafted from ${n} requests about ${category}: ${name}${score === null ? " (Gate B unscored)" : ` (Gate B ${score.toFixed(2)})`}. Accept promotes it; Dismiss retires the draft.`;
 export const jobSuggestedCard = (n: number, verdict: string): string => `🛠 ${n} similar requests, but Gate A says this is a ${verdict}, not a skill. Nothing was written.`;
 export const jobFailedCard = (code: string): string => `🛠 Skill drafting failed (${code}). Nothing was written.`;
-export const jobCollisionCard = (name: string): string => `🛠 A skill named ${name} is already active. Replace it (the old one retires with lineage), keep both (the new one becomes ${name}-2), or dismiss the draft.`;
 
 /** The card goes out from the fenced transition, keyed by job, attempt and state: a redelivered event never sends it twice (§5.2, codex round 4). */
 function enqueueJobCard(store: RunStore, chatId: string | null, job_id: string, attempt: number, state: JobState, text: string, buttons?: NotificationButton[]): void {
@@ -168,7 +160,7 @@ export function reconcileJobsAtBoot(store: RunStore, skills: SkillStore, chatId:
   return n;
 }
 
-/** Tick-time reconcile: stale queued jobs fail lane_busy; promoting jobs retry (Task 13's handler); orphaned pending files retire. */
+/** Tick-time reconcile: stale queued jobs fail lane_busy; promoting jobs retry (promote, shared with the tap); orphaned pending files retire. */
 export function reconcileJobs(d: Pick<JobDeps, "store" | "skills" | "now" | "chatId">): void {
   const cut = new Date(Date.parse(d.now) - JOB_QUEUED_TTL_DAYS * DAY_MS).toISOString();
   for (const job of d.store.listJobsByState(["queued"])) {
@@ -176,6 +168,9 @@ export function reconcileJobs(d: Pick<JobDeps, "store" | "skills" | "now" | "cha
     d.store.inTransaction(() => {
       if (d.store.transitionJob({ job_id: job.job_id, from: ["queued"], to: "failed", now: d.now, patch: { result_code: "lane_busy" } })) enqueueJobCard(d.store, job.chat_id ?? d.chatId, job.job_id, job.attempt, "failed", jobFailedCard("lane_busy"));
     });
+  }
+  for (const job of d.store.listJobsByState(["promoting"])) {
+    try { promote(d.store, d.skills, job, d.chatId, d.now); } catch (e) { console.error(`[skill-job] promote retry failed: ${errorCode(e)}`); }
   }
   sweepOrphans(d.store, d.skills, d.now);
 }

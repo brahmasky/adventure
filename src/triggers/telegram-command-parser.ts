@@ -341,6 +341,27 @@ export function parseDecisionReviewCallback(data: unknown): { decision_id: strin
   return m ? { decision_id: m[1]!, label: m[2] as "ok" | "bad" } : null;
 }
 
+export const PR_PREFIX = "dec:pr:";
+export const LM_PREFIX = "dec:lm:";
+const DEC_PROPOSAL = new RegExp(`^${PR_PREFIX}(pr_${LC_UUID}):(acc|dis|rev)$`);
+const DEC_SKILL = new RegExp(`^dec:sk:(job_${LC_UUID}):(accept|dismiss|replace|keep)$`);
+const DEC_MOVE = new RegExp(`^${LM_PREFIX}(lm_${LC_UUID}):(revoke)$`);
+export type ImprovementTap =
+  | { kind: "pr"; id: string; action: "acc" | "dis" | "rev" }
+  | { kind: "sk"; id: string; action: "accept" | "dismiss" | "replace" | "keep" }
+  | { kind: "lm"; id: string; action: "revoke" };
+
+/** 2b-ii §6.3: the three improvement tap families; at most 64 bytes; anything else is null. */
+export function parseImprovementCallback(data: unknown): ImprovementTap | null {
+  if (typeof data !== "string") return null;
+  const pr = DEC_PROPOSAL.exec(data);
+  if (pr) return { kind: "pr", id: pr[1]!, action: pr[2] as "acc" | "dis" | "rev" };
+  const sk = DEC_SKILL.exec(data);
+  if (sk) return { kind: "sk", id: sk[1]!, action: sk[2] as "accept" | "dismiss" | "replace" | "keep" };
+  const lm = DEC_MOVE.exec(data);
+  return lm ? { kind: "lm", id: lm[1]!, action: "revoke" } : null;
+}
+
 type SplitShellWordsResult = { ok: true; words: string[] } | { ok: false; error: { code: "TELEGRAM_COMMAND_INVALID"; message: string } };
 
 function splitShellWords(input: string): SplitShellWordsResult {
