@@ -165,6 +165,7 @@ import { TURN_GEAR, type TurnGearState, type TurnGearVerdict } from "../decision
 import { SETTLE_JEV_MS } from "../decisions/entries/turn-settle.js";
 import { storeRecorder } from "../decisions/record.js";
 import { decisionOf, recordTapOutcome } from "../decisions/tap-outcomes.js";
+import { recordCorrection, skipImproveSignal } from "../decisions/improve-signals.js";
 import type { AnyDecideResult, AnyEntry, DecideResult, DecisionRecorder, FallbackReason, RungOutcome, RungResult } from "../decisions/types.js";
 import { fallbackOfSkip, jevSkipReason, planTree, treeDetailOf, treeNear, type AnsweredDecision, type TreeDetail } from "./turn-handler-ladder.js";
 import { memoryInformNote, memoryLaneCard, memoryUndoButtons, type CardItems } from "./memory-lane-card.js";
@@ -2573,6 +2574,8 @@ export class CoreWorker {
           ...(escalated && v.paco_correction === null ? { paco_correction: "escalation" as const } : {})
         });
       });
+      // after the commit: the inbox row must not roll back the verdict end write; the producer never throws
+      if (escalated && v.paco_correction === null) recordCorrection(this.runStore, { about: v, run_id: i.run_id, chat_id: this.chatOf(i.run_id) });
     } catch (e) {
       console.error(`triage: verdict end write failed: ${safeReason(e)}`); // the reply is already decided; the ledger gap is logged
     }
@@ -3253,11 +3256,20 @@ export class CoreWorker {
    * reason `fix` / `memory_other` (spec Rev 3 §3). Not saved otherwise: the turn proceeds as if sets_rule were no (a memory
    * turn falls through, `fallback`, with the attempted save's outcome).
    */
+  /** 2b-ii §2 (a): a memory-lane fix corrects the chat's PREVIOUS turn: the latest verdict that is not this run's (codex B6); none, skipped no_run. */
+  private noteFixCorrection(run_id: string): void {
+    const chat = this.chatOf(run_id);
+    const prev = this.runStore.latestJevVerdictForChatExcluding(chat, new Date().toISOString(), run_id);
+    if (!prev) { skipImproveSignal(this.runStore, "correction", "no_run", run_id); return; }
+    recordCorrection(this.runStore, { about: prev, run_id, chat_id: chat });
+  }
+
   private async saveThenRoute(i: TriageInput, state: OmpTurnState, lang: Lang, route: Route, settleFor: SettleFor, held: TriageHeld): Promise<TriageOutcome> {
     const s = await this.saveFirst(i, state, lang, route, settleFor);
     const q = quoteField(held.quote);
     if (!s.settled && s.handOff) {
       // spec Rev 3 §3: memory.kind said fix / nothing; its row is already written (runMemoryWrite's held recorder)
+      if (s.handOff === "fix") this.noteFixCorrection(i.claim.run_id);
       const handed = handOffRoute(route, s.handOff);
       const id = this.settleTriage(i, state, lang, settleFor(handed, "none"));
       return { kind: "fallthrough", route: turnRoute(handed, id), ...q };

@@ -47,6 +47,7 @@ import { handleMemLaneUndo, memLaneAskTurnEvent, recordTriageOverride } from "./
 import { resolveQuietTriageOverrides } from "../jev/jev-incidents.js";
 import { handleDecisionReview } from "./decision-commands.js";
 import { decisionListText, decisionStatusLines } from "../decisions/status-view.js";
+import { recordApprovalDenied, recordCorrection, recordImproveSignal, skipImproveSignal } from "../decisions/improve-signals.js";
 import type { NotificationPayload } from "../notifications/notification-types.js";
 import { handleForgetMemory, handleMemories, handleMemoryUndo } from "./memory-commands.js";
 import { handleModels, modelsUnavailable, type ModelsRoles } from "./models-commands.js";
@@ -354,6 +355,7 @@ export class Gateway {
       applied_lesson_ids: applied
     });
     this.runStore.applyRatingToLessons(applied, parsed.rating, now);
+    this.noteRating(chat_id, parsed.rating, now);
     if (parsed.rating <= LOW_RATING_MAX) this.markLowRating(chat_id, now);
     // Phase W W2: the wiki pages folded into the window's turns absorb the same signal
     // (+0.25 reuse on a good session). Attribution rides the ledger, so this is inert
@@ -1003,6 +1005,7 @@ export class Gateway {
 
     if (resolution.ok) {
       this.recordTelegramAccepted(event, now);
+      if (decision === "denied") recordApprovalDenied(this.runStore, { run_id: resolution.run_id, approval_id: event.approval_id ?? "", chat_id: this.telegramChatId(event), now });
       // A tool approval (omp turn) is being waited on mid-turn: wake the bridge's waiter now.
       const approval_id = event.approval_id ?? "";
       if (this.runStore.getToolApproval(approval_id)) toolApprovalWaiters.resolve(approval_id, decision);
@@ -1151,7 +1154,16 @@ export class Gateway {
   /** Spec §6: a low session rating labels the chat's latest verdict (first correction wins: a tap or think-harder stays). */
   private markLowRating(chat_id: string, now: string): void {
     const v = this.runStore.latestJevVerdictForChat(chat_id, now);
-    if (v && v.paco_correction === null) this.runStore.updateJevVerdict(v.verdict_id, { paco_correction: "low_rating" });
+    if (!v || v.paco_correction !== null) return;
+    this.runStore.updateJevVerdict(v.verdict_id, { paco_correction: "low_rating" });
+    recordCorrection(this.runStore, { about: v, run_id: null, chat_id, now });
+  }
+
+  /** 2b-ii §2: the rating labels the chat's latest planner run (processRatingSignal returns early above 1 and has no run id). */
+  private noteRating(chat_id: string, rating: number, now: string): void {
+    const v = this.runStore.latestJevVerdictForChat(chat_id, now);
+    if (!v) { skipImproveSignal(this.runStore, "rating", "no_run"); return; }
+    recordImproveSignal(this.runStore, { signal: "rating", value: rating, run_id: null, chat_id, about_run_id: v.run_id, created_at: now });
   }
 
   /**

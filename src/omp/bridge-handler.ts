@@ -7,6 +7,7 @@ import type { BudgetLedger } from "../budget/budget-ledger.js";
 import { digestOutput } from "../core/output-digest.js";
 import { READER_INPUT_CHAR_CAP } from "../core/quarantine.js";
 import { decideSync } from "../decisions/decide.js";
+import { recordApprovalExpired } from "../decisions/improve-signals.js";
 import { KEY_MASK, pathOperands, SECRET_MASK } from "../decisions/egress.js";
 import { TOOL_SHELL_NETREAD } from "../decisions/entries/shell-netread.js";
 import { WITHHELD_UNJUDGED_TEXT } from "../decisions/entries/tool-injection.js";
@@ -359,6 +360,7 @@ async function executeWithApproval(deps: BridgeHandlerDeps, turn: ActiveTurn, re
   if (outcome === "approved") return { result: await runner.execute({ ...base, approved_approval_id: first.approval_id, budget_reserved: true }) };
   if (outcome === "denied") return { refusal: { reason: "denied_by_paco", text: APPROVAL_DENIED_TEXT } };
   deps.store.expireToolApproval(first.approval_id, new Date().toISOString());
+  if (outcome === "expired") recordApprovalExpired(deps.store, { run_id: turn.run_id, approval_id: first.approval_id }); // an aborted wait is not Paco's silence
   const trustExpired = outcome === "expired" && policy.pause.pause === "bounded";
   return { refusal: { reason: `approval_${outcome}`, text: trustExpired ? TRUST_ASK_EXPIRED_TEXT : APPROVAL_EXPIRED_TEXT } };
 }

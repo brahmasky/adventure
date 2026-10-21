@@ -24,6 +24,7 @@ describe("tap outcomes", () => {
       effort: "low", cascade: null, save_outcome: "none", route_outcome: "act", reason: "routed", skip_reason: null, quoted_turn_id: null, decision_id: id });
     recordTriageOverride(s, "run_a", "run_b", "555");
     expect(s.listDecisionOutcomes(id).map((o) => `${o.signal}:${o.value}`)).toEqual(["dig_deeper:lookup"]);
+    expect(s.listUnconsumedSignals(5).map((r) => [r.signal, r.value, r.about_run_id])).toEqual([["correction", "lookup", "run_a"]]);
   });
   it("decisionOf finds an entry's row for a run", () => {
     const s = RunStore.openInMemory(); s.insertDecision(D({})); s.insertDecision(D({ entry_id: "turn.gear", verdict: "fast" }));
