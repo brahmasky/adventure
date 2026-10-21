@@ -1,6 +1,6 @@
 # Decision ladder stage 2b-ii: `improve.route` — design
 
-**Status:** Rev 4, 2026-10-21 (Rev 1 + the senior review's probes + codex rounds 1–2, §12). Parent spec: [2026-10-12-decision-ladder-design.md](2026-10-12-decision-ladder-design.md) §7.4 (the
+**Status:** Rev 5, 2026-10-21 (Rev 1 + the senior review's probes + codex rounds 1–3, §12). Parent spec: [2026-10-12-decision-ladder-design.md](2026-10-12-decision-ladder-design.md) §7.4 (the
 entry), §8 (the surface), §13 (stage 2b). Sibling: [2026-10-19-ladder-2b-hooks-settle-design.md](2026-10-19-ladder-2b-hooks-settle-design.md)
 (2b-i, merged 2026-10-21 at `139b501`). ADR 0030 decision 8 ("Improvement as a decision"). Facts below were read at
 `61b8a5e`.
@@ -110,7 +110,7 @@ Two kinds of signal rows feed the tick:
 
 ```
 improve_signals(signal_id INTEGER PRIMARY KEY AUTOINCREMENT, signal TEXT NOT NULL, value TEXT NOT NULL, run_id TEXT, chat_id TEXT,
-  about_run_id TEXT, created_at TEXT NOT NULL, consumed_at TEXT)
+  about_run_id TEXT, source_outcome_id TEXT UNIQUE, created_at TEXT NOT NULL, consumed_at TEXT)
 ```
 
 `value` is checked by `checkOutcomeValue` at insert (the same closed sets; new sets below are a protected edit of
@@ -123,7 +123,7 @@ decision of its group (`source: "code"`), so every signal ends as an outcome row
 | `rating` | **at rating capture** in the gateway (`gateway.ts:372-379`, before `processRatingSignal`, which returns early for ratings above 1 and receives no run id): `about_run_id` = `latestJevVerdictForChat(chat_id, now).run_id`; none → an `improve_signal_skipped` event, no row | the chat's latest planner run | 0–3 (exists) |
 | `approval_denied` | `gateway.handleApproval` after `processApprovalTrigger` resolved `denied` | the run | `CAPABILITY_NAME` = `/^[a-z][a-z0-9_]{0,39}$/` (the tool registry name) |
 | `approval_expired` | `bridge-handler.ts:361` **only when `outcome === "expired"`** (an abort is not Paco's silence) | the run | same |
-| `planner_failed` | **inside `RunStore.finishRun`** when `next === "failed"` and the run's `source` is `telegram`: the store inserts the inbox row in the same statement batch as the `run_failed` ledger event, so every failure path (`ompFail`, `recoverPlannerLeases`, `failStrandedTurns`, `refuseOmpTurn` at `core-worker.ts:2343`, any later one) is covered without a seam list (codex F4, round 2) | the run | `PLANNER_FAILED_VALUES` = the `error_type` strings `finishRun` is called with: the `PlannerFailure` union plus `model_error`, `killed` (P1: 30 days show `planner_exit`, `merged_parent_failed`, `model_error`, `killed`); unknown → `other`; pinned by a test that greps every `finishRun({next: "failed"` call's literal |
+| `planner_failed` | **inside `RunStore.finishRun`** when `next === "failed"`, the run's `source` is `telegram`, and the run is a **planner run** (`worker_id LIKE 'planner:%'`, the discriminator lease recovery already uses at `run-store.ts:2293,2325`; codex round 3 N3): the store inserts the inbox row in the same statement batch as the `run_failed` ledger event, so every failure path (`ompFail`, `recoverPlannerLeases`, `failStrandedTurns`, `refuseOmpTurn` at `core-worker.ts:2343`, any later one) is covered without a seam list (codex F4, round 2) | the run | `PLANNER_FAILED_VALUES` = the `error_type` strings `finishRun` is called with: the `PlannerFailure` union plus `model_error`, `killed` (P1: 30 days show `planner_exit`, `merged_parent_failed`, `model_error`, `killed`); unknown → `other`; pinned by a test that greps every `finishRun({next: "failed"` call's literal |
 | `recurrence` | the tick (§3.3) | the cluster's newest run | 1–10 000 (exists) |
 | `abandoned` | the tick (§3.4) | A's run | `DIG_DEEPER_VALUES` (lanes; exists as a list) |
 | `review_unsure` | none (the digest no longer offers ✅/❌; R1) | — | entry id (exists) |
@@ -152,11 +152,15 @@ improve_ticks(local_date TEXT PRIMARY KEY, started_at, finished_at, result TEXT 
 improve_cursor(id INTEGER PRIMARY KEY CHECK(id = 1), outcome_created_at TEXT NOT NULL, outcome_rowid INTEGER NOT NULL)
 ```
 
-**The inbox is the tick's only input** (codex round 2 N1). Step 1, the *mirror*: one transaction copies every
-`decision_outcomes` row after the outcome cursor `(created_at, rowid)` (P7: `outcome_id` is `do_<uuid v4>`, random,
-not a cursor) into `improve_signals` (`source_outcome_id` set; rows on `improve.route`'s own decisions and on
-schedule-born runs other than `approval_expired` are skipped) and advances the cursor past the last row read. The
-mirror reads rows in order and groups nothing, so the cursor never passes an unread row. Step 2 works on inbox rows
+**The inbox is the tick's only input** (codex round 2 N1). Step 1, the *mirror*: one transaction copies the
+`decision_outcomes` rows after the outcome cursor `(created_at, rowid)` (P7: `outcome_id` is `do_<uuid v4>`, random,
+not a cursor) into `improve_signals` with `source_outcome_id = outcome_id` (UNIQUE, so a re-run after a crash between
+the inserts and the cursor update is idempotent: `INSERT OR IGNORE`), and advances the cursor past the last row read.
+**Mirror filter** = the "never a signal" rule in full (codex round 3 N1): skipped are rows on `improve.route`'s own
+decisions, rows of schedule-born runs other than `approval_expired` (R11), and rows whose `signal` is not one the
+entry consumes (none today: every `DecisionSignal` is consumed, §4.4). The other never-signal sources (the jobs' LLM
+calls, the digest's delivery) write no outcome rows at all, so nothing reaches the mirror from them. The mirror reads
+rows in order and groups nothing, so the cursor never passes an unread row. Step 2 works on inbox rows
 with `consumed_at IS NULL` (the oldest 500 per tick), grouped (§3.2); **a deferred group's rows stay unconsumed** and
 are read again tomorrow (durable retry); a row unconsumed for 30 days is consumed as `nothing` / `stale`. **Commit
 boundary** (codex D3): model calls (Jev, Tiny, distill) run outside any transaction; then **one transaction per group**
@@ -298,8 +302,9 @@ Tiny pick (a test asserts the question's option list and the pick parser both ex
 
 ### 4.4 Recording and outcomes
 
-`outcomes: ["recurrence", "abandoned", "review_ok", "review_bad", "review_unsure", "lesson_undone"]`. The tick writes
-the `recurrence` / `abandoned` rows on the entry's own decision (§2). `JEV_PAGED_ELSEWHERE` does not include it: a Jev
+`outcomes` = **every `DecisionSignal`** (`DECISION_SIGNALS`, `types.ts:20`): the entry is the sink of all signals, and
+the tick writes one outcome row per consumed inbox row on its own decision (§2, §3.1), whatever the signal; a registry
+test pins the list equal to `DECISION_SIGNALS` (codex round 3 N2). `JEV_PAGED_ELSEWHERE` does not include it: a Jev
 failure counts toward `decision_fallback:improve.route` as usual (three in an hour page; a tick makes at most 40 calls,
 so a dead Jev pages once per tick day and the tick continues on `fail`).
 
@@ -310,8 +315,10 @@ so a dead Jev pages once per tick day and the tick continues on `fail`).
 ```
 improvement_proposals(proposal_id TEXT PK, decision_id TEXT NOT NULL REFERENCES decisions, target TEXT CHECK(lesson|fact|skill|schedule|knowledge|tool_gap|ladder),
   scope TEXT, draft_json TEXT NOT NULL, evidence TEXT NOT NULL, state TEXT CHECK(open|accepted|reverted|dismissed|expired) DEFAULT 'open',
-  created_at, offered_at, resolved_at, paco_callback_id TEXT UNIQUE)
+  created_at, offered_at, resolved_at)
 ```
+
+(no callback column: taps live in `improvement_taps`, below; codex round 3 N4)
 
 `draft_json` holds what the handler needs, code-built: lesson `{scope, text, avoid?}`; fact `{text, evidence: {line,
 quote}, source_turn_ids}`; skill `{origin: {turn_ids, category}}`; schedule `{schedule_id, before: {spec_json, tz,
@@ -355,9 +362,11 @@ it, idempotent on `proposal_id`).
 ```
 improvement_jobs(job_id TEXT PK, kind TEXT CHECK(skill_author), decision_id TEXT NOT NULL, proposal_id TEXT, origin_json TEXT NOT NULL,
   idempotency_key TEXT NOT NULL UNIQUE, attempt INTEGER NOT NULL DEFAULT 0,
-  state TEXT CHECK(queued|running|pending_review|suggested|promoting|promoted|dismissed|failed), result_code TEXT, gate_a TEXT,
-  pending_scope TEXT, pending_name TEXT, created_at, started_at, finished_at, offered_at, resolved_at, paco_callback_id TEXT UNIQUE)
+  state TEXT CHECK(queued|running|pending_review|suggested|collision|promoting|promoted|dismissed|failed), result_code TEXT, gate_a TEXT,
+  pending_scope TEXT, pending_name TEXT, promote_mode TEXT, created_at, started_at, finished_at, offered_at, resolved_at)
 ```
+
+(no callback column: taps live in `improvement_taps`, §5.1)
 
 `origin_json` = `{turn_ids, run_ids, category, text_hashes}`; the texts are re-read from `chat_turns` when the job runs
 (never stored twice). **No runs row** (parent §7.4: an expired lease would dispatch it as a turn). `startSkillJob(origin)`
@@ -366,15 +375,18 @@ inserts `queued`; `runQueuedJob(job)` sets `running` with `attempt + 1` and call
 60 000, run: () => authorPendingSkill(job, attempt), onTimeout, onError, deliver})`; `false` (lane busy) → back to
 `queued` / `lane_busy`, retried next tick (a `queued` job older than 3 days → `failed` / `lane_busy`).
 
-**Restart, fencing and delivery** (codex D5, round 2 N2). The lane calls `deliver` exactly once, with whichever of
-`run()`'s result, `onTimeout()`'s or `onError()`'s comes first (`evolution-lane.ts:84`). Each of the three ends with
-**one fenced transition** `UPDATE improvement_jobs SET state = ?, … WHERE job_id = ? AND state = 'running' AND attempt = ?`:
-`run()` → `pending_review` or `suggested` (after `writePending`, which itself runs only after a read that the fence
-still holds); `onTimeout()` → `failed` / `timeout`; `onError()` → `failed` / `<error code>`. The transition that
-updates one row is the one whose card is delivered; a transition that updates zero rows (the other side won) returns a
-no-op outcome and the lane's deliver-once guard drops it. A late `run()` after a timeout therefore writes no state, no
-file (its pre-write check fails), and no card; a `_pending` file written just before the timeout fence moved is
-orphaned and swept by `reconcileJobs` (a pending file with no `pending_review` job → `_retired`). At boot,
+**Restart, fencing and delivery** (codex D5, round 2 N2, round 3 N2). The lane resolves by `Promise.race` and calls
+`deliver` exactly once with the race winner (`evolution-lane.ts:84,101`); a `run()` that committed its success and
+then lost the race to the timeout would have its card dropped. So **the card is never delivered through the lane**:
+each of the three endings is **one fenced transaction** `UPDATE improvement_jobs SET state = ?, … WHERE job_id = ? AND
+state = 'running' AND attempt = ?` that, when it updates one row, **also enqueues that ending's card and sets
+`offered_at`** in the same transaction (`run()` → `pending_review` or `suggested`, after `writePending`, which itself
+runs only after a read that the fence still holds; `onTimeout()` → `failed` / `timeout`; `onError()` → `failed` /
+`<error code>`). A transition that updates zero rows (the other ending won) enqueues nothing. All three return a no-op
+outcome to the lane, and `deliver` is a no-op (`text: ""` is skipped). A late `run()` after a timeout therefore writes
+no state, no file (its pre-write check fails), and no card; a `_pending` file written just before the timeout fence
+moved is orphaned and swept by `reconcileJobs` (a pending file with no `pending_review` or `collision` job →
+`_retired`). At boot,
 `reconcileJobs` marks every `running` job `failed` / `daemon_restart` (the lane is an in-memory singleton; nothing
 survives a restart) and enqueues the failed card; the cluster may author again only through a new job (same 30-day
 turn-overlap rule, §3.3). `deliver` enqueues the card through `enqueueNotification` with `idempotency_key:
@@ -402,13 +414,17 @@ rule; codex D9). Every transition writes a ledger event `improvement_job{job_id,
 
 **Promotion protocol** (one protocol, the parent's copy → rebuild → unlink; codex D7). `SkillStore.promotePending(scope,
 name, o: {onCollision: "refuse" | "replace" | "keep_both", now})`: (1) read the pending file; (2) collision check on the
-active tree: `refuse` → `{ok: false, error: "collision"}` and the card re-offers [Replace] [Keep both] (`dec:sk:<job>:
-replace|keep`), `replace` → `retireSkill(scope, name, {date: now, by: "paco", supersededBy: name})` first (codex F6),
-`keep_both` → the new name gets a `-2` suffix; (3) write the active copy (`writeSkill`, which regenerates the
-registry); (4) unlink the pending copy; (5) the caller marks `promoted`. State `promoting` is set before (3); a crash
-leaves `promoting`, which the next tick retries from (1): an identical active copy counts as (3) done, a missing
-pending copy counts as (4) done. `dismissPending(scope, name)` moves the draft to `_retired`. Both taps are one-shot
-("Already handled.").
+active tree: `refuse` → `{ok: false, error: "collision"}`, `replace` → `retireSkill(scope, name, {date: now, by:
+"paco", supersededBy: name})` first (codex F6), `keep_both` → the new name gets a `-2` suffix; (3) write the active copy
+(`writeSkill`, which regenerates the registry); (4) unlink the pending copy; (5) the caller marks `promoted`.
+**Job flow** (codex round 3 N4): Accept acts on `pending_review` → `promoting` (`promote_mode = refuse`); a collision
+moves the job to **`collision`** and enqueues the card [Replace] [Keep both] [Dismiss] (`dec:sk:<job>:replace|keep|
+dismiss`, `offered_at` reset in that transaction); `replace` / `keep` act only on `collision` → `promoting` with
+`promote_mode` set, then (1)–(5) again. `promoting` is set before (3); a crash leaves `promoting` with its
+`promote_mode`, which the next tick retries from (1): an identical active copy counts as (3) done, a missing pending
+copy counts as (4) done. `dismissPending(scope, name)` (Dismiss on `pending_review` or `collision`) moves the draft to
+`_retired`, state `dismissed`. Every tap is one tap row (§5.1) and acts only on the state named for it; any other state
+answers "Already handled.".
 
 ### 5.3 Lesson and fact
 
@@ -661,3 +677,14 @@ outside the digest transaction → `offered_at` set in it after the enqueue repo
 redactor option and an undefined `codeShapes` → `brokerRedact`, and the rule defined with its tests (§7); D15/N3 masked
 runner-up could not clear the bar → an inapplicable top abstains with `inapplicable_top`, `p` is the top option's
 probability (§4.3).
+
+### Round 3, codex scoped verification (2026-10-21, over Rev 4 at `91860be`; Rev 4 → Rev 5)
+
+Closed 4 of 7 (F4, D9, D10, D15). Fixed in Rev 5: D3/N1 the inbox lacked `source_outcome_id` → column, UNIQUE,
+`INSERT OR IGNORE` mirror, the filter spelled out (§2, §3.1); D5/N2 `Promise.race` could drop a committed success's
+card → every ending enqueues its own card inside its fenced transaction, the lane's `deliver` is a no-op (§5.2);
+D8/N4 callback columns kept in both tables → removed, taps only in `improvement_taps`; N2 §4.4's outcome list omitted
+consumed signals → every `DecisionSignal`, pinned; N3 `source = telegram` is origin not ownership → `worker_id LIKE
+'planner:%'` (§2); N4 collision taps after Accept → `collision` state and `promote_mode`, each tap on its named state
+(§5.2). Round 3 note on D9: the offer uses the queue's inserted status, never `duplicate` (the current helper treats
+`duplicate` as sent): carried into §6.1's wording "reported the row inserted".
