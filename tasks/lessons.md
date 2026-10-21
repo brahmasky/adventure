@@ -527,3 +527,11 @@ Rules Claude writes for itself after corrections. Review at session start.
   rule that depends on a tool's output shape accepts the shape by class (any non-letter prefix), not by the form seen
   once, and code pages when a read arrives in a shape nobody tested; rerun the masked-read gate case after every omp
   upgrade (`live-gate-ladder-2b-hooks.mjs --only 9` from a built worktree).
+
+## Decision ladder 2b-ii (2026-10-22)
+
+- **A sanity run's planted miss can be a design gap, not model variance.** The planted `review_bad` x3 case came back as a
+  lesson at p 0.93 from Jev; the instinct was to tune the wording or the bar. The mapping (a ❌ on a decision is a verdict
+  about the decider) was deterministic all along, so it belonged in the rule rung (ADR 0013). Rule: before tuning a model
+  for a planted miss, ask whether the right answer is a pure function of the input; if so, write it as code and take the
+  option out of the model's list.

@@ -467,3 +467,58 @@ regression; bracket it before touching code (`tasks/lessons.md`).
 **Revisit when added:** the share of real replies sent back exceeds 10 % over 14 days. Golden drift on `turn.settle`
 pages `decision_golden_drift:turn.settle` and does not disarm (R13). A calibrated row may replace the provisional bars
 when Paco commits one.
+
+## Amendment (2026-10-22): stage 2b-ii, `improve.route` (drafted for Paco's sign-off)
+
+Spec: [2026-10-21-ladder-2b-ii-improve-route-design.md](../superpowers/specs/2026-10-21-ladder-2b-ii-improve-route-design.md) (Rev 7);
+plan: [2026-10-21-ladder-2b-ii-improve-route.md](../superpowers/plans/2026-10-21-ladder-2b-ii-improve-route.md). Decision 8 ("improvement as a decision") is unchanged; this is its first entry.
+
+- **One inbox, one daily tick.** Producers write `improve_signals` rows (corrections from the memory lane's fix, the
+  ask-anyway tap, an escalation and a low rating; the rating itself; approval denials and expiries; planner failures
+  beside every `run_failed` write); existing `decision_outcomes` rows are mirrored into it behind a `(created_at, rowid)`
+  cursor. The tick runs once per local date at the digest's time (also while the digest is `off`), before the digest,
+  groups rows by (signal, scope), and commits one transaction per group: the decision row, one outcome row per inbox row,
+  the proposal or the queued job, `consumed_at`. A failing group is isolated: it counts `record_failed`, its signals stay
+  unconsumed and the tick continues. A pass has a 120 s budget per cycle and resumes on the next cycle; deferred groups stay
+  unconsumed. While a pass runs, the daemon's loop (Telegram polling, outbox) waits. Rulings R1–R11 of the spec stand;
+  plan rulings 1–16.
+- **The entry.** Stage `after_turn`, mixed input, fail-open on `nothing`, every signal an outcome. Rule rungs: stale,
+  stated rule owned by `memory.kind` (R3), recurrence → the skill-authoring job (lookup categories → knowledge, recorded
+  only while the wiki is disarmed, R5), expiry pattern → a schedule proposal, no text, and `review_bad`: on an unlocked
+  entry → `ladder` / `review_bad` (the draft moves `retire_judge` at ≥ 3 in 14 days, else `lower_bar`), on a locked entry
+  → `nothing` / `locked_entry`. `ladder` is applicable only to `review_bad` groups, so Jev never chooses it: a ❌ is a
+  verdict about the decider, a deterministic mapping (ADR 0013). The sanity run planted this case first and Jev read the
+  text as a behaviour rule (a lesson at p 0.93); the miss was a design gap, not variance. Jev: one fixed choice question
+  `improve_target` (escape first, the applicable targets in the state, masking after the answer), provisional bar 0.6
+  (R8; the sanity run's suggestion: 0.67, from `jev_choice` wins only). Tiny: one word among the top two. `noDirectEffect`
+  admits proposal effects (plan ruling 2): a judge that can only propose carries a provisional bar on a fail-open entry.
+- **The only automatic effect** is the `_pending` skill draft after a recurrence (≥ 3 turns of one category at cosine ≥
+  `HOUGE_RECURRENCE_COSINE_GATE`, default 0.6, in 14 days; once per root turn). The job is a row on the evolution lane,
+  never a run. At most one job starts per daily tick (a busy evolution lane starts none); up to 3 queue per day; a queued
+  job expires after 3 days. Each ending is one fenced transition that enqueues its own card; a restart fails running jobs;
+  Paco promotes by tap under one protocol (refuse / replace with lineage / keep both).
+- **Proposals** (lesson, fact, schedule, tool gap, ladder) are taps on the digest, one open per (target, scope), expiring
+  at 14 days; Accept of a lesson or fact writes through the memory lane's own store writers with Undo (R9, ruling 8).
+  Schedule Accept applies only while the row still equals `before` (spec and zone) and Revert restores; both recompute
+  `next_run_at` at tap time, because the drafted values can be 28 days old and a past slot fires at once. A skill Accept
+  whose job already exists dismisses the proposal with "A job for this already exists; nothing new queued." A ladder Accept
+  records a `ladder_moves` row and changes nothing by itself (R6); a tool gap replies the `self_write_propose` text (R7).
+- **The digest** has three sections only: Improvements today, Proposals waiting, Watch. It is scoped to its chat
+  (proposals and jobs whose `chat_id` equals the digest chat). Watch also carries `ticks failed N · stopped N · record
+  failed N` when any is non-zero, and a day with only that still sends: a failing tick must reach Paco. The unsure list,
+  counts, trust/noise, bar-stale and Health sections left it (incidents page on their own). `/status` keeps the counts and
+  gains the `turn.settle` health line and per-entry Jev-skip counts (24 h), so the pull surface holds what the digest lost.
+- **Known gap.** The digest no longer offers the ✅ / ❌ review taps, so no new `review_bad` signals are produced until a
+  review surface returns. The `ladder` target is fed only by historical `review_bad` rows.
+- **Egress.** Everything improvement-side reads Paco's own words through `redactForImprove` (broker values, link tokens,
+  and the new `codeShapes` rule: a standalone 6–8 digit run or a code after a code word). Tool text never leaves except a
+  clean turn's reply as the distill's reference.
+- **Evidence.** The pre-merge sanity run (`scripts/improve-sanity.mjs`, a 30-day copy, real Jev): PASS, planted 10/10, the
+  real window 7 groups, about 0.13 proposals a day, suggested bar 0.67. `IMPROVE_BAR_P` stays the provisional 0.6 until
+  Paco signs off. Live gate `scripts/live-gate-improve-route.mjs` on a copy with live Jev and real seats: cases 1–9 PASS;
+  case 10 (the memory-write gate is unchanged): PENDING.
+- **Deferred:** the wiki handler (R5), model-route proposals (R10), `lesson_unfollowed` (R4), `trust_source` moves
+  (ruling 9). **Revisit:** 14 days of rows for the bar and the gate (§11).
+- **Protected files touched:** `src/decisions/` (outcomes, entry-ids, registry, egress, digest, status-view,
+  improve-signals, entries/improve-route), `src/omp/bridge-handler.ts`, `src/jev/decide.ts`, `src/run/run-store.ts`,
+  `src/run/run-ledger.ts`, this ADR and its index row. `src/gateway/` and `src/core/skill-job.ts` are not protected.

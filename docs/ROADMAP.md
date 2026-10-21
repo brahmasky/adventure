@@ -268,6 +268,19 @@ settle health and the digest). Live gate on real Jev and omp 18.12.3: PASS 14/14
 amendment drafted for Paco's hand. Merge, `dist/` rebuild and kickstart are Paco's and pending. **Next: 2b-ii** (`improve.route`, improvement routed from outcomes). Open question for its spec: its proposal
 surface, since the daily decision digest has been off since 2026-10-14 (`HOUGE_DECISION_DIGEST_AT=off`).
 
+**Decision ladder, stage 2b-ii (built 2026-10-22, on branch `feat/ladder-2b-ii`, not merged).** `improve.route`: one inbox of
+improvement signals (corrections, ratings, denials and expiries, planner failures, recurrence) and one daily tick that runs
+at the digest's time, also while the digest is `off`. A code rule rung decides first (stale, a stated rule already saved,
+recurrence, expiry pattern, `review_bad` as a ladder proposal); then Jev's one `improve_target` question (provisional bar
+0.6; the sanity run suggests 0.67); then a Tiny pick. The only automatic effect is a `_pending` skill draft after a
+recurrence (one job starts per tick, up to 3 queue a day); everything else is a proposal, a tap on the digest, with Undo
+or Revert for lessons, facts and schedules. The digest is now three sections: improvements, proposals waiting, a watch
+line. Pre-merge sanity PASS (planted 10/10, real window 7 groups, about 0.13 proposals a day); live gate cases 1-9 PASS.
+**Known gap:** the digest no longer offers the review taps, so no new `review_bad` signals are produced until a review
+surface returns. **Deferred:** the wiki handler (R5), model-route proposals (R10), `lesson_unfollowed` (R4). ADR 0030
+amendment drafted for Paco's hand. Merge, `dist/` rebuild, kickstart, the digest time and the bar sign-off are Paco's.
+**Next: stage 3** (migrate the remaining families onto the registry).
+
 **SP4 scope change (2026-10-04).** The lifecycle-gap research
 (`docs/superpowers/research/2026-10-04-lifecycle-gap/00-synthesis.md`) found five lifecycle stages forbidden only
 because no safe version was designed (decide, spec, spec review, plan, live gate), most of the needed harness already

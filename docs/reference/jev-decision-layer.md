@@ -74,8 +74,8 @@ compare every persisted column with the pre-ladder build.
 
 When a handler falls back after the ladder decided (a lane that falls through to the planner, a card that fails to render), the `decisions` row keeps the ladder's verdict: it records what the ladder decided, not what the handler then did. The `jev_verdicts` row (`handler`, e.g. `fallthrough:<why>`) carries the handler's outcome.
 
-The daily decision digest (`HOUGE_DECISION_DIGEST_AT`, default 21:00) arrives in the operator chat with ✅ / ❌ review taps
-on the unsure verdicts; a tap writes one `review_ok` / `review_bad` label and nothing else
+The daily decision digest (`HOUGE_DECISION_DIGEST_AT`, default 21:00) arrives in the operator chat: improvements today,
+proposals waiting for a tap, and a watch line. Since 2b-ii it offers no ✅ / ❌ review taps
 ([configuration.md](configuration.md#decision-ladder-adr-0030)).
 
 ## Noise band and tap labels
@@ -259,6 +259,25 @@ and the settle detail are in [ADR 0030](../decisions/0030-decision-ladder.md)'s 
 errored pass 0 is never sent back) joins `budget` and `todo_unavailable` in the settle health count and the digest's Health
 line. The reply is redacted through the one redactor, including the turn's code-extracted codes and links, before Jev sees
 it; the after-delivery audit judges the text Paco received, not the last pass alone.
+
+## The improvement point (`improve.route`, 2b-ii)
+
+Built on `feat/ladder-2b-ii` (live after Paco's merge and kickstart). `improve.route` runs once a day inside the improvement
+tick, not in a turn. Signals (corrections, ratings, denials and expiries, planner failures, recurrence) are grouped by
+(signal, scope); each group is one decision, recorded `after_turn`, mixed input, fail value `nothing`.
+
+- **Rule rung first.** Stale; a stated rule `memory.kind` already saved; a recurrence (skill job, or `knowledge` while the
+  wiki is disarmed); an expiry pattern (schedule proposal); `review_bad` (unlocked entry: `ladder`; locked: `nothing` /
+  `locked_entry`); an empty text (`no_text`). `ladder` is listed as applicable only to `review_bad` groups, so Jev never
+  chooses it.
+- **Jev.** One fixed choice question `improve_target` (decision point `improve`, audit role `improve`, 1.5 s, no re-ask).
+  The options are always the same, escape (`nothing`) first; the state carries the `applicable` list, and a top pick
+  outside it records `nothing` / `inapplicable_top` after the answer. Provisional bar 0.6. It reads only Paco's redacted words
+  (`redactForImprove`), never tool text.
+- **Tiny pick** (audit role `improve_pick`) chooses among Jev's two best applicable options when the top is applicable but
+  under the bar. Its answer records `tiny_pick`; a failed pick records `nothing` / `below_bar`.
+- **Effects.** The only automatic one is the `_pending` skill draft. Everything else is a proposal: a tap on the digest,
+  nothing applied before Accept.
 
 ## Arming
 

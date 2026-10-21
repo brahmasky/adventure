@@ -255,7 +255,7 @@ type ImproveTarget = "nothing" | "lesson" | "fact" | "skill" | "schedule" | "kno
 
 Verdicts = `ImproveTarget`. Reason codes: `stated_rule_owned`, `recurrence`, `recurrence_lookup`, `already_authored`,
 `skill_exists`, `expiry_pattern`, `deferred_rate`, `wiki_disarmed`, `jev_choice`, `tiny_pick`, `below_bar`,
-`no_text`, `lane_busy`.
+`no_text`, `lane_busy`, `review_bad`, `locked_entry`.
 
 ### 4.3 Rungs
 
@@ -270,6 +270,9 @@ Verdicts = `ImproveTarget`. Reason codes: `stated_rule_owned`, `recurrence`, `re
    - `approval_expired` with `scheduleHint` (two expiries of the same capability in schedule-born runs at the same local
      hour within 14 days; the schedule is the run's `scheduled_tasks` row) → `schedule` / `expiry_pattern` → proposal
      (§5.5).
+   - `review_bad` (a ❌ on a decision): on an unlocked entry → `ladder` / `review_bad` (the draft moves `retire_judge` at
+     ≥ 3 in 14 days, else `lower_bar`); on a locked entry → `nothing` / `locked_entry`. `ladder` is applicable only to
+     `review_bad` groups, so Jev never chooses it: a ❌ is a verdict about the decider, a deterministic mapping (ADR 0013).
    - a group with empty `pacoText` and no recurrence (e.g. `planner_failed` on a turn whose text was pruned) → `nothing`
      / `no_text`: Jev has nothing to read.
    - otherwise abstain.

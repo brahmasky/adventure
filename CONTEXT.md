@@ -74,6 +74,10 @@ This file defines domain language for Houge architecture reviews and implementat
 
 **Ladder move**: A recorded change of who decides an entry (`ladder_moves`), such as a standing approval moving a fingerprint from Paco's tap to a code rule. Only code may make one on its own (standing approvals, skill authoring after recurrence, stated-rule lessons); every loosening is a proposal for Paco's tap; locked entries never move.
 
+**Proposal**: A change Houge drafts from an improvement signal and offers as a tap on the daily digest (lesson, fact, schedule, tool gap or ladder move). One open per (target, scope); it expires after 14 days; nothing is applied until Paco's Accept, and a lesson, fact or schedule Accept can be undone.
+
+**Improvement job**: The one automatic effect of `improve.route`: a skill-authoring job queued after a recurrence (the same kind of request three times in 14 days). It runs on the evolution lane, never as a run, and writes a draft to `_pending` for Paco to promote.
+
 **Trust level**: Clean, untrusted or hostile: what a turn has read so far (`turn.trust`, locked code). It only rises, and it only adds taps.
 
 **Hostile turn**: A turn in which `tool.injection` withheld a passage, withheld an outside passage unjudged, or lost its judgement on outside text (framed as not checked); or a turn whose planner transcript carries a hostile level. Shell commands off the read-only list and all writes ask.

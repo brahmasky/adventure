@@ -1695,3 +1695,18 @@ copies, parity fixtures), and the bridge pages `omp_read_format_drift` once per 
 text shape the mask was not tested against (`add37d7`, `src/omp/read-format.ts`); the contract probe keeps its no-tools
 child. The fetch probe on omp 18.12.3 confirmed `fetch.enabled: false` (`URL reads are disabled by settings.`, an error
 result) and that `rowPrefixes` is on only when `edit` is among the tools. Suite 351 files / 4933 tests, 0 skipped.
+
+## 2026-10-21 to 2026-10-22: decision ladder stage 2b-ii (`improve.route`), on `feat/ladder-2b-ii`
+
+Built the improvement point: one inbox (`improve_signals`) fed by corrections, ratings, denials and expiries, planner
+failures and recurrence; one daily tick at the digest's time that decides each group through a code rule rung, Jev's
+`improve_target` question (provisional bar 0.6) and a Tiny pick; proposals as digest taps (lesson, fact, schedule, tool gap,
+ladder); the only automatic effect a `_pending` skill draft after a recurrence, run as a row on the evolution lane. The
+digest shrank to three sections and `/status` took over the counts. The pre-merge sanity run planted `review_bad` and Jev
+read it as a behaviour rule (a lesson at p 0.93), so the mapping moved into the rule rung: that was a design gap, not
+model variance. After the fix: sanity PASS, planted 10/10, real window 7 groups, about 0.13 proposals a day, suggested bar
+0.67 (from `jev_choice` wins only; `IMPROVE_BAR_P` stays 0.6 until Paco signs off). Live gate on a copy with live Jev and real
+seats: cases 1–9 PASS; case 10: PENDING. Suite 372 files / 5086 tests, typecheck and build clean. Review rounds found, among
+others, a quadratic code-word regex (17 s on 64k spaces), a tick that latched failed on one bad group, and a digest that
+leaked cards across chats; all fixed in-branch. Known gap: the digest offers no review taps, so no new `review_bad`
+signals until a review surface returns. Still Paco's: sign-off, merge, `dist/` rebuild, kickstart, the digest time.

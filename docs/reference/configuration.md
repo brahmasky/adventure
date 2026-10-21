@@ -1060,7 +1060,8 @@ and `turn.gear` (the role on the route, recorded from the same Jev call). Refere
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `HOUGE_DECISION_DIGEST_AT` | `21:00` | Local time (`HH:MM`, in `HOUGE_DISPLAY_TZ`) of the daily decision digest to the operator chat, or `off` (any case) for no digest: the tick sends nothing and writes no latch row, while decisions and outcomes are recorded as before and the `decision_fallback` page and incidents are unaffected (`/status` still shows the 24 h counts; `/status decisions` the last 10 rows). Any other malformed value → the default. Sent once per local date on the first poll at or after the time; a day with no decisions and no health failures sends nothing (the latch row still records the date); a day with only health failures sends a Health-only digest. |
+| `HOUGE_DECISION_DIGEST_AT` | `21:00` | Local time (`HH:MM`, in `HOUGE_DISPLAY_TZ`) of the daily decision digest to the operator chat, or `off` (any case) for no digest: the tick sends nothing and writes no latch row, while decisions and outcomes are recorded as before and the `decision_fallback` page and incidents are unaffected (`/status` still shows the 24 h counts; `/status decisions` the last 10 rows). Any other malformed value → the default. Sent once per local date on the first poll at or after the time; a day with nothing to say sends nothing (the latch row still records the date). **Moving the digest moves the improvement tick**: the tick runs at this time, before the digest, and also when the digest is `off`. While a pass runs, the daemon's loop (Telegram polling, the outbox) waits; a pass has a 120 s budget per cycle and resumes on the next one. |
+| `HOUGE_RECURRENCE_COSINE_GATE` | `0.6` | Cosine similarity at or above which two of Paco's turns in one category count as the same request, for the recurrence that queues a skill-authoring job (3 turns, 14 days, category not `other` / `status` / `memory`, text of 20+ characters). Deliberately above the episodic gate 0.42: on the last 14 days (P2) 0.42 clustered 15 short `other` turns, 0.5 gave four clusters, 0.6 one. A float from 0 to 1; anything else uses the default. Read per tick. |
 | `HOUGE_TRUST_ASK_TTL_MS` | `300000` (5 min) | How long a trust card (an approval asked only because the turn read outside content, spec §7.2) waits for Paco, and the most a turn's trust cards together may pause its deadline and frame watchdog. A positive integer up to 1 800 000; anything else uses the default. Read per call; no restart needed. |
 
 The injection judge, turn trust, the golden set and the noise band have no switch (R13). The noise band has no variable: its values are reviewed rows in `src/decisions/noise-band.ts`.
@@ -1072,16 +1073,24 @@ proves the previous build runs on a migrated DB (run by each stage's final task)
 the outbox is sent without its buttons (the old adapter ignores `button_rows`), and a tap on an earlier digest is answered
 as unrecognised callback data; neither writes anything.
 
-**The digest** (one Telegram message, rich-rendered): up to 8 **unsure** verdicts (an applied Jev decision whose
-probability is within 0.15 of its entry's bar; `turn.handler`'s bar is the choice bar 0.6), each with ✅ / ❌ buttons
-(`dec:rv:<decision_id>:<ok|bad>`); **counts** per entry by deciding rung in the last 24 h; **health** per entry (Jev skips —
-failures on the Jev rung, budget excluded — fallbacks, and rows in the configured triage shadow when there are any;
-health counts applied rungs only, so in configured shadow a Jev failure shows in the triage `jev_skip_rate`, not here). A
-front-door row counts only when its turn's verdict links it. For front-door entries a line quotes the first 40
-characters of Paco's own message; no tool text ever. A tap passes the sender allowlist, writes one `decision_outcomes`
-row (`review_ok` / `review_bad`, value = the entry id) and replies; a second tap, an unknown id, or one no digest offered in
-the last 7 days answers "Already handled." and writes nothing. Review taps are exempt from the 5-commands-a-minute limit
-and do not count toward it.
+**The digest** (one Telegram message, rich-rendered, scoped to the digest's chat) has three sections since 2b-ii:
+**Improvements today** (what the tick did: lessons and facts saved with Undo, skill jobs and their endings),
+**Proposals waiting** (taps: lesson, fact, schedule, tool gap, ladder; one open per target and scope, expiring at 14 days)
+and **Watch** (signal groups the ladder left alone, plus `ticks failed N · stopped N · record failed N` when any is
+non-zero; a day with only that still sends). It offers no ✅ / ❌ review taps, so no new `review_bad` signals are produced
+until a review surface returns. The counts and the health lines moved to `/status` (the 24 h counts per entry, the
+`turn.settle` health line and the per-entry Jev-skip counts). A front-door row counts only when its turn's verdict links it.
+No tool text ever reaches the digest; improvement-side text is Paco's own words through `redactForImprove`.
+
+**The improvement tick** (`improve.route`, 2b-ii) runs once per local date at `HOUGE_DECISION_DIGEST_AT`, before the digest
+and also when the digest is `off`. It reads the inbox, mirrors new `decision_outcomes` rows into it, groups, decides and
+commits one transaction per group. A failing group is isolated (counted `record_failed`, its signals stay unconsumed). At
+most one skill-authoring job starts per tick, up to 3 queue per day, a queued job expires after 3 days. Audit roles:
+`improve` (Jev's `improve_target`) and `improve_pick` (the Tiny pick). Ledger events: `improve_tick` (one per pass, with
+its counts), `improvement_job` (each job transition), `improve_signal_skipped` (a producer that could not write an inbox
+row). A tap on a proposal or job card arrives as the `improvement_tap` task event. Tables (additive): `improve_signals`, `improve_ticks`,
+`improve_cursor`, `turn_embeddings`, `improvement_proposals`, `improvement_jobs`, `improvement_taps`. The bar for
+`improve_target` is code (`IMPROVE_BAR_P`, provisional 0.6); there is no env override.
 
 **Tables** (migration `2026-10-12-decision-ladder`, additive): `decisions` (one row per decision that matters:
 `decision_id`, `entry_id`, `entry_version`, `run_id`, `tool_call_id`, `stage`, `rung` (`rule` \| `system_one` \| `model` \|

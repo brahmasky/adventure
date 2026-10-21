@@ -158,7 +158,7 @@ follows [2026-10-20-ladder-2b-hooks-settle.md](2026-10-20-ladder-2b-hooks-settle
   question, Jev rung timeout `IMPROVE_JEV_MS + 500` (`IMPROVE_JEV_MS = 1_500`), model rung role `tiny`, timeout
   `IMPROVE_TINY_MS = 8_000`. `outcomes` = every `DecisionSignal`. Reason codes exactly: `stale`, `stated_rule_owned`,
   `recurrence`, `recurrence_lookup`, `already_authored`, `skill_exists`, `expiry_pattern`, `deferred_rate`,
-  `wiki_disarmed`, `jev_choice`, `tiny_pick`, `below_bar`, `no_text`, `lane_busy`, `inapplicable_top`, `already_proposed`.
+  `wiki_disarmed`, `jev_choice`, `tiny_pick`, `below_bar`, `no_text`, `lane_busy`, `inapplicable_top`, `already_proposed`, `review_bad`, `locked_entry`.
 - Jev question `improve_target` options in this order: `nothing, lesson, fact, skill, schedule, knowledge, tool_gap, ladder`
   (escape first). One fixed question; `applicable` travels in the state. Decision point `improve`, threshold version
   `IMPROVE_THRESHOLD_VERSION = "2026-10-21.1"`, audit role `improve`; the Tiny pick on audit role `improve_pick`, ticks chain.
