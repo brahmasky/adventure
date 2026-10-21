@@ -1025,6 +1025,14 @@ export interface ImproveTickRow { local_date: string; started_at: string; finish
 export interface RecurrenceCandidateRow { turn_id: string; run_id: string; chat_id: string; text: string; created_at: string; category: Category }
 export interface AbandonTurnRow { turn_id: string; run_id: string; chat_id: string; role: ChatTurnRole; text: string; created_at: string; lane: Lane | null }
 export interface ScheduleExpiryRow { approval_id: string; run_id: string; capability: string; resolved_at: string; schedule_id: string }
+export type ProposalTarget = "lesson" | "fact" | "skill" | "schedule" | "knowledge" | "tool_gap" | "ladder";
+export type ProposalState = "open" | "accepted" | "reverted" | "dismissed" | "expired";
+export interface ImprovementProposalRow { proposal_id: string; decision_id: string; target: ProposalTarget; scope: string; chat_id: string | null; draft_json: string; evidence: string; state: ProposalState; result_json: string | null; created_at: string; offered_at: string | null; resolved_at: string | null }
+export type JobState = "queued" | "running" | "pending_review" | "suggested" | "collision" | "promoting" | "promoted" | "dismissed" | "failed";
+export interface ImprovementJobRow { job_id: string; kind: "skill_author"; decision_id: string; proposal_id: string | null; chat_id: string | null; origin_json: string; idempotency_key: string; attempt: number; state: JobState; result_code: string | null; gate_a: string | null; pending_scope: string | null; pending_name: string | null; promote_mode: string | null; created_at: string; started_at: string | null; finished_at: string | null; offered_at: string | null; resolved_at: string | null }
+export interface ImprovementTapRow { tap_id: string; subject_kind: "proposal" | "job" | "move"; subject_id: string; action: string; telegram_callback_id: string; result: string; created_at: string }
+export type JobPatch = Partial<Pick<ImprovementJobRow, "result_code" | "gate_a" | "pending_scope" | "pending_name" | "promote_mode">>;
+export interface LadderMoveRow { move_id: string; entry_id: string; scope: string; from_rung: RungKind; to_rung: RungKind; evidence_json: string; granted_by: "paco" | "auto"; granted_via: string | null; paco_callback_id: string | null; revocable: number; state: "active" | "ended"; created_at: string; ended_at: string | null }
 /** The mirror's read of one outcome row with what the filter and the inbox need (never the decision's text: there is none). */
 interface MirrorOutcomeRow { outcome_id: string; rid: number; signal: DecisionSignal; value: string; created_at: string; entry_id: string; run_id: string | null; run_source: string | null; chat_id: string | null }
 export class LadderMoveRefused extends Error {
@@ -1036,6 +1044,20 @@ export class DecisionRejected extends Error {
   constructor(readonly column: "stage" | "fallback_reason" | "reask") { super(`decision rejected: ${column} not allowed`); }
 }
 
+const JOB_PATCH_COLUMNS = ["result_code", "gate_a", "pending_scope", "pending_name", "promote_mode"] as const;
+const JOB_FINISHED: ReadonlySet<JobState> = new Set(["pending_review", "suggested", "failed"]);
+const JOB_RESOLVED: ReadonlySet<JobState> = new Set(["promoted", "dismissed"]);
+/** The SET list of one job transition: the patch columns, the attempt bump, and the timestamp each target state stamps. */
+function jobTransitionSets(i: { to: JobState; now: string; patch?: JobPatch; bumpAttempt?: boolean }): { sets: string[]; values: Array<string | number | null> } {
+  const sets = ["state = ?"]; const values: Array<string | number | null> = [i.to];
+  for (const c of JOB_PATCH_COLUMNS) if (i.patch && c in i.patch) { sets.push(`${c} = ?`); values.push(i.patch[c] ?? null); }
+  if (i.bumpAttempt) sets.push("attempt = attempt + 1");
+  if (i.to === "running") { sets.push("started_at = ?"); values.push(i.now); }
+  if (JOB_FINISHED.has(i.to)) { sets.push("finished_at = ?"); values.push(i.now); }
+  if (JOB_RESOLVED.has(i.to)) { sets.push("resolved_at = ?"); values.push(i.now); }
+  if (i.to === "collision" || i.to === "promoting") sets.push("offered_at = NULL");
+  return { sets, values };
+}
 const sqlList = (xs: readonly string[]): string => xs.map((x) => `'${x}'`).join(", ");
 /** The only automatic ladder move the store accepts (spec §4.3): standing approvals, on tool.policy, granted by approval.standing. */
 const AUTO_MOVE = { entry_id: "tool.policy", granted_via: "approval.standing" } as const;
@@ -5163,6 +5185,124 @@ export class RunStore {
   clarifyCounts(sinceIso: string): { clarify: number; total: number } {
     return this.db.prepare(`SELECT COALESCE(SUM(CASE WHEN intent = 'clarify' THEN 1 ELSE 0 END), 0) AS clarify, COUNT(*) AS total FROM chat_turns WHERE role = 'assistant' AND created_at > ?`)
       .get<{ clarify: number; total: number }>(sinceIso) ?? { clarify: 0, total: 0 };
+  }
+
+  insertImprovementProposal(p: { decision_id: string; target: ProposalTarget; scope: string; chat_id: string | null; draft_json: string; evidence: string; created_at?: string }): string {
+    const proposal_id = `pr_${randomUUID()}`;
+    this.db.prepare(`INSERT INTO improvement_proposals (proposal_id, decision_id, target, scope, chat_id, draft_json, evidence, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(proposal_id, p.decision_id, p.target, p.scope, p.chat_id, p.draft_json, p.evidence, p.created_at ?? new Date().toISOString());
+    return proposal_id;
+  }
+  getImprovementProposal(proposal_id: string): ImprovementProposalRow | undefined {
+    return this.db.prepare(`SELECT * FROM improvement_proposals WHERE proposal_id = ?`).get<ImprovementProposalRow>(proposal_id);
+  }
+  listOpenProposals(): ImprovementProposalRow[] {
+    return this.db.prepare(`SELECT * FROM improvement_proposals WHERE state = 'open' ORDER BY created_at ASC, rowid ASC`).all<ImprovementProposalRow>();
+  }
+  openProposalExists(target: ProposalTarget, scope: string): boolean {
+    return this.db.prepare(`SELECT 1 AS hit FROM improvement_proposals WHERE target = ? AND scope = ? AND state = 'open' LIMIT 1`).get<{ hit: number }>(target, scope) !== undefined;
+  }
+  /** Fenced on the from states (§5.1: a tap acts only on the state named for it); the result (ids the digest shows) is kept with the state. */
+  transitionProposal(i: { proposal_id: string; from: readonly ProposalState[]; to: ProposalState; now: string; result_json?: string }): boolean {
+    const r = this.db.prepare(`UPDATE improvement_proposals SET state = ?, resolved_at = ?, result_json = COALESCE(?, result_json) WHERE proposal_id = ? AND state IN (${i.from.map(() => "?").join(", ")})`)
+      .run(i.to, i.now, i.result_json ?? null, i.proposal_id, ...i.from);
+    return Number(r.changes) === 1;
+  }
+  /** §5.1 / §6.1: the first offer wins; a later digest carrying the same proposal keeps the first timestamp. */
+  markProposalsOffered(ids: readonly string[], now: string): void {
+    if (ids.length === 0) return;
+    this.db.prepare(`UPDATE improvement_proposals SET offered_at = ? WHERE offered_at IS NULL AND proposal_id IN (${ids.map(() => "?").join(", ")})`).run(now, ...ids);
+  }
+  expireProposals(olderThanIso: string, now: string): number {
+    return Number(this.db.prepare(`UPDATE improvement_proposals SET state = 'expired', resolved_at = ? WHERE state = 'open' AND created_at < ?`).run(now, olderThanIso).changes);
+  }
+  listProposalsResolvedSince(sinceIso: string): ImprovementProposalRow[] {
+    return this.db.prepare(`SELECT * FROM improvement_proposals WHERE resolved_at > ? ORDER BY resolved_at ASC, rowid ASC`).all<ImprovementProposalRow>(sinceIso);
+  }
+  countProposalsByState(sinceIso: string): Record<ProposalState, number> {
+    const out: Record<ProposalState, number> = { open: 0, accepted: 0, reverted: 0, dismissed: 0, expired: 0 };
+    for (const r of this.db.prepare(`SELECT state, COUNT(*) AS n FROM improvement_proposals WHERE created_at > ? GROUP BY state`).all<{ state: ProposalState; n: number }>(sinceIso)) out[r.state] = r.n;
+    return out;
+  }
+  /** §4.2 last_improvement: the newest accepted proposal or promoted job on the scope (a job's scope is its origin category). */
+  lastAcceptedImprovement(scope: string): { target: string; at: string } | undefined {
+    return this.db.prepare(`
+      SELECT target, resolved_at AS at FROM improvement_proposals WHERE scope = ? AND state = 'accepted'
+      UNION ALL SELECT 'skill' AS target, resolved_at AS at FROM improvement_jobs WHERE state = 'promoted' AND json_extract(origin_json, '$.category') = ?
+      ORDER BY at DESC LIMIT 1
+    `).get<{ target: string; at: string }>(scope, scope);
+  }
+
+  insertImprovementJob(j: { decision_id: string; proposal_id: string | null; chat_id: string | null; origin_json: string; idempotency_key: string; created_at?: string }): string | null {
+    const job_id = `job_${randomUUID()}`;
+    const r = this.db.prepare(`INSERT OR IGNORE INTO improvement_jobs (job_id, kind, decision_id, proposal_id, chat_id, origin_json, idempotency_key, state, created_at) VALUES (?, 'skill_author', ?, ?, ?, ?, ?, 'queued', ?)`)
+      .run(job_id, j.decision_id, j.proposal_id, j.chat_id, j.origin_json, j.idempotency_key, j.created_at ?? new Date().toISOString());
+    return Number(r.changes) === 1 ? job_id : null;
+  }
+  /** Ruling 14: starts are budgeted apart from queueing (a job queued by a tap starts at the next tick). */
+  countJobsStartedSince(sinceIso: string): number {
+    return this.db.prepare(`SELECT COUNT(*) AS n FROM improvement_jobs WHERE started_at > ?`).get<{ n: number }>(sinceIso)?.n ?? 0;
+  }
+  listImprovementTaps(subject_id?: string): ImprovementTapRow[] {
+    return subject_id === undefined
+      ? this.db.prepare(`SELECT * FROM improvement_taps ORDER BY created_at ASC, rowid ASC`).all<ImprovementTapRow>()
+      : this.db.prepare(`SELECT * FROM improvement_taps WHERE subject_id = ? ORDER BY created_at ASC, rowid ASC`).all<ImprovementTapRow>(subject_id);
+  }
+  getImprovementJob(job_id: string): ImprovementJobRow | undefined {
+    return this.db.prepare(`SELECT * FROM improvement_jobs WHERE job_id = ?`).get<ImprovementJobRow>(job_id);
+  }
+  /** §3.3 step 4: a cluster sharing any turn id with a job created after `sinceIso` is already authored. */
+  jobOverlapsTurns(turn_ids: readonly string[], sinceIso: string): boolean {
+    if (turn_ids.length === 0) return false;
+    return this.db.prepare(`
+      SELECT 1 AS hit FROM improvement_jobs j, json_each(j.origin_json, '$.turn_ids') t WHERE j.created_at > ? AND t.value IN (${turn_ids.map(() => "?").join(", ")}) LIMIT 1
+    `).get<{ hit: number }>(sinceIso, ...turn_ids) !== undefined;
+  }
+  listJobsByState(states: readonly JobState[]): ImprovementJobRow[] {
+    if (states.length === 0) return [];
+    return this.db.prepare(`SELECT * FROM improvement_jobs WHERE state IN (${states.map(() => "?").join(", ")}) ORDER BY created_at ASC, rowid ASC`).all<ImprovementJobRow>(...states);
+  }
+  countJobsCreatedSince(sinceIso: string): number {
+    return this.db.prepare(`SELECT COUNT(*) AS n FROM improvement_jobs WHERE created_at > ?`).get<{ n: number }>(sinceIso)?.n ?? 0;
+  }
+  /**
+   * §5.2: one fenced UPDATE (state in `from`, and `attempt` when given) is the only thing that lets an ending write; the loser
+   * updates zero rows and enqueues nothing. A move to `collision` or back to `promoting` clears offered_at (a new card is due).
+   * The ledger event names the exact from state. The caller holds the transaction that also enqueues the card.
+   */
+  transitionJob(i: { job_id: string; from: readonly JobState[]; to: JobState; now: string; attempt?: number; patch?: JobPatch; bumpAttempt?: boolean }): boolean {
+    const row = this.getImprovementJob(i.job_id);
+    if (!row || !i.from.includes(row.state) || (i.attempt !== undefined && row.attempt !== i.attempt)) return false;
+    const { sets, values } = jobTransitionSets(i);
+    const r = this.db.prepare(`UPDATE improvement_jobs SET ${sets.join(", ")} WHERE job_id = ? AND state = ? AND attempt = ?`).run(...values, i.job_id, row.state, row.attempt);
+    if (Number(r.changes) !== 1) return false;
+    const attempt = i.bumpAttempt ? row.attempt + 1 : row.attempt;
+    this.recordMemoryEvent("improvement_job", { job_id: i.job_id, from: row.state, to: i.to, attempt, ...(i.patch?.result_code ? { result_code: i.patch.result_code } : {}) }, "improve");
+    return true;
+  }
+  markJobsOffered(ids: readonly string[], now: string): void {
+    if (ids.length === 0) return;
+    this.db.prepare(`UPDATE improvement_jobs SET offered_at = ? WHERE offered_at IS NULL AND job_id IN (${ids.map(() => "?").join(", ")})`).run(now, ...ids);
+  }
+  listJobsFinishedSince(sinceIso: string): ImprovementJobRow[] {
+    return this.db.prepare(`SELECT * FROM improvement_jobs WHERE finished_at > ? OR resolved_at > ? ORDER BY COALESCE(resolved_at, finished_at) ASC, rowid ASC`).all<ImprovementJobRow>(sinceIso, sinceIso);
+  }
+
+  /** §5.1 tap history: one row per Telegram callback id (a redelivered tap is the same tap). */
+  insertImprovementTap(t: { subject_kind: "proposal" | "job" | "move"; subject_id: string; action: string; telegram_callback_id: string; result: string; created_at?: string }): boolean {
+    const r = this.db.prepare(`INSERT OR IGNORE INTO improvement_taps (tap_id, subject_kind, subject_id, action, telegram_callback_id, result, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+      .run(`tap_${randomUUID()}`, t.subject_kind, t.subject_id, t.action, t.telegram_callback_id, t.result, t.created_at ?? new Date().toISOString());
+    return Number(r.changes) === 1;
+  }
+  getLadderMove(move_id: string): LadderMoveRow | undefined {
+    return this.db.prepare(`SELECT * FROM ladder_moves WHERE move_id = ?`).get<LadderMoveRow>(move_id);
+  }
+  /** §5.6 Revoke: an active, revocable move ends once. */
+  endLadderMove(move_id: string, now: string): boolean {
+    return Number(this.db.prepare(`UPDATE ladder_moves SET state = 'ended', ended_at = ? WHERE move_id = ? AND state = 'active' AND revocable = 1`).run(now, move_id).changes) === 1;
+  }
+  listLadderMovesCreatedSince(sinceIso: string): LadderMoveRow[] {
+    return this.db.prepare(`SELECT * FROM ladder_moves WHERE created_at > ? ORDER BY created_at ASC, rowid ASC`).all<LadderMoveRow>(sinceIso);
   }
 
   listLedgerEventsByTypeSince(event_type: LedgerEventType, sinceIso: string): LedgerEvent[] {
