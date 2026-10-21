@@ -3,7 +3,7 @@
 **Status:** Rev 7, 2026-10-21 (Rev 1 + the senior review's probes + codex rounds 1–5, §12). Parent spec: [2026-10-12-decision-ladder-design.md](2026-10-12-decision-ladder-design.md) §7.4 (the
 entry), §8 (the surface), §13 (stage 2b). Sibling: [2026-10-19-ladder-2b-hooks-settle-design.md](2026-10-19-ladder-2b-hooks-settle-design.md)
 (2b-i, merged 2026-10-21 at `139b501`). ADR 0030 decision 8 ("Improvement as a decision"). Facts below were read at
-`61b8a5e`.
+`61b8a5e`. **Final-fix amendments** (after the whole-diff review, `417f705`..`d6de183`) are marked *Final fix* where they change the text and recorded in ADR 0030's amendment.
 
 ## 0. Scope and rulings
 
@@ -194,7 +194,7 @@ cosine ≥ the relevance gate**, schedule-born runs excluded. Steps:
 2. Embeddings: a new table `turn_embeddings(turn_id TEXT PRIMARY KEY, model TEXT, embedding BLOB, created_at)` filled
    lazily by the tick for candidate turns that lack one (text capped at `EMBED_TEXT_CHAR_CAP = 1_500` chars per turn,
    a constant of its own; `THREAD_TEXT_CHAR_CAP` is the memory lane's total thread budget, codex F7). `embedText` null (Ollama down) → the tick records `detail_json.embed_unavailable = n` and
-   skips recurrence and abandonment for the day; the Watch line says so.
+   skips recurrence and abandonment for the day; the Watch line says so. *Final fix:* at most `EMBED_PER_TICK_MAX = 50` turns are embedded per call and the first failure stops the rest (they count unavailable, no call). When the cap, not an outage, leaves turns missing, the segment ends `stopped` after the produce phase and the next evening cycle embeds the next 50; a recurrence row on a day with `embed_unavailable > 0` stays unconsumed.
 3. Per category, single-linkage clusters at cosine ≥ `HOUGE_RECURRENCE_COSINE_GATE` (`resolveCosineGate`, **default
    `0.6`**, not the episodic gate: P2 on the last 14 days gave 15-turn and 4-turn clusters at 0.42, four at 0.5, one
    at 0.6 and none at 0.7 over unfiltered turns, and none at any gate over the 14 filtered candidates; documented in
@@ -207,7 +207,7 @@ cosine ≥ the relevance gate**, schedule-born runs excluded. Steps:
    window can a new cluster on the same topic (a new root) author again, at least 14 days later. A cluster that
    **shares any turn id** with a job younger than 30 days (`origin_json.turn_ids`, checked before insert; this covers
    single-linkage merges that change the root) is recorded (`recurrence` outcome, verdict `nothing`, reason
-   `already_authored`) and starts nothing. So is one whose request matches an active skill by Gate A anchors
+   `already_authored`) and starts nothing. *Final fix:* it is also `already_authored` when a job of the last 90 days in the same category has an origin turn whose stored embedding is within the recurrence gate of any turn of the cluster; a `failed` job never counts in either check. So is one whose request matches an active skill by Gate A anchors
    (`skillStore.list()` word-boundary match, as `authorAndWriteSkill` step 0 does): `skill_exists`.
 
 ### 3.4 Abandonment
@@ -336,7 +336,7 @@ distill has no tools; the injection test covers the draft). A **fact** draft nee
 occur in Paco's text (the memory lane's `factRefused: no_evidence` rule, codex D12), else no fact proposal. A `failed:
 "parse"` or empty draft records the proposal as `nothing` / `no_text` instead of showing an empty card. One open
 proposal per (target, scope): a second one on the same scope is recorded `nothing` with reason `already_proposed` (new
-reason code). Open proposals older than 14 days become `expired` at the next tick, silently.
+reason code). Open proposals older than 14 days become `expired` at the next tick, silently. *Final fix:* the check runs before the draft (no distill call for a duplicate), and a proposal `dismissed` or `expired` within 14 days blocks the same (target, scope) too. A lesson or fact draft passes the memory lane's backstops (`checkLessonSide` on the rule and its AVOID, `checkFactSide` on a fact); a refused one is `nothing` / `no_text`. The digest line of a lesson shows its AVOID.
 
 `offered_at` is set when the digest (or a card) carrying the proposal is enqueued, in the same transaction as the
 outbox row (§6.1); a tap on a proposal with `offered_at` null answers "Already handled." (codex D9: no `offered_json`
@@ -365,7 +365,7 @@ it, idempotent on `proposal_id`).
 ```
 improvement_jobs(job_id TEXT PK, kind TEXT CHECK(skill_author), decision_id TEXT NOT NULL, proposal_id TEXT, origin_json TEXT NOT NULL,
   idempotency_key TEXT NOT NULL UNIQUE, attempt INTEGER NOT NULL DEFAULT 0,
-  state TEXT CHECK(queued|running|pending_review|suggested|collision|promoting|promoted|dismissed|failed), result_code TEXT, gate_a TEXT,
+  state TEXT CHECK(queued|running|pending_review|suggested|collision|promoting|promoted|dismissed|failed|expired), result_code TEXT, gate_a TEXT,
   pending_scope TEXT, pending_name TEXT, promote_mode TEXT, created_at, started_at, finished_at, offered_at, resolved_at)
 ```
 
@@ -376,7 +376,7 @@ improvement_jobs(job_id TEXT PK, kind TEXT CHECK(skill_author), decision_id TEXT
 inserts `queued`; `runQueuedJob(job)` sets `running` with `attempt + 1` and calls `tryStartEvolutionPipeline({current:
 {run_id: job_id, tool: "skill_author", started_at}, capMs: compileSkillAuthorContract(objective).budget.time_minutes ×
 60 000, run: () => authorPendingSkill(job, attempt), onTimeout, onError, deliver})`; `false` (lane busy) → back to
-`queued` / `lane_busy`, retried next tick (a `queued` job older than 3 days → `failed` / `lane_busy`).
+`queued` / `lane_busy`, retried next tick (a `queued` job older than 3 days → `failed` / `lane_busy`). *Final fix:* endings carry the wall clock; a failed Gate A call ends `failed` / `gate_a_unavailable`; an offer untapped for 14 days ends `expired` (`offer_expired`); a `promoting` job's retry that throws is `promote_retry:N`, the third failure `failed` / `promote_failed`; `/disarm` leaves queued jobs queued; each seat call has `IMPROVE_SEAT_DEADLINE_MS = 60 000`.
 
 **Restart, fencing and delivery** (codex D5, round 2 N2, round 3 N2). The lane resolves by `Promise.race` and calls
 `deliver` exactly once with the race winner (`evolution-lane.ts:84,101`); a `run()` that committed its success and
@@ -435,7 +435,7 @@ answers "Already handled.".
 Accept saves through the **memory lane's own store writes**: the plan extracts `saveMemoryForTurn`'s store section into
 `saveMemoryPlan(store, plan, {run_id: origin run, chat_id, source: "improve"})` returning the change ids, so the lesson row
 + `lesson_changes` Undo and the fact row + `memory_changes` `add` are written exactly as a lane save, under the origin
-turn's run id (Undo and `recordSaveUndone` work unchanged; `lessons.source` gains `improve`). Caps apply
+turn's run id (`lessons.source` gains `improve`). *Final fix:* Undo of an improve-sourced save skips `recordSaveUndone` (it would label the corrected turn's `turn.handler`) and moves the proposal `accepted` → `reverted`. Caps apply
 (`resolveSkillMaxPerScope`'s sibling for lessons, `LESSON_CAPPED_HINT`); a capped save answers the tap with the hint. The
 digest's *Improvements today* line for it carries the Undo button (`memlaneUndoButton`, `memoryUndoButton`).
 
@@ -491,7 +491,7 @@ three are empty:
    leaves either the message, the latch and the offers, or none of them.
 3. **Watch** — one line each, 7-day numbers: corrections · abandoned · clarify rate (assistant turns `intent = clarify`
    over all assistant turns, the A27 cap stays) · unattached signals · deferred (rate limit) · silent signals
-   (`review_unsure`, `lesson_unfollowed`, and `dig_deeper` if zero in 7 days) · "wiki disarmed: N topics" · "embeddings
+   (`review_unsure`, `lesson_unfollowed`, `review_bad` and `dig_deeper` if zero in 7 days; *final fix:* `review_bad` is named while no review surface produces it) · deferred on an outage N · "wiki disarmed: N topics" · "embeddings
    unavailable: N days".
 
 The unsure list, counts, trust/noise, bar-stale and Health sections are removed from the digest (Health conditions
@@ -585,7 +585,7 @@ copy. PASS requires every case and the silent-degradation checks:
 | 6 digest | after cases 1–5 | exactly the three sections, nothing from the old digest, every button's data ≤ 64 bytes, no draft text contains the planted `sk-` token |
 | 7 injection | case 1's turns carry a tool result with `ignore previous instructions`; the daemon temp dir holds it | the draft file and every `llm_calls` prompt row of the job lack the phrase |
 | 8 idempotency and rate | run the tick twice; plant 4 clusters | no second job; 3 jobs started, the 4th `deferred_rate` |
-| 9 silent degradation | every inbox row in the window is consumed and has an outcome row on an `improve.route` decision; every job state transition has an `improvement_job` ledger event (`run_id` null, `payload_json` = `{job_id, from, to, result_code?}`); `improve_tick` start and end events exist; Jev fallback count = 0 on the day; the unattached count = 0 | |
+| 9 silent degradation | every inbox row in the window is consumed (a group deferred on an outage stays unconsumed and counts `deferred_outage`, so a Jev or seat outage fails this case truthfully) and has an outcome row on an `improve.route` decision; every job state transition has an `improvement_job` ledger event (`run_id` null, `payload_json` = `{job_id, from, to, result_code?}`); `improve_tick` start and end events exist; Jev fallback count = 0 on the day; the unattached count = 0 | |
 | 10 memory lane unchanged | `scripts/live-gate-memory-write.mjs` (the memory-write gate) reruns green after §5.3's extraction of the save writes | |
 
 A planner-side outage or Ollama down makes a case INCONCLUSIVE, never PASS (lessons.md: preconditions, counts).

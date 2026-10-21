@@ -278,7 +278,23 @@ tick, not in a turn. Signals (corrections, ratings, denials and expiries, planne
   under the bar. Its answer records `tiny_pick`; a failed pick, or a word outside the two, is an abstention, so the row
   records `nothing` on the `fail` rung with no reason code (abstentions set none; `improve-sanity.mjs` counts these).
 - **Effects.** The only automatic one is the `_pending` skill draft. Everything else is a proposal: a tap on the digest,
-  nothing applied before Accept.
+  nothing applied before Accept. A lesson or fact draft first passes the memory lane's backstops (a lifted rule, an
+  unsupported quote or a refused AVOID is dropped or the draft is `nothing` / `no_text`); the digest line of a lesson shows
+  its AVOID.
+- **Outages defer.** A Jev failure that is an outage (timeout, or `no_key`, `fused`, `auth`, `rate_limited`, `overloaded`,
+  `transport`, `error`), a failed Tiny pick or a failed distill call leaves the group unconsumed with no decision row; the tick
+  counts it `deferred_outage` and Watch shows it. The first outage of a segment latches: the remaining groups run the rule
+  rung only (Jev answers `latched`, Tiny abstains, no call), and the segment still ends `done`. A Jev parse,
+  `state_too_large` or a throwing rule records as before. The 30-day stale rule bounds the wait.
+- **Bounds.** Each seat call has `IMPROVE_SEAT_DEADLINE_MS = 60 000`. The embedder takes at most `EMBED_PER_TICK_MAX = 50`
+  turns per call and stops at its first failure; a backlog over the cap ends each segment `stopped` until it clears. Counts
+  add up across the segments of a local date; the 40-group cap is per date.
+- **Skill job endings.** `pending_review` / `collision` offers expire after 14 days (`expired`, one card). Result codes:
+  `gate_a_unavailable`, `offer_expired`, `promote_retry:N`, `promote_failed` (3 failed retries). `/disarm` holds queued jobs.
+- **Repeats and Undo.** A proposal Paco dismissed, or that expired, blocks the same (target, scope) for 14 days. An already
+  authored cluster also covers a job of the last 90 days in the same category whose origin turn embeds within the recurrence
+  gate; a `failed` job never counts. Undo of an improve-sourced save moves its proposal to `reverted` and writes no
+  `turn.handler` label.
 
 ## Arming
 

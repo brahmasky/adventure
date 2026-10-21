@@ -517,6 +517,46 @@ plan: [2026-10-21-ladder-2b-ii-improve-route.md](../superpowers/plans/2026-10-21
   real window 7 groups, about 0.13 proposals a day, suggested bar 0.67. `IMPROVE_BAR_P` stays the provisional 0.6 until
   Paco signs off. Live gate `scripts/live-gate-improve-route.mjs` on a copy with live Jev and real seats: cases 1–9 PASS;
   case 10 (the memory-write gate is unchanged): PENDING.
+- **Final fixes** (after the whole-diff review; commits `417f705`..`d6de183`):
+  - *Drafts and the digest.* A lesson or fact draft passes the memory lane's own backstops before it can be a proposal
+    (`checkLessonSide` on the rule and its AVOID, `checkFactSide` on a fact); a refused draft records `nothing` /
+    `no_text`. The waiting line of a lesson shows its AVOID (redacted, clipped like the text), so Paco sees every line that
+    would enter the planner.
+  - *Job states and endings.* A job also ends `expired`: a drafted skill or a collision that Paco has not tapped within 14
+    days (`TAP_STALE_DAYS`) closes at the next reconcile with one card, and its draft is retired. New result codes:
+    `gate_a_unavailable` (a failed Gate A call ends the job `failed`, never `suggested`), `offer_expired`,
+    `promote_retry:N` and `promote_failed` (a `promoting` job whose retry throws three times, with a card). A promote that
+    throws returns the job to `pending_review` / `collision` with its `offered_at`, so the retap works. Job endings carry the
+    wall clock, not the tick's `now`. A `_pending` file is retired only when its stamped job row is `dismissed`, `expired`
+    or `failed`; a stamp with no job row, or a promoted job's, is never touched. A draft whose frontmatter repeats a key, or
+    whose scope or name starts with `_`, ends `failed` / `author_failed`.
+  - *`/disarm` holds jobs.* With `HOUGE_SKILLS_ENABLED` off, queued jobs stay queued (no seat call, no file) and a
+    recurrence group that would start a job is deferred and unconsumed.
+  - *Outages defer; they never consume.* An undecided group whose Jev failure is an outage (a rung timeout, or an outage
+    with a transient code: `no_key`, `fused`, `auth`, `rate_limited`, `overloaded`, `timeout`, `transport`, `error`), or whose
+    pick or distill seat call failed, writes no row and stays unconsumed. It counts `deferred_outage` in the tick and the
+    Watch line; the 30-day stale rule bounds it. A Jev parse, `state_too_large`, a throwing rule or the disarm posture
+    records as before. The first outage of a segment sets a latch: later groups run the rule rung only (Jev answers a
+    `latched` outage, Tiny abstains, no call), a group the rule cannot decide, or one that needs the distill, is deferred,
+    and the segment still ends `done`. On a day the embedder is down, a waiting recurrence row stays unconsumed too. With no
+    Jev key every undecided group waits until stale, and Watch says so.
+  - *One proposal per (target, scope), for 14 days.* The duplicate check runs before the draft, so a duplicate costs no
+    distill call. A proposal `dismissed` or `expired` within 14 days blocks the same (target, scope) (`already_proposed`).
+  - *Undo.* Undoing an improve-sourced lesson or fact moves its proposal `accepted` → `reverted` and skips
+    `recordSaveUndone`: the undo is not a `turn.handler` label on the corrected turn, and it cannot feed the inbox its own
+    reverted output.
+  - *Loop bounds.* Every seat call (pick, distill, classify, compose, verify) of the tick or a job runs under
+    `IMPROVE_SEAT_DEADLINE_MS = 60 000`, combined with the stop signal; a seat that never answers is cut and the group is
+    deferred. This also bounds the skill writer: a slow writer can end a job `author_failed`. The embedder takes at most
+    `EMBED_PER_TICK_MAX = 50` turns per call and stops at its first failure (the rest count unavailable, no call). When the
+    cap, not an outage, leaves turns missing, the segment ends `stopped` after the produce phase and the next evening cycle
+    embeds the next 50, until nothing is missing; then the tick groups. The budget is checked after the produce phase as well
+    as between groups. Counts accumulate across the segments of one local date, and the 40-group cap is per date.
+  - *Habit suppression.* A cluster is already authored when a job of the last 90 days in the same category has an origin
+    turn whose stored embedding is within the recurrence gate of any turn of the cluster, as well as on the 30-day shared
+    turn id. A `failed` job never suppresses either check (a failure is not an answer); its idempotency key still blocks a
+    second job for the same cluster.
+  - *Watch names `review_bad`* with the other silent families while no review surface produces it.
 - **Deferred:** the wiki handler (R5), model-route proposals (R10), `lesson_unfollowed` (R4), `trust_source` moves
   (ruling 9). **Revisit:** 14 days of rows for the bar and the gate (§11).
 - **Protected files touched:** `src/decisions/` (outcomes, entry-ids, registry, egress, digest, status-view,

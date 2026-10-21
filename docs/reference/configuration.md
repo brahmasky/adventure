@@ -1077,8 +1077,9 @@ as unrecognised callback data; neither writes anything.
 **Improvements today** (what the tick did: lessons and facts saved with Undo, skill jobs and their endings),
 **Proposals waiting** (taps: lesson, fact, schedule, tool gap, ladder; one open per target and scope, expiring at 14 days)
 and **Watch** (signal groups the ladder left alone, plus `ticks failed N · stopped N · record failed N` when any is
-non-zero; a day with only that still sends). It offers no ✅ / ❌ review taps, so no new `review_bad` signals are produced
-until a review surface returns. The counts and the health lines moved to `/status` (the 24 h counts per entry, the
+non-zero; a day with only that still sends; `deferred on an outage N` when groups waited on an outage). It offers no ✅ / ❌
+review taps, so no new `review_bad` signals are produced until a review surface returns; Watch names `review_bad` among the
+silent families meanwhile. The counts and the health lines moved to `/status` (the 24 h counts per entry, the
 `turn.settle` health line and the per-entry Jev-skip counts). A front-door row counts only when its turn's verdict links it.
 No tool text ever reaches the digest; improvement-side text is Paco's own words through `redactForImprove`.
 
@@ -1090,7 +1091,12 @@ most one skill-authoring job starts per tick, up to 3 queue per day, a queued jo
 its counts), `improvement_job` (each job transition), `improve_signal_skipped` (a producer that could not write an inbox
 row). A tap on a proposal or job card arrives as the `improvement_tap` task event. Tables (additive): `improve_signals`, `improve_ticks`,
 `improve_cursor`, `turn_embeddings`, `improvement_proposals`, `improvement_jobs`, `improvement_taps`. The bar for
-`improve_target` is code (`IMPROVE_BAR_P`, provisional 0.6); there is no env override.
+`improve_target` is code (`IMPROVE_BAR_P`, provisional 0.6); there is no env override. No new env var since the final fixes; the
+bounds are code constants: `IMPROVE_SEAT_DEADLINE_MS = 60 000` per seat call, `EMBED_PER_TICK_MAX = 50` embeds per call,
+`IMPROVE_GROUPS_PER_TICK = 40` per local date, a proposal blocks its (target, scope) for 14 days after a dismissal or expiry.
+An outage (Jev or a seat call) leaves a group unconsumed and counts `deferred_outage`. **`/disarm`** (`HOUGE_SKILLS_ENABLED`
+off) holds skill jobs: queued jobs stay queued and a recurrence group that would start one waits. An unreviewed skill offer
+expires after 14 days.
 
 **Tables** (migration `2026-10-12-decision-ladder`, additive): `decisions` (one row per decision that matters:
 `decision_id`, `entry_id`, `entry_version`, `run_id`, `tool_call_id`, `stage`, `rung` (`rule` \| `system_one` \| `model` \|
