@@ -64,6 +64,29 @@ describe("the skill job", () => {
     expect(String(compose.mock.calls[0]![0].question)).toContain("weekly report");
     void id;
   });
+  it("the objective keeps the newest 6 turns, then the newest that fit in 3 000 characters", async () => {
+    const mk = () => setup();
+    const turnsOf = (store: RunStore, texts: string[]) => texts.map((t) => {
+      const r = createTelegramTurn(store, t);
+      const db = (store as unknown as { db: { prepare(q: string): { run(...a: string[]): unknown } } }).db;
+      db.prepare("UPDATE runs SET state = 'completed' WHERE run_id = ?").run(r.run_id);
+      db.prepare("DELETE FROM telegram_command_audit").run();
+      return r;
+    });
+    const a = mk();                                                      // 8 short turns: only the newest 6 survive
+    const short = turnsOf(a.store, ["t1 x", "t2 x", "t3 x", "t4 x", "t5 x", "t6 x", "t7 x", "t8 x"]);
+    startSkillJob(a.store, { decision_id: a.decision_id, proposal_id: null, chat_id: "555", origin: origin(short.map((t) => t.turn_id), short.map((t) => t.run_id)), idempotency_key: "k", now: NOW });
+    await runQueuedJobs(a.d, 1); await evolutionLaneSettled();
+    const q1 = String(a.compose.mock.calls[0]![0].question);
+    expect(q1).toContain("t8 x"); expect(q1).toContain("t3 x"); expect(q1).not.toContain("t2 x"); expect(q1).not.toContain("t1 x");
+    resetEvolutionLaneForTests();
+    const b = mk();                                                      // 3 long turns: only the newest fit
+    const big = turnsOf(b.store, ["OLDEST " + "alpha ".repeat(230), "MIDDLE " + "bravo ".repeat(230), "NEWEST " + "charlie ".repeat(175)]);
+    startSkillJob(b.store, { decision_id: b.decision_id, proposal_id: null, chat_id: "555", origin: origin(big.map((t) => t.turn_id), big.map((t) => t.run_id)), idempotency_key: "k", now: NOW });
+    await runQueuedJobs(b.d, 1); await evolutionLaneSettled();
+    const q2 = String(b.compose.mock.calls[0]![0].question);
+    expect(q2).toContain("NEWEST"); expect(q2).toContain("MIDDLE"); expect(q2).not.toContain("OLDEST");
+  });
   it("a Gate A down-route (lesson / code / unsure / retire / restore) ends suggested with no file and a card without buttons", async () => {
     const { store, skills, d, runs, turn_ids, decision_id, compose } = setup({ classify: '{"verdict":"lesson","reason":"a tweak","lesson":"be brief"}' });
     const id = startSkillJob(store, { decision_id, proposal_id: null, chat_id: "555", origin: origin(turn_ids, runs), idempotency_key: "k", now: NOW })!;
@@ -82,18 +105,59 @@ describe("the skill job", () => {
     expect(store.getImprovementJob(id)).toMatchObject({ state: "failed", result_code: "author_failed" });
     expect([...drainOutbox(store).keys()]).toContain(`improve_job:${id}:1:failed`);
   });
-  it("the lane busy → the job goes back to queued with lane_busy and no card (the attempt stays bumped); a queued job older than 3 days fails lane_busy", async () => {
+  it("the lane busy → no job transitions (no started_at, no event, no card), none counts against the day; a queued job older than 3 days fails lane_busy, a younger one stays queued", async () => {
     const { store, d, runs, turn_ids, decision_id } = setup();
     let release!: () => void;
     const held = new Promise<{ text: string }>((resolve) => { release = () => resolve({ text: "" }); });   // controllable, so teardown never waits on the 60 s cap (codex B18)
     tryStartEvolutionPipeline({ current: { run_id: "other", tool: "self_write_propose", started_at: NOW }, capMs: 60_000, run: () => held, onTimeout: () => ({ text: "" }), onError: () => ({ text: "" }), deliver: () => {} });
     const id = startSkillJob(store, { decision_id, proposal_id: null, chat_id: "555", origin: origin(turn_ids, runs), idempotency_key: "k", now: NOW })!;
-    expect(await runQueuedJobs(d, 1)).toBe(0);
-    expect(store.getImprovementJob(id)).toMatchObject({ state: "queued", result_code: "lane_busy", attempt: 1 });
+    const id2 = startSkillJob(store, { decision_id, proposal_id: null, chat_id: "555", origin: origin(turn_ids, runs), idempotency_key: "k2", now: "2026-10-24T09:00:00.000Z" })!;
+    const before = store.countJobsStartedSince("2026-01-01T00:00:00.000Z");
+    expect(await runQueuedJobs(d, 3)).toBe(0);
+    expect(store.getImprovementJob(id)).toMatchObject({ state: "queued", attempt: 0, started_at: null });
+    expect(store.getImprovementJob(id2)).toMatchObject({ state: "queued", attempt: 0, started_at: null });
+    expect(store.countJobsStartedSince("2026-01-01T00:00:00.000Z")).toBe(before);
+    expect(store.listLedgerEventsByTypeSince("improvement_job", "2026-01-01T00:00:00.000Z")).toEqual([]);
     expect(drainOutbox(store).size).toBe(0);
     release(); await evolutionLaneSettled();
     reconcileJobs({ ...d, now: "2026-10-25T10:00:00.000Z" });
     expect(store.getImprovementJob(id)).toMatchObject({ state: "failed", result_code: "lane_busy" });
+    expect(store.getImprovementJob(id2)?.state).toBe("queued");           // 1 day old: inside the 3-day TTL
+  });
+  it("a timeout whose ending throws never escapes into the lane: the row stays running and the boot sweep fails it; the late body then writes nothing", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const { store, skills, d, runs, turn_ids, decision_id, compose } = setup();
+      let release!: () => void;
+      compose.mockImplementation(() => new Promise((resolve) => { release = () => resolve({ ok: true as const, answer: GOOD }); }));
+      const id = startSkillJob(store, { decision_id, proposal_id: null, chat_id: "555", origin: origin(turn_ids, runs), idempotency_key: "k", now: NOW })!;
+      await runQueuedJobs(d, 1);
+      const spy = vi.spyOn(store, "transitionJob").mockImplementationOnce(() => { throw new Error("SQLITE_BUSY"); });
+      await vi.advanceTimersByTimeAsync(11 * 60_000);
+      await evolutionLaneSettled();                                       // an escaped rejection would fail the run here
+      spy.mockRestore();
+      expect(store.getImprovementJob(id)?.state).toBe("running");
+      expect(reconcileJobsAtBoot(store, skills, "555", NOW)).toBe(1);
+      release(); await vi.advanceTimersByTimeAsync(0);
+      expect(skills.listPending()).toEqual([]);
+      expect(store.getImprovementJob(id)).toMatchObject({ state: "failed", result_code: "daemon_restart" });
+    } finally { vi.useRealTimers(); }
+  });
+  it("the timeout wins while the writer call is pending: the late body writes no file and no card, the row stays failed", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const { store, skills, d, runs, turn_ids, decision_id, compose } = setup();
+      let release!: () => void;
+      compose.mockImplementation(() => new Promise((resolve) => { release = () => resolve({ ok: true as const, answer: GOOD }); }));
+      const id = startSkillJob(store, { decision_id, proposal_id: null, chat_id: "555", origin: origin(turn_ids, runs), idempotency_key: "k", now: NOW })!;
+      await runQueuedJobs(d, 1);
+      await vi.advanceTimersByTimeAsync(11 * 60_000);
+      expect(store.getImprovementJob(id)).toMatchObject({ state: "failed", result_code: "timeout" });
+      release(); await evolutionLaneSettled(); await vi.advanceTimersByTimeAsync(0);
+      expect(skills.listPending()).toEqual([]);
+      expect(store.getImprovementJob(id)?.state).toBe("failed");
+      expect([...drainOutbox(store).keys()].sort()).toEqual([`improve_job:${id}:1:failed`, `improve_job:${id}:1:running`]);
+    } finally { vi.useRealTimers(); }
   });
   it("the timeout ending loses to a committed success: only one ending writes, only its card is queued", async () => {
     const { store, d, runs, turn_ids, decision_id } = setup();

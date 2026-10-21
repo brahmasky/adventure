@@ -9,7 +9,8 @@ import type { ImproveTickDeps, JobHooks } from "../improve/tick.js";
 import type { NotificationButton } from "../notifications/notification-types.js";
 import type { ImprovementJobRow, JobPatch, JobState, RunStore } from "../run/run-store.js";
 import { sanitizeSlug, setFrontmatterFields, type SkillStore } from "../skills/skill-store.js";
-import { tryStartEvolutionPipeline } from "./evolution-lane.js";
+import { errorCode } from "../domain/error-code.js";
+import { evolutionLaneSnapshot, tryStartEvolutionPipeline } from "./evolution-lane.js";
 
 /**
  * The skill-authoring job (2b-ii §5.2): an improvement_jobs row, never a runs row. It runs on the evolution lane with a
@@ -71,21 +72,31 @@ function objectiveOf(store: RunStore, origin: Origin): string {
   return out.join("\n\n");
 }
 
+/** A lane callback must never throw (an unobserved rejection kills the daemon): a failed ending leaves the row running for the boot sweep. */
+function safeEnd(...args: Parameters<typeof endJob>): void {
+  try { endJob(...args); } catch (e) { console.error(`[skill-job] end failed: ${errorCode(e)}`); }
+}
+
 export async function runQueuedJobs(d: JobDeps, budget: number): Promise<number> {
   let started = 0;
   for (const job of d.store.listJobsByState(["queued"])) {
-    if (started >= budget || d.signal.aborted) break;
-    if (!d.store.transitionJob({ job_id: job.job_id, from: ["queued"], to: "running", now: d.now, bumpAttempt: true })) continue;
+    if (started >= budget || d.signal.aborted || evolutionLaneSnapshot().busy) break; // busy: no transition, no started_at, no card; the next tick retries
+    let origin: Origin;
+    try { origin = originOf(job); } catch (e) { console.error(`[skill-job] bad origin: ${errorCode(e)}`); continue; }
     const attempt = job.attempt + 1;
-    const origin = originOf(job);
+    const moved = d.store.inTransaction(() => {
+      if (!d.store.transitionJob({ job_id: job.job_id, from: ["queued"], to: "running", now: d.now, bumpAttempt: true })) return false;
+      enqueueJobCard(d.store, job.chat_id ?? d.chatId, job.job_id, attempt, "running", jobStartedCard(origin.turn_ids.length, origin.category)); // before the body: a synchronous ending shows after it
+      return true;
+    });
+    if (!moved) continue;
     const capMs = compileSkillAuthorContract(objectiveOf(d.store, origin).slice(0, 200)).budget.time_minutes * 60_000;
     const ok = tryStartEvolutionPipeline({ current: { run_id: job.job_id, tool: "skill_author", started_at: d.now }, capMs,
       run: async () => { await authorPendingSkill(d, { ...job, state: "running", attempt }, attempt); return { text: "" }; },
-      onTimeout: () => { endJob(d, job, attempt, "failed", { result_code: "timeout" }, jobFailedCard("timeout")); return { text: "" }; },
-      onError: () => { endJob(d, job, attempt, "failed", { result_code: "error" }, jobFailedCard("error")); console.error(`[improve] job ${job.job_id} threw (detail withheld: it may carry model text)`); return { text: "" }; },
+      onTimeout: () => { safeEnd(d, job, attempt, "failed", { result_code: "timeout" }, jobFailedCard("timeout")); return { text: "" }; },
+      onError: () => { safeEnd(d, job, attempt, "failed", { result_code: "error" }, jobFailedCard("error")); console.error(`[improve] job ${job.job_id} threw (detail withheld: it may carry model text)`); return { text: "" }; },
       deliver: () => {} });
-    if (!ok) { d.store.transitionJob({ job_id: job.job_id, from: ["running"], to: "queued", now: d.now, attempt, patch: { result_code: "lane_busy" } }); continue; }
-    enqueueJobCard(d.store, job.chat_id ?? d.chatId, job.job_id, attempt, "running", jobStartedCard(origin.turn_ids.length, origin.category));
+    if (!ok) { d.store.transitionJob({ job_id: job.job_id, from: ["running"], to: "queued", now: d.now, attempt, patch: { result_code: "lane_busy" } }); break; }
     started += 1;
   }
   return started;
@@ -178,7 +189,9 @@ function sweepOrphans(store: RunStore, skills: SkillStore, now: string): void {
   const owned = new Set(store.listJobsByState(["pending_review", "collision", "promoting"]).map((j) => `${j.pending_scope}/${j.pending_name}`));
   for (const m of skills.listPending()) {
     if (!m.origin?.startsWith("improve_job:") || owned.has(`${m.scope}/${m.name}`)) continue;
-    skills.dismissPending(m.scope, m.name, now.slice(0, 10));
+    if (store.getImprovementJob(m.origin.slice("improve_job:".length))?.state === "running") continue; // its body is still on the lane
+    const r = skills.dismissPending(m.scope, m.name, now.slice(0, 10));
+    if (!r.ok) console.error(`[skill-job] sweep failed: ${r.error}`);
   }
 }
 
@@ -187,7 +200,8 @@ export function reconcileAccepted(d: Pick<JobDeps, "store" | "now">): void {
   const withJob = new Set(d.store.listJobsByState(["queued", "running", "pending_review", "suggested", "collision", "promoting", "promoted", "dismissed", "failed"]).map((j) => j.proposal_id));
   for (const p of d.store.listProposalsResolvedSince(new Date(Date.parse(d.now) - 30 * DAY_MS).toISOString())) {
     if (p.target !== "skill" || p.state !== "accepted" || withJob.has(p.proposal_id)) continue;
-    const draft = JSON.parse(p.draft_json) as { origin: { turn_ids: string[]; category: string } };
+    let draft: { origin: { turn_ids: string[]; category: string } };
+    try { draft = JSON.parse(p.draft_json) as typeof draft; if (!Array.isArray(draft.origin.turn_ids)) continue; } catch (e) { console.error(`[skill-job] bad proposal draft: ${errorCode(e)}`); continue; }
     const texts = draft.origin.turn_ids.map((id) => d.store.getChatTurnById(id)?.text ?? "");
     startSkillJob(d.store, { decision_id: p.decision_id, proposal_id: p.proposal_id, chat_id: p.chat_id, now: d.now, idempotency_key: `${draft.origin.category}:${draft.origin.turn_ids[0]}`,
       origin: { turn_ids: draft.origin.turn_ids, run_ids: draft.origin.turn_ids.map((id) => d.store.getChatTurnById(id)?.run_id ?? ""), category: draft.origin.category,
