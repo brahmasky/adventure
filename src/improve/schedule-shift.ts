@@ -34,6 +34,7 @@ export function scheduleHints(store: RunStore, now: string, tz: string): Map<str
   for (const [k, rows] of by) {
     if (rows.length < SCHEDULE_HINT_MIN) continue;
     const [capability, schedule_id, hour] = k.split("|") as [string, string, string];
+    // when two schedules qualify for one capability, the last in query order wins (the map is keyed by capability)
     out.set(capability, { schedule_id, hour: Number(hour), dates: [...new Set(rows.map((r) => localDate(r.resolved_at, tz)))].sort() });
   }
   return out;
@@ -44,11 +45,14 @@ export function scheduleDraft(store: RunStore, hint: ScheduleHint, now: string, 
   const row = store.getScheduledTask(hint.schedule_id);
   const spec = row ? parseScheduleSpec(row.spec_json) : null;
   if (!row || !spec) return null;
-  const hour_to = medianLocalHour(store.userTurnTimesSince(new Date(Date.parse(now) - 14 * DAY_MS).toISOString()), tz) ?? (hint.hour + 1) % 24;
+  if (spec.kind === "once") return null;
+  // hour_from is the spec's own hour (the expiry hour trails the fire by up to the approval timeout); the median is read in the zone the shifted spec is interpreted in
+  const hour_from = Number(spec.at.slice(0, 2));
+  const hour_to = medianLocalHour(store.userTurnTimesSince(new Date(Date.parse(now) - 14 * DAY_MS).toISOString()), row.tz) ?? (hour_from + 1) % 24;
   const shifted = shiftSpec(spec, hour_to);
   const next_run_at = shifted ? computeNextRunAt(shifted, row.tz, now) : null;
-  if (!shifted || !next_run_at || hour_to === hint.hour) return null;
-  const draft = { schedule_id: row.schedule_id, hour_from: hint.hour, hour_to, before: { spec_json: row.spec_json, tz: row.tz, next_run_at: row.next_run_at },
+  if (!shifted || !next_run_at || hour_to === hour_from) return null;
+  const draft = { schedule_id: row.schedule_id, hour_from, hour_to, before: { spec_json: row.spec_json, tz: row.tz, next_run_at: row.next_run_at },
     after: { spec_json: JSON.stringify(shifted), tz: row.tz, next_run_at } };
   return { draft_json: JSON.stringify(draft), evidence: `${hint.dates.length} expiries at ${String(hint.hour).padStart(2, "0")}:00 (${hint.dates.join(", ")})` };
 }

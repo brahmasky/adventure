@@ -4,7 +4,7 @@ import type { ImproveState, ImproveTarget } from "../decisions/entries/improve-r
 import type { ProposalTarget, RunStore } from "../run/run-store.js";
 import { formatInstantInZone } from "../run/schedule-spec.js";
 import type { TickLlm } from "./decide-improve.js";
-import type { SignalGroup } from "./groups.js";
+import { PACO_TEXT_CAP, type SignalGroup } from "./groups.js";
 import { scheduleDraft, type ScheduleHint } from "./schedule-shift.js";
 
 /** 2b-ii §5.1: proposals are drafted at proposal time, code-built or distilled from Paco's words; the digest shows the draft beside its evidence. */
@@ -48,7 +48,7 @@ function ladderDraft(s: ImproveState, evidence: string): Draft | null {
 function priorOf(store: RunStore, run_id: string | null, redact: (t: string) => string): string {
   if (!run_id) return "";
   const clean = store.getLedgerEvents(run_id).some((e) => e.event_type === "turn_trust_final" && e.payload.max_level === "clean");
-  return clean ? redact(store.assistantTurnTextForRun(run_id) ?? "") : "";
+  return clean ? Array.from(redact(store.assistantTurnTextForRun(run_id) ?? "")).slice(0, PACO_TEXT_CAP).join("") : ""; // capped like Paco's text
 }
 
 async function distillDraft(target: "lesson" | "fact", g: SignalGroup, s: ImproveState, d: DraftDeps, evidence: string): Promise<Draft | null> {
