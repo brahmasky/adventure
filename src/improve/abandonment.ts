@@ -27,11 +27,13 @@ function candidatePairs(turns: readonly AbandonTurnRow[]): Pair[] {
   return pairs;
 }
 
-export async function computeAbandonment(d: { store: RunStore; now: string; gate: number; embed: Embedder; embedModel: string; signal: AbortSignal }): Promise<number> {
+/** Final fix 3: `overBudget` holds embedding back like the cap; `onBacklog` hears that turns were left (the tick then stops the segment; unrecorded pairs are read again). */
+export async function computeAbandonment(d: { store: RunStore; now: string; gate: number; embed: Embedder; embedModel: string; signal: AbortSignal; overBudget?: () => boolean; onBacklog?: () => void }): Promise<number> {
   const since = new Date(Date.parse(d.now) - 24 * 60 * 60 * 1000 - ABANDON_WINDOW_MS).toISOString();
   const pairs = candidatePairs(d.store.listAbandonTurns(since)).filter((p) => !d.store.hasImproveSignal("abandoned", p.a.run_id));
   const turns = [...new Map(pairs.flatMap((p) => [[p.a.turn_id, p.a], [p.b.turn_id, p.b]] as const)).values()];
-  const { vectors } = await ensureEmbeddings(d.store, turns, d.embed, d.embedModel, d.now, d.signal);
+  const { vectors, capped } = await ensureEmbeddings(d.store, turns, d.embed, d.embedModel, d.now, d.signal, d.overBudget);
+  if (capped) d.onBacklog?.();
   let n = 0;
   for (const p of pairs) {
     const va = vectors.get(p.a.turn_id), vb = vectors.get(p.b.turn_id);

@@ -141,8 +141,9 @@ describe("runImproveTick", () => {
     correction(s); correction(s, "find me the march invoice again", "lookup");
     let t = 0;
     const clock = () => (t += 5_000);   // every read of the clock is 5 s later (no real timing: flake-free)
-    // reads: 5 000 at start, 10 000 after recurrence and 15 000 after the produce phase (final fix E2), 20 000 before group 1 (15 000 ≤ 19 000), 25 000 before group 2 (20 000 > 19 000 → stopped)
-    const r = await runImproveTick(deps(s, { budgetMs: 19_000, clock }));
+    // embedder down, so one embed attempt (final fix 3 reads the budget before it). Reads: 5 000 at start, 10 000 before the embed,
+    // 15 000 after recurrence and 20 000 after the produce phase (final fix E2), 25 000 before group 1 (20 000 ≤ 24 000), 30 000 before group 2 (25 000 > 24 000 → stopped)
+    const r = await runImproveTick(deps(s, { budgetMs: 24_000, clock, embed: async () => null }));
     expect(r).toMatchObject({ ran: true, result: "stopped", counts: { decided: 1 } });
     expect(await runImproveTick(deps(s))).toMatchObject({ ran: true, result: "done", counts: { decided: 2 } });   // final fix E4: counts of one date accumulate
     expect(s.listUnconsumedSignals(10)).toEqual([]);
@@ -356,5 +357,23 @@ describe("runImproveTick", () => {
     expect(three).toMatchObject({ ran: true, result: "done", counts: { embed_unavailable: 0 } });
     expect(three.ran && three.counts.groups).toBeGreaterThan(0);
     expect(embed.mock.calls.length).toBeGreaterThanOrEqual(120);
+  });
+  it("final fix 3A: embedding stops when the tick budget is spent and the rest is backlog: the segment ends stopped and the next cycle continues", async () => {
+    const s = RunStore.openInMemory();
+    for (let k = 0; k < 6; k += 1) {
+      const run_id = turn(s, `budget request number ${k} about something distinct`).run_id;
+      s.insertJevVerdict({ run_id, category: "answer", breadth: null, reasoning: null, actions: null, sets_rule: null, rule_scope: null, lane: "answer", role: "default", effort: null, cascade: null,
+        save_outcome: "none", route_outcome: "fallback", reason: "jev_skipped", skip_reason: null, quoted_turn_id: null });
+    }
+    let t = 0; let calls = 0;
+    const clock = () => t;
+    const embed = vi.fn(async () => { calls += 1; if (calls >= 3) t = 10_000; return Float32Array.from([1, calls]); });   // past a 5 s budget after the 3rd embed
+    const r = await runImproveTick(deps(s, { embed, clock, budgetMs: 5_000 }));
+    expect(r).toMatchObject({ ran: true, result: "stopped", counts: { groups: 0, embed_unavailable: 0 } });
+    expect(embed).toHaveBeenCalledTimes(3);
+    expect(s.getTurnEmbeddings(s.listRecurrenceCandidates("2026-01-01T00:00:00.000Z", 20, ["other", "status", "memory"]).map((x) => x.turn_id)).size).toBe(3);
+    t = 0; calls = -100;
+    expect(await runImproveTick(deps(s, { embed, clock, budgetMs: 5_000 }))).toMatchObject({ ran: true, result: "done" });
+    expect(embed).toHaveBeenCalledTimes(6);
   });
 });

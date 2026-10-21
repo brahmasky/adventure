@@ -11,6 +11,7 @@ import type { ImprovementJobRow, JobPatch, JobState, RunStore } from "../run/run
 import { jobCollisionCard, promote, SK_PREFIX, skillButtons, TAP_STALE_DAYS } from "../skills/promote.js";
 import { duplicateFrontmatterKeys, resolveSkillsEnabled, sanitizeSlug, setFrontmatterFields, type SkillStore } from "../skills/skill-store.js";
 import { errorCode } from "../domain/error-code.js";
+import { formatInstantInZone, resolveDisplayZone } from "../run/schedule-spec.js";
 import { evolutionLaneSnapshot, tryStartEvolutionPipeline } from "./evolution-lane.js";
 
 /**
@@ -177,7 +178,7 @@ export function reconcileJobsAtBoot(store: RunStore, skills: SkillStore, chatId:
   return n;
 }
 
-type ReconcileDeps = Pick<JobDeps, "store" | "skills" | "now" | "chatId">;
+type ReconcileDeps = Pick<JobDeps, "store" | "skills" | "now" | "chatId"> & { env?: NodeJS.ProcessEnv };
 
 /** Tick-time reconcile: stale queued jobs fail lane_busy; unreviewed offers expire; promoting jobs retry (promote, shared with the tap); orphaned pending files retire. */
 export function reconcileJobs(d: ReconcileDeps): void {
@@ -211,6 +212,8 @@ function expireOffers(d: ReconcileDeps): void {
 
 /** Final fix C3: a retry that ends the job sends its card (the tap's reply is gone); a throw counts toward PROMOTE_RETRY_MAX, then promote_failed with a card. */
 function retryPromote(d: ReconcileDeps, job: ImprovementJobRow): void {
+  // final fix 3: at most one retry per local date (resumed segments of one tick never burn PROMOTE_RETRY_MAX in minutes)
+  if (retryOf(job.result_code).date === localDateOf(d)) return;
   let text: string;
   try { text = promote(d.store, d.skills, job, d.chatId, d.now); } catch (e) {
     console.error(`[skill-job] promote retry failed: ${errorCode(e)}`);
@@ -221,10 +224,17 @@ function retryPromote(d: ReconcileDeps, job: ImprovementJobRow): void {
   if (after === "promoted" || after === "failed") enqueueJobCard(d.store, job.chat_id ?? d.chatId, job.job_id, job.attempt, after, text);
 }
 
+/** `promote_retry:<n>:<local date of that retry>` on the row's result_code: the count and the day it last ran (no new column). */
+function retryOf(code: string | null): { n: number; date: string | null } {
+  const m = /^promote_retry:(\d+)(?::(\d{4}-\d{2}-\d{2}))?$/.exec(code ?? "");
+  return m ? { n: Number(m[1]), date: m[2] ?? null } : { n: 0, date: null };
+}
+const localDateOf = (d: ReconcileDeps): string => formatInstantInZone(d.now, resolveDisplayZone(d.env ?? process.env)).slice(0, 10);
+
 function promoteRetryFailed(d: ReconcileDeps, job: ImprovementJobRow): void {
-  const n = Number(/^promote_retry:(\d+)$/.exec(job.result_code ?? "")?.[1] ?? 0) + 1;
+  const n = retryOf(job.result_code).n + 1;
   d.store.inTransaction(() => {
-    if (n < PROMOTE_RETRY_MAX) { d.store.transitionJob({ job_id: job.job_id, from: ["promoting"], to: "promoting", now: d.now, patch: { result_code: `promote_retry:${n}` } }); return; }
+    if (n < PROMOTE_RETRY_MAX) { d.store.transitionJob({ job_id: job.job_id, from: ["promoting"], to: "promoting", now: d.now, patch: { result_code: `promote_retry:${n}:${localDateOf(d)}` } }); return; }
     if (d.store.transitionJob({ job_id: job.job_id, from: ["promoting"], to: "failed", now: d.now, patch: { result_code: "promote_failed" } }))
       enqueueJobCard(d.store, job.chat_id ?? d.chatId, job.job_id, job.attempt, "failed", jobPromoteFailedCard(job.pending_name ?? "draft"));
   });

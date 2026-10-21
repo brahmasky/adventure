@@ -29,23 +29,24 @@ export const EMBED_PER_TICK_MAX = 50;
 /**
  * Stored vectors for the turns, embedding the missing ones (text capped) and storing them; a null embed counts as unavailable.
  * Final fix E1: the first null is an outage, so every remaining missing turn counts unavailable without another call, and
- * at most EMBED_PER_TICK_MAX turns are embedded per call.
+ * at most EMBED_PER_TICK_MAX turns are embedded per call. Final fix 3: a spent tick budget (`overBudget`) holds the rest back like the cap.
  */
-export async function ensureEmbeddings(store: RunStore, turns: readonly { turn_id: string; text: string }[], embed: Embedder, model: string, now: string, signal?: AbortSignal)
+export async function ensureEmbeddings(store: RunStore, turns: readonly { turn_id: string; text: string }[], embed: Embedder, model: string, now: string, signal?: AbortSignal,
+  overBudget?: () => boolean)
   : Promise<{ vectors: Map<string, Float32Array>; unavailable: number; capped: boolean }> {
   const vectors = store.getTurnEmbeddings(turns.map((t) => t.turn_id));
   let unavailable = 0; let calls = 0; let down = false;
   for (const t of turns) {
     if (vectors.has(t.turn_id)) continue;
     // an aborted run is a partial window, an outage or the cap a deferral: each counted so the caller never clusters it
-    if (signal?.aborted || down || calls >= EMBED_PER_TICK_MAX) { unavailable += 1; continue; }
+    if (signal?.aborted || down || calls >= EMBED_PER_TICK_MAX || overBudget?.() === true) { unavailable += 1; continue; }
     calls += 1;
     const v = await embed(Array.from(t.text).slice(0, EMBED_TEXT_CHAR_CAP).join(""));
     if (!v) { unavailable += 1; down = true; continue; }
     store.putTurnEmbedding(t.turn_id, model, v, now);
     vectors.set(t.turn_id, v);
   }
-  // final fix 2: `capped` — only the cap (no outage, no abort) left turns missing: a backlog the next segment continues
+  // final fix 2/3: `capped` — only the cap or the budget (no outage, no abort) left turns missing: a backlog the next segment continues
   return { vectors, unavailable, capped: unavailable > 0 && !down && !signal?.aborted };
 }
 
@@ -72,11 +73,11 @@ export function clusterCandidates(cands: readonly RecurrenceCandidateRow[], vect
   });
 }
 
-export async function computeRecurrence(d: { store: RunStore; env: NodeJS.ProcessEnv; now: string; embed: Embedder; embedModel: string; signal: AbortSignal })
+export async function computeRecurrence(d: { store: RunStore; env: NodeJS.ProcessEnv; now: string; embed: Embedder; embedModel: string; signal: AbortSignal; overBudget?: () => boolean })
   : Promise<{ clusters: Map<string, RecurrenceCluster>; embedUnavailable: number; backlog: number }> {
   const since = new Date(Date.parse(d.now) - RECURRENCE_WINDOW_DAYS * DAY_MS).toISOString();
   const cands = d.store.listRecurrenceCandidates(since, RECURRENCE_MIN_CHARS, RECURRENCE_EXCLUDED_CATEGORIES);
-  const { vectors, unavailable, capped } = await ensureEmbeddings(d.store, cands, d.embed, d.embedModel, d.now, d.signal);
+  const { vectors, unavailable, capped } = await ensureEmbeddings(d.store, cands, d.embed, d.embedModel, d.now, d.signal, d.overBudget);
   const clusters = new Map<string, RecurrenceCluster>();
   if (capped) return { clusters, embedUnavailable: 0, backlog: unavailable }; // a backlog, not an outage: the caller stops the segment and resumes
   if (unavailable > 0) return { clusters, embedUnavailable: unavailable, backlog: 0 }; // a partial day would cluster a partial window: skip recurrence today (§3.3 step 2)

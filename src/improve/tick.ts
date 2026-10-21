@@ -105,14 +105,15 @@ async function producePhase(d: ImproveTickDeps, c: TickCounts, overBudget: () =>
   d.jobs?.reconcile(d);
   d.jobs?.reconcileAccepted(d);
   c.mirrored += d.store.mirrorOutcomesIntoInbox().copied;
-  const rec = await computeRecurrence({ store: d.store, env: d.env, now: d.now, embed: d.embed, embedModel: d.embedModel, signal: d.signal });
+  const rec = await computeRecurrence({ store: d.store, env: d.env, now: d.now, embed: d.embed, embedModel: d.embedModel, signal: d.signal, overBudget });
   // final fix 2: the 50-embed cap (not an outage) left turns missing — stop now, the next cycle embeds the next 50 (a backlog clears in one evening)
   if (d.signal.aborted || rec.backlog > 0) return { clusters: rec.clusters, stopped: true };
   c.embed_unavailable += rec.embedUnavailable;
   c.recurrence += recordRecurrenceSignals(d.store, rec.clusters, d.now);
   if (overBudget()) return { clusters: rec.clusters, stopped: true };
-  if (rec.embedUnavailable === 0) c.abandoned += await computeAbandonment({ store: d.store, now: d.now, gate: resolveRecurrenceGate(d.env), embed: d.embed, embedModel: d.embedModel, signal: d.signal });
-  return { clusters: rec.clusters, stopped: d.signal.aborted || overBudget() };
+  let backlog = false;
+  if (rec.embedUnavailable === 0) c.abandoned += await computeAbandonment({ store: d.store, now: d.now, gate: resolveRecurrenceGate(d.env), embed: d.embed, embedModel: d.embedModel, signal: d.signal, overBudget, onBacklog: () => { backlog = true; } });
+  return { clusters: rec.clusters, stopped: d.signal.aborted || backlog || overBudget() };
 }
 
 async function tickBody(d: ImproveTickDeps, c: TickCounts): Promise<"done" | "stopped"> {

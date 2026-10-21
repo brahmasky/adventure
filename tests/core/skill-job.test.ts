@@ -286,9 +286,9 @@ describe("job lifecycle (final fix C)", () => {
     store.transitionJob({ job_id: id, from: ["pending_review"], to: "promoting", now: NOW, patch: { promote_mode: "refuse" } });
     const real = skills.promotePending.bind(skills);
     skills.promotePending = () => { throw new Error("EIO"); };
-    reconcileJobs(d); reconcileJobs(d);
+    reconcileJobs(d); reconcileJobs({ ...d, now: at(NOW, 1) });   // final fix 3: one retry per local date
     expect(store.getImprovementJob(id)?.state).toBe("promoting");
-    reconcileJobs(d);
+    reconcileJobs({ ...d, now: at(NOW, 2) });
     expect(store.getImprovementJob(id)).toMatchObject({ state: "failed", result_code: "promote_failed" });
     expect([...drainOutbox(store).keys()]).toEqual([`improve_job:${id}:1:failed`]);
     skills.promotePending = real;
@@ -307,5 +307,17 @@ describe("job lifecycle (final fix C)", () => {
     expect(store.getImprovementJob(id)).toMatchObject({ state: "queued", attempt: 0 });
     expect(classify).not.toHaveBeenCalled(); expect(compose).not.toHaveBeenCalled();
     expect(skills.listPending()).toEqual([]); expect(drainOutbox(store).size).toBe(0);
+  });
+  it("final fix 3B: a promoting job is retried at most once per local date — two resumed segments on one date make one retry, the next date the second", () => {
+    const { store, skills, d, decision_id } = setup();
+    const id = reviewJob(store, skills, decision_id, NOW);
+    store.transitionJob({ job_id: id, from: ["pending_review"], to: "promoting", now: NOW, patch: { promote_mode: "refuse" } });
+    let tries = 0;
+    skills.promotePending = () => { tries += 1; throw new Error("EIO"); };
+    reconcileJobs(d); reconcileJobs({ ...d, now: "2026-10-21T10:02:00.000Z" });
+    expect(tries).toBe(1);
+    expect(store.getImprovementJob(id)?.state).toBe("promoting");
+    reconcileJobs({ ...d, now: at(NOW, 1) });
+    expect(tries).toBe(2);
   });
 });
