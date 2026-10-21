@@ -3,6 +3,7 @@ import { saveMemoryPlan, LESSON_CAPPED_HINT } from "../capabilities/memory-save.
 import type { TypedTaskEvent } from "../domain/types.js";
 import { startSkillJob } from "../core/skill-job.js";
 import { errorCode } from "../domain/error-code.js";
+import { computeNextRunAt, parseScheduleSpec } from "../run/schedule-spec.js";
 import { promote } from "../skills/promote.js";
 import type { ImprovementJobRow, ImprovementProposalRow, RunStore } from "../run/run-store.js";
 import { LadderMoveRefused } from "../run/run-store.js";
@@ -19,6 +20,7 @@ export const TAP_STALE_DAYS = 14;
 export const TAP_HANDLED_TEXT = "Already handled.";
 /** A transient failure (a store error mid-effect): the trigger is processed, but the text says so and a NEW tap (a new callback id) retries (codex B20). */
 export const TAP_FAILED_TEXT = "That did not go through; tap it again.";
+export const JOB_EXISTS_TEXT = "A job for this already exists; nothing new queued.";
 const DAY_MS = 24 * 60 * 60 * 1000;
 const tapped = (): GatewayIntakeResult => ({ ok: true, status: "improvement_tapped", run_id: "" });
 const chatOf = (e: TypedTaskEvent): string => (e.notify.kind === "telegram" ? e.notify.chat_id : "");
@@ -34,9 +36,13 @@ export function handleImprovementTap(store: RunStore, skills: SkillStore, event:
     } catch (e) {
       console.error(`[improve] tap ${tap.kind}:${tap.action} failed: ${errorCode(e)}`);
     }
-    const result = text === TAP_HANDLED_TEXT ? "handled" : text === TAP_FAILED_TEXT ? "failed" : "applied";
-    store.insertImprovementTap({ subject_kind: tap.kind === "pr" ? "proposal" : tap.kind === "sk" ? "job" : "move", subject_id: tap.id, action: tap.action, telegram_callback_id: tap.callback, result, created_at: now });
-    replyTo(store, event, "improvement_tap", text);
+    try {
+      const result = text === TAP_HANDLED_TEXT ? "handled" : text === TAP_FAILED_TEXT ? "failed" : text === LESSON_CAPPED_HINT ? "capped" : "applied";
+      store.insertImprovementTap({ subject_kind: tap.kind === "pr" ? "proposal" : tap.kind === "sk" ? "job" : "move", subject_id: tap.id, action: tap.action, telegram_callback_id: tap.callback, result, created_at: now });
+      replyTo(store, event, "improvement_tap", text);
+    } catch (e) {
+      console.error(`[improve] tap ${tap.kind}:${tap.action} record failed: ${errorCode(e)}`);
+    }
     return tapped();
   });
 }
@@ -73,8 +79,12 @@ function acceptSkill(store: RunStore, p: ImprovementProposalRow, draft: Record<s
   const origin = draft.origin as { turn_ids: string[]; category: string } | undefined;
   if (!origin || !store.transitionProposal({ proposal_id: p.proposal_id, from: ["open"], to: "accepted", now })) return TAP_HANDLED_TEXT;
   const texts = origin.turn_ids.map((id) => store.getChatTurnById(id)?.text ?? "");
-  startSkillJob(store, { decision_id: p.decision_id, proposal_id: p.proposal_id, chat_id: p.chat_id, now, idempotency_key: `${origin.category}:${origin.turn_ids[0]}`,
+  const job_id = startSkillJob(store, { decision_id: p.decision_id, proposal_id: p.proposal_id, chat_id: p.chat_id, now, idempotency_key: `${origin.category}:${origin.turn_ids[0]}`,
     origin: { turn_ids: origin.turn_ids, run_ids: origin.turn_ids.map((id) => store.getChatTurnById(id)?.run_id ?? ""), category: origin.category, text_hashes: texts.map((t) => createHash("sha256").update(t).digest("hex").slice(0, 16)) } });
+  if (job_id === null) { // a job for this cluster already exists (idempotency key): say so, never "Queued" without a job
+    store.transitionProposal({ proposal_id: p.proposal_id, from: ["accepted"], to: "dismissed", now, result_json: JSON.stringify({ reason: "job_exists" }) });
+    return JOB_EXISTS_TEXT;
+  }
   return "✅ Queued: the skill will be drafted at the next tick.";
 }
 
@@ -94,10 +104,20 @@ interface ScheduleDraft { schedule_id: string; before: { spec_json: string; tz: 
 function applySchedule(store: RunStore, p: ImprovementProposalRow, draft: Record<string, unknown>, now: string): string {
   const d = draft as unknown as ScheduleDraft;
   const row = store.getScheduledTask(d.schedule_id);
-  if (!row || row.spec_json !== d.before.spec_json) { store.transitionProposal({ proposal_id: p.proposal_id, from: ["open"], to: "expired", now }); return TAP_HANDLED_TEXT; }
-  if (!store.updateScheduledTask({ schedule_id: d.schedule_id, spec_json: d.after.spec_json, tz: d.after.tz, next_run_at: d.after.next_run_at, now })) return TAP_HANDLED_TEXT;
+  if (!row || row.spec_json !== d.before.spec_json || row.tz !== d.before.tz) { store.transitionProposal({ proposal_id: p.proposal_id, from: ["open"], to: "expired", now }); return TAP_HANDLED_TEXT; }
+  const next = nextRunAt(d.after.spec_json, d.after.tz, now); // recomputed at tap time: the drafted value is up to 14 days old
+  if (!next || !store.updateScheduledTask({ schedule_id: d.schedule_id, spec_json: d.after.spec_json, tz: d.after.tz, next_run_at: next, now })) return TAP_HANDLED_TEXT;
   if (!store.transitionProposal({ proposal_id: p.proposal_id, from: ["open"], to: "accepted", now })) throw new Error("accept_lost");
   return `⏰ Moved to ${String(d.hour_to).padStart(2, "0")}:00. Revert is on tonight's digest line.`;
+}
+
+function nextRunAt(spec_json: string, tz: string, now: string): string | null {
+  try {
+    const spec = parseScheduleSpec(JSON.parse(spec_json));
+    return spec ? computeNextRunAt(spec, tz, now) : null;
+  } catch {
+    return null;
+  }
 }
 
 function revertSchedule(store: RunStore, p: ImprovementProposalRow, now: string): string {
@@ -105,8 +125,9 @@ function revertSchedule(store: RunStore, p: ImprovementProposalRow, now: string)
   const d = JSON.parse(p.draft_json) as ScheduleDraft;
   return store.inTransaction(() => {
     const row = store.getScheduledTask(d.schedule_id);
-    if (!row || row.spec_json !== d.after.spec_json) return TAP_HANDLED_TEXT;
-    if (!store.updateScheduledTask({ schedule_id: d.schedule_id, spec_json: d.before.spec_json, tz: d.before.tz, next_run_at: d.before.next_run_at, now })) return TAP_HANDLED_TEXT;
+    if (!row || row.spec_json !== d.after.spec_json || row.tz !== d.after.tz) return TAP_HANDLED_TEXT;
+    const next = nextRunAt(d.before.spec_json, d.before.tz, now);
+    if (!next || !store.updateScheduledTask({ schedule_id: d.schedule_id, spec_json: d.before.spec_json, tz: d.before.tz, next_run_at: next, now })) return TAP_HANDLED_TEXT;
     return store.transitionProposal({ proposal_id: p.proposal_id, from: ["accepted"], to: "reverted", now }) ? "↩️ Reverted to the previous time." : TAP_HANDLED_TEXT;
   });
 }

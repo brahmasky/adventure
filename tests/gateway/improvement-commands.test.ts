@@ -2,12 +2,14 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { computeNextRunAt, parseScheduleSpec } from "../../src/run/schedule-spec.js";
 import { buildTypedTaskEvent } from "../../src/domain/types.js";
-import { handleImprovementTap, TAP_FAILED_TEXT, TAP_HANDLED_TEXT } from "../../src/gateway/improvement-commands.js";
+import { handleImprovementTap, JOB_EXISTS_TEXT, TAP_FAILED_TEXT, TAP_HANDLED_TEXT } from "../../src/gateway/improvement-commands.js";
 import { RunStore, type DecisionInsert } from "../../src/run/run-store.js";
 import { parseSkillFile, setFrontmatterFields, SkillStore } from "../../src/skills/skill-store.js"; // drop the names a file does not use
 import { createQueuedTurnRun, createTelegramTurn } from "../helpers/runs.js"; // drop whichever a file does not use
 import { reconcileJobs } from "../../src/core/skill-job.js";
+import { LESSON_CAPPED_HINT } from "../../src/capabilities/lesson-write.js";
 import { drainOutbox } from "../helpers/omp-worker.js";
 
 // Spec 2b-ii §5.1, §5.2, §5.5, §5.6, §6.3: every tap is one improvement_taps row; a tap acts only on the state named for it,
@@ -53,10 +55,11 @@ describe("proposal taps", () => {
     expect(reply(s)).toEqual([TAP_HANDLED_TEXT]);
     expect(s.getImprovementProposal(id)?.state).toBe("open");
     const { id: bad } = proposal(s, "lesson", { scope: "ask", text: "x".repeat(10) });
-    const broken = Object.create(s) as RunStore; (broken as { saveReconciledLesson: unknown }).saveReconciledLesson = () => { throw new Error("disk full"); };
+    const broken = Object.create(s) as RunStore; (broken as { insertLessonChange: unknown }).insertLessonChange = () => { throw new Error("disk full"); }; // after the lesson row is written
     handleImprovementTap(broken, skills(), tap("pr", bad, "acc"), NOW);
     expect(reply(s).at(-1)).toBe(TAP_FAILED_TEXT);
-    expect(s.getImprovementProposal(bad)?.state).toBe("open");            // the transaction rolled back
+    expect(s.getImprovementProposal(bad)?.state).toBe("open");            // the transaction rolled back, lesson row included
+    expect(s.listLessons()).toEqual([]);
     handleImprovementTap(s, skills(), tap("pr", bad, "acc"), NOW);        // a new callback id: the retry goes through
     expect(s.getImprovementProposal(bad)?.state).toBe("accepted");
   });
@@ -69,7 +72,7 @@ describe("proposal taps", () => {
     expect(b).toEqual(a);
     expect(s.listDecisionsBetween("2026-01-01T00:00:00.000Z", "2027-01-01T00:00:00.000Z")).toHaveLength(1);
   });
-  it("a tap older than 14 days after the offer is handled; expired proposals too", () => {
+  it("a tap older than 14 days after the offer is handled", () => {
     const s = RunStore.openInMemory();
     const { id } = proposal(s, "lesson", { scope: "ask", text: "x" });
     handleImprovementTap(s, skills(), tap("pr", id, "acc"), "2026-11-06T10:00:00.000Z");
@@ -120,6 +123,56 @@ describe("proposal taps", () => {
     handleImprovementTap(s, skills(), tap("pr", locked, "acc"), NOW);
     expect(reply(s).at(-1)).toBe(TAP_HANDLED_TEXT);
   });
+
+  it("Revert 15 days after the Accept is handled and the proposal stays accepted", () => {
+    const s = RunStore.openInMemory();
+    const schedule_id = s.addScheduledTask({ chat_id: "555", goal: "check the mailbox", spec_json: JSON.stringify({ kind: "daily", at: "11:00" }), tz: "Australia/Sydney", next_run_at: "2026-10-22T00:00:00.000Z", now: "2026-10-01T00:00:00.000Z" }).schedule_id;
+    const before = { spec_json: JSON.stringify({ kind: "daily", at: "11:00" }), tz: "Australia/Sydney", next_run_at: "2026-10-22T00:00:00.000Z" };
+    const after = { spec_json: JSON.stringify({ kind: "daily", at: "20:00" }), tz: "Australia/Sydney", next_run_at: "2026-10-22T09:00:00.000Z" };
+    const { id } = proposal(s, "schedule", { schedule_id, before, after, hour_from: 11, hour_to: 20 }, "shell_external");
+    handleImprovementTap(s, skills(), tap("pr", id, "acc"), NOW);
+    handleImprovementTap(s, skills(), tap("pr", id, "rev"), "2026-11-05T10:00:01.000Z");
+    expect(reply(s).at(-1)).toBe(TAP_HANDLED_TEXT);
+    expect(s.getImprovementProposal(id)?.state).toBe("accepted");
+  });
+  it("Accept and Revert recompute next_run_at at tap time (a drafted value is stale by then), and the fence compares tz too", () => {
+    const s = RunStore.openInMemory();
+    const schedule_id = s.addScheduledTask({ chat_id: "555", goal: "check the mailbox", spec_json: JSON.stringify({ kind: "daily", at: "11:00" }), tz: "Australia/Sydney", next_run_at: "2026-10-22T00:00:00.000Z", now: "2026-10-01T00:00:00.000Z" }).schedule_id;
+    const before = { spec_json: JSON.stringify({ kind: "daily", at: "11:00" }), tz: "Australia/Sydney", next_run_at: "2026-10-22T00:00:00.000Z" };
+    const after = { spec_json: JSON.stringify({ kind: "daily", at: "20:00" }), tz: "Australia/Sydney", next_run_at: "2026-10-22T09:00:00.000Z" };
+    const { id } = proposal(s, "schedule", { schedule_id, before, after, hour_from: 11, hour_to: 20 }, "shell_external");
+    const acceptAt = "2026-10-30T10:00:00.000Z", revertAt = "2026-11-09T10:00:00.000Z";
+    handleImprovementTap(s, skills(), tap("pr", id, "acc"), acceptAt);
+    expect(s.getScheduledTask(schedule_id)?.next_run_at).toBe(computeNextRunAt(parseScheduleSpec(JSON.parse(after.spec_json))!, after.tz, acceptAt));
+    handleImprovementTap(s, skills(), tap("pr", id, "rev"), revertAt);
+    const next = s.getScheduledTask(schedule_id)!.next_run_at;
+    expect(next > revertAt).toBe(true);
+    expect(next).toBe(computeNextRunAt(parseScheduleSpec(JSON.parse(before.spec_json))!, before.tz, revertAt));
+    const { id: other } = proposal(s, "schedule", { schedule_id, before: { ...before, tz: "UTC" }, after, hour_from: 11, hour_to: 20 }, "http_fetch");
+    handleImprovementTap(s, skills(), tap("pr", other, "acc"), "2026-11-02T10:00:00.000Z");
+    expect(s.getImprovementProposal(other)?.state).toBe("expired");
+  });
+  it("a lesson over the cap: the tap row says capped, the reply carries the hint, the proposal stays open", () => {
+    const s = RunStore.openInMemory();
+    const { id } = proposal(s, "lesson", { scope: "ask", text: "x".repeat(300) });
+    handleImprovementTap(s, skills(), tap("pr", id, "acc"), NOW);
+    expect(reply(s)).toEqual([LESSON_CAPPED_HINT]);
+    expect(s.getImprovementProposal(id)?.state).toBe("open");
+    expect(s.listImprovementTaps().map((t) => t.result)).toEqual(["capped"]);
+  });
+  it("skill Accept when a job for the cluster already exists: no second job, proposal dismissed with job_exists, never 'Queued'", () => {
+    const s = RunStore.openInMemory();
+    const t = createTelegramTurn(s, "weekly report please");
+    const draft = { origin: { turn_ids: [t.turn_id], category: "answer" } };
+    const { id } = proposal(s, "skill", draft, "answer");
+    const decision_id = s.getImprovementProposal(id)!.decision_id;
+    const first = s.insertImprovementJob({ decision_id, proposal_id: null, chat_id: "555", origin_json: "{}", idempotency_key: `answer:${t.turn_id}`, created_at: NOW });
+    expect(first).not.toBeNull();
+    handleImprovementTap(s, skills(), tap("pr", id, "acc"), NOW);
+    expect(reply(s)).toEqual([JOB_EXISTS_TEXT]);
+    expect(s.getImprovementProposal(id)).toMatchObject({ state: "dismissed", result_json: JSON.stringify({ reason: "job_exists" }) });
+    expect(s.listJobsByState(["queued"])).toHaveLength(1);
+  });
 });
 
 describe("skill job taps", () => {
@@ -145,12 +198,13 @@ describe("skill job taps", () => {
     const s = RunStore.openInMemory(); const sk = skills();
     sk.writeSkill("ask", "weekly-report", GOOD.replace("asked", "old"));
     const id = pendingJob(s, sk);
-    handleImprovementTap(s, sk, tap("sk", id, "accept"), NOW);
-    expect(s.getImprovementJob(id)).toMatchObject({ state: "collision", offered_at: NOW });
+    const LATER = "2026-10-25T10:00:00.000Z";
+    handleImprovementTap(s, sk, tap("sk", id, "accept"), LATER);
+    expect(s.getImprovementJob(id)).toMatchObject({ state: "collision", offered_at: LATER });
     const out = drainOutbox(s);
     const card = [...out.entries()].find(([k]) => k === `improve_job:${id}:1:collision`)![1];
     expect((card.buttons as Array<{ data: string }>).map((b) => b.data)).toEqual([`dec:sk:${id}:replace`, `dec:sk:${id}:keep`, `dec:sk:${id}:dismiss`]);
-    handleImprovementTap(s, sk, tap("sk", id, "replace"), NOW);
+    handleImprovementTap(s, sk, tap("sk", id, "replace"), LATER);
     expect(s.getImprovementJob(id)).toMatchObject({ state: "promoted", promote_mode: "replace" });
     expect(sk.listRetired().map((m) => m.name)).toEqual(["weekly-report"]);
     expect(sk.readSkill("ask", "weekly-report")?.meta.when).toBe("asked");
@@ -168,6 +222,16 @@ describe("skill job taps", () => {
     reconcileJobs({ store: s, skills: sk, now: NOW, chatId: "555" });
     expect(s.getImprovementJob(id)?.state).toBe("promoted");
     expect(sk.list().map((m) => m.name)).toEqual(["weekly-report"]);
+  });
+  it("a skill-job tap from another chat is handled; the job stays pending_review and the draft stays under _pending", () => {
+    const s = RunStore.openInMemory(); const sk = skills();
+    const id = pendingJob(s, sk);
+    const other = buildTypedTaskEvent({ ...tap("sk", id, "accept"), notify: { kind: "telegram", chat_id: "-999" } });
+    handleImprovementTap(s, sk, other, NOW);
+    expect(reply(s)).toEqual([TAP_HANDLED_TEXT]);
+    expect(s.getImprovementJob(id)?.state).toBe("pending_review");
+    expect(sk.listPending().map((m) => m.name)).toEqual(["weekly-report"]);
+    expect(sk.list()).toEqual([]);
   });
   it("Dismiss on pending_review or collision retires the draft; replace/keep on pending_review are handled; a suggested job's taps are handled", () => {
     const s = RunStore.openInMemory(); const sk = skills();
@@ -192,5 +256,13 @@ describe("ladder move taps", () => {
     expect(s.getLadderMove(move_id)?.state).toBe("ended");
     handleImprovementTap(s, skills(), tap("lm", move_id, "revoke"), NOW);
     expect(reply(s)).toEqual([TAP_HANDLED_TEXT, expect.stringMatching(/revoked/i), TAP_HANDLED_TEXT]);
+  });
+  it("a Revoke more than 14 days after the move was made is handled", () => {
+    const s = RunStore.openInMemory();
+    const { id: pr } = proposal(s, "ladder", { entry_id: "turn.settle", move: "retire_judge" }, "turn.settle");
+    const move_id = s.insertLadderMove({ entry_id: "turn.settle", scope: "turn.settle", from_rung: "system_one", to_rung: "model", evidence: [pr], granted_by: "paco", granted_via: "improve.route", paco_callback_id: "cb0", revocable: true, created_at: NOW });
+    handleImprovementTap(s, skills(), tap("lm", move_id, "revoke"), "2026-11-05T10:00:01.000Z");
+    expect(reply(s)).toEqual([TAP_HANDLED_TEXT]);
+    expect(s.getLadderMove(move_id)?.state).toBe("active");
   });
 });

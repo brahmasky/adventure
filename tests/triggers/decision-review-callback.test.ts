@@ -37,7 +37,7 @@ describe("parseImprovementCallback", () => {
     expect(parseImprovementCallback(`dec:pr:pr_${u}:acc`)).toEqual({ kind: "pr", id: `pr_${u}`, action: "acc" });
     expect(parseImprovementCallback(`dec:sk:job_${u}:keep`)).toEqual({ kind: "sk", id: `job_${u}`, action: "keep" });
     expect(parseImprovementCallback(`dec:lm:lm_${u}:revoke`)).toEqual({ kind: "lm", id: `lm_${u}`, action: "revoke" });
-    for (const bad of [`dec:pr:pr_${u}:accept`, `dec:sk:pr_${u}:accept`, `dec:lm:lm_${u}:acc`, "dec:pr:x:acc", 42, null]) expect(parseImprovementCallback(bad)).toBeNull();
+    for (const bad of [`dec:pr:pr_${u}:accept`, `dec:sk:pr_${u}:accept`, `dec:lm:lm_${u}:acc`, "dec:pr:x:acc", `dec:pr:pr_${u}:acc:x`, `dec:pr:pr_${u.toUpperCase()}:acc`, "dec:pr::acc", "dec:sk::keep", 42, null]) expect(parseImprovementCallback(bad)).toBeNull();
     expect(Buffer.byteLength(`dec:sk:job_${u}:dismiss`)).toBeLessThanOrEqual(64);
   });
   it("every button skillButtons builds parses back (the literal prefix is pinned here)", () => {
@@ -47,7 +47,7 @@ describe("parseImprovementCallback", () => {
   });
   it("the adapter turns an improvement tap into an improvement_tap event and refuses a stranger", () => {
     const r = tap(111, `dec:pr:pr_${u}:acc`);
-    expect(r).toMatchObject({ ok: true, event: { type: "improvement_tap", notify: { chat_id: "222" }, metadata: { telegram_callback_id: "cbq_9", kind: "pr", id: `pr_${u}`, action: "acc" } } });
+    expect(r).toMatchObject({ ok: true, event: { type: "improvement_tap", notify: { chat_id: "222" }, metadata: { telegram_update_id: 3000, telegram_callback_id: "cbq_9", kind: "pr", id: `pr_${u}`, action: "acc" } } });
     expect(tap(999, `dec:pr:pr_${u}:acc`)).toMatchObject({ ok: false, error: { code: "TELEGRAM_AUTH_DENIED" } });
   });
 });
