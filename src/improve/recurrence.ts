@@ -29,7 +29,8 @@ export async function ensureEmbeddings(store: RunStore, turns: readonly { turn_i
   const vectors = store.getTurnEmbeddings(turns.map((t) => t.turn_id));
   let unavailable = 0;
   for (const t of turns) {
-    if (vectors.has(t.turn_id) || signal?.aborted) continue;
+    if (vectors.has(t.turn_id)) continue;
+    if (signal?.aborted) { unavailable += 1; continue; } // an aborted run is a partial window: counted so the caller never clusters it
     const v = await embed(Array.from(t.text).slice(0, EMBED_TEXT_CHAR_CAP).join(""));
     if (!v) { unavailable += 1; continue; }
     store.putTurnEmbedding(t.turn_id, model, v, now);

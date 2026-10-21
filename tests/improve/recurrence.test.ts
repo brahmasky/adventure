@@ -15,10 +15,10 @@ const verdict = (s: RunStore, run_id: string) => s.insertJevVerdict({ run_id, ca
 describe("clusterCandidates", () => {
   it("three near turns form one cluster; two do not; categories never mix; single linkage chains a→b→c", () => {
     const vectors = new Map([["t1", vec(1, 0)], ["t2", vec(0.9, 0.44)], ["t3", vec(0.6, 0.8)], ["t4", vec(-1, 0)], ["t5", vec(1, 0)]]); // t4 opposes every other (senior B5: (0,1)·t3 was 0.8)
-    const cs = clusterCandidates([cand("t1", "a".repeat(20)), cand("t2", "b".repeat(20)), cand("t3", "c".repeat(20)), cand("t4", "d".repeat(20)), cand("t5", "e".repeat(20), "lookup")], vectors, 0.75);
+    const cs = clusterCandidates([cand("t1", "a".repeat(20), "answer", "2026-10-21T09:00:00.000Z"), cand("t2", "b".repeat(20), "answer", "2026-10-21T08:00:00.000Z"), cand("t3", "c".repeat(20), "answer", "2026-10-21T07:00:00.000Z"), cand("t4", "d".repeat(20)), cand("t5", "e".repeat(20), "lookup")], vectors, 0.75);
     // t1·t2 = 0.9, t2·t3 ≈ 0.89, t1·t3 = 0.6 (< gate, but linked through t2); t4 is far; t5 is another category
-    expect(cs.map((c) => [c.category, c.turnIds])).toEqual([["answer", ["t1", "t2", "t3"]]]);
-    expect(cs[0]!.idempotencyKey).toBe("answer:t1");
+    expect(cs.map((c) => [c.category, c.turnIds])).toEqual([["answer", ["t3", "t2", "t1"]]]); // ordered by created_at, not input order
+    expect(cs[0]!.idempotencyKey).toBe("answer:t3"); // the earliest turn by created_at
     expect(cs[0]!.clusterId).toBe(clusterIdOf("answer", ["t1", "t2", "t3"]));
     expect(clusterIdOf("answer", ["t3", "t1", "t2"])).toBe(cs[0]!.clusterId); // order-free
     expect(cs[0]!.clusterId).toMatch(/^rec_[0-9a-f]{16}$/);
@@ -49,6 +49,17 @@ describe("ensureEmbeddings", () => {
     expect(r.unavailable).toBe(1);
     expect(s.getTurnEmbeddings(["t2"]).has("t2")).toBe(true); // stored once
   });
+  it("an aborted signal embeds nothing and counts every un-embedded turn as unavailable (a partial window is never clustered)", async () => {
+    const s = RunStore.openInMemory();
+    s.putTurnEmbedding("t1", "m", vec(1, 0), NOW);
+    const embed = vi.fn(async () => vec(0, 1));
+    const ac = new AbortController();
+    ac.abort();
+    const r = await ensureEmbeddings(s, [{ turn_id: "t1", text: "x" }, { turn_id: "t2", text: "y" }, { turn_id: "t3", text: "z" }, { turn_id: "t4", text: "w" }], embed, "m", NOW, ac.signal);
+    expect(embed).not.toHaveBeenCalled();
+    expect([...r.vectors.keys()]).toEqual(["t1"]);
+    expect(r.unavailable).toBe(3);
+  });
 });
 
 describe("computeRecurrence and recordRecurrenceSignals", () => {
@@ -65,6 +76,17 @@ describe("computeRecurrence and recordRecurrenceSignals", () => {
     expect(recordRecurrenceSignals(s, r.clusters, NOW)).toBe(1);
     expect(recordRecurrenceSignals(s, r.clusters, NOW)).toBe(0);
     expect(s.listUnconsumedSignals(5).map((x) => [x.signal, x.value, x.about_run_id, x.chat_id, x.source_outcome_id])).toEqual([["recurrence", "3", runs[2], "555", `rec:${c.clusterId}:3`]]);
+  });
+  it("a pre-aborted signal yields no clusters and embedUnavailable = the candidate count, even with a working embedder", async () => {
+    const s = RunStore.openInMemory();
+    for (const t of ["make the weekly report please", "weekly report again please", "the weekly report, thanks again"]) verdict(s, createTelegramTurn(s, t).run_id);
+    const ac = new AbortController();
+    ac.abort();
+    const embed = vi.fn(async () => vec(1, 0));
+    const r = await computeRecurrence({ store: s, env: {}, now: NOW, embed, embedModel: "m", signal: ac.signal });
+    expect(embed).not.toHaveBeenCalled();
+    expect(r.clusters.size).toBe(0);
+    expect(r.embedUnavailable).toBe(3);
   });
   it("Ollama down (every embed null) → no clusters and embedUnavailable = the candidate count", async () => {
     const s = RunStore.openInMemory();

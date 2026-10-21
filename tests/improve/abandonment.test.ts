@@ -36,4 +36,29 @@ describe("computeAbandonment", () => {
     expect(await computeAbandonment({ store: s, now: T(90), gate: 0.6, embed, embedModel: "m", signal: new AbortController().signal })).toBe(0); // once per A
     void c; void d; void e;
   });
+  const run = (s: RunStore, embed: (t: string) => Promise<Float32Array>) => computeAbandonment({ store: s, now: T(90), gate: 0.6, embed, embedModel: "m", signal: new AbortController().signal });
+  const invoiceOnly = async (t: string) => (t.includes("invoice") ? Float32Array.from([1, 0]) : Float32Array.from([0, 1]));
+
+  it("a B inside the window but far from A (cosine below the gate) is not a re-ask", async () => {
+    const s = RunStore.openInMemory();
+    turn(s, "find the invoice from march for me", 0, "Here is what I found.", "lookup");
+    turn(s, "what did we decide about the venue?", 5, "The park.", "answer");
+    expect(await run(s, invoiceOnly)).toBe(0);
+    expect(s.listUnconsumedSignals(10)).toEqual([]);
+  });
+  it("the window is anchored on the reply, not on A: a late reply with A→B over 10 min but reply→B within it still counts", async () => {
+    const s = RunStore.openInMemory();
+    const a = turn(s, "find the invoice from march for me", 0, "Here is what I found.", "lookup");
+    s.rewriteChatTurnTimeForTest(a, "assistant", T(20)); // the reply took 20 minutes
+    turn(s, "no, the march invoice from the supplier please", 25, null, "lookup"); // reply→B 5 min, A→B 25 min
+    expect(await run(s, invoiceOnly)).toBe(1);
+    expect(s.listUnconsumedSignals(10).map((r) => [r.signal, r.value, r.about_run_id])).toEqual([["abandoned", "lookup", a]]);
+  });
+  it("a B at exactly reply + 600 000 ms counts (the bound is inclusive)", async () => {
+    const s = RunStore.openInMemory();
+    const a = turn(s, "find the invoice from march for me", 0, "Here is what I found.", "lookup"); // reply at T(1)
+    turn(s, "no, the march invoice from the supplier please", 11, null, "lookup"); // T(11) = T(1) + 600 000 ms
+    expect(await run(s, invoiceOnly)).toBe(1);
+    expect(s.listUnconsumedSignals(10).map((r) => r.about_run_id)).toEqual([a]);
+  });
 });
