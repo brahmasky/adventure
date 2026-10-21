@@ -275,7 +275,8 @@ tick, not in a turn. Signals (corrections, ratings, denials and expiries, planne
   outside it records `nothing` / `inapplicable_top` after the answer. Provisional bar 0.6. It reads only Paco's redacted words
   (`redactForImprove`), never tool text.
 - **Tiny pick** (audit role `improve_pick`) chooses among Jev's two best applicable options when the top is applicable but
-  under the bar. Its answer records `tiny_pick`; a failed pick records `nothing` / `below_bar`.
+  under the bar. Its answer records `tiny_pick`; a failed pick, or a word outside the two, is an abstention, so the row
+  records `nothing` on the `fail` rung with no reason code (abstentions set none; `improve-sanity.mjs` counts these).
 - **Effects.** The only automatic one is the `_pending` skill draft. Everything else is a proposal: a tap on the digest,
   nothing applied before Accept.
 
