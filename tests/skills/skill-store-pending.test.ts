@@ -95,3 +95,24 @@ describe("promotion and dismissal edge cases", () => {
     expect(s.pendingExists("ask", "z")).toBe(true);
   });
 });
+
+describe("keep_both retry and exhaustion", () => {
+  it("a crash after writing x-2 but before unlinking the pending copy: the retry reuses x-2, creates no x-3, removes the pending copy", () => {
+    const s = fresh();
+    s.writeSkill("ask", "x", file("x", "old"));
+    const pending = file("x", "new");
+    s.writePending("ask", "x", pending);
+    s.writeSkill("ask", "x-2", setFrontmatterFields(pending, { name: "x-2" })); // the crashed first attempt
+    expect(s.promotePending("ask", "x", { onCollision: "keep_both", now: NOW })).toMatchObject({ ok: true, name: "x-2" });
+    expect(existsSync(join(s["root"], "ask", "x-3.md"))).toBe(false);
+    expect(s.pendingExists("ask", "x")).toBe(false);
+  });
+  it("no_free_name: x and x-2..x-9 all taken by other content leaves the pending file in place", () => {
+    const s = fresh();
+    s.writeSkill("ask", "x", file("x", "old"));
+    for (let n = 2; n <= 9; n += 1) s.writeSkill("ask", `x-${n}`, file(`x-${n}`, "other"));
+    s.writePending("ask", "x", file("x", "new"));
+    expect(s.promotePending("ask", "x", { onCollision: "keep_both", now: NOW })).toEqual({ ok: false, error: "no_free_name" });
+    expect(s.pendingExists("ask", "x")).toBe(true);
+  });
+});
