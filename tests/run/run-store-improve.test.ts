@@ -116,7 +116,7 @@ describe("readers", () => {
     verdict(s, b.run_id, "lookup", "lookup");
     expect(s.listAbandonTurns("2026-01-01T00:00:00.000Z").map((t) => [t.role, t.lane])).toEqual([["user", "lookup"], ["assistant", "lookup"], ["user", "lookup"]]);
     expect(s.assistantTurnTextForRun(a.run_id)).toBe("Here it is.");
-    expect(s.latestJevVerdictForChatExcluding("555", "2027-01-01T00:00:00.000Z", b.run_id)?.run_id).toBe(a.run_id);
+    expect(s.latestJevVerdictForChatExcluding("555", new Date(Date.now() + 60_000).toISOString(), b.run_id)?.run_id).toBe(a.run_id);
   });
   it("listExpiredApprovalsOnSchedules joins expired tool approvals to schedule-born runs and their schedule id", () => {
     const s = RunStore.openInMemory();

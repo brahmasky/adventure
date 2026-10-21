@@ -1,11 +1,11 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { RunStore } from "../../src/run/run-store.js";
-import { createQueuedTurnRun, createTelegramTurn } from "../helpers/runs.js"; // drop whichever a file does not use
+import { createQueuedTurnRun } from "../helpers/runs.js";
 
 // Spec 2b-ii §2 (codex F4, round 4): every writer of a run_failed ledger event calls noteFailedPlannerRun in the same batch,
-// so every failure path (ompFail, lease recovery, stranded turns, refuseOmpTurn, any later one) feeds the inbox without a
-// seam list in the worker. The grep pins it; the behaviour test covers finishRun and failExpiredPlannerRow.
+// so the owner-checked paths (finishRun, lease recovery) feed the inbox without a seam list in the worker; recordRunFailed
+// passes a null worker id (ruling 12), so it writes no row. The grep pins it; the behaviour test covers finishRun and failExpiredPlannerRow.
 describe("planner_failed producer", () => {
   it("every \"run_failed\" write in run-store.ts is followed by noteFailedPlannerRun within 12 lines", () => {
     const lines = readFileSync("src/run/run-store.ts", "utf8").split("\n");
@@ -30,7 +30,7 @@ describe("planner_failed producer", () => {
     const s = RunStore.openInMemory();
     const a = createQueuedTurnRun(s, "a");
     s.claimRun(a, "planner:555", 1);
-    expect(s.recoverExpiredPlannerLeases("2026-12-31T00:00:00.000Z")).toHaveLength(1);
+    expect(s.recoverExpiredPlannerLeases(new Date(Date.now() + 5_000).toISOString())).toHaveLength(1);
     expect(s.listUnconsumedSignals(10).map((r) => [r.signal, r.value])).toEqual([["planner_failed", "lease_expired"]]);
     expect(s.getLedgerEvents(a).some((e) => e.event_type === "run_failed")).toBe(true);
   });
