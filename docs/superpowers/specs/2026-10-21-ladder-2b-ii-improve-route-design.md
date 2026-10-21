@@ -1,6 +1,6 @@
 # Decision ladder stage 2b-ii: `improve.route` — design
 
-**Status:** Rev 3, 2026-10-21 (Rev 1 + the senior review's probes + the codex design pass, §12). Parent spec: [2026-10-12-decision-ladder-design.md](2026-10-12-decision-ladder-design.md) §7.4 (the
+**Status:** Rev 4, 2026-10-21 (Rev 1 + the senior review's probes + codex rounds 1–2, §12). Parent spec: [2026-10-12-decision-ladder-design.md](2026-10-12-decision-ladder-design.md) §7.4 (the
 entry), §8 (the surface), §13 (stage 2b). Sibling: [2026-10-19-ladder-2b-hooks-settle-design.md](2026-10-19-ladder-2b-hooks-settle-design.md)
 (2b-i, merged 2026-10-21 at `139b501`). ADR 0030 decision 8 ("Improvement as a decision"). Facts below were read at
 `61b8a5e`.
@@ -123,7 +123,7 @@ decision of its group (`source: "code"`), so every signal ends as an outcome row
 | `rating` | **at rating capture** in the gateway (`gateway.ts:372-379`, before `processRatingSignal`, which returns early for ratings above 1 and receives no run id): `about_run_id` = `latestJevVerdictForChat(chat_id, now).run_id`; none → an `improve_signal_skipped` event, no row | the chat's latest planner run | 0–3 (exists) |
 | `approval_denied` | `gateway.handleApproval` after `processApprovalTrigger` resolved `denied` | the run | `CAPABILITY_NAME` = `/^[a-z][a-z0-9_]{0,39}$/` (the tool registry name) |
 | `approval_expired` | `bridge-handler.ts:361` **only when `outcome === "expired"`** (an abort is not Paco's silence) | the run | same |
-| `planner_failed` | one producer `noteRunFailed(store, run_id, error_type)` called at **every** seam that fails a planner run: `CoreWorker.ompFail` after `finishRun` returned true, `recoverPlannerLeases` (`lease_expired`, which never reaches `ompFail`: `run-store.ts:2331`, `core-worker.ts:2308`), and `failStrandedTurns` if it does not route through `ompFail` (the plan checks); a test greps every `finishRun({next: "failed"` call site and asserts the producer follows it | the run | `PLANNER_FAILED_VALUES` = the `error_type` strings `finishRun` is called with: the `PlannerFailure` union plus `model_error`, `killed` (P1: 30 days show `planner_exit`, `merged_parent_failed`, `model_error`, `killed`); unknown → `other`; pinned by a test that greps every `finishRun({next: "failed"` call's literal |
+| `planner_failed` | **inside `RunStore.finishRun`** when `next === "failed"` and the run's `source` is `telegram`: the store inserts the inbox row in the same statement batch as the `run_failed` ledger event, so every failure path (`ompFail`, `recoverPlannerLeases`, `failStrandedTurns`, `refuseOmpTurn` at `core-worker.ts:2343`, any later one) is covered without a seam list (codex F4, round 2) | the run | `PLANNER_FAILED_VALUES` = the `error_type` strings `finishRun` is called with: the `PlannerFailure` union plus `model_error`, `killed` (P1: 30 days show `planner_exit`, `merged_parent_failed`, `model_error`, `killed`); unknown → `other`; pinned by a test that greps every `finishRun({next: "failed"` call's literal |
 | `recurrence` | the tick (§3.3) | the cluster's newest run | 1–10 000 (exists) |
 | `abandoned` | the tick (§3.4) | A's run | `DIG_DEEPER_VALUES` (lanes; exists as a list) |
 | `review_unsure` | none (the digest no longer offers ✅/❌; R1) | — | entry id (exists) |
@@ -149,27 +149,30 @@ daemon's stop signal and returns early between model calls (lessons.md 2026-10-0
 
 ```
 improve_ticks(local_date TEXT PRIMARY KEY, started_at, finished_at, result TEXT CHECK(running|done|stopped|failed), detail_json)
-improve_cursor(id INTEGER PRIMARY KEY CHECK(id = 1), inbox_signal_id INTEGER NOT NULL, outcome_created_at TEXT NOT NULL, outcome_rowid INTEGER NOT NULL)
+improve_cursor(id INTEGER PRIMARY KEY CHECK(id = 1), outcome_created_at TEXT NOT NULL, outcome_rowid INTEGER NOT NULL)
 ```
 
-latch a date and hold the two cursors: inbox rows by their autoincrement id, `decision_outcomes` rows by `(created_at,
-rowid)` (P7: `outcome_id` is `do_<uuid v4>`, random, not a cursor). **Commit boundary** (codex D3): model calls (Jev,
-Tiny, distill) run outside any transaction; then **one transaction per group** writes the decision row, its outcome
-rows, the proposal or queued job, `consumed_at` on the group's inbox rows, and advances both cursors past the group's
-newest input row. Groups are processed in input order, so the cursor never passes an unhandled row; a crash mid-tick
-loses nothing (the next loop cycle finds the date latch `running` and resumes from the cursors; already-committed groups
-are not redone). The date latch becomes `done` in the last transaction. The 40-group cap stops the loop: input after the
-40th group stays unconsumed and ahead of the cursors for tomorrow. A missed day (daemon down at 21:00) runs at the next
-loop cycle after the due time. Ledger events `improve_tick{phase: start|end, counts}` (`run_id` null) bracket every
-run, so a tick that died mid-way is visible.
+**The inbox is the tick's only input** (codex round 2 N1). Step 1, the *mirror*: one transaction copies every
+`decision_outcomes` row after the outcome cursor `(created_at, rowid)` (P7: `outcome_id` is `do_<uuid v4>`, random,
+not a cursor) into `improve_signals` (`source_outcome_id` set; rows on `improve.route`'s own decisions and on
+schedule-born runs other than `approval_expired` are skipped) and advances the cursor past the last row read. The
+mirror reads rows in order and groups nothing, so the cursor never passes an unread row. Step 2 works on inbox rows
+with `consumed_at IS NULL` (the oldest 500 per tick), grouped (§3.2); **a deferred group's rows stay unconsumed** and
+are read again tomorrow (durable retry); a row unconsumed for 30 days is consumed as `nothing` / `stale`. **Commit
+boundary** (codex D3): model calls (Jev, Tiny, distill) run outside any transaction; then **one transaction per group**
+writes the decision row, its outcome rows (one per inbox row, `source: "code"`), the proposal or queued job, and
+`consumed_at` on the group's rows. A crash mid-tick loses nothing: the next loop cycle finds the date latch `running`
+and runs step 2 again over what is still unconsumed; committed groups are not redone. The date latch becomes `done` in
+the last transaction. A missed day (daemon down at 21:00) runs at the next loop cycle after the due time. Ledger events
+`improve_tick{phase: start|end, counts}` (`run_id` null) bracket every run, so a tick that died mid-way is visible.
 
 ### 3.2 Input and grouping
 
-New readers `listDecisionOutcomesAfter(cursor, limit)` (joins `decision_outcomes` with `decisions` for `entry_id`,
-`run_id` and with `runs` for `source`; **rows whose decision is `improve.route`'s own are excluded**, codex D2) and
-`listUnconsumedSignals(limit)` (the inbox). The chat of a row is the inbox row's `chat_id`, else the run's
-`chat_turns.chat_id` (`runs` has no chat column, codex F3), else the operator chat (`allowlist.chats[0]`). Rows from
-schedule-born runs are dropped except `approval_expired` (R11). Rows are grouped by **(signal, scope)** where scope is:
+Readers: `listDecisionOutcomesAfter(cursor, limit)` for the mirror (joins `decision_outcomes` with `decisions` for
+`entry_id`, `run_id` and with `runs` for `source`; **rows whose decision is `improve.route`'s own are excluded**, codex
+D2) and `listUnconsumedSignals(limit)` for step 2. The chat of a row is the inbox row's `chat_id`, else the run's
+`chat_turns.chat_id` (`runs` has no chat column, codex F3), else the operator chat (`allowlist.chats[0]`). Schedule-born
+runs are dropped at the mirror except `approval_expired` (R11). Rows are grouped by **(signal, scope)** where scope is:
 the category for `correction`, `think_harder`, `dig_deeper`; `category + value` for `rating` (a 0 and a 3 are not one
 group, codex D13); the capability for `approval_*`; the failure kind for `planner_failed`; the reason for `settle_*`;
 the entry id for `review_*`. One `improve.route` decision per group (`run_id` = the group's newest run, so `/status
@@ -213,10 +216,12 @@ P1), and B's run did not route to the memory lane (a "记下来" after a reply i
 
 ### 3.5 Rate and cost
 
-Per tick: at most 40 groups, at most one Jev call per group (`improve_target`), at most one Tiny call per group below the
-bar, at most **3 automatic effects a day** (skill jobs started; the rest of the clusters record `deferred_rate` and
-try tomorrow). Expected volume from the 2b-i sanity window: 5–15 signals a day → 3–8 groups, under TypeSafe's limits
-at 10× (parent P5).
+Per tick: at most 40 groups get model calls, at most one Jev call per group (`improve_target`), at most one Tiny call
+per group below the bar, at most **3 automatic effects a day** (skill jobs started). A group beyond the 40 or a cluster
+beyond the 3 is **not consumed and gets no decision row** (its rows stay in the inbox, §3.1; `detail_json.deferred`
+counts it; a `recurrence` cluster is recomputed tomorrow from the window anyway), so "try tomorrow" has durable input
+(codex round 2 N1). Expected volume from the 2b-i sanity window: 5–15 signals a day → 3–8 groups, under TypeSafe's
+limits at 10× (parent P5).
 
 ## 4. The entry
 
@@ -271,11 +276,14 @@ Verdicts = `ImproveTarget`. Reason codes: `stated_rule_owned`, `recurrence`, `re
    wording). The question is **one fixed question** (one criteria hash, one bar; codex D15): every option is always
    offered, and the state carries `applicable: ImproveTarget[]` (`knowledge` only when the wiki is armed, `skill` only
    with a recurrence and no existing skill, `schedule` only with a hint) so the instructions say which targets Houge can
-   act on today. **Masking after the answer:** the verdict is the top *applicable* option; if the overall top option was
-   inapplicable, the top applicable one must itself clear the bar, else abstain. State sent: the `ImproveState` minus
-   `pacoText` plus `redacted.pacoText` (§7's durable redaction). Bar: `IMPROVE_BAR` provisional `p = 0.6` (R8),
-   `recordedP: "improve_target"`, timeout 1 500 ms client + 500 ms outer. Answer: the top applicable option when its
-   probability ≥ bar → that target / `jev_choice`; else abstain with `detail.top2` (the two best applicable options).
+   act on today. **Masking after the answer** (codex round 2 N3): the verdict is the overall top option when it is
+   applicable and its probability ≥ bar → that target / `jev_choice`; an inapplicable overall top option → abstain
+   with reason `inapplicable_top` (probabilities sum to 1, so no runner-up can clear a 0.6 bar; the Watch line counts
+   these, and a rising count means the instructions' "applicable today" list is not being read); an applicable top
+   below the bar → abstain with `detail.top2` (the two best applicable options) for the Tiny rung. The row's `p` is the
+   overall top option's probability (`recordedP: "improve_target"` names the question, as `turn.settle`'s names
+   `settle`). State sent: the `ImproveState` minus `pacoText` plus `redacted.pacoText` (§7's durable redaction). Bar:
+   `IMPROVE_BAR` provisional `p = 0.6` (R8), timeout 1 500 ms client + 500 ms outer.
 3. **Model** `{kind: "model", role: "tiny"}`: below the bar, `tickSeat(store, "improve", "improve_pick", env, chains)`
    (new `LlmCallRole` `improve_pick`, ticks chain) asks for **one word among Jev's top two** with the same redacted state
    rendered as text; 8 s bound; an answer that is not one of the two → abstain. Verdict / `tiny_pick`.
@@ -321,12 +329,23 @@ proposal per (target, scope): a second one on the same scope is recorded `nothin
 reason code). Open proposals older than 14 days become `expired` at the next tick, silently.
 
 `offered_at` is set when the digest (or a card) carrying the proposal is enqueued, in the same transaction as the
-outbox row; a tap on a proposal with `offered_at` null answers "Already handled." (codex D9: no `offered_json` list).
-Callbacks `dec:pr:<proposal_id>:acc|dis|rev` (≤ 64 bytes; `pr_` + uuid), parsed by `parseImprovementCallback` after the
-sender allowlist, as `dec:rv:` is; handled in `src/gateway/improvement-commands.ts` under `oncePerTrigger`. `acc` and
-`dis` act only on `open`; **`rev`** (schedule only) acts only on `accepted` within 14 days of `resolved_at` and restores
-`before` (`updateScheduledTask`), state `reverted` (codex D8). Any other state, an unknown id, or an id older than 14
-days answers "Already handled." and writes nothing. Accept runs the handler **inside the same transaction as the state
+outbox row (§6.1); a tap on a proposal with `offered_at` null answers "Already handled." (codex D9: no `offered_json`
+list). **Tap history** (codex round 2 N4): `paco_callback_id` leaves the proposals and jobs tables; every handled tap is
+a row of
+
+```
+improvement_taps(tap_id TEXT PK, subject_kind TEXT CHECK(proposal|job|move), subject_id TEXT NOT NULL, action TEXT NOT NULL,
+  telegram_callback_id TEXT NOT NULL UNIQUE, result TEXT NOT NULL, created_at)
+```
+
+so Accept and a later Revert are two rows on one proposal. Callbacks `dec:pr:<proposal_id>:acc|dis|rev` (≤ 64 bytes;
+`pr_` + uuid), parsed by `parseImprovementCallback` after the sender allowlist, as `dec:rv:` is; handled in
+`src/gateway/improvement-commands.ts` under `oncePerTrigger`, whose replay is **per Telegram callback id** (a retried
+delivery of the same tap gets the same stored result; that is correct: the same tap, the same answer): a *new* callback
+id is never a replay and is checked against the current state. `acc` and `dis` act only on `open`; **`rev`** (schedule
+only) acts only on `accepted` within 14 days of `resolved_at` and restores `before` (`updateScheduledTask`), state
+`reverted` (codex D8). Any other state, an unknown id, or an id older than 14 days answers "Already handled." and
+writes only the tap row. Accept runs the handler **inside the same transaction as the state
 change** where the handler is a store write (lesson, fact, schedule, ladder); for `skill` and `tool_gap` the state
 changes first and the effect follows (a crash leaves `accepted` with no job: the next tick's `reconcileAccepted` starts
 it, idempotent on `proposal_id`).
@@ -347,16 +366,22 @@ inserts `queued`; `runQueuedJob(job)` sets `running` with `attempt + 1` and call
 60 000, run: () => authorPendingSkill(job, attempt), onTimeout, onError, deliver})`; `false` (lane busy) → back to
 `queued` / `lane_busy`, retried next tick (a `queued` job older than 3 days → `failed` / `lane_busy`).
 
-**Restart and fencing** (codex D5): every state write of the job carries the attempt token (`UPDATE … WHERE job_id = ? AND
-state = 'running' AND attempt = ?`), and `authorPendingSkill` checks the token before `writePending` and before
-`deliver`; a late promise after `onTimeout` (the lane released, the promise still working) finds `attempt` moved or
-`state` ≠ `running` and writes nothing, sends nothing. At boot, `reconcileJobs` marks every `running` job `failed` /
-`daemon_restart` (the lane is an in-memory singleton; nothing survives a restart) and enqueues the failed card; the
-cluster may author again only through a new job (same 30-day turn-overlap rule, §3.3). `deliver` enqueues the urgent
-card through `enqueueNotification` with `idempotency_key: improve_job:<job_id>:<attempt>:<state>` (not
-`enqueueEvolutionReportNotification`, which needs a run with a chat; the chat is the operator chat) and sets
-`offered_at` in the same transaction (§5.1's offer rule; codex D9). Every transition writes a ledger event
-`improvement_job{job_id, from, to, attempt, result_code?}` (`run_id` null).
+**Restart, fencing and delivery** (codex D5, round 2 N2). The lane calls `deliver` exactly once, with whichever of
+`run()`'s result, `onTimeout()`'s or `onError()`'s comes first (`evolution-lane.ts:84`). Each of the three ends with
+**one fenced transition** `UPDATE improvement_jobs SET state = ?, … WHERE job_id = ? AND state = 'running' AND attempt = ?`:
+`run()` → `pending_review` or `suggested` (after `writePending`, which itself runs only after a read that the fence
+still holds); `onTimeout()` → `failed` / `timeout`; `onError()` → `failed` / `<error code>`. The transition that
+updates one row is the one whose card is delivered; a transition that updates zero rows (the other side won) returns a
+no-op outcome and the lane's deliver-once guard drops it. A late `run()` after a timeout therefore writes no state, no
+file (its pre-write check fails), and no card; a `_pending` file written just before the timeout fence moved is
+orphaned and swept by `reconcileJobs` (a pending file with no `pending_review` job → `_retired`). At boot,
+`reconcileJobs` marks every `running` job `failed` / `daemon_restart` (the lane is an in-memory singleton; nothing
+survives a restart) and enqueues the failed card; the cluster may author again only through a new job (same 30-day
+turn-overlap rule, §3.3). `deliver` enqueues the card through `enqueueNotification` with `idempotency_key:
+improve_job:<job_id>:<attempt>:<state>` (not `enqueueEvolutionReportNotification`, which needs a run with a chat; the
+chat is the operator chat) and sets `offered_at` in the same transaction when the card carries buttons (§5.1's offer
+rule; codex D9). Every transition writes a ledger event `improvement_job{job_id, from, to, attempt, result_code?}`
+(`run_id` null).
 
 `authorPendingSkill(job, attempt)` (new, `src/core/skill-job.ts`, claim-less):
 - objective = Paco's request texts of the cluster joined (≤ 6 turns, `THREAD_USER_TURN_CAP`; `JOB_OBJECTIVE_CHAR_CAP =
@@ -438,7 +463,12 @@ three are empty:
    <goal> moved to H2:00 · 2 expiries at 11:00 [Revert]" (`dec:pr:<id>:rev`, §5.1), "ladder move <…> · 3 ❌ on
    <entry> [Revoke]".
 2. **Proposals waiting** — up to 8 open proposals, oldest first, each one line with its draft (≤ 120 chars, redacted)
-   and evidence, [Accept] [Dismiss]; a ninth and later are counted ("+N more"). `offered_at` is set for the eight shown.
+   and evidence, [Accept] [Dismiss]; a ninth and later are counted ("+N more"). **Offer transaction** (codex round 2
+   N6): `buildDecisionDigest` returns the ids it rendered (`offered: {proposal_ids, job_ids}`); `runDecisionDigestTick`'s
+   existing transaction (`digest.ts:251`: enqueue, then latch) sets `offered_at = now` on exactly those ids **after
+   `enqueueNotification` reported the row inserted**; a deduped enqueue (the day's idempotency key already used) sets
+   nothing, and an id whose `offered_at` is already set keeps its first value. The transaction is atomic, so a crash
+   leaves either the message, the latch and the offers, or none of them.
 3. **Watch** — one line each, 7-day numbers: corrections · abandoned · clarify rate (assistant turns `intent = clarify`
    over all assistant turns, the A27 cap stays) · unattached signals · deferred (rate limit) · silent signals
    (`review_unsure`, `lesson_unfollowed`, and `dig_deeper` if zero in 7 days) · "wiki disarmed: N topics" · "embeddings
@@ -479,10 +509,14 @@ handled." on a second tap, a state the action does not apply to, an unknown or s
 - **Rate:** 3 automatic effects a day; 40 groups a tick; 8 proposals shown; one open proposal per (target, scope); one job
   per cluster per 30 days.
 - **Egress, from durable data** (codex D10: a turn's `extracted` codes and links live in a `WeakMap` on the live turn
-  and are gone by the next day): one function `redactForImprove(store, text)` = `redactForJudge(text, { known:
-  store.redactSecretValues, linkTokens: true, codeShapes: true })`, where `codeShapes` is a new option of the judge
-  redactor that masks OTP-shaped runs (6–8 digits, or 4–8 alphanumerics after `code`/`码`/`OTP`) the way the extracted
-  codes were masked live. Jev reads `redacted.pacoText` only (Paco's own words); Tiny reads the same; the distill's
+  and are gone by the next day): one function `redactForImprove(store, text)` = `redactForJudge(text, { brokerRedact: (s)
+  => store.redactSecretValues(s), linkTokens: true, codeShapes: true })` (`RedactOptions` has `brokerRedact`, `known`,
+  `extracted`, `linkTokens` today, `egress.ts:30-39`), where **`codeShapes`** is a new boolean option of the judge
+  redactor implemented as one more masking rule in its named-pattern pass (beside the credential-shape rules): a
+  standalone run of 6–8 digits (`(?<![\w.-])\d{6,8}(?![\w.-])`; dates such as `20261021` are over-masked, accepted),
+  and 4–8 alphanumerics after a code word (`(?:code|OTP|verification|验证码|校验码|码)\s*[:：]?\s*([A-Za-z0-9]{4,8})`,
+  case-insensitive); masked as `SECRET_MASK`, mirrored to the planner copy like every mask; off by default so no
+  existing caller changes. Tests: the two shapes mask, a 5-digit and a 9-digit run do not, the option off leaves them. Jev reads `redacted.pacoText` only (Paco's own words); Tiny reads the same; the distill's
   `prior` and every draft and evidence line the digest or a card shows go through the same function; tool text never
   leaves except inside a clean turn's reply as `prior` to the in-house distill (§5.1). Tests plant an OTP, a link and a
   known secret value in Paco's text and assert all three are masked in the Jev request, the Tiny prompt, the distill
@@ -615,3 +649,15 @@ fixed question, masking after the answer (§4.3).
 
 Parent gaps: P1 fact handler → R9; P2 model-route proposals → R10; P3 evidence on the daily line → `evidence` (§5.1,
 §6.1).
+
+### Round 2, codex scoped verification (2026-10-21, over Rev 3 at `5f85850`; Rev 3 → Rev 4)
+
+Closed 18 of 25. Open and new, fixed in Rev 4: F4 `refuseOmpTurn`'s direct `finishRun` → the producer lives inside
+`finishRun` (§2); D3/N1 cursor could pass an interleaved row and a deferred group had no durable input → the inbox is
+the only input, outcomes are mirrored in order, deferred groups stay unconsumed (§3.1, §3.5); D5/N2 timeout vs the
+lane's deliver-once → one fenced transition per ending, the winner's card is delivered (§5.2); D8/N4 one callback id
+and `oncePerTrigger` replay → `improvement_taps` rows per callback id, replay only for the same id (§5.1); D9/N6 offer
+outside the digest transaction → `offered_at` set in it after the enqueue reported inserted (§6.1); D10/N5 wrong
+redactor option and an undefined `codeShapes` → `brokerRedact`, and the rule defined with its tests (§7); D15/N3 masked
+runner-up could not clear the bar → an inapplicable top abstains with `inapplicable_top`, `p` is the top option's
+probability (§4.3).
