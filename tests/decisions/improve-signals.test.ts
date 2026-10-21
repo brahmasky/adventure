@@ -46,6 +46,16 @@ describe("recordImproveSignal", () => {
     expect(s.listUnconsumedSignals(5).map((r) => [r.signal, r.value, r.about_run_id, r.chat_id])).toEqual([["approval_denied", "shell_external", a, "555"], ["approval_expired", "shell_external", a, "555"]]);
     expect(skipped(s)).toEqual([{ signal: "approval_expired", code: "no_capability", run_id: a }]);
   });
+  it("a repeated denial of one approval (a redelivered /deny) leaves one row and no skipped event", () => {
+    const s = RunStore.openInMemory();
+    const a = createQueuedTurnRun(s, "a");
+    const id = s.createToolApproval({ run_id: a, worker_id: "planner:555", tool_call_id: "c1", capability: "shell_external", input_hash: "h", action_fingerprint: "f",
+      requester: { kind: "user", id: "paco" }, summary: "ls", side_effect_level: "external_write", expires_at: "2026-10-21T11:00:00.000Z" }).approval_id;
+    expect(recordApprovalDenied(s, { run_id: a, approval_id: id, chat_id: "555", now: NOW })).toBe(true);
+    expect(recordApprovalDenied(s, { run_id: a, approval_id: id, chat_id: "555", now: NOW })).toBe(false);
+    expect(s.listUnconsumedSignals(5)).toHaveLength(1);
+    expect(skipped(s)).toEqual([]);
+  });
   it("the call sites exist: the memory lane's fix hand-off, the ask-anyway tap, the escalation end, the low rating, the rating capture, the denial, the expiry", () => {
     const worker = readFileSync("src/core/core-worker.ts", "utf8"); const gateway = readFileSync("src/gateway/gateway.ts", "utf8");
     const memlane = readFileSync("src/gateway/memlane-commands.ts", "utf8"); const bridge = readFileSync("src/omp/bridge-handler.ts", "utf8");
@@ -53,7 +63,8 @@ describe("recordImproveSignal", () => {
     expect(memlane).toContain("recordCorrection(");                                          // ask_anyway
     expect((gateway.match(/recordCorrection\(/g) ?? []).length).toBeGreaterThanOrEqual(1);   // low_rating
     expect(gateway).toContain("signal: \"rating\"");
-    expect(gateway).toContain("recordApprovalDenied(");
+    expect(gateway).toContain("if (decision === \"denied\") recordApprovalDenied(");
+    expect(bridge).toContain("if (outcome === \"expired\") recordApprovalExpired(");
     expect(bridge.indexOf("recordApprovalExpired(")).toBeGreaterThan(bridge.indexOf("expireToolApproval("));
   });
 });

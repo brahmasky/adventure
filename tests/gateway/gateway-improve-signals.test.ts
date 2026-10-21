@@ -36,8 +36,10 @@ describe("gateway producers", () => {
     const claim = s.claimRun(run_id, "planner:555", 60)!;
     const approval = s.createToolApproval({ run_id: claim.run_id, worker_id: "planner:555", tool_call_id: "c1", capability: "shell_external", input_hash: "h", action_fingerprint: "f",
       requester: { kind: "user", id: "paco" }, summary: "ls", side_effect_level: "external_write", expires_at: "2099-01-01T00:00:00.000Z" }); // the event's created_at is the real clock; resolution refuses an expired approval
-    const r = new Gateway(s).intake(event("deny", "", { approval_id: approval.approval_id }), NOW);
-    expect(r).toMatchObject({ ok: true, status: "approval_resolved" });
+    const deny = event("deny", "", { approval_id: approval.approval_id });
+    const g = new Gateway(s);
+    expect(g.intake(deny, NOW)).toMatchObject({ ok: true, status: "approval_resolved" });
+    expect(g.intake(deny, NOW)).toMatchObject({ ok: true, status: "approval_resolved" }); // a redelivered update replays the cached result; still one row
     expect(rows(s)).toEqual([["approval_denied", "shell_external", run_id]]);
   });
 });

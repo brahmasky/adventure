@@ -3250,12 +3250,6 @@ export class CoreWorker {
     return { settled: true, save_outcome: "saved", note: memoryInformNote(w.saved), verdict_id: v.id, saved: w.saved, w };
   }
 
-  /**
-   * A save on a planner or memory route: save first, then the route's handler. A memory-lane save ends at the card; any
-   * other category is the planner with the [memory] note. memory.kind said fix or nothing on the memory lane: the planner,
-   * reason `fix` / `memory_other` (spec Rev 3 §3). Not saved otherwise: the turn proceeds as if sets_rule were no (a memory
-   * turn falls through, `fallback`, with the attempted save's outcome).
-   */
   /** 2b-ii §2 (a): a memory-lane fix corrects the chat's PREVIOUS turn: the latest verdict that is not this run's (codex B6); none, skipped no_run. */
   private noteFixCorrection(run_id: string): void {
     const chat = this.chatOf(run_id);
@@ -3264,6 +3258,12 @@ export class CoreWorker {
     recordCorrection(this.runStore, { about: prev, run_id, chat_id: chat });
   }
 
+  /**
+   * A save on a planner or memory route: save first, then the route's handler. A memory-lane save ends at the card; any
+   * other category is the planner with the [memory] note. memory.kind said fix or nothing on the memory lane: the planner,
+   * reason `fix` / `memory_other` (spec Rev 3 §3). Not saved otherwise: the turn proceeds as if sets_rule were no (a memory
+   * turn falls through, `fallback`, with the attempted save's outcome).
+   */
   private async saveThenRoute(i: TriageInput, state: OmpTurnState, lang: Lang, route: Route, settleFor: SettleFor, held: TriageHeld): Promise<TriageOutcome> {
     const s = await this.saveFirst(i, state, lang, route, settleFor);
     const q = quoteField(held.quote);

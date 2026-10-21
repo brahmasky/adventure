@@ -45,7 +45,8 @@ function approvalSignal(store: RunStore, signal: "approval_denied" | "approval_e
     if (!capability) { skipImproveSignal(store, signal, "no_capability", i.run_id); return false; }
     if (signal === "approval_denied" && store.runSource(i.run_id) === "schedule") return false;
     const chat_id = i.chat_id ?? chatOfRun(store, i.run_id);
-    return recordImproveSignal(store, { signal, value: capability, run_id: i.run_id, chat_id, about_run_id: i.run_id, ...(i.now ? { created_at: i.now } : {}) });
+    return recordImproveSignal(store, { signal, value: capability, run_id: i.run_id, chat_id, about_run_id: i.run_id,
+      source_outcome_id: `${signal === "approval_denied" ? "deny" : "exp"}:${i.approval_id}`, ...(i.now ? { created_at: i.now } : {}) });
   } catch (e) {
     console.error(`[improve] signal skipped: ${signal} (store_error: ${errorCode(e)})`);
     skipImproveSignal(store, signal, "store_error", i.run_id);
