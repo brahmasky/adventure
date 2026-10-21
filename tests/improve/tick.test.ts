@@ -128,20 +128,24 @@ describe("runImproveTick", () => {
     const ac = new AbortController();
     const client = vi.fn(async (req: JevRequest) => { ac.abort(); return jev({ lesson: 0.8 })(req); }); // the abort lands DURING the first group's call
     const r = await runImproveTick(deps(s, { signal: ac.signal, client }));
-    expect(r).toMatchObject({ ran: true, result: "stopped", counts: { decided: 1 } });                  // ruling 17: a decided group always commits
+    // the stop also fails the first group's distill call (seats answer {ok:false} once stopped): final fix D1 defers that group, unconsumed
+    expect(r).toMatchObject({ ran: true, result: "stopped", counts: { decided: 0, deferred_outage: 1 } });
     expect(s.getImproveTick("2026-10-21")?.result).toBe("stopped");
-    expect(s.listUnconsumedSignals(10)).toHaveLength(1);
-    expect(await runImproveTick(deps(s, { client: jev({ lesson: 0.8 }) }))).toMatchObject({ ran: true, result: "done", counts: { decided: 1 } });
+    expect(s.listUnconsumedSignals(10)).toHaveLength(2);
+    // final fix E4: the resumed segment adds to the stored counts of the date
+    expect(await runImproveTick(deps(s, { client: jev({ lesson: 0.8 }) }))).toMatchObject({ ran: true, result: "done", counts: { decided: 2, deferred_outage: 1 } });
     expect(s.getImproveTick("2026-10-21")?.result).toBe("done");
   });
   it("a per-cycle time budget ends the call stopped after the running group; the next cycle resumes", async () => {
     const s = RunStore.openInMemory();
     correction(s); correction(s, "find me the march invoice again", "lookup");
     let t = 0;
-    const clock = () => (t += 5_000);   // every read of the clock is 5 s later: the first group fits a 10 s budget, the second does not (no real timing: flake-free)
-    const r = await runImproveTick(deps(s, { budgetMs: 9_000, clock }));   // reads: 5 000 at start, 10 000 before group 1 (5 000 elapsed ≤ 9 000), 15 000 before group 2 (10 000 > 9 000 → stopped)
+    const clock = () => (t += 5_000);   // every read of the clock is 5 s later (no real timing: flake-free)
+    // reads: 5 000 at start, 10 000 after recurrence and 15 000 after the produce phase (final fix E2), 20 000 before group 1 (15 000 ≤ 19 000), 25 000 before group 2 (20 000 > 19 000 → stopped)
+    const r = await runImproveTick(deps(s, { budgetMs: 19_000, clock }));
     expect(r).toMatchObject({ ran: true, result: "stopped", counts: { decided: 1 } });
-    expect(await runImproveTick(deps(s))).toMatchObject({ ran: true, result: "done", counts: { decided: 1 } });
+    expect(await runImproveTick(deps(s))).toMatchObject({ ran: true, result: "done", counts: { decided: 2 } });   // final fix E4: counts of one date accumulate
+    expect(s.listUnconsumedSignals(10)).toEqual([]);
   });
   it("a second open proposal on one (target, scope) is not inserted: the row records nothing/already_proposed (ruling 6); a failed draft records nothing/no_text", async () => {
     const s = RunStore.openInMemory();
@@ -261,5 +265,36 @@ describe("runImproveTick", () => {
     expect(r).toMatchObject({ ran: true, counts: { stale: 0, deferred_outage: 1 } });
     expect(s.listUnconsumedSignals(10).map((x) => x.signal)).toEqual(["recurrence"]);
     expect(s.listDecisionsBetween("2026-01-01T00:00:00.000Z", "2027-01-01T00:00:00.000Z").filter((x) => x.entry_id === "improve.route")).toEqual([]);
+  });
+  it("E2: a produce phase that uses up the budget stops before abandonment and before the inbox is read; the next cycle resumes", async () => {
+    const s = RunStore.openInMemory();
+    correction(s);
+    let t = 0;
+    const clock = () => (t += 5_000);   // start 5 000; after recurrence 10 000 (5 000 elapsed > 4 000): stopped
+    const abandon = vi.spyOn(s, "listAbandonTurns");
+    const r = await runImproveTick(deps(s, { budgetMs: 4_000, clock }));
+    expect(r).toMatchObject({ ran: true, result: "stopped", counts: { groups: 0, decided: 0 } });
+    expect(abandon).not.toHaveBeenCalled();
+    expect(s.listUnconsumedSignals(10)).toHaveLength(1);
+    expect(await runImproveTick(deps(s))).toMatchObject({ ran: true, result: "done", counts: { decided: 1 } });
+  });
+  it("E3: a seat call that never answers is cut at the seat deadline (its signal aborts) and the group is deferred, not stuck", async () => {
+    const s = RunStore.openInMemory();
+    correction(s);
+    let seen: AbortSignal | undefined;
+    const hung = vi.fn((i: { question: string; system: string; signal?: AbortSignal }) => { seen = i.signal; return new Promise<{ ok: true; answer: string }>(() => {}); });
+    const r = await runImproveTick(deps(s, { seatDeadlineMs: 30, llm: { ...deps(s).llm, distill: hung } }));
+    expect(r).toMatchObject({ ran: true, result: "done", counts: { deferred_outage: 1 } });
+    expect(seen?.aborted).toBe(true);
+    expect(s.listUnconsumedSignals(10)).toHaveLength(1);
+  });
+  it("E4: counts accumulate across resumed segments of one local date, and the 40-group cap is per date, not per segment", async () => {
+    const s = RunStore.openInMemory();
+    correction(s);
+    s.beginImproveTick("2026-10-21", NOW); s.finishImproveTick("2026-10-21", "stopped", { decided: IMPROVE_GROUPS_PER_TICK, record_failed: 2, proposals: 5 }, NOW);
+    const r = await runImproveTick(deps(s));
+    expect(r).toMatchObject({ ran: true, result: "done", counts: { decided: IMPROVE_GROUPS_PER_TICK, deferred: 1, record_failed: 2, proposals: 5 } });
+    expect(s.getImproveTick("2026-10-21")?.detail).toMatchObject({ decided: IMPROVE_GROUPS_PER_TICK, deferred: 1, record_failed: 2, proposals: 5 });
+    expect(s.listUnconsumedSignals(10)).toHaveLength(1);
   });
 });

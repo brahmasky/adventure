@@ -96,3 +96,23 @@ describe("computeRecurrence and recordRecurrenceSignals", () => {
     expect(r.embedUnavailable).toBe(3);
   });
 });
+
+describe("ensureEmbeddings loop safety (final fix E1)", () => {
+  const turns = (n: number) => Array.from({ length: n }, (_, k) => ({ turn_id: `t${k}`, text: `turn ${k}` }));
+  it("after the first null from the embedder every remaining missing turn counts unavailable without another call (a wedged Ollama costs one timeout, not one per turn)", async () => {
+    const embed = vi.fn(async () => null);
+    const r = await ensureEmbeddings(RunStore.openInMemory(), turns(5), embed, "m", "2026-10-21T10:00:00.000Z");
+    expect(embed).toHaveBeenCalledTimes(1);
+    expect(r.unavailable).toBe(5);
+  });
+  it("embeds at most 50 turns per call; the rest are unavailable this tick and stored ones are not embedded again", async () => {
+    const s = RunStore.openInMemory();
+    const embed = vi.fn(async () => Float32Array.from([1, 0]));
+    const r = await ensureEmbeddings(s, turns(60), embed, "m", "2026-10-21T10:00:00.000Z");
+    expect(embed).toHaveBeenCalledTimes(50);
+    expect(r.unavailable).toBe(10);
+    const again = await ensureEmbeddings(s, turns(60), embed, "m", "2026-10-21T10:00:00.000Z");
+    expect(embed).toHaveBeenCalledTimes(60);
+    expect(again.unavailable).toBe(0);
+  });
+});

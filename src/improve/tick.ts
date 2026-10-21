@@ -45,8 +45,12 @@ export interface ImproveTickDeps {
   clock?: () => number;
   /** The instant a job's ending is stamped with (final fix C1). Unset in the daemon (the wall clock); the live gate passes its shifted clock. */
   wallNow?: () => string;
+  /** Tests only: overrides IMPROVE_SEAT_DEADLINE_MS. */
+  seatDeadlineMs?: number;
 }
 export const IMPROVE_TICK_BUDGET_MS = 120_000;
+/** Final fix E3: one seat call (distill, pick, classify, compose, verify) from the tick or a job never runs longer than this. */
+export const IMPROVE_SEAT_DEADLINE_MS = 60_000;
 export interface TickCounts { mirrored: number; recurrence: number; abandoned: number; groups: number; decided: number; proposals: number; jobs_queued: number; jobs_started: number; deferred: number; deferred_outage: number; stale: number; already_proposed: number; no_draft: number; record_failed: number; embed_unavailable: number }
 export type ImproveTickResult = { ran: false } | { ran: true; result: "done" | "stopped" | "failed"; counts: TickCounts };
 const zero = (): TickCounts => ({ mirrored: 0, recurrence: 0, abandoned: 0, groups: 0, decided: 0, proposals: 0, jobs_queued: 0, jobs_started: 0, deferred: 0, deferred_outage: 0, stale: 0, already_proposed: 0, no_draft: 0, record_failed: 0, embed_unavailable: 0 });
@@ -63,10 +67,10 @@ export async function runImproveTick(d: ImproveTickDeps): Promise<ImproveTickRes
   const date = improveTickDue(d.store, d.env, d.now);
   if (!date || d.store.beginImproveTick(date, d.now) === "done") return { ran: false };
   d.store.recordMemoryEvent("improve_tick", { phase: "start", local_date: date }, "improve");
-  const counts = zero();
+  const counts = resumedCounts(d.store.getImproveTick(date)?.detail ?? {}); // final fix E4: a resumed date adds to its stored counts
   let result: "done" | "stopped" | "failed" = "done";
   try {
-    result = await tickBody(d, counts);
+    result = await tickBody({ ...d, llm: deadlineSeats(d.llm, d.signal, d.seatDeadlineMs ?? IMPROVE_SEAT_DEADLINE_MS) }, counts);
   } catch (e) {
     result = "failed";
     console.error(`[improve] tick failed: ${errorCode(e)}`);
@@ -76,36 +80,57 @@ export async function runImproveTick(d: ImproveTickDeps): Promise<ImproveTickRes
   return { ran: true, result, counts };
 }
 
-/** Phase 1: housekeeping and the producers. `stopped` when the daemon is stopping. */
-async function producePhase(d: ImproveTickDeps, c: TickCounts): Promise<{ clusters: Map<string, RecurrenceCluster>; stopped: boolean }> {
+/** Final fix E4: the stored counts of a resumed date, numeric fields only, over a zero base. */
+function resumedCounts(detail: Record<string, unknown>): TickCounts {
+  const c = zero();
+  for (const k of Object.keys(c) as Array<keyof TickCounts>) if (typeof detail[k] === "number") c[k] = detail[k];
+  return c;
+}
+
+/** Final fix E3: every seat call runs under the deadline combined with the stop signal; a call past it answers `{ok:false}` (an outage) whatever the seat does. */
+function deadlineSeats(llm: ImproveTickDeps["llm"], stop: AbortSignal, ms: number): ImproveTickDeps["llm"] {
+  const wrap = (seat: TickLlm): TickLlm => async (input) => {
+    const signal = AbortSignal.any([stop, AbortSignal.timeout(ms), ...(input.signal ? [input.signal] : [])]);
+    if (signal.aborted) return { ok: false };
+    let onAbort!: () => void;
+    const aborted = new Promise<{ ok: false }>((resolve) => { onAbort = () => resolve({ ok: false }); signal.addEventListener("abort", onAbort, { once: true }); });
+    try { return await Promise.race([seat({ ...input, signal }), aborted]); } finally { signal.removeEventListener("abort", onAbort); }
+  };
+  return { pick: wrap(llm.pick), distill: wrap(llm.distill), classify: wrap(llm.classify), compose: wrap(llm.compose), verify: wrap(llm.verify) };
+}
+
+/** Phase 1: housekeeping and the producers. `stopped` when the daemon is stopping or the produce phase used up the budget (final fix E2). */
+async function producePhase(d: ImproveTickDeps, c: TickCounts, overBudget: () => boolean): Promise<{ clusters: Map<string, RecurrenceCluster>; stopped: boolean }> {
   d.store.expireProposals(new Date(Date.parse(d.now) - PROPOSAL_TTL_DAYS * DAY_MS).toISOString(), d.now);
   d.jobs?.reconcile(d);
   d.jobs?.reconcileAccepted(d);
-  c.mirrored = d.store.mirrorOutcomesIntoInbox().copied;
+  c.mirrored += d.store.mirrorOutcomesIntoInbox().copied;
   const rec = await computeRecurrence({ store: d.store, env: d.env, now: d.now, embed: d.embed, embedModel: d.embedModel, signal: d.signal });
   if (d.signal.aborted) return { clusters: rec.clusters, stopped: true };
-  c.embed_unavailable = rec.embedUnavailable;
-  c.recurrence = recordRecurrenceSignals(d.store, rec.clusters, d.now);
-  if (rec.embedUnavailable === 0) c.abandoned = await computeAbandonment({ store: d.store, now: d.now, gate: resolveRecurrenceGate(d.env), embed: d.embed, embedModel: d.embedModel, signal: d.signal });
-  return { clusters: rec.clusters, stopped: d.signal.aborted };
+  c.embed_unavailable += rec.embedUnavailable;
+  c.recurrence += recordRecurrenceSignals(d.store, rec.clusters, d.now);
+  if (overBudget()) return { clusters: rec.clusters, stopped: true };
+  if (rec.embedUnavailable === 0) c.abandoned += await computeAbandonment({ store: d.store, now: d.now, gate: resolveRecurrenceGate(d.env), embed: d.embed, embedModel: d.embedModel, signal: d.signal });
+  return { clusters: rec.clusters, stopped: d.signal.aborted || overBudget() };
 }
 
 async function tickBody(d: ImproveTickDeps, c: TickCounts): Promise<"done" | "stopped"> {
   const clock = d.clock ?? Date.now;
   const started = clock();
-  const { clusters, stopped } = await producePhase(d, c);
+  const overBudget = (): boolean => clock() - started > (d.budgetMs ?? IMPROVE_TICK_BUDGET_MS);
+  const { clusters, stopped } = await producePhase(d, c, overBudget);
   if (stopped) return "stopped";
   const tz = resolveDisplayZone(d.env);
   const staleBefore = new Date(Date.parse(d.now) - IMPROVE_STALE_DAYS * DAY_MS).toISOString();
   const groups = groupSignals(d.store.listUnconsumedSignals(IMPROVE_INBOX_BATCH), (id) => d.store.getJevVerdictForRun(id), clusters, staleBefore);
-  c.groups = groups.length;
+  c.groups = groups.length; // a snapshot of the inbox this segment read (a resumed segment re-reads the unconsumed groups); every other count accumulates
   const hints = scheduleHints(d.store, d.now, tz);
   const since14 = d.store.listImproveSignalsSince(new Date(Date.parse(d.now) - RECURRENCE_WINDOW_DAYS * DAY_MS).toISOString());
   const dayAgo = new Date(Date.parse(d.now) - DAY_MS).toISOString();
   let queueLeft = IMPROVE_JOBS_PER_DAY - d.store.countJobsCreatedSince(dayAgo);
   for (const g of groups) {
     // ruling 17: between groups only — a decided group always commits; the stop or the budget ends the call, the latch resumes next cycle
-    if (d.signal.aborted || clock() - started > (d.budgetMs ?? IMPROVE_TICK_BUDGET_MS)) return "stopped";
+    if (d.signal.aborted || overBudget()) return "stopped";
     if (c.decided >= IMPROVE_GROUPS_PER_TICK) { c.deferred += 1; continue; }
     // final fix D5: with the embedder down no cluster exists today, so a waiting recurrence row is deferred, not consumed stale
     if (g.signal === "recurrence" && c.embed_unavailable > 0 && g.rows.every((x) => x.created_at >= staleBefore)) { c.deferred_outage += 1; continue; }
@@ -127,7 +152,7 @@ async function tickBody(d: ImproveTickDeps, c: TickCounts): Promise<"done" | "st
     if (s.stale) c.stale += 1;
     c.decided += 1;
   }
-  if (d.jobs) c.jobs_started = await d.jobs.runQueued(d, Math.max(0, IMPROVE_JOBS_PER_DAY - d.store.countJobsStartedSince(dayAgo))); // ruling 14: starts are budgeted apart from queueing
+  if (d.jobs) c.jobs_started += await d.jobs.runQueued(d, Math.max(0, IMPROVE_JOBS_PER_DAY - d.store.countJobsStartedSince(dayAgo))); // ruling 14: starts are budgeted apart from queueing
   return "done";
 }
 

@@ -23,16 +23,25 @@ export const resolveRecurrenceGate = (env: NodeJS.ProcessEnv): number => resolve
 export const clusterIdOf = (category: string, turnIds: readonly string[]): string =>
   `rec_${createHash("sha256").update(category + [...turnIds].sort().join(",")).digest("hex").slice(0, 16)}`;
 
-/** Stored vectors for the turns, embedding the missing ones (text capped) and storing them; a null embed counts as unavailable. */
+/** Final fix E1: embeds per call; the rest wait for a later tick (the first night after a kickstart is 14 days of turns on a CPU-only box). */
+export const EMBED_PER_TICK_MAX = 50;
+
+/**
+ * Stored vectors for the turns, embedding the missing ones (text capped) and storing them; a null embed counts as unavailable.
+ * Final fix E1: the first null is an outage, so every remaining missing turn counts unavailable without another call, and
+ * at most EMBED_PER_TICK_MAX turns are embedded per call.
+ */
 export async function ensureEmbeddings(store: RunStore, turns: readonly { turn_id: string; text: string }[], embed: Embedder, model: string, now: string, signal?: AbortSignal)
   : Promise<{ vectors: Map<string, Float32Array>; unavailable: number }> {
   const vectors = store.getTurnEmbeddings(turns.map((t) => t.turn_id));
-  let unavailable = 0;
+  let unavailable = 0; let calls = 0; let down = false;
   for (const t of turns) {
     if (vectors.has(t.turn_id)) continue;
-    if (signal?.aborted) { unavailable += 1; continue; } // an aborted run is a partial window: counted so the caller never clusters it
+    // an aborted run is a partial window, an outage or the cap a deferral: each counted so the caller never clusters it
+    if (signal?.aborted || down || calls >= EMBED_PER_TICK_MAX) { unavailable += 1; continue; }
+    calls += 1;
     const v = await embed(Array.from(t.text).slice(0, EMBED_TEXT_CHAR_CAP).join(""));
-    if (!v) { unavailable += 1; continue; }
+    if (!v) { unavailable += 1; down = true; continue; }
     store.putTurnEmbedding(t.turn_id, model, v, now);
     vectors.set(t.turn_id, v);
   }

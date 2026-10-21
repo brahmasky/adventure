@@ -594,7 +594,7 @@ function runDigestTick(store: RunTelegramDaemonOptions["store"], chatId: string 
 }
 
 /** A tick's model seat: `{question, system}` in, `{ok, answer}` out. */
-type TickLlm = (input: { question: string; system: string }) => Promise<{ ok: true; answer: string } | { ok: false }>;
+type TickLlm = (input: { question: string; system: string; signal?: AbortSignal }) => Promise<{ ok: true; answer: string } | { ok: false }>;
 
 /**
  * Slice 2 (review B2): ONE seat per tick, each with its own run-less audit scope, so every
@@ -607,12 +607,13 @@ function tickLlm(options: RunTelegramDaemonOptions, name: string, role: LlmCallR
   const injected = options.llmAdapter;
   const stop = options.stopSignal;
   return async (input) => {
-    if (stop.aborted) return { ok: false };
+    if (stop.aborted || input.signal?.aborted) return { ok: false };
     if (injected) {
       const read = await injected({ question: input.question, system: input.system });
       return read.ok && typeof read.output.answer === "string" ? { ok: true, answer: read.output.answer } : { ok: false };
     }
-    return tickSeat(options.store, name, role, process.env, () => roles.chains())({ ...input, signal: stop });
+    // a caller's deadline (the improve tick's, final fix E3) aborts the omp call as the daemon's stop does
+    return tickSeat(options.store, name, role, process.env, () => roles.chains())({ question: input.question, system: input.system, signal: input.signal ? AbortSignal.any([stop, input.signal]) : stop });
   };
 }
 

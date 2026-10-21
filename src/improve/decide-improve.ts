@@ -7,7 +7,7 @@ import type { RunStore } from "../run/run-store.js";
 import { buildPickQuestion, parsePick, PICK_DISCIPLINE } from "./pick.js";
 
 /** A tick's model seat (telegram-daemon.ts tickLlm): `{question, system}` in, `{ok, answer}` out. */
-export type TickLlm = (input: { question: string; system: string }) => Promise<{ ok: true; answer: string } | { ok: false }>;
+export type TickLlm = (input: { question: string; system: string; signal?: AbortSignal }) => Promise<{ ok: true; answer: string } | { ok: false }>;
 export interface ImproveDecideDeps { store: RunStore; env: NodeJS.ProcessEnv; client: (r: JevRequest) => Promise<JevResult>; pick: TickLlm; now: () => string }
 type Result = RungResult<ImproveTarget, ImproveDetail>;
 
