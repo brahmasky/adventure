@@ -100,7 +100,8 @@ async function produce(c, args, now0) {
   const { m, store } = c; const ac = new AbortController(); const clusters = new Map(); let embedUnavailable = 0; let abandoned = 0; let recorded = 0;
   for (let k = 0; k * 14 < args.days; k++) {
     const now = new Date(now0 - k * 14 * DAY_MS).toISOString();
-    const rec = await m.computeRecurrence({ store, env: process.env, now, embed: c.embed, embedModel: c.cfg.model, signal: ac.signal });
+    let rec; // final fix 2: a capped backlog is embedded 50 at a time; keep going until the window is complete
+    do { rec = await m.computeRecurrence({ store, env: process.env, now, embed: c.embed, embedModel: c.cfg.model, signal: ac.signal }); } while (rec.backlog > 0);
     embedUnavailable += rec.embedUnavailable;
     for (const [key, v] of rec.clusters) clusters.set(key, v);
     recorded += m.recordRecurrenceSignals(store, rec.clusters, now);

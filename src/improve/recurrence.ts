@@ -32,7 +32,7 @@ export const EMBED_PER_TICK_MAX = 50;
  * at most EMBED_PER_TICK_MAX turns are embedded per call.
  */
 export async function ensureEmbeddings(store: RunStore, turns: readonly { turn_id: string; text: string }[], embed: Embedder, model: string, now: string, signal?: AbortSignal)
-  : Promise<{ vectors: Map<string, Float32Array>; unavailable: number }> {
+  : Promise<{ vectors: Map<string, Float32Array>; unavailable: number; capped: boolean }> {
   const vectors = store.getTurnEmbeddings(turns.map((t) => t.turn_id));
   let unavailable = 0; let calls = 0; let down = false;
   for (const t of turns) {
@@ -45,7 +45,8 @@ export async function ensureEmbeddings(store: RunStore, turns: readonly { turn_i
     store.putTurnEmbedding(t.turn_id, model, v, now);
     vectors.set(t.turn_id, v);
   }
-  return { vectors, unavailable };
+  // final fix 2: `capped` — only the cap (no outage, no abort) left turns missing: a backlog the next segment continues
+  return { vectors, unavailable, capped: unavailable > 0 && !down && !signal?.aborted };
 }
 
 /** Single linkage per category: union-find over pairs at or over the gate; clusters of RECURRENCE_MIN_TURNS or more. */
@@ -72,14 +73,15 @@ export function clusterCandidates(cands: readonly RecurrenceCandidateRow[], vect
 }
 
 export async function computeRecurrence(d: { store: RunStore; env: NodeJS.ProcessEnv; now: string; embed: Embedder; embedModel: string; signal: AbortSignal })
-  : Promise<{ clusters: Map<string, RecurrenceCluster>; embedUnavailable: number }> {
+  : Promise<{ clusters: Map<string, RecurrenceCluster>; embedUnavailable: number; backlog: number }> {
   const since = new Date(Date.parse(d.now) - RECURRENCE_WINDOW_DAYS * DAY_MS).toISOString();
   const cands = d.store.listRecurrenceCandidates(since, RECURRENCE_MIN_CHARS, RECURRENCE_EXCLUDED_CATEGORIES);
-  const { vectors, unavailable } = await ensureEmbeddings(d.store, cands, d.embed, d.embedModel, d.now, d.signal);
+  const { vectors, unavailable, capped } = await ensureEmbeddings(d.store, cands, d.embed, d.embedModel, d.now, d.signal);
   const clusters = new Map<string, RecurrenceCluster>();
-  if (unavailable > 0) return { clusters, embedUnavailable: unavailable }; // a partial day would cluster a partial window: skip recurrence today (§3.3 step 2)
+  if (capped) return { clusters, embedUnavailable: 0, backlog: unavailable }; // a backlog, not an outage: the caller stops the segment and resumes
+  if (unavailable > 0) return { clusters, embedUnavailable: unavailable, backlog: 0 }; // a partial day would cluster a partial window: skip recurrence today (§3.3 step 2)
   for (const c of clusterCandidates(cands, vectors, resolveRecurrenceGate(d.env))) clusters.set(`rec:${c.clusterId}`, c);
-  return { clusters, embedUnavailable: 0 };
+  return { clusters, embedUnavailable: 0, backlog: 0 };
 }
 
 /** One inbox row per (cluster, size): `source_outcome_id = rec:<id>:<size>` (ruling 4); value = the size, about = the newest run. */

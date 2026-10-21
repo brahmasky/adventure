@@ -127,4 +127,26 @@ describe("buildImproveState", () => {
     job("k_like", "old1", "answer", "2026-09-01T00:00:00.000Z");
     expect(authored()).toBe(true);
   });
+  it("R2-3: a failed job never marks a cluster authored (neither the 30-day turn overlap nor the 90-day like-origin check); a promoted, dismissed or suggested one does", () => {
+    const dec = (s: RunStore) => s.insertDecision({ entry_id: "improve.route", entry_version: 1, run_id: null, tool_call_id: null, stage: "after_turn", rung: "rule", verdict: "skill", p: null, reason_code: "recurrence", fallback_reason: null, fallback_rung: null, armed_mode: "on", latency_ms: 1, created_at: NOW });
+    const rec: RecurrenceInfo = { clusterId: "rec_n", turnIds: ["new1", "new2", "new3"], idempotencyKey: "answer:new1", texts: ["a", "b", "c"], category: "answer", spanDays: 2 };
+    const gr = groupSignals([row({ signal: "recurrence", value: "3", source_outcome_id: "rec:rec_n:3", about_run_id: null })], () => undefined, new Map([["rec:rec_n", rec]]), "2026-01-01T00:00:00.000Z")[0]!;
+    const ended = (s: RunStore, turn: string, to: "failed" | "promoted" | "dismissed" | "suggested") => {
+      const id = s.insertImprovementJob({ decision_id: dec(s), proposal_id: null, chat_id: "555", origin_json: JSON.stringify({ turn_ids: [turn], run_ids: [], category: "answer", text_hashes: [] }), idempotency_key: `k_${turn}_${to}`, created_at: "2026-10-10T00:00:00.000Z" })!;
+      s.transitionJob({ job_id: id, from: ["queued"], to: "running", now: NOW, bumpAttempt: true });
+      if (to === "failed" || to === "suggested") { s.transitionJob({ job_id: id, from: ["running"], to, now: NOW, attempt: 1 }); return; }
+      s.transitionJob({ job_id: id, from: ["running"], to: "pending_review", now: NOW, attempt: 1, patch: { pending_scope: "ask", pending_name: "x" } });
+      if (to === "dismissed") { s.transitionJob({ job_id: id, from: ["pending_review"], to: "dismissed", now: NOW }); return; }
+      s.transitionJob({ job_id: id, from: ["pending_review"], to: "promoting", now: NOW, patch: { promote_mode: "refuse" } }); s.transitionJob({ job_id: id, from: ["promoting"], to: "promoted", now: NOW });
+    };
+    for (const [to, expected] of [["failed", false], ["promoted", true], ["dismissed", true], ["suggested", true]] as const) {
+      for (const turn of ["new1", "old1"]) {   // new1: a shared turn id (30-day overlap); old1: a like origin turn (90-day check)
+        const s = RunStore.openInMemory();
+        const skills = new SkillStore({ root: mkdtempSync(join(tmpdir(), "hg-skills-")) });
+        s.putTurnEmbedding("old1", "m", Float32Array.from([1, 0]), NOW); s.putTurnEmbedding("new1", "m", Float32Array.from([0.95, 0.05]), NOW);
+        ended(s, turn, to);
+        expect([to, turn, buildImproveState(gr, { store: s, env: {}, now: NOW, skills, redact: (t) => t, scheduleHints: new Map(), since14: [], recurrenceGate: 0.6 }).alreadyAuthored]).toEqual([to, turn, expected]);
+      }
+    }
+  });
 });

@@ -5257,16 +5257,16 @@ export class RunStore {
   getImprovementJob(job_id: string): ImprovementJobRow | undefined {
     return this.db.prepare(`SELECT * FROM improvement_jobs WHERE job_id = ?`).get<ImprovementJobRow>(job_id);
   }
-  /** §3.3 step 4: a cluster sharing any turn id with a job created after `sinceIso` is already authored. */
+  /** §3.3 step 4: a cluster sharing any turn id with a job created after `sinceIso` is already authored; a `failed` job never counts (final fix 2: a transient failure is no verdict). */
   jobOverlapsTurns(turn_ids: readonly string[], sinceIso: string): boolean {
     if (turn_ids.length === 0) return false;
     return this.db.prepare(`
-      SELECT 1 AS hit FROM improvement_jobs j, json_each(j.origin_json, '$.turn_ids') t WHERE j.created_at > ? AND t.value IN (${turn_ids.map(() => "?").join(", ")}) LIMIT 1
+      SELECT 1 AS hit FROM improvement_jobs j, json_each(j.origin_json, '$.turn_ids') t WHERE j.created_at > ? AND j.state != 'failed' AND t.value IN (${turn_ids.map(() => "?").join(", ")}) LIMIT 1
     `).get<{ hit: number }>(sinceIso, ...turn_ids) !== undefined;
   }
-  /** Final fix D6: the origin turn ids of the jobs of one category created after `sinceIso` (any state). */
+  /** Final fix D6: the origin turn ids of the jobs of one category created after `sinceIso`, `failed` jobs excluded (final fix 2). */
   jobOriginTurnIds(category: string, sinceIso: string): string[] {
-    return this.db.prepare(`SELECT DISTINCT t.value AS turn_id FROM improvement_jobs j, json_each(j.origin_json, '$.turn_ids') t WHERE j.created_at > ? AND json_extract(j.origin_json, '$.category') = ?`)
+    return this.db.prepare(`SELECT DISTINCT t.value AS turn_id FROM improvement_jobs j, json_each(j.origin_json, '$.turn_ids') t WHERE j.created_at > ? AND j.state != 'failed' AND json_extract(j.origin_json, '$.category') = ?`)
       .all<{ turn_id: string }>(sinceIso, category).map((r) => r.turn_id);
   }
   listJobsByState(states: readonly JobState[]): ImprovementJobRow[] {

@@ -11,7 +11,7 @@ import type { ProposalTarget, RunStore } from "../run/run-store.js";
 import { formatInstantInZone, resolveDisplayZone } from "../run/schedule-spec.js";
 import { resolveSkillsEnabled, type SkillStore } from "../skills/skill-store.js";
 import { computeAbandonment } from "./abandonment.js";
-import { decideImprove, deferredRecorder, type RecordPatch, type TickLlm } from "./decide-improve.js";
+import { decideImprove, deferredRecorder, isJevOutage, type RecordPatch, type TickLlm } from "./decide-improve.js";
 import { buildImproveState, groupSignals, RECURRENCE_WINDOW_DAYS, type SignalGroup } from "./groups.js";
 import { DRAFT_SEAT_FAILED, draftFor, PROPOSAL_TTL_DAYS, type Draft } from "./proposals.js";
 import { computeRecurrence, recordRecurrenceSignals, resolveRecurrenceGate, type Embedder, type RecurrenceCluster } from "./recurrence.js";
@@ -106,7 +106,8 @@ async function producePhase(d: ImproveTickDeps, c: TickCounts, overBudget: () =>
   d.jobs?.reconcileAccepted(d);
   c.mirrored += d.store.mirrorOutcomesIntoInbox().copied;
   const rec = await computeRecurrence({ store: d.store, env: d.env, now: d.now, embed: d.embed, embedModel: d.embedModel, signal: d.signal });
-  if (d.signal.aborted) return { clusters: rec.clusters, stopped: true };
+  // final fix 2: the 50-embed cap (not an outage) left turns missing — stop now, the next cycle embeds the next 50 (a backlog clears in one evening)
+  if (d.signal.aborted || rec.backlog > 0) return { clusters: rec.clusters, stopped: true };
   c.embed_unavailable += rec.embedUnavailable;
   c.recurrence += recordRecurrenceSignals(d.store, rec.clusters, d.now);
   if (overBudget()) return { clusters: rec.clusters, stopped: true };
@@ -128,6 +129,7 @@ async function tickBody(d: ImproveTickDeps, c: TickCounts): Promise<"done" | "st
   const since14 = d.store.listImproveSignalsSince(new Date(Date.parse(d.now) - RECURRENCE_WINDOW_DAYS * DAY_MS).toISOString());
   const dayAgo = new Date(Date.parse(d.now) - DAY_MS).toISOString();
   let queueLeft = IMPROVE_JOBS_PER_DAY - d.store.countJobsCreatedSince(dayAgo);
+  const latch = { on: false }; // final fix 2: after the first outage of the segment, the rule rung only (no Jev, no seat call)
   for (const g of groups) {
     // ruling 17: between groups only — a decided group always commits; the stop or the budget ends the call, the latch resumes next cycle
     if (d.signal.aborted || overBudget()) return "stopped";
@@ -139,7 +141,7 @@ async function tickBody(d: ImproveTickDeps, c: TickCounts): Promise<"done" | "st
     if (willStartJob(s) && (queueLeft <= 0 || !resolveSkillsEnabled(d.env))) { c.deferred += 1; continue; }
     let outcome: GroupOutcome;
     try {
-      outcome = await runGroup(d, g, s, { tz, hints }, c);
+      outcome = await runGroup(d, g, s, { tz, hints, latch }, c);
     } catch (e) {   // one group's failure (the commit rolled back whole) never costs the next group its turn; its rows stay unconsumed
       console.error(`[improve] group failed: ${errorCode(e)}`);
       c.record_failed += 1;
@@ -159,18 +161,23 @@ async function tickBody(d: ImproveTickDeps, c: TickCounts): Promise<"done" | "st
 type GroupOutcome = "queued" | "committed" | "record_failed" | "deferred" | "deferred_outage";
 
 /**
- * One group's model calls, outside any transaction, then its commit. Final fix D1: a Jev failure (any fallbackReason) or a
- * failed distill seat call writes nothing and consumes nothing. D2/D3: the duplicate check (an open proposal, or one Paco
- * dismissed or that expired within PROPOSAL_TTL_DAYS) runs before the draft, so a duplicate costs no distill call.
+ * One group's model calls, outside any transaction, then its commit. Final fix D1 (narrowed in fix 2): an undecided group
+ * whose Jev failure is an outage (isJevOutage), or whose pick or distill seat call failed, writes nothing and consumes
+ * nothing; a Jev parse, a throwing rule or the disarm posture records as before. The first outage sets the segment's latch:
+ * later groups run the rule rung only, and one the rule cannot decide (or that would need the distill) is deferred with no
+ * call. D2/D3: the duplicate check runs before the draft, so a duplicate costs no distill call.
  */
-async function runGroup(d: ImproveTickDeps, g: SignalGroup, s: ImproveState, x: { tz: string; hints: ReturnType<typeof scheduleHints> }, c: TickCounts): Promise<GroupOutcome> {
+async function runGroup(d: ImproveTickDeps, g: SignalGroup, s: ImproveState, x: { tz: string; hints: ReturnType<typeof scheduleHints>; latch: { on: boolean } }, c: TickCounts): Promise<GroupOutcome> {
   const rec2 = deferredRecorder();
-  const r = await decideImprove({ store: d.store, env: d.env, client: d.client, pick: d.llm.pick, now: () => d.now }, s, rec2.recorder, g.newest.about_run_id ?? g.newest.run_id);
-  if (r.fallbackReason !== null) return "deferred_outage";
+  let pickFailed = false;
+  const pick: TickLlm = async (i) => { const a = await d.llm.pick(i); if (!a.ok) pickFailed = true; return a; };
+  const r = await decideImprove({ store: d.store, env: d.env, client: d.client, pick, now: () => d.now, modelRungs: !x.latch.on }, s, rec2.recorder, g.newest.about_run_id ?? g.newest.run_id);
+  if (isJevOutage(r) || pickFailed) { x.latch.on = true; return "deferred_outage"; }
   const wantsDraft = r.verdict !== "nothing" && !(r.rung === "rule" && r.verdict === "skill");
   const duplicate = wantsDraft && NEEDS_DRAFT.has(r.verdict) && d.store.proposalBlocks(r.verdict as ProposalTarget, s.scope, ttlSince(d.now));
+  if (x.latch.on && !duplicate && (r.verdict === "lesson" || r.verdict === "fact")) return "deferred_outage"; // its draft needs the distill seat
   const draft = wantsDraft && !duplicate ? await draftFor(r.verdict, g, s, { store: d.store, env: d.env, now: d.now, tz: x.tz, distill: d.llm.distill, redact: (t) => redactForImprove(d.store, t), scheduleHints: x.hints }) : null;
-  if (draft === DRAFT_SEAT_FAILED) return "deferred_outage";
+  if (draft === DRAFT_SEAT_FAILED) { x.latch.on = true; return "deferred_outage"; }
   return commitGroup(d, g, s, r, { draft, duplicate }, rec2.flush, c);
 }
 const ttlSince = (now: string): string => new Date(Date.parse(now) - PROPOSAL_TTL_DAYS * DAY_MS).toISOString();

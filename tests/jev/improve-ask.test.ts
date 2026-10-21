@@ -21,10 +21,10 @@ describe("askImprove", () => {
   });
   it("timeout → timeout, transport → outage, a non-choice answer → parse", async () => {
     const store = RunStore.openInMemory();
-    expect(await askImprove({ state: state as never, client: async () => ({ ok: false, reason: "error", detail: "t", error_kind: "timeout" }), store })).toEqual({ failed: "timeout" });
-    expect(await askImprove({ state: state as never, client: async () => ({ ok: false, reason: "error", detail: "t", error_kind: "transport" }), store })).toEqual({ failed: "outage" });
+    expect(await askImprove({ state: state as never, client: async () => ({ ok: false, reason: "error", detail: "t", error_kind: "timeout" }), store })).toEqual({ failed: "timeout", reason: "timeout" });
+    expect(await askImprove({ state: state as never, client: async () => ({ ok: false, reason: "error", detail: "t", error_kind: "transport" }), store })).toEqual({ failed: "outage", reason: "transport" });
     const noul = vi.fn(async (): Promise<JevResult> => ({ ok: true, model: "jev-1.13.0", input_tokens: 1, latency_ms: 1, answers: { improve_target: { type: "noul", noul: 0.9 } } }));
-    expect(await askImprove({ state: state as never, client: noul, store })).toEqual({ failed: "parse" });
+    expect(await askImprove({ state: state as never, client: noul, store })).toEqual({ failed: "parse", reason: "parse" });
   });
   it("the threshold version is pinned", () => { expect(IMPROVE_THRESHOLD_VERSION).toBe("2026-10-21.1"); });
 });

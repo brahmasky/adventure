@@ -297,4 +297,64 @@ describe("runImproveTick", () => {
     expect(s.getImproveTick("2026-10-21")?.detail).toMatchObject({ decided: IMPROVE_GROUPS_PER_TICK, deferred: 1, record_failed: 2, proposals: 5 });
     expect(s.listUnconsumedSignals(10)).toHaveLength(1);
   });
+
+  // final fix round 2 (re-review NEW-1, NEW-2, NEW-4)
+  const routeRows = (s: RunStore) => s.listDecisionsBetween("2026-01-01T00:00:00.000Z", "2027-01-01T00:00:00.000Z").filter((x) => x.entry_id === "improve.route");
+  it("R2-1: after the first outage in a segment the remaining groups run the rule rung only: no Jev or seat call, deferred_outage, and the segment finishes done", async () => {
+    const s = RunStore.openInMemory();
+    correction(s); correction(s, "find me the march invoice again", "lookup");
+    const client = vi.fn(async (): Promise<JevResult> => ({ ok: false, reason: "error", detail: "timed out", error_kind: "timeout" }));
+    const d0 = deps(s, { client });
+    const r = await runImproveTick(d0);
+    expect(r).toMatchObject({ ran: true, result: "done", counts: { decided: 0, deferred_outage: 2 } });
+    expect(client).toHaveBeenCalledTimes(1);
+    expect(d0.llm.pick).not.toHaveBeenCalled(); expect(d0.llm.distill).not.toHaveBeenCalled();
+    expect(s.listUnconsumedSignals(10)).toHaveLength(2);
+  });
+  it("R2-1: under the latch a group the rule rung decides (review_bad → ladder) still commits", async () => {
+    const s = RunStore.openInMemory();
+    correction(s);
+    for (const day of ["18", "19", "20"]) s.insertImproveSignal({ signal: "review_bad", value: "turn.settle", run_id: null, chat_id: "555", about_run_id: null, created_at: `2026-10-${day}T03:00:00.000Z` });
+    const client = vi.fn(async (): Promise<JevResult> => ({ ok: false, reason: "error", detail: "429", error_kind: "rate_limited" }));
+    const r = await runImproveTick(deps(s, { client }));
+    expect(r).toMatchObject({ ran: true, result: "done", counts: { decided: 1, deferred_outage: 1, proposals: 1 } });
+    expect(routeRows(s).map((x) => [x.verdict, x.rung])).toEqual([["ladder", "rule"]]);
+  });
+  it("R2-4: a Jev parse failure is recorded and consumed as before (not an outage); a failed Tiny pick call defers like a failed distill", async () => {
+    const s = RunStore.openInMemory();
+    correction(s);
+    const parse = async (): Promise<JevResult> => ({ ok: true, model: "jev-1.13.0", input_tokens: 1, latency_ms: 1, answers: {} });
+    const r = await runImproveTick(deps(s, { client: parse }));
+    expect(r).toMatchObject({ ran: true, counts: { decided: 1, deferred_outage: 0 } });
+    expect(routeRows(s)).toHaveLength(1);
+    expect(s.listUnconsumedSignals(10)).toEqual([]);
+    const s2 = RunStore.openInMemory();
+    correction(s2);
+    const pick = vi.fn(async () => ({ ok: false as const }));
+    const r2 = await runImproveTick(deps(s2, { client: jev({ lesson: 0.5, fact: 0.4, nothing: 0.1 }), llm: { ...deps(s2).llm, pick } }));
+    expect(pick).toHaveBeenCalledTimes(1);
+    expect(r2).toMatchObject({ ran: true, counts: { decided: 0, deferred_outage: 1 } });
+    expect(routeRows(s2)).toEqual([]);
+    expect(s2.listUnconsumedSignals(10)).toHaveLength(1);
+  });
+  it("R2-2: an embed backlog over the 50 cap ends each segment stopped right after the produce phase until nothing is missing, then the tick groups", async () => {
+    const s = RunStore.openInMemory();
+    for (let k = 0; k < 120; k += 1) {
+      const run_id = turn(s, `backlog request number ${k} about something distinct`).run_id;
+      s.insertJevVerdict({ run_id, category: "answer", breadth: null, reasoning: null, actions: null, sets_rule: null, rule_scope: null, lane: "answer", role: "default", effort: null, cascade: null,
+        save_outcome: "none", route_outcome: "fallback", reason: "jev_skipped", skip_reason: null, quoted_turn_id: null });
+    }
+    correction(s);
+    let n = 0;
+    const embed = vi.fn(async () => { n += 1; return Float32Array.from([Math.cos(n), Math.sin(n), n % 7]); });
+    const one = await runImproveTick(deps(s, { embed }));
+    expect(one).toMatchObject({ ran: true, result: "stopped", counts: { groups: 0, embed_unavailable: 0 } });
+    expect(embed).toHaveBeenCalledTimes(50);
+    expect(await runImproveTick(deps(s, { embed }))).toMatchObject({ ran: true, result: "stopped", counts: { groups: 0 } });
+    expect(embed).toHaveBeenCalledTimes(100);
+    const three = await runImproveTick(deps(s, { embed }));
+    expect(three).toMatchObject({ ran: true, result: "done", counts: { embed_unavailable: 0 } });
+    expect(three.ran && three.counts.groups).toBeGreaterThan(0);
+    expect(embed.mock.calls.length).toBeGreaterThanOrEqual(120);
+  });
 });

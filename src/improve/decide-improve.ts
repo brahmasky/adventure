@@ -8,7 +8,20 @@ import { buildPickQuestion, parsePick, PICK_DISCIPLINE } from "./pick.js";
 
 /** A tick's model seat (telegram-daemon.ts tickLlm): `{question, system}` in, `{ok, answer}` out. */
 export type TickLlm = (input: { question: string; system: string; signal?: AbortSignal }) => Promise<{ ok: true; answer: string } | { ok: false }>;
-export interface ImproveDecideDeps { store: RunStore; env: NodeJS.ProcessEnv; client: (r: JevRequest) => Promise<JevResult>; pick: TickLlm; now: () => string }
+export interface ImproveDecideDeps {
+  store: RunStore; env: NodeJS.ProcessEnv; client: (r: JevRequest) => Promise<JevResult>; pick: TickLlm; now: () => string;
+  /** Final fix 2 (the outage latch): false runs the rule rung only — Jev answers a `latched` outage and Tiny abstains, with no call. */
+  modelRungs?: boolean;
+}
+
+/** Final fix 2: the Jev skip reasons that are an outage (unreachable, rate-limited, timed out), as opposed to a deterministic failure (parse, state_too_large, posture…). */
+const TRANSIENT_JEV: ReadonlySet<string> = new Set(["no_key", "fused", "auth", "rate_limited", "overloaded", "timeout", "transport", "error", "latched"]);
+
+/** An undecided result whose Jev failure is an outage (a rung timeout has no code: it is one). A rule that threw, a parse, the disarm posture: not one. */
+export function isJevOutage(r: DecideResult<ImproveTarget, ImproveDetail>): boolean {
+  if (r.rung !== "fail" || r.fallbackRung !== "system_one") return false;
+  return r.fallbackReason === "timeout" || (r.fallbackReason === "outage" && TRANSIENT_JEV.has(r.reason ?? ""));
+}
 type Result = RungResult<ImproveTarget, ImproveDetail>;
 
 /**
@@ -30,8 +43,9 @@ export async function decideImprove(d: ImproveDecideDeps, s: ImproveState, recor
 }
 
 async function jevRung(d: ImproveDecideDeps, s: ImproveState): Promise<Result> {
+  if (d.modelRungs === false) return { failed: "outage", reason: "latched" };
   const r = await askImprove({ state: improveJevState(s), client: d.client, store: d.store });
-  if ("failed" in r) return { failed: r.failed };
+  if ("failed" in r) return { failed: r.failed, ...(r.reason ? { reason: r.reason } : {}) };
   return jevVerdictOf(r.answer, s);
 }
 
@@ -39,7 +53,7 @@ async function jevRung(d: ImproveDecideDeps, s: ImproveState): Promise<Result> {
 async function tinyRung(d: ImproveDecideDeps, s: ImproveState, prior: readonly RungOutcome<ImproveTarget, ImproveDetail>[]): Promise<Result> {
   const jev = prior.find((o) => o.kind === "system_one")?.result;
   const detail = jev && "abstain" in jev ? jev.detail : undefined;
-  if (!detail?.top2) return { abstain: true };
+  if (!detail?.top2 || d.modelRungs === false) return { abstain: true };
   const r = await d.pick({ question: buildPickQuestion(improveJevState(s), detail.top2), system: PICK_DISCIPLINE });
   // ruling 18 / spec §4.3: a failed call or a word that is not one of the two ABSTAINS (never a decision_fallback count); the seat's audit row holds the failure
   if (!r.ok) return { abstain: true, reason: "below_bar" };
