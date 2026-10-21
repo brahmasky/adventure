@@ -32,10 +32,10 @@
 // fresh chat and clock; still both-failed and identical, it is inconclusive — never a deterministic pair, never a pass.
 // PASS: ≥ 190 deterministic pairs before 200 decided (candidates over-fetched by 30), 0 mismatches; the coverage floor
 // (every answered row reports a calibrated model; ≥ 100 armed turn.handler verdicts; the cascade rung ran); every stage-1
-// verdict and Jev row links its turn.handler decision; the digest builds on copy B and renders through the Telegram adapter
-// with exactly `✅ <n>` ↔ `dec:rv:<offered id>:ok` and `❌ <n>` ↔ `:bad` per row (label and callback together), the tick
-// sends once, the button LABELLED ❌ writes one review_bad outcome, the one labelled ✅ then writes nothing, a stranger's
-// tap is refused and writes nothing. Exit: 0 PASS · 1 FAIL · 2 setup error · 3 INCONCLUSIVE. Never opens the live DB
+// verdict and Jev row links its turn.handler decision; /status's decision counts (decisionStatusLines) show turn.handler;
+// the digest (2b-ii: Improvements today / Proposals waiting / Watch) is either no message (an empty day) or the header plus
+// only those three section headers, renders through the Telegram adapter with every button inside Telegram's 64 bytes, and
+// the tick sends once. The digest no longer offers the review taps, so the old tap checks are gone. Exit: 0 PASS · 1 FAIL · 2 setup error · 3 INCONCLUSIVE. Never opens the live DB
 // for writing: it is opened read-only, only for `VACUUM INTO` copies under the gate's temp root.
 // Egress (senior S8): CoreWorker is built without a broker, so the replayed Telegram texts and their stored context reach
 // TypeSafe redacted by shape only (sanitizeJevText), not by known secret values — the jev-tree gate's class. Approved by
@@ -350,93 +350,50 @@ function clearDigestLatch(pathB, root, live) {
   } finally { db.close(); }
 }
 
-/**
- * The ❌ tap is under test, not Jev's p distribution (senior B2, codex B3): when the dual run left no unsure verdict, the
- * newest applied System One turn.handler judgement (reason `routed`, inside the digest's judgement allowlist) of this
- * run is set to p 0.6 (the choice bar, inside [bar, bar + UNSURE_BAND)) on copy B only, and the output says so.
- */
-function ensureUnsure(g, runs) {
-  const digest = g.newMods.buildDecisionDigest(g.newSide.store, new Date().toISOString(), process.env);
-  if (digest && digest.offered.length > 0) return;
-  const target = runs.flatMap((r) => g.newSide.store.listDecisionsForRun(r))
-    .filter((d) => d.entry_id === "turn.handler" && d.rung === "system_one" && d.armed_mode === "on" && d.reason_code === "routed").at(-1);
-  if (!target) return;
-  guardCopy(g.pathB, g.root, g.live);
-  const db = new DatabaseSync(g.pathB);
-  try { db.prepare(`UPDATE decisions SET p = 0.6 WHERE decision_id = ?`).run(target.decision_id); } finally { db.close(); }
-  console.log(`  seeded: ${target.decision_id} set to p 0.6 on copy B so the digest offers one decision`);
-}
-
 function claimDigest(store) {
   let note = null;
   for (let n = store.claimNextNotification("p6", 30); n; n = store.claimNextNotification("p6", 30)) if (n.idempotency_key.startsWith("decision_digest:")) note = n;
   return note;
 }
 
-/**
- * Spec §13 row 1 "the digest renders": the queued payload through TelegramNotificationAdapter with a stub transport (codex
- * S7). Each rendered row must be exactly, label AND callback together, `✅ <n>` ↔ `dec:rv:<offered id>:ok` and `❌ <n>` ↔
- * `dec:rv:<offered id>:bad`, in offer order (codex #8, Rev 3 verification): swapped labels fail. Returns the keyboard.
- */
-async function checkRender(g, note, digest) {
-  if (!note || !digest) { cannotRun("digest render", "no digest message was queued"); return []; }
+/** Spec §13 row 1 "the digest renders": the queued payload through TelegramNotificationAdapter with a stub transport (codex S7); every button inside 64 bytes. */
+async function checkRender(g, note) {
   const sent = [];
   const adapter = new g.newMods.TelegramNotificationAdapter({ sendMessage: async (input) => { sent.push(input); return { message_id: 1 }; } });
   await adapter.send(note);
   const rows = sent[0]?.reply_markup?.inline_keyboard ?? [];
   check("digest render: HTML through the rich renderer", sent.length === 1 && sent[0].parse_mode === "HTML" && sent[0].text.includes("Decisions"), sent[0]?.text.split("\n")[0] ?? "nothing sent");
-  const want = digest.offered.map((id, k) => [{ text: `✅ ${k + 1}`, callback_data: `dec:rv:${id}:ok` }, { text: `❌ ${k + 1}`, callback_data: `dec:rv:${id}:bad` }]);
-  const got = rows.map((r) => r.map((b) => ({ text: b.text, callback_data: b.callback_data })));
-  check("digest render: each row is exactly ✅ <n> → dec:rv:<offered id>:ok and ❌ <n> → dec:rv:<offered id>:bad", JSON.stringify(got) === JSON.stringify(want),
-    `${rows.length} row(s), ${digest.offered.length} offered`);
-  return rows;
+  const data = rows.flat().map((b) => b.callback_data ?? "");
+  check("digest render: every button's callback_data is present and within 64 bytes", data.every((d) => d.length > 0 && Buffer.byteLength(d, "utf8") <= 64), `${data.length} button(s)`);
+}
+
+const SECTION_HEADERS = new Set(["**Improvements today**", "**Proposals waiting**", "**Watch (7 d)**"]);
+/** 2b-ii contract: no message, or the dated header and only the three new section headers. */
+function digestShapeOk(digest) {
+  if (digest === null) return true;
+  const lines = digest.text.split("\n");
+  return /^🪜 \*\*Decisions — \d{4}-\d{2}-\d{2}\*\*$/.test(lines[0]) && lines.slice(1).filter((l) => l.startsWith("**")).every((l) => SECTION_HEADERS.has(l));
 }
 
 async function checkDigest(g) {
   const now = new Date().toISOString();
+  const status = g.newMods.decisionStatusLines(g.newSide.store, now);
+  check("/status decisions: the counts show turn.handler", status.some((l) => l.startsWith("· turn.handler ")), status[1] ?? "no decision section");
   const digest = g.newMods.buildDecisionDigest(g.newSide.store, now, process.env);
-  check("digest: builds on copy B with turn.handler counts", digest !== null && digest.text.includes("· turn.handler "), digest ? digest.text.split("\n")[0] : "null");
+  check("digest: no message on an empty day, else the header and only the three new sections", digestShapeOk(digest), digest ? digest.text.split("\n")[0] : "null (empty day)");
   const env = { ...process.env, HOUGE_DECISION_DIGEST_AT: "00:00" };
   const first = g.newMods.runDecisionDigestTick({ store: g.newSide.store, chatId: "p6op", now, env });
   const again = g.newMods.runDecisionDigestTick({ store: g.newSide.store, chatId: "p6op", now, env });
-  check("digest tick: sends once per local date", first.ran === true && first.sent === true && again.ran === false, JSON.stringify({ first, again }));
+  // a young running improve tick on copy B defers the digest (ruling 21): then nothing ran, and that is not a failure here
+  check("digest tick: sends once per local date (or waits for today's improve tick)", (first.ran === false && again.ran === false) || (first.ran === true && first.sent === (digest !== null) && again.ran === false), JSON.stringify({ first, again }));
   const note = claimDigest(g.newSide.store);
-  check("digest tick: one outbox message to the operator chat", note !== null && note.payload.text === digest?.text, note ? note.idempotency_key : "none");
-  return { digest, rows: await checkRender(g, note, digest) };
-}
-
-function tapUpdate(m, from, data, id) {
-  const allowlist = { users: [{ telegram_user_id: 111, identity_id: "p6" }], chats: [{ telegram_chat_id: 222, label: "p6", allowed_identity_ids: ["p6"] }] };
-  return m.normalizeTelegramUpdate({ update_id: 7_000_000 + id, callback_query: { id: `p6cb${id}`, from: { id: from }, message: { message_id: 1, chat: { id: 222 } }, data } }, allowlist);
-}
-
-/**
- * The RENDERED buttons go into the gateway, picked by their visible label (codex #8): the button Paco sees as ❌ must
- * write review_bad, the one he sees as ✅ must then write nothing.
- */
-function checkTap(g, { digest, rows }) {
-  const offered = digest?.offered ?? [];
-  if (offered.length === 0) { cannotRun("❌ tap", "nothing was offered even after seeding (copy B has no applied jev-rung turn.handler row)"); return; }
-  const row = rows[0] ?? [];
-  const bad = row.find((b) => b.text.startsWith("❌"))?.callback_data;
-  const ok = row.find((b) => b.text.startsWith("✅"))?.callback_data;
-  if (!ok || !bad) { cannotRun("❌ tap", "the digest rendered no ✅/❌ pair to tap"); return; }
-  const id = offered[0];
-  const gw = new g.newMods.Gateway(g.newSide.store);
-  const first = tapUpdate(g.newMods, 111, bad, 1);
-  if (first.ok) gw.intake(first.event);
-  const second = tapUpdate(g.newMods, 111, ok, 2);
-  if (second.ok) gw.intake(second.event);
-  const outcomes = g.newSide.store.listDecisionOutcomes(id).map((o) => `${o.signal}:${o.value}:${o.source}`);
-  check("❌ tap: writes exactly one review_bad outcome; the second tap writes nothing", outcomes.length === 1 && outcomes[0] === "review_bad:turn.handler:paco", outcomes.join(",") || "none");
-  const stranger = tapUpdate(g.newMods, 999, bad, 3);
-  if (stranger.ok) gw.intake(stranger.event);
-  const after = g.newSide.store.listDecisionOutcomes(id).length;
-  check("❌ tap: a stranger's tap is refused by the allowlist and writes nothing", stranger.ok === false && after === outcomes.length, `outcomes ${outcomes.length} → ${after}`);
+  if (digest === null || !first.ran) return;
+  check("digest tick: one outbox message to the operator chat", note !== null && note.payload.text === digest.text, note ? note.idempotency_key : "none");
+  if (note) await checkRender(g, note);
 }
 
 async function setup(args) {
-  const newMods = await loadBuild(NEW_DIST, ["config/load-env.js", "config/disarm-posture.js", "decisions/digest.js", "triggers/telegram-trigger-adapter.js",
+  const newMods = await loadBuild(NEW_DIST, ["config/load-env.js", "config/disarm-posture.js", "decisions/digest.js", "decisions/status-view.js", "triggers/telegram-trigger-adapter.js",
     "jev/calibration.js", "notifications/telegram-notification-adapter.js"]);
   newMods.loadHougeEnv();
   if (!process.env.TYPESAFE_API_KEY) throw new Error("TYPESAFE_API_KEY is not set (HOUGE_ENV_FILE?)");
@@ -476,8 +433,7 @@ async function main() {
     const t = await dualRun(g, items, args.limit);
     reportDualRun(t, g.retries);
     reportCoverage(coverage(g, t.newRuns));
-    ensureUnsure(g, t.newRuns);
-    checkTap(g, await checkDigest(g));
+    await checkDigest(g);
   } finally { g.oldSide.store.close(); g.newSide.store.close(); }
   return verdict();
 }

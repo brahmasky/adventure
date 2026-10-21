@@ -1,6 +1,10 @@
+import { memoryUndoButton } from "../capabilities/memory-correct.js";
+import { memlaneUndoButton } from "../core/memory-lane-card.js";
 import type { NotificationButton } from "../notifications/notification-types.js";
-import type { DecisionRow, RunStore } from "../run/run-store.js";
+import type { DecisionRow, ImprovementJobRow, ImprovementProposalRow, RunStore } from "../run/run-store.js";
 import { formatInstantInZone, resolveDisplayZone } from "../run/schedule-spec.js";
+import { skillButtons } from "../skills/promote.js";
+import { redactForImprove } from "./egress.js";
 import { REGISTRY } from "./registry.js";
 import { SETTLE_HEALTH_REASONS, TURN_SETTLE_ID } from "./entries/turn-settle.js";
 import { TRUST_ORDER, rankOf, type TrustLevel } from "./entries/turn-trust.js";
@@ -8,10 +12,11 @@ import { TRUST_TAP_BUDGET } from "./trust-ask.js";
 import type { AnyEntry, DecidedBy } from "./types.js";
 
 /**
- * The daily decision digest (spec §8.1), stage 1 content: unsure verdicts with ✅/❌ taps, counts per entry by rung, and
- * per-entry health. Improvements, proposals and the gaming watch join in stage 2b. One message per local date at
- * HOUGE_DECISION_DIGEST_AT, through the outbox and the rich renderer; skipped when the day has no decisions and no health failures (a day with only health failures sends a Health-only digest). No enable
- * flag (R13): the time is the only knob, and `off` (Paco 2026-10-14) switches the summary off; the ledger under it is unchanged.
+ * The daily decision digest (2b-ii §6.1): Improvements today (what the ladder saved or moved, each with its Undo / Revert /
+ * Revoke), Proposals waiting (at most 8, with Accept / Dismiss) and Watch (7-day numbers). Counts, health and trust live in
+ * `/status`. One message per local date at HOUGE_DECISION_DIGEST_AT, through the outbox and the rich renderer; skipped when all
+ * three sections are empty; waits for the day's improve tick (ruling 21). No enable flag (R13): the time is the only knob, and
+ * `off` (Paco 2026-10-14) switches the summary off; the ledger under it is unchanged.
  */
 export const DEFAULT_DIGEST_AT = "21:00";
 export const DIGEST_WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -19,10 +24,7 @@ export const UNSURE_BAND = 0.15;
 export const UNSURE_MAX = 8;
 /** The review tap's callback prefix (`dec:rv:<decision_id>:<ok|bad>`); the callback parser imports it, never a second literal. */
 export const REVIEW_PREFIX = "dec:rv:";
-const SNIPPET_CHARS = 40;
 const RUNG_ORDER: readonly DecidedBy[] = ["rule", "system_one", "model", "paco", "fail"];
-/** Entries decided over Paco's own message: their unsure line may quote his words (never tool text, plan ruling 10). */
-const PACO_TEXT_STAGES: ReadonlySet<string> = new Set(["intake", "pre_model"]);
 /** Entries whose rows settleTriage writes with the turn's verdict (plan ruling 14). */
 const FRONT_DOOR: ReadonlySet<string> = new Set(["turn.handler", "turn.gear"]);
 /**
@@ -72,9 +74,6 @@ export function reviewButtons(decision_id: string, n: number): NotificationButto
   return [{ text: `✅ ${n}`, data: ok }, { text: `❌ ${n}`, data: bad }];
 }
 
-/** Code points, not UTF-16 units: a split surrogate pair would make Telegram reject the HTML send. */
-const snippetOf = (text: string): string => Array.from(text.replace(/[*_`[\]<>]/g, " ").replace(/\s+/g, " ").trim()).slice(0, SNIPPET_CHARS).join("");
-
 /**
  * Plan ruling 14: a front-door row counts only when its run's verdict links it. Stage 1 writes the two atomically, so this
  * only guards a future path that leaves a row behind (a lost or killed turn must never be offered for review).
@@ -85,13 +84,6 @@ function settledRows(store: RunStore, rows: readonly DecisionRow[]): DecisionRow
     const linked = r.run_id ? store.getJevVerdictForRun(r.run_id)?.decision_id ?? null : null;
     return linked !== null && (r.entry_id !== "turn.handler" || linked === r.decision_id);
   });
-}
-
-function unsureLine(store: RunStore, r: DecisionRow, n: number, tz: string, registry: readonly AnyEntry[]): string {
-  const entry = registry.find((e) => e.id === r.entry_id);
-  const words = entry && PACO_TEXT_STAGES.has(entry.stage) && r.run_id ? store.userTurnTextForRun(r.run_id) : undefined;
-  const at = formatInstantInZone(r.created_at, tz).slice(11);
-  return `${n}. ${r.entry_id} → ${r.verdict} · p ${(r.p ?? 0).toFixed(2)} · ${at}${words ? ` · «${snippetOf(words)}»` : ""}`;
 }
 
 /** Per entry, counts by decider under the display labels; the digest and `/status` both print these lines. */
@@ -107,25 +99,6 @@ export function countLines(rows: readonly DecisionRow[]): string[] {
     const known = RUNG_ORDER.filter((k) => m.has(k)).map((k) => `${RUNG_LABEL[k]} ${m.get(k)}`);
     const other = [...m.keys()].filter((k) => !(RUNG_ORDER as readonly string[]).includes(k)).sort().map((k) => `${k} ${m.get(k)}`);
     return `· ${id} ${total} — ${[...known, ...other].join(" · ")}`;
-  });
-}
-
-const plural = (n: number, word: string): string => `${n} ${word}${n === 1 ? "" : "s"}`;
-
-/**
- * Per entry over the whole window (spec §5.2): Jev skips by the store's own rule (`countDecisionJevSkips`, ruling M1: a
- * failure ON the System One rung, stale_bar and budget excluded), named fallbacks (`fail` rows, budget excluded), and rows
- * run in the configured triage shadow when there are any; entries with nothing to report are left out.
- */
-function healthLines(store: RunStore, rows: readonly DecisionRow[], since: string, until: string): string[] {
-  const ids = [...new Set(rows.map((r) => r.entry_id))].sort();
-  return ids.flatMap((id) => {
-    const mine = rows.filter((r) => r.entry_id === id);
-    const skips = store.countDecisionJevSkips(id, since, until).failed;
-    const fallbacks = mine.filter((r) => r.rung === "fail" && r.fallback_reason !== null && r.fallback_reason !== "budget").length;
-    const shadowed = mine.filter((r) => r.armed_mode === "shadow").length;
-    if (skips + fallbacks + shadowed === 0) return [];
-    return [`· ${id}: ${plural(skips, "Jev skip")} · ${plural(fallbacks, "fallback")}${shadowed > 0 ? ` · ${shadowed} in configured shadow` : ""}`];
   });
 }
 
@@ -193,24 +166,6 @@ export function reaskLines(rows: readonly DecisionRow[]): string[] {
   return [...by].sort(([a], [b]) => a.localeCompare(b)).map(([id, c]) => `· ${id}: re-asked ${c.mean + c.max + c.failed} (mean ${c.mean} · max ${c.max} · failed ${c.failed})`);
 }
 
-/** The golden set's model-move page (spec 4.2): a provisional bar measured on one model, judged by another, until Paco looks. */
-function staleBarLines(store: RunStore): string[] {
-  return store.listOpenIncidents().filter((i) => i.kind === "decision_bar_stale").map((i) => {
-    const d = JSON.parse(i.detail_json) as { model?: unknown; bar_model?: unknown };
-    return `· ${i.subject}: the bar was measured on ${String(d.bar_model)}, Jev now reports ${String(d.model)}`;
-  });
-}
-
-/** The two stage 2a sections; each is left out when it has nothing to say, so a stage 1 day renders as before. */
-function stage2aSections(store: RunStore, rows: readonly DecisionRow[], now: string, env: NodeJS.ProcessEnv): string[] {
-  const trust = trustLines(store, rows, now, env);
-  const reasks = reaskLines(rows);
-  return [...(trust.length > 0 ? [["**Injection & trust (24 h)**", ...trust].join("\n")] : []),
-    ...(reasks.length > 0 ? [["**Noise band (24 h)**", ...reasks].join("\n")] : [])];
-}
-
-export interface Digest { text: string; button_rows: NotificationButton[][]; offered: string[] }
-
 /** The 24 h before `now`: every row (health reads orphans too) and the settled rows the counts read. */
 export function decisionWindow(store: RunStore, now: string): { since: string; all: DecisionRow[]; rows: DecisionRow[] } {
   const since = new Date(Date.parse(now) - DIGEST_WINDOW_MS).toISOString();
@@ -218,48 +173,174 @@ export function decisionWindow(store: RunStore, now: string): { since: string; a
   return { since, all, rows: settledRows(store, all) };
 }
 
-export function buildDecisionDigest(store: RunStore, now: string, env: NodeJS.ProcessEnv = process.env, registry: readonly AnyEntry[] = REGISTRY): Digest | null {
-  const { since, all, rows } = decisionWindow(store, now);
-  // Health reads every row in the window, orphans included: a day of only unsettled rows still reports its failures.
-  const settleHealth = settleHealthLine(all);
-  const health = [...healthLines(store, all, since, now), ...(settleHealth ? [settleHealth] : [])];
-  const stale = staleBarLines(store);
-  if (rows.length === 0 && health.length === 0 && stale.length === 0) return null;
+
+export const DIGEST_PROPOSALS_MAX = 8;
+export const DRAFT_LINE_CHARS = 120;
+export const WATCH_WINDOW_DAYS = 7;
+/** Ruling 21: the improve tick runs before the digest; a running or budget-stopped tick younger than this defers the digest to the next cycle. */
+export const DIGEST_WAIT_FOR_TICK_MS = 30 * 60_000;
+/** The callback prefixes of telegram-command-parser.ts (`PR_PREFIX` / `LM_PREFIX`); that file imports this one, so they are literals here and a test pins the pair. */
+export const DIGEST_PR_PREFIX = "dec:pr:";
+export const DIGEST_LM_PREFIX = "dec:lm:";
+const LESSON_NOT_HOLDING = "lesson did not hold";
+const SILENT_FAMILIES = ["review_unsure", "lesson_unfollowed", "dig_deeper"] as const;
+
+export interface Digest { text: string; button_rows: NotificationButton[][]; offered: { proposal_ids: string[]; job_ids: string[] } }
+interface Section { lines: string[]; button_rows: NotificationButton[][] }
+
+/** Code points, not UTF-16 units: a split surrogate pair would make Telegram reject the HTML send. */
+const clip = (text: string, n: number): string => Array.from(text.replace(/\s+/g, " ").trim()).slice(0, n).join("");
+const daysBefore = (now: string, n: number): string => new Date(Date.parse(now) - n * 24 * 60 * 60 * 1000).toISOString();
+
+function button(text: string, data: string): NotificationButton {
+  if (Buffer.byteLength(data, "utf8") > 64) throw new Error("digest callback_data exceeds 64 bytes");
+  return { text, data };
+}
+
+/** A stored JSON object, or {} for anything else: a corrupt row never breaks the digest. */
+function parsed(json: string | null): Record<string, unknown> {
+  try { const v: unknown = JSON.parse(json ?? "{}"); return typeof v === "object" && v !== null && !Array.isArray(v) ? v as Record<string, unknown> : {}; } catch { return {}; }
+}
+const str = (v: unknown): string => (typeof v === "string" ? v : "");
+
+/** What a proposal's draft says in one line (redacted before the cut so a secret is never half-shown). */
+function draftSummary(store: RunStore, p: ImprovementProposalRow, chars: number): string {
+  const d = parsed(p.draft_json);
+  const raw = p.target === "lesson" || p.target === "fact" ? str(d.text)
+    : p.target === "schedule" ? `move ${str(d.schedule_id).slice(0, 12)} to ${String(d.hour_to ?? "?")}:00`
+    : p.target === "ladder" ? `${str(d.move)} on ${str(d.entry_id)}` : str(d.text);
+  return clip(redactForImprove(store, raw), chars);
+}
+
+function jobLine(job: ImprovementJobRow): string | null {
+  const turns = parsed(job.origin_json).turn_ids;
+  const n = `${Array.isArray(turns) ? turns.length : 0} requests`;
+  if (job.state === "pending_review") return `· skill ${job.pending_name ?? "draft"} drafted · ${n}`;
+  if (job.state === "suggested") return `· suggested: ${job.gate_a ?? "lesson"} · ${n}`;
+  if (job.state === "promoted") return `· skill ${job.pending_name ?? "draft"} promoted`;
+  return null;
+}
+
+/** An accepted proposal as one Improvements line with its undo; null for a target whose acceptance the digest does not show. */
+function acceptedLine(store: RunStore, p: ImprovementProposalRow): { line: string; button?: NotificationButton } | null {
+  const result = parsed(p.result_json);
+  const d = parsed(p.draft_json);
+  const change = str(result.change_id);
+  if (p.target === "lesson") return { line: `· lesson saved: ${draftSummary(store, p, 80)} · ${p.evidence}`, ...(change ? { button: memlaneUndoButton(change) } : {}) };
+  if (p.target === "fact") return { line: `· fact saved · ${draftSummary(store, p, 40)}`, ...(change ? { button: memoryUndoButton(change) } : {}) };
+  if (p.target === "schedule") {
+    const goal = store.getScheduledTask(str(d.schedule_id))?.goal;
+    const name = goal ? clip(redactForImprove(store, goal), 40) : str(d.schedule_id).slice(0, 12);
+    return { line: `· schedule ${name} moved to ${String(d.hour_to ?? "?").padStart(2, "0")}:00 · ${p.evidence}`, button: button("↩️ Revert", `${DIGEST_PR_PREFIX}${p.proposal_id}:rev`) };
+  }
+  if (p.target === "ladder") {
+    const move = store.getLadderMove(str(result.move_id));
+    const live = move !== undefined && move.state === "active" && move.revocable === 1;
+    return { line: `· ladder move ${str(d.move)} on ${str(d.entry_id)} · ${p.evidence}`, ...(live ? { button: button("⏪ Revoke", `${DIGEST_LM_PREFIX}${move.move_id}:revoke`) } : {}) };
+  }
+  return null;
+}
+
+/** Jobs finished since the last digest and proposals Paco accepted since, each with the tap that undoes it. */
+export function improvementsToday(store: RunStore, since: string): Section & { job_ids: string[] } {
+  const lines: string[] = []; const button_rows: NotificationButton[][] = []; const job_ids: string[] = [];
+  for (const job of store.listJobsFinishedSince(since)) {
+    const line = jobLine(job);
+    if (!line) continue;
+    lines.push(line);
+    if (job.state === "pending_review") { button_rows.push(skillButtons(job.job_id, "review")); job_ids.push(job.job_id); }
+  }
+  for (const p of store.listProposalsResolvedSince(since)) {
+    const a = p.state === "accepted" ? acceptedLine(store, p) : null;
+    if (!a) continue;
+    lines.push(a.line);
+    if (a.button) button_rows.push([a.button]);
+  }
+  return { lines, button_rows, job_ids };
+}
+
+/** The open proposals, oldest first, at most DIGEST_PROPOSALS_MAX, each with Accept / Dismiss; `ids` are the rendered ones only. */
+export function proposalsWaiting(store: RunStore): Section & { ids: string[] } {
+  const open = store.listOpenProposals();
+  const shown = open.slice(0, DIGEST_PROPOSALS_MAX);
+  const lines = shown.map((p, k) => `${k + 1}. ${p.target} · ${draftSummary(store, p, DRAFT_LINE_CHARS)} · ${p.evidence}`);
+  if (open.length > shown.length) lines.push(`+${open.length - shown.length} more`);
+  const button_rows = shown.map((p, k) => [button(`✅ ${k + 1}`, `${DIGEST_PR_PREFIX}${p.proposal_id}:acc`), button(`🗑 ${k + 1}`, `${DIGEST_PR_PREFIX}${p.proposal_id}:dis`)]);
+  return { lines, button_rows, ids: shown.map((p) => p.proposal_id) };
+}
+
+const countOf = (rows: readonly { signal: string }[], signal: string): number => rows.filter((r) => r.signal === signal).length;
+const sumDetail = (ticks: readonly { detail: Record<string, unknown> }[], key: string): number =>
+  ticks.reduce((a, t) => a + (typeof t.detail[key] === "number" ? t.detail[key] : 0), 0);
+
+/** Seven days of numbers that show the loop gaming or starving itself (§6.1); a line with only zeros is left out. */
+export function watchLines(store: RunStore, now: string): string[] {
+  const since = daysBefore(now, WATCH_WINDOW_DAYS);
+  const signals = store.listImproveSignalsSince(since);
+  const ticks = store.listImproveTicksSince(since);
+  const route = store.listDecisionsBetween(since, now).filter((r) => r.entry_id === "improve.route");
+  const { clarify, total } = store.clarifyCounts(since);
+  const skipped = new Map<string, number>();
+  for (const e of store.listLedgerEventsByTypeSince("improve_signal_skipped", since)) { const k = str(e.payload.signal) || "unknown"; skipped.set(k, (skipped.get(k) ?? 0) + 1); }
+  // With no signal at all in the window "silent" would be every day's line and an empty day would never be skipped.
+  const silent = signals.length === 0 ? [] : SILENT_FAMILIES.filter((f) => countOf(signals, f) === 0);
+  const made = new Map([...store.listOpenProposals(), ...store.listProposalsResolvedSince(since)].map((p) => [p.proposal_id, p] as const));
+  const holding = [...made.values()].filter((p) => p.created_at > since && p.evidence.startsWith(LESSON_NOT_HOLDING)).length;
+  const reasons = (code: string): number => route.filter((r) => r.reason_code === code).length;
+  const embedDays = ticks.filter((t) => sumDetail([t], "embed_unavailable") > 0).length;
+  const c = { corrections: countOf(signals, "correction"), abandoned: countOf(signals, "abandoned"), rate: total > 0 ? Math.round((100 * clarify) / total) : 0 };
+  const lines: Array<[number, string]> = [
+    [c.corrections + c.abandoned + c.rate, `· corrections ${c.corrections} · abandoned ${c.abandoned} · clarify rate ${c.rate}%`],
+    [skipped.size, `· unattached: ${[...skipped].sort(([a], [b]) => a.localeCompare(b)).map(([k, n]) => `${k} ${n}`).join(", ")}`],
+    [sumDetail(ticks, "deferred"), `· deferred ${sumDetail(ticks, "deferred")}`],
+    [silent.length, `· silent: ${silent.join(", ")}`],
+    [reasons("wiki_disarmed"), `· wiki disarmed: ${reasons("wiki_disarmed")} topics`],
+    [embedDays, `· embeddings unavailable: ${embedDays} days`],
+    [reasons("inapplicable_top"), `· inapplicable top ${reasons("inapplicable_top")}`],
+    [holding, `· lessons not holding ${holding}`]
+  ];
+  return lines.filter(([n]) => n > 0).map(([, line]) => line);
+}
+
+export function buildDecisionDigest(store: RunStore, now: string, env: NodeJS.ProcessEnv = process.env): Digest | null {
   const tz = resolveDisplayZone(env);
-  const unsure = unsureOf(rows, registry);
+  const today = improvementsToday(store, new Date(Date.parse(now) - DIGEST_WINDOW_MS).toISOString());
+  const waiting = proposalsWaiting(store);
+  const watch = watchLines(store, now);
+  if (today.lines.length + waiting.lines.length + watch.length === 0) return null;
   const sections = [`🪜 **Decisions — ${formatInstantInZone(now, tz).slice(0, 10)}**`];
-  if (unsure.length > 0) sections.push(["**Unsure** (✅ right · ❌ wrong)", ...unsure.map((r, k) => unsureLine(store, r, k + 1, tz, registry))].join("\n"));
-  if (rows.length > 0) sections.push(["**Counts (24 h)**", ...countLines(rows)].join("\n"));
-  sections.push(...stage2aSections(store, rows, now, env));
-  if (stale.length > 0) sections.push(["**Bar stale**", ...stale].join("\n"));
-  if (health.length > 0) sections.push(["**Health**", ...health].join("\n"));
-  return { text: sections.join("\n\n"), button_rows: unsure.map((r, k) => reviewButtons(r.decision_id, k + 1)), offered: unsure.map((r) => r.decision_id) };
+  if (today.lines.length > 0) sections.push(["**Improvements today**", ...today.lines].join("\n"));
+  if (waiting.lines.length > 0) sections.push(["**Proposals waiting**", ...waiting.lines].join("\n"));
+  if (watch.length > 0) sections.push([`**Watch (${WATCH_WINDOW_DAYS} d)**`, ...watch].join("\n"));
+  return { text: sections.join("\n\n"), button_rows: [...today.button_rows, ...waiting.button_rows], offered: { proposal_ids: waiting.ids, job_ids: today.job_ids } };
 }
 
 export interface DigestTickInput { store: RunStore; chatId: string | null; now: string; env?: NodeJS.ProcessEnv }
 export type DigestTickResult = { ran: false } | { ran: true; sent: boolean };
 
-/** Due once per local date at or after HOUGE_DECISION_DIGEST_AT; the latch row and the message commit together. */
+/** Due once per local date at or after HOUGE_DECISION_DIGEST_AT; the latch row, the message and the offers commit together. */
 export function runDecisionDigestTick(i: DigestTickInput): DigestTickResult {
   const env = i.env ?? process.env;
   if (!i.chatId || digestOff(env)) return { ran: false };
   const chatId = i.chatId;
   const [date, time] = formatInstantInZone(i.now, resolveDisplayZone(env)).split(" ") as [string, string];
   if (time < resolveDigestAt(env) || i.store.getDecisionDigest(date)) return { ran: false };
+  const tick = i.store.getImproveTick(date);
+  if (tick && tick.result !== "done" && tick.result !== "failed" && Date.parse(i.now) - Date.parse(tick.started_at) < DIGEST_WAIT_FOR_TICK_MS) return { ran: false };
   const digest = buildDecisionDigest(i.store, i.now, env);
   return i.store.inTransaction((): DigestTickResult => {
     if (i.store.getDecisionDigest(date)) return { ran: false };
-    const sent = digest !== null && enqueueDigest(i.store, chatId, date, digest);
-    i.store.recordDecisionDigest({ local_date: date, sent, offered: digest && sent ? digest.offered : [], created_at: i.now });
-    return { ran: true, sent };
+    const queued = digest !== null && enqueueDigest(i.store, chatId, date, digest) === "queued";
+    if (queued && digest) { i.store.markProposalsOffered(digest.offered.proposal_ids, i.now); i.store.markJobsOffered(digest.offered.job_ids, i.now); }
+    i.store.recordDecisionDigest({ local_date: date, sent: queued, offered: [], created_at: i.now });
+    return { ran: true, sent: queued };
   });
 }
 
-/** False on an idempotency conflict (another payload already holds today's key): the day latches sent 0, logged, never a silent "sent". */
-function enqueueDigest(store: RunStore, chatId: string, date: string, digest: Digest): boolean {
+/** The queue's verdict; a conflict (another payload holds today's key) is logged, never a silent "sent", and a duplicate sets no offers. */
+function enqueueDigest(store: RunStore, chatId: string, date: string, digest: Digest): "queued" | "duplicate" | "conflict" {
   const r = store.enqueueNotification({ target: { kind: "telegram", chat_id: chatId }, intent_type: "progress", idempotency_key: `decision_digest:${date}`,
     correlation_id: "decision-digest", payload: { text: digest.text, ...(digest.button_rows.length > 0 ? { button_rows: digest.button_rows } : {}) } });
-  if (r.status !== "conflict") return true;
-  console.error(`decisions: digest for ${date} not queued (${r.error})`);
-  return false;
+  if (r.status === "conflict") console.error(`decisions: digest for ${date} not queued (${r.error})`);
+  return r.status;
 }

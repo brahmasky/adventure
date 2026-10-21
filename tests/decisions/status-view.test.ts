@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildDecisionDigest } from "../../src/decisions/digest.js";
+import { countLines, decisionWindow } from "../../src/decisions/digest.js";
 import { decisionListText, decisionStatusLines } from "../../src/decisions/status-view.js";
 import { RunStore, type DecisionInsert } from "../../src/run/run-store.js";
 
@@ -44,10 +44,20 @@ describe("/status decisions section", () => {
     ]);
     s.close();
   });
-  it("uses the digest's own count lines, so /status and the digest never disagree", () => {
+  it("the /status count lines are countLines over the same 24 h window the digest's day reads, with no digest text involved", () => {
     const s = seeded();
-    const digest = buildDecisionDigest(s, NOW, ENV)!.text;
-    for (const line of decisionStatusLines(s, NOW).filter((l) => l.startsWith("· "))) expect(digest).toContain(line);
+    const counts = countLines(decisionWindow(s, NOW).rows);
+    expect(counts.length).toBeGreaterThan(0);
+    expect(decisionStatusLines(s, NOW).filter((l) => l.startsWith("· "))).toEqual(counts);
+    s.close();
+  });
+  it("adds the 30-day proposal counts when any proposal exists, and no line otherwise", () => {
+    const s = seeded();
+    expect(decisionStatusLines(s, NOW).some((l) => l.startsWith("Proposals (30 d)"))).toBe(false);
+    const mk = (scope: string) => s.insertImprovementProposal({ decision_id: s.insertDecision(D({ entry_id: "improve.route", verdict: "lesson" })), target: "lesson", scope, chat_id: "555", draft_json: "{}", evidence: "e", created_at: "2026-10-12T09:00:00.000Z" });
+    const a = mk("a"); mk("b"); mk("c");
+    s.transitionProposal({ proposal_id: a, from: ["open"], to: "accepted", now: AT });
+    expect(decisionStatusLines(s, NOW)).toContain("Proposals (30 d): open 2 · accepted 1 · dismissed 0 · expired 0");
     s.close();
   });
   it("says none when Jev logged no failure and nothing was injected or raised", () => {

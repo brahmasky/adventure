@@ -22,11 +22,20 @@ function jevFailureLine(store: RunStore, since: string, now: string): string {
  */
 export function decisionStatusLines(store: RunStore, now: string): string[] {
   const { since, rows } = decisionWindow(store, now);
-  if (rows.length === 0) return [];
+  const proposals = proposalsLine(store, now);
+  if (rows.length === 0) return proposals ? ["", proposals] : [];
   const inj = injectionCounts(rows);
   const hostile = [...trustTops(rows).values()].filter((l) => l === "hostile").length;
   return ["", "🪜 DECISIONS (24h)", ...countLines(rows), jevFailureLine(store, since, now),
-    `Injection: withheld ${inj.withheld} · framed ${inj.framed} · not checked ${inj.lost}`, `Hostile turns: ${hostile}`];
+    `Injection: withheld ${inj.withheld} · framed ${inj.framed} · not checked ${inj.lost}`, `Hostile turns: ${hostile}`, ...(proposals ? [proposals] : [])];
+}
+
+const PROPOSAL_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
+/** 2b-ii: how the improvement proposals of the last 30 days ended; null when there are none. */
+function proposalsLine(store: RunStore, now: string): string | null {
+  const c = store.countProposalsByState(new Date(Date.parse(now) - PROPOSAL_WINDOW_MS).toISOString());
+  if (c.open + c.accepted + c.dismissed + c.expired === 0) return null;
+  return `Proposals (30 d): open ${c.open} · accepted ${c.accepted} · dismissed ${c.dismissed} · expired ${c.expired}`;
 }
 
 /** `run_<uuid>` → its first 8 characters after the prefix; a run-less row shows "–". */

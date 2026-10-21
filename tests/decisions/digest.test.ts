@@ -1,222 +1,151 @@
+// Spec 2b-ii §6.1 (R1): three sections only — Improvements today (effects and accepted proposals since the last digest with
+// Undo/Revert/Revoke), Proposals waiting (≤ 8 open, oldest first, Accept/Dismiss, "+N more"), Watch (7-day numbers) — each
+// skipped when empty, the message skipped when all three are; drafts redacted; offered_at set inside the latch transaction
+// only after the outbox reported queued. The unsure list, counts, trust/noise, bar-stale and Health sections are gone.
 import { describe, expect, it } from "vitest";
-import { buildDecisionDigest, REVIEW_PREFIX, resolveDigestAt, reviewButtons, runDecisionDigestTick, unsureOf, UNSURE_MAX } from "../../src/decisions/digest.js";
+import { buildDecisionDigest, DIGEST_PROPOSALS_MAX, resolveDigestAt, runDecisionDigestTick } from "../../src/decisions/digest.js";
 import { RunStore, type DecisionInsert } from "../../src/run/run-store.js";
-import { createQueuedTurnRun } from "../helpers/runs.js";
+import { createTelegramTurn } from "../helpers/runs.js";
 import { drainOutbox } from "../helpers/omp-worker.js";
 
-// Spec §8.1: one message a day, rich-rendered, skipped when empty: up to 8 unsure verdicts (p within 0.15 of the entry's
-// bar) with ✅/❌ taps, counts per entry by rung, per-entry health. The line shows Paco's own words for front-door entries
-// and never tool text. The latch makes it one message per local date, whatever the poll cadence. Plan ruling 14: a
-// front-door row whose verdict does not link it (a turn that never settled) is neither counted nor offered.
-// Ruling R1: only System One judgements are offered; an `uncalibrated` fallback carries an arbitrary p and is not one.
-// An offer needs p in [bar, bar + 0.15) and a judgement route reason (allowlist); turn.handler's bar is 0.6.
 const ENV = { HOUGE_DISPLAY_TZ: "Australia/Sydney" };
-const NOW = "2026-10-12T11:00:00.000Z"; // 22:00 in Sydney (AEDT, UTC+11)
-const D = (o: Partial<DecisionInsert>): DecisionInsert => ({ entry_id: "turn.handler", entry_version: 1, run_id: null, tool_call_id: null, stage: "pre_model",
-  rung: "system_one", verdict: "planner", p: 0.9, reason_code: "routed", fallback_reason: null, fallback_rung: null, armed_mode: "on", latency_ms: 1,
-  created_at: "2026-10-12T05:00:00.000Z", ...o });
-/** A turn.handler decision as settleTriage writes it: its run's verdict links it. */
-function settled(store: RunStore, o: Partial<DecisionInsert>, text = "x"): { id: string; run_id: string } {
-  const run_id = createQueuedTurnRun(store, text);
-  const id = store.insertDecision(D({ run_id, ...o }));
-  store.insertJevVerdict({ run_id, category: null, breadth: null, reasoning: null, actions: null, sets_rule: null, rule_scope: null, lane: "planner",
-    role: "default", effort: null, cascade: null, save_outcome: "none", route_outcome: "fallback", reason: "jev_skipped", skip_reason: null,
-    quoted_turn_id: null, decision_id: id });
-  return { id, run_id };
-}
+const NOW = "2026-10-21T11:00:00.000Z"; // 22:00 AEDT
+const D: DecisionInsert = { entry_id: "improve.route", entry_version: 1, run_id: null, tool_call_id: null, stage: "after_turn", rung: "system_one", verdict: "lesson", p: 0.7, reason_code: "jev_choice",
+  fallback_reason: null, fallback_rung: null, armed_mode: "on", latency_ms: 1, created_at: "2026-10-21T10:00:00.000Z" };
+const open = (s: RunStore, n: number, target: "lesson" | "fact" = "lesson") => Array.from({ length: n }, (_, k) =>
+  s.insertImprovementProposal({ decision_id: s.insertDecision(D), target, scope: `scope${k}`, chat_id: "555", draft_json: JSON.stringify({ scope: "ask", text: `Rule ${k}: ${"x".repeat(200)} sk-liveSECRETvalue000000000` }), evidence: `correction on 2026-10-21, scope scope${k}`, created_at: `2026-10-21T0${k % 10}:00:00.000Z` }));
+const buttons = (d: NonNullable<ReturnType<typeof buildDecisionDigest>>) => d.button_rows.flat().map((b) => b.data);
 
-describe("unsureOf", () => {
-  it("keeps applied System One judgements within 0.15 of the entry's bar (turn.handler: 0.6), newest first, at most 8", () => {
-    const store = RunStore.openInMemory();
-    store.insertDecision(D({ p: 0.9 }));                                     // sure
-    store.insertDecision(D({ p: 0.65, armed_mode: "shadow" }));              // shadow: not applied, not offered
-    store.insertDecision(D({ p: 0.65, rung: "rule" }));                      // a rule decided
-    store.insertDecision(D({ p: 0.65, rung: "model", reason_code: "cascade" })); // the cascade decided
-    store.insertDecision(D({ p: 0.65, reason_code: "uncalibrated" }));       // a fallback route, not a judgement (R1)
-    store.insertDecision(D({ p: 0.5, reason_code: "below_bar" }));           // cascadePlan's planner fallback below the bar (R1)
-    store.insertDecision(D({ p: 0.55, reason_code: "cascade" }));            // cascadePlan's one-candidate route below the bar (R1)
-    store.insertDecision(D({ p: 0.55, reason_code: "routed" }));             // below the bar even with a judgement reason
-    store.insertDecision(D({ p: 0.75, reason_code: "routed" }));             // at bar + 0.15: outside the band
-    store.insertDecision(D({ entry_id: "turn.gear", p: 0.65 }));             // turn.gear has no single bar
-    for (let k = 0; k < 10; k += 1) store.insertDecision(D({ p: 0.6 + k * 0.01, created_at: `2026-10-12T06:0${k}:00.000Z` }));
-    const rows = unsureOf(store.listDecisionsBetween("2026-10-11T11:00:00.000Z", NOW));
-    expect(rows).toHaveLength(UNSURE_MAX);
-    expect(rows[0]?.p).toBeCloseTo(0.69);
-    expect(rows[UNSURE_MAX - 1]?.p).toBeCloseTo(0.62);
-    expect(rows.every((r) => r.entry_id === "turn.handler" && r.rung === "system_one" && r.armed_mode === "on" && r.reason_code === "routed")).toBe(true);
-    store.close();
+describe("buildDecisionDigest (2b-ii)", () => {
+  it("renders the three sections and nothing else; offered ids are the rendered proposals and jobs", () => {
+    const s = RunStore.openInMemory();
+    const ids = open(s, 2);
+    const run_id = createTelegramTurn(s, "shorter").run_id;
+    const lesson = s.addLesson({ scope: "ask", text: "Answer in one line.", source: "improve" });
+    const change = s.insertLessonChange({ run_id, chat_id: "555", new_id: lesson, superseded_id: null, pruned_ids: [] });
+    const accepted = s.insertImprovementProposal({ decision_id: s.insertDecision(D), target: "lesson", scope: "answer", chat_id: "555", draft_json: JSON.stringify({ scope: "ask", text: "Answer in one line." }), evidence: "correction on 2026-10-21, scope answer", created_at: "2026-10-21T01:00:00.000Z" });
+    s.transitionProposal({ proposal_id: accepted, from: ["open"], to: "accepted", now: "2026-10-21T09:00:00.000Z", result_json: JSON.stringify({ change_id: change.change_id, lesson_id: lesson }) });
+    s.insertImproveSignal({ signal: "correction", value: "answer", run_id, chat_id: "555", about_run_id: run_id, created_at: "2026-10-21T02:00:00.000Z" });
+    const d = buildDecisionDigest(s, NOW, ENV)!;
+    const headers = d.text.split("\n").filter((l) => l.startsWith("**"));
+    expect(headers).toEqual(["**Improvements today**", "**Proposals waiting**", "**Watch (7 d)**"]);
+    for (const gone of ["Unsure", "Counts (24 h)", "Health", "Bar stale", "Injection & trust", "Noise band"]) expect(d.text).not.toContain(gone);
+    expect(d.text).toContain("lesson saved: Answer in one line. · correction on 2026-10-21, scope answer");
+    expect(buttons(d)).toEqual([`memlane:undo:${change.change_id}`, `dec:pr:${ids[0]}:acc`, `dec:pr:${ids[0]}:dis`, `dec:pr:${ids[1]}:acc`, `dec:pr:${ids[1]}:dis`]);
+    expect(d.offered).toEqual({ proposal_ids: ids, job_ids: [] });
+  });
+  it("skips an empty day entirely: no message, latch sent 0", () => {
+    const s = RunStore.openInMemory();
+    expect(buildDecisionDigest(s, NOW, ENV)).toBeNull();
+    expect(runDecisionDigestTick({ store: s, chatId: "555", now: NOW, env: ENV })).toEqual({ ran: true, sent: false });
+    expect(s.getDecisionDigest("2026-10-21")).toMatchObject({ sent: 0, offered: [] });
+    expect(drainOutbox(s).size).toBe(0);
+  });
+  it("Proposals waiting shows at most 8, oldest first, with +N more; a draft line is redacted and cut at 120 code points; every button's data is ≤ 64 bytes", () => {
+    const s = RunStore.openInMemory();
+    const ids = open(s, 10);
+    const d = buildDecisionDigest(s, NOW, ENV)!;
+    const lines = d.text.split("\n").filter((l) => /^\d+\. /.test(l));
+    expect(lines).toHaveLength(DIGEST_PROPOSALS_MAX);
+    expect(d.text).toContain("+2 more");
+    expect(d.text).not.toContain("sk-liveSECRET");
+    expect(Array.from(lines[0]!.split(" · ")[1]!)).toHaveLength(120);
+    expect(d.offered.proposal_ids).toEqual(ids.slice(0, DIGEST_PROPOSALS_MAX));
+    for (const b of buttons(d)) expect(Buffer.byteLength(b, "utf8")).toBeLessThanOrEqual(64);
+  });
+  it("Improvements today: a drafted skill with Accept/Dismiss, a suggested job without buttons, a promoted skill, a shifted schedule with Revert, a ladder move with Revoke", () => {
+    const s = RunStore.openInMemory();
+    const job = (state: "pending_review" | "suggested" | "promoted", name: string) => {
+      const id = s.insertImprovementJob({ decision_id: s.insertDecision(D), proposal_id: null, chat_id: "555", origin_json: JSON.stringify({ turn_ids: ["t1", "t2", "t3"], run_ids: [], category: "answer", text_hashes: [] }), idempotency_key: name, created_at: "2026-10-21T01:00:00.000Z" })!;
+      s.transitionJob({ job_id: id, from: ["queued"], to: "running", now: "2026-10-21T09:00:00.000Z", bumpAttempt: true });
+      s.transitionJob({ job_id: id, from: ["running"], to: state === "promoted" ? "pending_review" : state, now: "2026-10-21T09:30:00.000Z", attempt: 1, patch: { pending_scope: "ask", pending_name: name, gate_a: state === "suggested" ? "lesson" : "skill" } });
+      if (state === "promoted") { s.transitionJob({ job_id: id, from: ["pending_review"], to: "promoting", now: "2026-10-21T10:00:00.000Z", patch: { promote_mode: "refuse" } }); s.transitionJob({ job_id: id, from: ["promoting"], to: "promoted", now: "2026-10-21T10:00:00.000Z" }); }
+      return id;
+    };
+    const drafted = job("pending_review", "weekly-report"); job("suggested", "x"); job("promoted", "invoice-finder");
+    const sched = s.insertImprovementProposal({ decision_id: s.insertDecision(D), target: "schedule", scope: "shell_external", chat_id: "555", draft_json: JSON.stringify({ schedule_id: "s1", hour_from: 11, hour_to: 20, before: {}, after: {} }), evidence: "2 expiries at 11:00 (2026-10-19, 2026-10-20)", created_at: "2026-10-21T01:00:00.000Z" });
+    s.transitionProposal({ proposal_id: sched, from: ["open"], to: "accepted", now: "2026-10-21T09:00:00.000Z" });
+    const lad = s.insertImprovementProposal({ decision_id: s.insertDecision(D), target: "ladder", scope: "turn.settle", chat_id: "555", draft_json: JSON.stringify({ entry_id: "turn.settle", move: "retire_judge" }), evidence: "3 ❌ on turn.settle in 14 days", created_at: "2026-10-21T01:00:00.000Z" });
+    const move_id = s.insertLadderMove({ entry_id: "turn.settle", scope: "turn.settle", from_rung: "system_one", to_rung: "model", evidence: [lad], granted_by: "paco", granted_via: "improve.route", paco_callback_id: "cb1", revocable: true, created_at: "2026-10-21T09:00:00.000Z" });
+    s.transitionProposal({ proposal_id: lad, from: ["open"], to: "accepted", now: "2026-10-21T09:00:00.000Z", result_json: JSON.stringify({ move_id }) });
+    const d = buildDecisionDigest(s, NOW, ENV)!;
+    expect(d.text).toContain("skill weekly-report drafted · 3 requests");
+    expect(d.text).toContain("suggested: lesson · 3 requests");
+    expect(d.text).toContain("skill invoice-finder promoted");
+    expect(d.text).toContain("moved to 20:00 · 2 expiries at 11:00 (2026-10-19, 2026-10-20)");
+    expect(d.text).toContain("ladder move retire_judge on turn.settle · 3 ❌ on turn.settle in 14 days");
+    expect(buttons(d)).toEqual([`dec:sk:${drafted}:accept`, `dec:sk:${drafted}:dismiss`, `dec:pr:${sched}:rev`, `dec:lm:${move_id}:revoke`]);
+    expect(d.offered).toEqual({ proposal_ids: [], job_ids: [drafted] });
+  });
+  it("Watch: corrections, abandoned, clarify rate, unattached by family, deferred, silent signals, wiki disarmed topics, embeddings unavailable days", () => {
+    const s = RunStore.openInMemory();
+    const run_id = createTelegramTurn(s, "x").run_id;
+    s.recordChatTurn({ chat_id: "555", run_id, role: "assistant", text: "Which?", intent: "clarify", created_at: "2026-10-20T10:00:00.000Z" });
+    s.recordChatTurn({ chat_id: "555", run_id, role: "assistant", text: "Done.", intent: "answer", created_at: "2026-10-20T10:01:00.000Z" });
+    s.insertImproveSignal({ signal: "correction", value: "answer", run_id, chat_id: "555", about_run_id: run_id, created_at: "2026-10-20T10:00:00.000Z" });
+    s.insertImproveSignal({ signal: "abandoned", value: "lookup", run_id, chat_id: "555", about_run_id: run_id, created_at: "2026-10-20T10:00:00.000Z" });
+    s.insertImproveSignal({ signal: "dig_deeper", value: "lookup", run_id, chat_id: "555", about_run_id: run_id, created_at: "2026-10-20T10:00:00.000Z" });
+    s.recordMemoryEvent("improve_signal_skipped", { signal: "rating", code: "no_run" }, "improve");
+    s.beginImproveTick("2026-10-20", "2026-10-20T10:00:00.000Z"); s.finishImproveTick("2026-10-20", "done", { deferred: 2, embed_unavailable: 3 }, "2026-10-20T10:00:00.000Z");
+    s.insertDecision({ ...D, verdict: "knowledge", rung: "rule", reason_code: "wiki_disarmed", p: null });
+    s.insertDecision({ ...D, verdict: "nothing", reason_code: "inapplicable_top", p: 0.8 });
+    s.insertImprovementProposal({ decision_id: s.insertDecision(D), target: "lesson", scope: "answer", chat_id: "555", draft_json: JSON.stringify({ scope: "ask", text: "Shorter." }), evidence: "lesson did not hold: 2 corrections since (9 d)", created_at: "2026-10-21T10:00:00.000Z" });
+    const lines = buildDecisionDigest(s, NOW, ENV)!.text.split("\n");
+    expect(lines).toEqual(expect.arrayContaining(["· corrections 1 · abandoned 1 · clarify rate 50%", "· unattached: rating 1", "· deferred 2", "· silent: review_unsure, lesson_unfollowed", "· wiki disarmed: 1 topics",
+      "· embeddings unavailable: 1 days", "· inapplicable top 1", "· lessons not holding 1"]));
+    expect(lines.some((l) => l.includes("dig_deeper"))).toBe(false); // it had a row in 7 days, so it is not silent
+  });
+  it("the offer transaction: offered_at is set for exactly the rendered ids after a queued enqueue; a duplicate or conflicting enqueue sets nothing; an already-offered id keeps its first value", () => {
+    const s = RunStore.openInMemory();
+    const ids = open(s, 10);
+    s.markProposalsOffered([ids[0]!], "2026-10-20T11:00:00.000Z");
+    expect(runDecisionDigestTick({ store: s, chatId: "555", now: NOW, env: ENV })).toEqual({ ran: true, sent: true });
+    const offered = ids.map((id) => s.getImprovementProposal(id)!.offered_at);
+    expect(offered[0]).toBe("2026-10-20T11:00:00.000Z");
+    expect(offered.slice(1, DIGEST_PROPOSALS_MAX)).toEqual(Array(DIGEST_PROPOSALS_MAX - 1).fill(NOW));
+    expect(offered.slice(DIGEST_PROPOSALS_MAX)).toEqual([null, null]);
+    expect(s.getDecisionDigest("2026-10-21")).toMatchObject({ sent: 1, offered: [] });
+    const s2 = RunStore.openInMemory();
+    const more = open(s2, 1);
+    s2.enqueueNotification({ target: { kind: "telegram", chat_id: "555" }, intent_type: "progress", idempotency_key: "decision_digest:2026-10-21", correlation_id: "other", payload: { text: "taken" } });
+    expect(runDecisionDigestTick({ store: s2, chatId: "555", now: NOW, env: ENV })).toEqual({ ran: true, sent: false }); // conflict: another payload holds the key
+    expect(s2.getImprovementProposal(more[0]!)?.offered_at).toBeNull();
+  });
+  it("waits for the day's improve tick while it is running or stopped and under 30 min old; sends after the cap or once the tick is done (ruling 21)", () => {
+    const s = RunStore.openInMemory();
+    open(s, 1);
+    s.beginImproveTick("2026-10-21", "2026-10-21T10:50:00.000Z");                                   // running, 10 min old
+    expect(runDecisionDigestTick({ store: s, chatId: "555", now: NOW, env: ENV })).toEqual({ ran: false });
+    s.finishImproveTick("2026-10-21", "stopped", {}, NOW);                                            // budget-stopped, still young
+    expect(runDecisionDigestTick({ store: s, chatId: "555", now: NOW, env: ENV })).toEqual({ ran: false });
+    expect(runDecisionDigestTick({ store: s, chatId: "555", now: "2026-10-21T11:25:00.000Z", env: ENV })).toEqual({ ran: true, sent: true }); // 35 min after it started: the cap
+    const s2 = RunStore.openInMemory();
+    open(s2, 1);
+    s2.beginImproveTick("2026-10-21", "2026-10-21T10:50:00.000Z"); s2.finishImproveTick("2026-10-21", "done", {}, NOW);
+    expect(runDecisionDigestTick({ store: s2, chatId: "555", now: NOW, env: ENV })).toEqual({ ran: true, sent: true });
+  });
+  it("resolveDigestAt survives: off → the default, a time → itself", () => {
+    expect(resolveDigestAt({ HOUGE_DECISION_DIGEST_AT: "off" })).toBe("21:00");
+    expect(resolveDigestAt({ HOUGE_DECISION_DIGEST_AT: "20:30" })).toBe("20:30");
   });
 });
 
-describe("unsureOf (R1)", () => {
-  it("offers only judgement routes at p in [bar, bar + 0.15): sub-bar below_bar / cascade fallbacks and unknown reasons are not offered", () => {
-    const store = RunStore.openInMemory();
-    store.insertDecision(D({ p: 0.5, reason_code: "below_bar" }));
-    store.insertDecision(D({ p: 0.55, reason_code: "cascade" }));
-    store.insertDecision(D({ p: 0.55, reason_code: "routed" }));
-    store.insertDecision(D({ p: 0.65, reason_code: "uncalibrated" }));
-    store.insertDecision(D({ p: 0.65, reason_code: "some_future_reason" }));
-    store.insertDecision(D({ p: 0.75, reason_code: "routed" }));
-    const ok = ["routed", "bare_ack_guard", "lane_limits", "correction", "two_request", "fix", "memory_other"].map((reason_code) => store.insertDecision(D({ p: 0.6, reason_code })));
-    const rows = unsureOf(store.listDecisionsBetween("2026-10-11T11:00:00.000Z", NOW));
-    expect(rows.map((r) => r.decision_id).sort()).toEqual([...ok].sort());
-    store.close();
+describe("runDecisionDigestTick latch and switches", () => {
+  const AT_ENV = { ...ENV, HOUGE_DECISION_DIGEST_AT: "22:30" };
+  it("before HOUGE_DECISION_DIGEST_AT nothing runs; after it one message per local date", () => {
+    const s = RunStore.openInMemory();
+    open(s, 1);
+    expect(runDecisionDigestTick({ store: s, chatId: "555", now: NOW, env: AT_ENV })).toEqual({ ran: false }); // 22:00 < 22:30
+    expect(runDecisionDigestTick({ store: s, chatId: "555", now: "2026-10-21T11:40:00.000Z", env: AT_ENV })).toEqual({ ran: true, sent: true });
+    expect(runDecisionDigestTick({ store: s, chatId: "555", now: "2026-10-21T12:00:00.000Z", env: AT_ENV })).toEqual({ ran: false });
+    expect(drainOutbox(s).size).toBe(1);
   });
-  // Rev 2 item 11: memory.kind is armed without a calibration sitting, so its Jev answers inside [0.85, 1.0) are the
-  // review list Paco labels from; one below its own bar is not a judgement and is not offered.
-  it("offers a memory.kind Jev row (jev_kind) at p 0.85 and 0.99, not at 0.84", () => {
-    const store = RunStore.openInMemory();
-    const mk = (p: number) => store.insertDecision(D({ entry_id: "memory.kind", entry_version: 1, verdict: "fact", p, reason_code: "jev_kind" }));
-    const offered = [mk(0.85), mk(0.99)];
-    mk(0.84);
-    expect(unsureOf(store.listDecisionsBetween("2026-10-11T11:00:00.000Z", NOW)).map((r) => r.decision_id).sort()).toEqual([...offered].sort());
-    store.close();
-  });
-});
-
-describe("buildDecisionDigest", () => {
-  it("null on a day with no decisions (skipped when empty)", () => {
-    const store = RunStore.openInMemory();
-    expect(buildDecisionDigest(store, NOW, ENV)).toBeNull();
-    store.close();
-  });
-  it("renders unsure, counts and health; the line carries Paco's own words (markdown stripped, 40 code points), no tool text", () => {
-    const store = RunStore.openInMemory();
-    const { id, run_id } = settled(store, { p: 0.62 });
-    store.recordChatTurn({ chat_id: "555", run_id, role: "user", text: "**明天** 悉尼 [天气] 怎么样？ 顺便 看看 后天 的 风 和 湿度 还有 紫外线 指数 多少" });
-    settled(store, { rung: "fail", fallback_reason: "outage", fallback_rung: "system_one", reason_code: "transport", p: null });
-    settled(store, { rung: "rule", reason_code: "ack_rule", p: null });
-    const g = buildDecisionDigest(store, NOW, ENV)!;
-    expect(g.text).toContain("🪜 **Decisions — 2026-10-12**");
-    expect(g.text).toContain("1. turn.handler → planner · p 0.62 · 16:00 · «明天 悉尼 天气 怎么样？ 顺便 看看 后天 的 风 和 湿度 还有 紫外线 指»");
-    expect(g.text).toContain("· turn.handler 3 — code 1 · Jev 1 · fallback 1");
-    expect(g.text).toContain("· turn.handler: 1 Jev skip · 1 fallback");
-    expect(g.offered).toEqual([id]);
-    expect(g.button_rows).toEqual([reviewButtons(id, 1)]);
-    store.close();
-  });
-  it("health counts Jev skips by the store's rule (M1): stale_bar and budget are not skips, a cascade failure is not a Jev skip", () => {
-    const store = RunStore.openInMemory();
-    settled(store, { rung: "fail", fallback_reason: "stale_bar", fallback_rung: "system_one", reason_code: "jev_skipped", p: null });
-    settled(store, { rung: "fail", fallback_reason: "budget", fallback_rung: "system_one", reason_code: "jev_skipped", p: null });
-    settled(store, { rung: "fail", fallback_reason: "timeout", fallback_rung: "model", reason_code: "cascade_failed", p: null });
-    const g = buildDecisionDigest(store, NOW, ENV)!;
-    expect(g.text).toContain("· turn.handler: 0 Jev skips · 2 fallbacks");
-    store.close();
-  });
-  it("a day with only routine rows has no health section", () => {
-    const store = RunStore.openInMemory();
-    settled(store, { p: 0.95 });
-    const g = buildDecisionDigest(store, NOW, ENV)!;
-    expect(g.text).not.toContain("**Health**");
-    expect(g.button_rows).toEqual([]);
-    store.close();
-  });
-  it("a day of only unsettled rows is still sent when they carry failures (orphans never hide an outage)", () => {
-    const store = RunStore.openInMemory();
-    store.insertDecision(D({ run_id: createQueuedTurnRun(store, "x"), rung: "fail", fallback_reason: "outage", fallback_rung: "system_one",
-      reason_code: "transport", p: null }));
-    const g = buildDecisionDigest(store, NOW, ENV)!;
-    expect(g.text).toContain("**Health**\n· turn.handler: 1 Jev skip · 1 fallback");
-    expect(g.text).not.toContain("**Counts");
-    expect(g.offered).toEqual([]);
-    store.close();
-  });
-  it("a day of only unsettled routine rows is skipped", () => {
-    const store = RunStore.openInMemory();
-    store.insertDecision(D({ run_id: createQueuedTurnRun(store, "x"), p: 0.62 }));
-    expect(buildDecisionDigest(store, NOW, ENV)).toBeNull();
-    store.close();
-  });
-  it("a front-door row no verdict links (a turn that never settled) is neither counted nor offered", () => {
-    const store = RunStore.openInMemory();
-    const orphan = store.insertDecision(D({ run_id: createQueuedTurnRun(store, "x"), p: 0.6 }));
-    const { id } = settled(store, { p: 0.62 });
-    const g = buildDecisionDigest(store, NOW, ENV)!;
-    expect(g.offered).toEqual([id]);
-    expect(g.offered).not.toContain(orphan);
-    expect(g.text).toContain("· turn.handler 1 — Jev 1");
-    store.close();
-  });
-  it("a snippet never splits an emoji (code points, not UTF-16 units)", () => {
-    const store = RunStore.openInMemory();
-    const { run_id } = settled(store, { p: 0.6 });
-    store.recordChatTurn({ chat_id: "555", run_id, role: "user", text: `${"a".repeat(39)}😀tail` });
-    expect(buildDecisionDigest(store, NOW, ENV)!.text).toContain(`«${"a".repeat(39)}😀»`);
-    store.close();
-  });
-  it("review buttons carry dec:rv:<id>:<ok|bad> within Telegram's 64-byte callback limit", () => {
-    const id = "dec_00000000-0000-0000-0000-000000000000";
-    expect(REVIEW_PREFIX).toBe("dec:rv:");
-    expect(reviewButtons(id, 3)).toEqual([{ text: "✅ 3", data: `dec:rv:${id}:ok` }, { text: "❌ 3", data: `dec:rv:${id}:bad` }]);
-    expect(Buffer.byteLength(`dec:rv:${id}:bad`)).toBeLessThanOrEqual(64);
-  });
-});
-
-describe("runDecisionDigestTick", () => {
-  it("before HOUGE_DECISION_DIGEST_AT nothing runs; after it, one message per local date with the offered ids latched", () => {
-    const store = RunStore.openInMemory();
-    const { id } = settled(store, { p: 0.6 });
-    const env = { ...ENV, HOUGE_DECISION_DIGEST_AT: "22:30" };
-    expect(runDecisionDigestTick({ store, chatId: "555", now: NOW, env })).toEqual({ ran: false });          // 22:00 < 22:30
-    const later = "2026-10-12T11:40:00.000Z";                                                                 // 22:40
-    expect(runDecisionDigestTick({ store, chatId: "555", now: later, env })).toEqual({ ran: true, sent: true });
-    expect(runDecisionDigestTick({ store, chatId: "555", now: "2026-10-12T12:00:00.000Z", env })).toEqual({ ran: false });
-    const sent = [...drainOutbox(store).values()];
-    expect(sent).toHaveLength(1);
-    expect(sent[0]?.button_rows).toEqual([reviewButtons(id, 1)]);
-    expect(store.getDecisionDigest("2026-10-12")).toMatchObject({ sent: 1, offered: [id] });
-    store.close();
-  });
-  it("an empty day latches with sent 0 and sends nothing; no operator chat: nothing runs", () => {
-    const store = RunStore.openInMemory();
-    expect(runDecisionDigestTick({ store, chatId: null, now: NOW, env: ENV })).toEqual({ ran: false });
-    expect(runDecisionDigestTick({ store, chatId: "555", now: NOW, env: ENV })).toEqual({ ran: true, sent: false });
-    expect(drainOutbox(store).size).toBe(0);
-    expect(store.getDecisionDigest("2026-10-12")).toMatchObject({ sent: 0, offered: [] });
-    store.close();
-  });
-  it("an outbox conflict on today's key latches sent 0 with nothing offered (never a silent 'sent')", () => {
-    const store = RunStore.openInMemory();
-    settled(store, { p: 0.6 });
-    store.enqueueNotification({ target: { kind: "telegram", chat_id: "555" }, intent_type: "progress", idempotency_key: "decision_digest:2026-10-12",
-      correlation_id: "decision-digest", payload: { text: "an older digest" } });
-    expect(runDecisionDigestTick({ store, chatId: "555", now: NOW, env: ENV })).toEqual({ ran: true, sent: false });
-    expect(store.getDecisionDigest("2026-10-12")).toMatchObject({ sent: 0, offered: [] });
-    store.close();
-  });
-  it("HOUGE_DECISION_DIGEST_AT=off (any case) sends nothing and writes no latch; the decisions stay recorded", () => {
-    // Paco 2026-10-14: the digest is a summary he can switch off; the ledger under it must not change with it.
-    for (const off of ["off", " OFF ", "Off"]) {
-      const store = RunStore.openInMemory();
-      const { id } = settled(store, { p: 0.6 });
-      expect(runDecisionDigestTick({ store, chatId: "555", now: NOW, env: { ...ENV, HOUGE_DECISION_DIGEST_AT: off } })).toEqual({ ran: false });
-      expect(drainOutbox(store).size).toBe(0);
-      expect(store.getDecisionDigest("2026-10-12")).toBeUndefined();
-      expect(store.getDecision(id)).toBeDefined();
-      store.close();
-    }
-  });
-  it("a value that is neither a time nor off keeps the 21:00 digest (a typo never silences it)", () => {
-    const store = RunStore.openInMemory();
-    settled(store, { p: 0.6 });
-    expect(runDecisionDigestTick({ store, chatId: "555", now: NOW, env: { ...ENV, HOUGE_DECISION_DIGEST_AT: "offf" } })).toEqual({ ran: true, sent: true });
-    store.close();
-  });
-  it("a malformed HOUGE_DECISION_DIGEST_AT falls back to 21:00", () => {
-    expect([resolveDigestAt({}), resolveDigestAt({ HOUGE_DECISION_DIGEST_AT: "9pm" }), resolveDigestAt({ HOUGE_DECISION_DIGEST_AT: "07:05" })]).toEqual(["21:00", "21:00", "07:05"]);
-  });
-});
-
-describe("R0': turn.settle's health reasons in the digest", () => {
-  it("counts budget, todo_unavailable and pass_errored rows per reason under Health; a day without them adds no line", () => {
-    const store = RunStore.openInMemory();
-    const S = (reason_code: string) => D({ entry_id: "turn.settle", stage: "settle", rung: reason_code === "budget" ? "fail" : "rule", verdict: "settle", p: null, reason_code });
-    for (const r of ["pass_errored", "pass_errored", "todo_unavailable", "settled"]) store.insertDecision(S(r));
-    const text = buildDecisionDigest(store, NOW, ENV)!.text;
-    expect(text).toContain("**Health**");
-    expect(text).toContain("· turn.settle unfinished: budget 0 · todo_unavailable 1 · pass_errored 2");
-    const clean = RunStore.openInMemory(); clean.insertDecision(S("settled"));
-    expect(buildDecisionDigest(clean, NOW, ENV)?.text ?? "").not.toContain("turn.settle unfinished");
+  it("no operator chat: nothing runs; off (any case) sends nothing and writes no latch; a typo keeps the 21:00 digest", () => {
+    const s = RunStore.openInMemory();
+    open(s, 1);
+    expect(runDecisionDigestTick({ store: s, chatId: null, now: NOW, env: ENV })).toEqual({ ran: false });
+    for (const off of ["off", " OFF ", "Off"]) expect(runDecisionDigestTick({ store: s, chatId: "555", now: NOW, env: { ...ENV, HOUGE_DECISION_DIGEST_AT: off } })).toEqual({ ran: false });
+    expect(s.getDecisionDigest("2026-10-21")).toBeUndefined();
+    expect(runDecisionDigestTick({ store: s, chatId: "555", now: NOW, env: { ...ENV, HOUGE_DECISION_DIGEST_AT: "offf" } })).toEqual({ ran: true, sent: true });
   });
 });

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildDecisionDigest, reaskLines, trustLines, unsureOf } from "../../src/decisions/digest.js";
+import { reaskLines, trustLines, unsureOf } from "../../src/decisions/digest.js";
 import { RunStore, type DecisionInsert } from "../../src/run/run-store.js";
 
 // Spec §8.1 + R6: the new judges are armed at ship on provisional bars, so the digest is the net. Paco cannot see a judged
@@ -37,23 +37,9 @@ describe("digest — injection and trust (stage 2a)", () => {
     ]);
     expect(reaskLines(rows)).toEqual(["· tool.injection: re-asked 1 (mean 0 · max 1 · failed 0)"]);
   });
-  it("renders both sections in the digest message", () => {
-    const d = buildDecisionDigest(seeded(), NOW, {});
-    expect(d?.text).toContain("**Injection & trust (24 h)**");
-    expect(d?.text).toContain("**Noise band (24 h)**");
-    expect(d?.offered).toEqual([]);
-  });
 });
 
-describe("digest — stage 2a additions never disturb stage 1", () => {
-  it("a day with only stage 1 activity renders no injection, trust or noise sections", () => {
-    const s = RunStore.openInMemory();
-    s.insertDecision(D({ entry_id: "fetch.ssrf", stage: "pre_tool", rung: "rule", verdict: "allow", p: null, reason_code: null }));
-    const text = buildDecisionDigest(s, NOW, {})?.text ?? "";
-    expect(text).toContain("**Counts (24 h)**");
-    expect(text).not.toContain("Injection & trust");
-    expect(text).not.toContain("Noise band");
-  });
+describe("digest — trust lines (stage 2a)", () => {
   it("counts a turn once at its highest level and separates hostile by unjudged outside text", () => {
     const s = RunStore.openInMemory();
     const T = (verdict: string, reason_code: string, run_id: string): void => { s.insertDecision(D({ entry_id: "turn.trust", verdict, rung: "rule", p: null, reason_code, run_id })); };
@@ -65,16 +51,6 @@ describe("digest — stage 2a additions never disturb stage 1", () => {
   it("shows a lone trust-tap count even when no turn rose", () => {
     const s = RunStore.openInMemory(); s.bumpTrustTapBudget("2026-10-13", AT);
     expect(trustLines(s, [], NOW, {})).toEqual(["· turns: untrusted 0 · hostile 0 · trust taps today 1 of 3"]);
-  });
-});
-
-describe("digest — stale bar (stage 2a, golden set)", () => {
-  it("flags an open decision_bar_stale incident even on a day with no decisions", () => {
-    const s = RunStore.openInMemory();
-    expect(buildDecisionDigest(s, NOW, {})).toBeNull();
-    s.openIncident({ kind: "decision_bar_stale", subject: "tool.injection", detail: { model: "jev-1.14.0", bar_model: "jev-1.13.0" }, now: AT });
-    const d = buildDecisionDigest(s, NOW, {});
-    expect(d?.text).toContain("tool.injection: the bar was measured on jev-1.13.0, Jev now reports jev-1.14.0");
   });
 });
 
