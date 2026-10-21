@@ -1,4 +1,4 @@
-# Decision ladder stage 2b-ii: `improve.route` — Implementation Plan (Rev 2)
+# Decision ladder stage 2b-ii: `improve.route` — Implementation Plan (Rev 3)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -29,6 +29,15 @@ follows [2026-10-20-ladder-2b-hooks-settle.md](2026-10-20-ladder-2b-hooks-settle
 
 ## Changelog
 
+- **Rev 3 (2026-10-21):** senior re-verification of Rev 2 (12 of 19 closed; 2 new blockers) and codex round 2 (28 of
+  28 closed; 3 new blockers, closed in Rev 2.1). Closed: `codeSpans` reads `m[2]` (the regex has two groups);
+  `setFrontmatterFields` WRITES `name` and `origin` (its body sets five named fields; a type widening alone dropped them)
+  with a round-trip test; Watch lines for `inapplicable_top` rows and "lessons not holding"; the right gate scripts
+  (`live-gate-decisions-parity.mjs`, `live-gate-decisions-2a.mjs`, `check-ladder-2b-hooks-rollback.mjs`);
+  `createToolApproval(...).approval_id`; `pendingJob` keys; a stronger `redactForImprove` assertion; every remaining
+  placeholder filled (`scheduleRun`, the approval inserts, `addScheduledTask`, the gateway producer tests); an injected
+  clock for the budget test; `improvementsToday`'s signature; the digest waits up to 30 min for the day's improve latch
+  (ruling 21). Codex 2.1 items: `listLessons`, job cards on `job.chat_id`, `safeReason` in every improvement log.
 - **Rev 2 (2026-10-21):** senior plan review (8 blockers, 11 warnings, 8 suggestions; every claim checked against HEAD)
   and codex plan review round 1 (23 blockers, 5 warnings), overlapping heavily. Closed: numeric outcome values through
   the mirror and the commit (`outcomeValueOf`); the correcting turn's text is Paco's text for a correction, the corrected
@@ -130,6 +139,11 @@ follows [2026-10-20-ladder-2b-hooks-settle.md](2026-10-20-ladder-2b-hooks-settle
     `origin: improve_job:<job_id>` and stores the slugged scope and name on the row; `sweepOrphans` retires only stamped
     drafts no job owns, so `/skills pending` drafts the commanded path parks (`core-worker.ts:2056`) are never touched. A
     pending path another job already holds gets the first free `-N` suffix before the write.
+21. **The digest waits for the day's tick, with a cap.** (Rev 3, senior.) A budgeted tick can end `stopped` in the
+    cycle the digest is due, and spec §3.1 orders the tick before the digest. `runDecisionDigestTick` returns
+    `{ ran: false }` while the date's improve latch is `running` or `stopped` and younger than
+    `DIGEST_WAIT_FOR_TICK_MS = 30 * 60_000`; after the cap the digest sends what exists. Cost: on a heavy day the digest
+    is up to 30 minutes late.
 
 ## Global Constraints
 
@@ -515,7 +529,7 @@ describe("readers", () => {
     const s = RunStore.openInMemory();
     const run_id = scheduleRun(s, "sched_1");
     const id = s.createToolApproval({ run_id, worker_id: "planner:x", tool_call_id: "c1", capability: "shell_external", input_hash: "h", action_fingerprint: "f",
-      requester: { kind: "schedule", id: "sched_1" }, summary: "ls", side_effect_level: "external", expires_at: "2026-10-21T11:00:00.000Z" });
+      requester: { kind: "schedule", id: "sched_1" }, summary: "ls", side_effect_level: "external", expires_at: "2026-10-21T11:00:00.000Z" }).approval_id; // createToolApproval returns the row (run-store.ts:6050)
     s.expireToolApproval(id, "2026-10-21T11:00:00.000Z");
     expect(s.listExpiredApprovalsOnSchedules("2026-10-01T00:00:00.000Z")).toEqual([{ approval_id: id, run_id, capability: "shell_external", resolved_at: "2026-10-21T11:00:00.000Z", schedule_id: "sched_1" }]);
   });
@@ -531,19 +545,21 @@ describe("readers", () => {
   });
 });
 
-/** A schedule-born run through the real gateway intake (source schedule, requested_by the schedule), as schedule-tick.ts builds it. */
+let schedSeq = 0;
+/** A schedule-born run through the real gateway intake (source schedule, requested_by the schedule), as schedule-tick.ts:107 builds it. */
 function scheduleRun(s: RunStore, schedule_id = "sched_1"): string {
-  // mirror tests/helpers/runs.ts with source: "schedule", requested_by: { kind: "schedule", id: schedule_id }, idempotency_key `schedule:${schedule_id}:${Date.now()}`
-  ...
+  schedSeq += 1;
+  const intake = new Gateway(s).intake(buildTypedTaskEvent({ source: "schedule", type: "turn", program: "turn", goal: "scheduled goal", requested_by: { kind: "schedule", id: schedule_id },
+    notify: { kind: "telegram", chat_id: "555" }, idempotency_key: `schedule:${schedule_id}:${schedSeq}`, source_reference: `scheduled_tasks.${schedule_id}` }));
+  if (!intake.ok) throw new Error(`schedule intake failed: ${JSON.stringify(intake)}`);
+  return intake.run_id;
 }
 ```
 
-Write `scheduleRun` fully in the test (copy `createQueuedTurnRun`'s body with the schedule identity; `program: "turn"`,
-`goal: "scheduled goal"`). In the first mirror test delete the two `sched` lines (they are a placeholder; the second
-test covers schedule-born rows). Add `setImproveCursorForTest(c: ImproveCursor): void` as a `/** @internal tests only */`
-method (precedent: `breakLaneCardForTest`). `createToolApproval`'s real name and input shape: read `ToolApprovalInput`
-at `run-store.ts:160-176` and the method that inserts it (`grep -n "INSERT INTO tool_approvals" src/run/run-store.ts`);
-use that method.
+(imports: `Gateway` from `../../src/gateway/gateway.js`, `buildTypedTaskEvent` from `../../src/domain/types.js`.)
+`createToolApproval(input: ToolApprovalInput): ToolApprovalRow` (`run-store.ts:6050`) returns the ROW: the test above
+takes `.approval_id` (`const id = s.createToolApproval({ … }).approval_id;`). Add `setImproveCursorForTest(c: ImproveCursor): void`
+as a `/** @internal tests only */` method (precedent: `breakLaneCardForTest`).
 
 `tests/run/run-store-planner-failed-pin.test.ts`:
 
@@ -1329,7 +1345,8 @@ describe("recordImproveSignal", () => {
   it("recordApprovalDenied / recordApprovalExpired take the capability from the approval row; a missing row is no_capability", () => {
     const s = RunStore.openInMemory();
     const a = createQueuedTurnRun(s, "a");
-    const id = /* create a tool approval on run a with capability shell_external, as tests/run/run-store-improve.test.ts does */ "";
+    const id = s.createToolApproval({ run_id: a, worker_id: "planner:555", tool_call_id: "c1", capability: "shell_external", input_hash: "h", action_fingerprint: "f",
+      requester: { kind: "user", id: "paco" }, summary: "ls", side_effect_level: "external", expires_at: "2026-10-21T11:00:00.000Z" }).approval_id;
     expect(recordApprovalDenied(s, { run_id: a, approval_id: id, chat_id: "555", now: NOW })).toBe(true);
     expect(recordApprovalExpired(s, { run_id: a, approval_id: id, now: NOW })).toBe(true);
     expect(recordApprovalExpired(s, { run_id: a, approval_id: "appr_missing", now: NOW })).toBe(false);
@@ -1353,14 +1370,52 @@ Fill the approval creation with the store's real insert method (found in Task 2)
 (use the existing gateway rating test as the harness model: `grep -ln "rating_captured" tests/gateway/*.test.ts`):
 
 ```ts
+import { describe, expect, it } from "vitest";
+import { buildTypedTaskEvent } from "../../src/domain/types.js";
+import { Gateway } from "../../src/gateway/gateway.js";
+import { RunStore } from "../../src/run/run-store.js";
+import { createTelegramTurn } from "../helpers/runs.js";
+
 // Spec 2b-ii §2 table: a captured rating labels the chat's latest planner run (rating value 0–3); a low rating also writes a
-// correction (first correction wins); a rating with no run in the chat is an improve_signal_skipped no_run event, never a throw.
-it("a bare rating writes rating on the chat's latest verdict run; a 0 also writes correction; no verdict → skipped no_run", () => { ... });
-it("/deny on a tool approval writes approval_denied with the capability", () => { ... });
+// correction (first correction wins); a rating with no run in the chat is an improve_signal_skipped no_run event, never a throw;
+// /deny on a tool approval writes approval_denied with the capability (a denial on a schedule-born run is never a signal, R11).
+const NOW = "2026-10-21T10:00:00.000Z";
+let seq = 0;
+const event = (type: "turn" | "deny", goal: string, extra: Record<string, unknown> = {}) => buildTypedTaskEvent({ source: "telegram", type, program: "turn", goal, requested_by: { kind: "user", id: "paco" },
+  notify: { kind: "telegram", chat_id: "555" }, idempotency_key: `t:${++seq}`, source_reference: `telegram:update:${seq}:message:1`, ...extra } as never);
+const verdictOf = (s: RunStore, run_id: string) => s.insertJevVerdict({ run_id, category: "answer", breadth: null, reasoning: null, actions: null, sets_rule: null, rule_scope: null, lane: "answer",
+  role: "default", effort: null, cascade: null, save_outcome: "none", route_outcome: "fallback", reason: "jev_skipped", skip_reason: null, quoted_turn_id: null });
+const rows = (s: RunStore) => s.listUnconsumedSignals(10).map((r) => [r.signal, r.value, r.about_run_id]);
+const skipped = (s: RunStore) => s.listLedgerEventsByTypeSince("improve_signal_skipped", "2026-01-01T00:00:00.000Z").map((e) => e.payload);
+
+describe("gateway producers", () => {
+  it("a bare rating writes rating on the chat's latest verdict run; a 0 also writes correction; with no verdict → skipped no_run", () => {
+    const s = RunStore.openInMemory();
+    const g = new Gateway(s);
+    s.writePendingRating({ chat_id: "555", asked_at: NOW, window_start: "2026-10-21T09:00:00.000Z" });  // run-store.ts:3011
+    expect(g.intake(event("turn", "3"), NOW)).toMatchObject({ ok: true, status: "rating_captured" });      // no planner run in the chat yet
+    expect(skipped(s)).toEqual([{ signal: "rating", code: "no_run" }]);
+    const run_id = createTelegramTurn(s, "what time is it").run_id; verdictOf(s, run_id);
+    s.writePendingRating({ chat_id: "555", asked_at: NOW, window_start: "2026-10-21T09:00:00.000Z" });
+    expect(g.intake(event("turn", "0"), NOW)).toMatchObject({ ok: true, status: "rating_captured" });
+    expect(rows(s)).toEqual([["rating", "0", run_id], ["correction", "answer", run_id]]);
+    expect(s.getJevVerdictForRun(run_id)?.paco_correction).toBe("low_rating");
+  });
+  it("/deny on a tool approval writes approval_denied with the capability", () => {
+    const s = RunStore.openInMemory();
+    const run_id = createTelegramTurn(s, "run the thing").run_id;
+    const claim = s.claimRun(run_id, "planner:555", 60)!;
+    const approval = s.createToolApproval({ run_id: claim.run_id, worker_id: "planner:555", tool_call_id: "c1", capability: "shell_external", input_hash: "h", action_fingerprint: "f",
+      requester: { kind: "user", id: "paco" }, summary: "ls", side_effect_level: "external", expires_at: "2026-10-21T11:00:00.000Z" });
+    const r = new Gateway(s).intake(event("deny", "", { approval_id: approval.approval_id }), NOW);
+    expect(r).toMatchObject({ ok: true, status: "approval_resolved" });
+    expect(rows(s)).toEqual([["approval_denied", "shell_external", run_id]]);
+  });
+});
 ```
 
-Write both with the harness's own helpers (a pending rating via `askSessionRating`/`recordRatingAsk` as that suite does;
-an approval via `createToolApproval` then a `deny` event through `gateway.intake`). Add to `tests/decisions/tap-outcomes.test.ts`'s
+(Read how the existing deny tests build the event — `grep -rn "type: \"deny\"" tests/gateway tests/core | head` — and
+copy that shape if `approval_id` sits elsewhere than the event's top level.) Add to `tests/decisions/tap-outcomes.test.ts`'s
 "Dig deeper" case: `expect(s.listUnconsumedSignals(5).map((r) => [r.signal, r.value, r.about_run_id])).toEqual([["correction", "lookup", "run_a"]]);`.
 
 - [ ] **Step 2: Run the tests to verify they fail**
@@ -1517,6 +1572,7 @@ describe("codeShapes", () => {
     const store = { redactSecretValues: (s: string) => s.replace("sk-liveSECRETvalue000000000", "‹redacted›") };
     const out = redactForImprove(store, "key sk-liveSECRETvalue000000000, code 112233, see https://x.example/p/aB3dE5fG7hJ9kL1m?t=zz");
     expect(out).not.toContain("sk-liveSECRET"); expect(out).not.toContain("112233"); expect(out).not.toContain("aB3dE5fG7hJ9kL1m");
+    expect(out.startsWith("key ")).toBe(true); expect(out).toContain(", code "); expect(out).toContain(", see https://x.example/p/"); // the prose survives: not one whole-text mask (senior W18)
   });
 });
 ```
@@ -1553,7 +1609,7 @@ after `shapeSpans`:
 /** `codeShapes` (2b-ii §7): every mask mirrored, so the planner copy never carries a code Jev did not see. */
 function codeSpans(k: Marks): void {
   k.scan(CODE_RUN, (m) => [masked(m[0], true)]);
-  k.scan(CODE_WORD, (m) => [keep(m[1]! + m[2]!), masked(m[3]!, true)]);
+  k.scan(CODE_WORD, (m) => [keep(m[1]!), masked(m[2]!, true)]); // two groups: the code word(s) + separator, the value (senior N1)
 }
 ```
 
@@ -2117,7 +2173,7 @@ git commit -m "feat(decisions): the improve.route entry, its one fixed Jev quest
 import { describe, expect, it } from "vitest";
 import { buildImproveState, groupSignals, scopeOf, skillMentioned, toolSummaryOf, type RecurrenceInfo } from "../../src/improve/groups.js";
 import { RunStore, type ImproveSignalRow, type JevVerdictRow } from "../../src/run/run-store.js";
-import { setFrontmatterFields, SkillStore } from "../../src/skills/skill-store.js"; // drop setFrontmatterFields where a file does not use it
+import { parseSkillFile, setFrontmatterFields, SkillStore } from "../../src/skills/skill-store.js"; // drop the names a file does not use
 import { createQueuedTurnRun, createTelegramTurn } from "../helpers/runs.js"; // drop whichever a file does not use
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -2665,8 +2721,13 @@ describe("medianLocalHour and shiftSpec", () => {
 describe("scheduleHints and scheduleDraft", () => {
   it("two expiries of one capability on one schedule at one local hour in 14 days are a hint; one is not; the draft holds before and after and the evidence names the dates", () => {
     const s = RunStore.openInMemory();
-    // build a scheduled_tasks row (the store's create method; spec_json daily 11:00, tz Sydney) and two schedule-born runs with expired shell_external approvals at 00:00Z (11:00 AEDT) on two dates
-    ...
+    const row = s.addScheduledTask({ chat_id: "555", goal: "check the mailbox", spec_json: JSON.stringify({ kind: "daily", at: "11:00" }), tz: TZ, next_run_at: "2026-10-22T00:00:00.000Z", now: "2026-10-01T00:00:00.000Z" }); // run-store.ts:5040
+    for (const day of ["2026-10-19", "2026-10-20"]) {   // 00:00Z = 11:00 AEDT
+      const run_id = scheduleRun(s, row.schedule_id);   // the Task 2 helper, copied here
+      const id = s.createToolApproval({ run_id, worker_id: "planner:555", tool_call_id: `c-${day}`, capability: "shell_external", input_hash: "h", action_fingerprint: "f",
+        requester: { kind: "schedule", id: row.schedule_id }, summary: "ls", side_effect_level: "external", expires_at: `${day}T00:05:00.000Z` }).approval_id;
+      s.expireToolApproval(id, `${day}T00:00:00.000Z`);
+    }
     const hints = scheduleHints(s, "2026-10-21T10:00:00.000Z", TZ);
     expect([...hints.entries()]).toEqual([["shell_external", { schedule_id: expect.any(String), hour: 11, dates: ["2026-10-19", "2026-10-20"] }]]);
     const d = scheduleDraft(s, hints.get("shell_external")!, "2026-10-21T10:00:00.000Z", TZ);
@@ -2945,7 +3006,7 @@ import { describe, expect, it, vi } from "vitest";
 import { IMPROVE_GROUPS_PER_TICK, improveTickDue, runImproveTick, type ImproveTickDeps, type JobHooks } from "../../src/improve/tick.js";
 import { SETTLE_REASON_VALUES } from "../../src/decisions/outcomes.js";
 import { RunStore, type DecisionInsert } from "../../src/run/run-store.js";
-import { setFrontmatterFields, SkillStore } from "../../src/skills/skill-store.js"; // drop setFrontmatterFields where a file does not use it
+import { parseSkillFile, setFrontmatterFields, SkillStore } from "../../src/skills/skill-store.js"; // drop the names a file does not use
 import type { JevRequest, JevResult } from "../../src/jev/jev-client.js";
 import { createQueuedTurnRun, createTelegramTurn } from "../helpers/runs.js"; // drop whichever a file does not use
 import { mkdtempSync } from "node:fs";
@@ -3059,10 +3120,11 @@ describe("runImproveTick", () => {
   it("a per-cycle time budget ends the call stopped after the running group; the next cycle resumes", async () => {
     const s = RunStore.openInMemory();
     correction(s); correction(s, "find me the march invoice again", "lookup");
-    const slow = async (req: JevRequest) => { await new Promise((r) => setTimeout(r, 30)); return jev({ lesson: 0.8 })(req); };
-    const r = await runImproveTick(deps(s, { client: slow, budgetMs: 10 }));   // `budgetMs` overrides IMPROVE_TICK_BUDGET_MS for tests (an optional dep)
+    let t = 0;
+    const clock = () => (t += 5_000);   // every read of the clock is 5 s later: the first group fits a 10 s budget, the second does not (no real timing: flake-free)
+    const r = await runImproveTick(deps(s, { budgetMs: 10_000, clock }));
     expect(r).toMatchObject({ ran: true, result: "stopped", counts: { decided: 1 } });
-    expect(await runImproveTick(deps(s, { client: slow }))).toMatchObject({ ran: true, result: "done", counts: { decided: 1 } });
+    expect(await runImproveTick(deps(s))).toMatchObject({ ran: true, result: "done", counts: { decided: 1 } });
   });
   it("a second open proposal on one (target, scope) is not inserted: the row records nothing/already_proposed (ruling 6); a failed draft records nothing/no_text", async () => {
     const s = RunStore.openInMemory();
@@ -3154,8 +3216,9 @@ export interface ImproveTickDeps {
   client: (r: JevRequest) => Promise<JevResult>;
   llm: { pick: TickLlm; distill: TickLlm; classify: TickLlm; compose: TickLlm; verify: TickLlm };
   embed: Embedder; embedModel: string; skills: SkillStore; jobs?: JobHooks;
-  /** Tests only: overrides IMPROVE_TICK_BUDGET_MS. */
+  /** Tests only: overrides IMPROVE_TICK_BUDGET_MS, and the wall clock the budget is measured on (a flake-free budget test). */
   budgetMs?: number;
+  clock?: () => number;
 }
 export const IMPROVE_TICK_BUDGET_MS = 120_000;
 export interface TickCounts { mirrored: number; recurrence: number; abandoned: number; groups: number; decided: number; proposals: number; jobs_queued: number; jobs_started: number; deferred: number; stale: number; already_proposed: number; no_draft: number; record_failed: number; embed_unavailable: number }
@@ -3202,7 +3265,8 @@ async function producePhase(d: ImproveTickDeps, c: TickCounts): Promise<{ cluste
 }
 
 async function tickBody(d: ImproveTickDeps, c: TickCounts): Promise<"done" | "stopped"> {
-  const started = Date.now();
+  const clock = d.clock ?? Date.now;
+  const started = clock();
   const { clusters, stopped } = await producePhase(d, c);
   if (stopped) return "stopped";
   const tz = resolveDisplayZone(d.env);
@@ -3215,7 +3279,7 @@ async function tickBody(d: ImproveTickDeps, c: TickCounts): Promise<"done" | "st
   let queueLeft = IMPROVE_JOBS_PER_DAY - d.store.countJobsCreatedSince(dayAgo);
   for (const g of groups) {
     // ruling 17: between groups only — a decided group always commits; the stop or the budget ends the call, the latch resumes next cycle
-    if (d.signal.aborted || Date.now() - started > (d.budgetMs ?? IMPROVE_TICK_BUDGET_MS)) return "stopped";
+    if (d.signal.aborted || clock() - started > (d.budgetMs ?? IMPROVE_TICK_BUDGET_MS)) return "stopped";
     if (c.decided >= IMPROVE_GROUPS_PER_TICK) { c.deferred += 1; continue; }
     const s = buildImproveState(g, { store: d.store, env: d.env, now: d.now, skills: d.skills, redact: (t) => redactForImprove(d.store, t), scheduleHints: hints, since14 });
     if (willStartJob(s) && queueLeft <= 0) { c.deferred += 1; continue; }   // §3.5: a cluster beyond the day's 3 gets no row (ruling 5)
@@ -3338,7 +3402,7 @@ import { mkdtempSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { setFrontmatterFields, SkillStore } from "../../src/skills/skill-store.js"; // drop setFrontmatterFields where a file does not use it
+import { parseSkillFile, setFrontmatterFields, SkillStore } from "../../src/skills/skill-store.js"; // drop the names a file does not use
 
 // Spec 2b-ii §5.2 promotion protocol (codex D7): ONE protocol — read the pending file, collision check on the active tree
 // (refuse / replace = retire the active one with lineage / keep_both = a -2 suffix), write the active copy (registry
@@ -3484,9 +3548,19 @@ Run: `npx vitest run tests/skills/skill-store-pending.test.ts tests/capabilities
   }
 ```
 
-(`retireSkill`'s `by` type is `"paco" | "refine"`; `"paco"` is already allowed.) Two small widenings in the same file:
-`setFrontmatterFields`' `fields` type gains `name?: string` and `origin?: string` (the `set()` helper already handles any
-key; Task 12 stamps `origin`), and `sanitizeSlug` is exported (Task 12 stores the slugged scope and name on the job row).
+(`retireSkill`'s `by` type is `"paco" | "refine"`; `"paco"` is already allowed.) Two small changes in the same file:
+`setFrontmatterFields` gains two fields in its `fields` type AND its body (`skill-store.ts:461-482` sets five named
+fields explicitly; a type widening alone would drop them — senior N2): `if (fields.name) set("name", fields.name);` and
+`if (fields.origin) set("origin", fields.origin);` (Task 12 stamps `origin`; keep_both rewrites `name`); and
+`sanitizeSlug` is exported (Task 12 stores the slugged scope and name on the job row). Round-trip test (same file):
+
+```ts
+it("setFrontmatterFields writes name and origin, replacing an existing name line and adding a missing origin line", () => {
+  const out = setFrontmatterFields(file("old"), { name: "new-name", origin: "improve_job:job_1" });
+  expect(parseSkillFile(out)?.meta).toMatchObject({ name: "new-name", origin: "improve_job:job_1" });
+  expect(out.match(/^name:/gm)).toHaveLength(1);
+});
+```
 
 `src/capabilities/skill-author.ts` (append; move `withFrontmatterVersion` here from core-worker.ts verbatim, exported):
 
@@ -3555,7 +3629,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { evolutionLaneSettled, resetEvolutionLaneForTests, tryStartEvolutionPipeline } from "../../src/core/evolution-lane.js";
 import { authorPendingSkill, reconcileAccepted, reconcileJobs, reconcileJobsAtBoot, runQueuedJobs, startSkillJob, type JobDeps } from "../../src/core/skill-job.js";
 import { RunStore, type DecisionInsert } from "../../src/run/run-store.js";
-import { setFrontmatterFields, SkillStore } from "../../src/skills/skill-store.js"; // drop setFrontmatterFields where a file does not use it
+import { parseSkillFile, setFrontmatterFields, SkillStore } from "../../src/skills/skill-store.js"; // drop the names a file does not use
 import { createQueuedTurnRun, createTelegramTurn } from "../helpers/runs.js"; // drop whichever a file does not use
 import { drainOutbox } from "../helpers/omp-worker.js";
 
@@ -4010,7 +4084,7 @@ import { describe, expect, it } from "vitest";
 import { buildTypedTaskEvent } from "../../src/domain/types.js";
 import { handleImprovementTap, TAP_FAILED_TEXT, TAP_HANDLED_TEXT } from "../../src/gateway/improvement-commands.js";
 import { RunStore, type DecisionInsert } from "../../src/run/run-store.js";
-import { setFrontmatterFields, SkillStore } from "../../src/skills/skill-store.js"; // drop setFrontmatterFields where a file does not use it
+import { parseSkillFile, setFrontmatterFields, SkillStore } from "../../src/skills/skill-store.js"; // drop the names a file does not use
 import { createQueuedTurnRun, createTelegramTurn } from "../helpers/runs.js"; // drop whichever a file does not use
 import { drainOutbox } from "../helpers/omp-worker.js";
 
@@ -4082,7 +4156,7 @@ describe("proposal taps", () => {
   });
   it("Revert's 14 days count from the Accept, not the offer (codex B21)", () => {
     const s = RunStore.openInMemory();
-    const schedule_id = /* the same daily 11:00 schedule setup as the schedule test */ "";
+    const schedule_id = s.addScheduledTask({ chat_id: "555", goal: "check the mailbox", spec_json: JSON.stringify({ kind: "daily", at: "11:00" }), tz: "Australia/Sydney", next_run_at: "2026-10-22T00:00:00.000Z", now: "2026-10-01T00:00:00.000Z" }).schedule_id;
     const before = { spec_json: JSON.stringify({ kind: "daily", at: "11:00" }), tz: "Australia/Sydney", next_run_at: s.getScheduledTask(schedule_id)!.next_run_at };
     const after = { spec_json: JSON.stringify({ kind: "daily", at: "20:00" }), tz: "Australia/Sydney", next_run_at: "2026-10-22T09:00:00.000Z" };
     const { id } = proposal(s, "schedule", { schedule_id, before, after, hour_from: 11, hour_to: 20 }, "shell_external");
@@ -4093,7 +4167,7 @@ describe("proposal taps", () => {
   });
   it("schedule: Accept shifts the row only when its spec still equals before; Revert within 14 days restores under the same check; a second Revert is handled", () => {
     const s = RunStore.openInMemory();
-    const schedule_id = /* create a daily 11:00 schedule row via the store, tz Australia/Sydney */ "";
+    const schedule_id = s.addScheduledTask({ chat_id: "555", goal: "check the mailbox", spec_json: JSON.stringify({ kind: "daily", at: "11:00" }), tz: "Australia/Sydney", next_run_at: "2026-10-22T00:00:00.000Z", now: "2026-10-01T00:00:00.000Z" }).schedule_id;
     const before = { spec_json: JSON.stringify({ kind: "daily", at: "11:00" }), tz: "Australia/Sydney", next_run_at: s.getScheduledTask(schedule_id)!.next_run_at };
     const after = { spec_json: JSON.stringify({ kind: "daily", at: "20:00" }), tz: "Australia/Sydney", next_run_at: "2026-10-22T09:00:00.000Z" };
     const { id } = proposal(s, "schedule", { schedule_id, before, after, hour_from: 11, hour_to: 20 }, "shell_external");
@@ -4129,7 +4203,7 @@ describe("proposal taps", () => {
 describe("skill job taps", () => {
   function pendingJob(s: RunStore, sk: SkillStore, name = "weekly-report") {
     sk.writePending("ask", name, GOOD.replace("weekly-report", name));
-    const id = s.insertImprovementJob({ decision_id: s.insertDecision(D), proposal_id: null, chat_id: "555", origin_json: JSON.stringify({ turn_ids: ["t1"], run_ids: ["r1"], category: "answer", text_hashes: ["h"] }), idempotency_key: name, created_at: NOW })!;
+    const id = s.insertImprovementJob({ decision_id: s.insertDecision(D), proposal_id: null, chat_id: "555", origin_json: JSON.stringify({ turn_ids: ["t1"], run_ids: ["r1"], category: "answer", text_hashes: ["h"] }), idempotency_key: `${name}:${++cb}`, created_at: NOW })!; // unique per call (senior W18)
     s.transitionJob({ job_id: id, from: ["queued"], to: "running", now: NOW, bumpAttempt: true });
     s.transitionJob({ job_id: id, from: ["running"], to: "pending_review", now: NOW, attempt: 1, patch: { pending_scope: "ask", pending_name: name, gate_a: "skill" } });
     s.markJobsOffered([id], NOW);
@@ -4475,8 +4549,8 @@ git commit -m "feat(gateway): improvement taps — proposals, skill drafts, ladd
 
 **Interfaces:**
 - Produces: `Digest { text: string; button_rows: NotificationButton[][]; offered: { proposal_ids: string[]; job_ids: string[] } }`, `buildDecisionDigest(store, now, env?)`,
-  `DIGEST_PROPOSALS_MAX = 8`, `DRAFT_LINE_CHARS = 120`, `WATCH_WINDOW_DAYS = 7`, `improvementsToday(store, since, now, tz)`, `proposalsWaiting(store)`, `watchLines(store, now, env)`,
-  `decisionStatusLines` gains a proposals line.
+  `DIGEST_PROPOSALS_MAX = 8`, `DRAFT_LINE_CHARS = 120`, `WATCH_WINDOW_DAYS = 7`, `DIGEST_WAIT_FOR_TICK_MS = 30 * 60_000` (ruling 21),
+  `improvementsToday(store, since, tz)`, `proposalsWaiting(store)`, `watchLines(store, now, env)`, `decisionStatusLines` gains a proposals line.
 - Consumes: Task 3 store methods, `memlaneUndoButton` / `memoryUndoButton`, `redactForImprove`, `skillButtons`, `countProposalsByState`.
 
 - [ ] **Step 1: Write the failing tests** — the new shape in `tests/decisions/digest.test.ts`
@@ -4572,8 +4646,11 @@ describe("buildDecisionDigest (2b-ii)", () => {
     s.recordMemoryEvent("improve_signal_skipped", { signal: "rating", code: "no_run" }, "improve");
     s.beginImproveTick("2026-10-20", "2026-10-20T10:00:00.000Z"); s.finishImproveTick("2026-10-20", "done", { deferred: 2, embed_unavailable: 3 }, "2026-10-20T10:00:00.000Z");
     s.insertDecision({ ...D, verdict: "knowledge", rung: "rule", reason_code: "wiki_disarmed", p: null });
+    s.insertDecision({ ...D, verdict: "nothing", reason_code: "inapplicable_top", p: 0.8 });
+    s.insertImprovementProposal({ decision_id: s.insertDecision(D), target: "lesson", scope: "answer", chat_id: "555", draft_json: JSON.stringify({ scope: "ask", text: "Shorter." }), evidence: "lesson did not hold: 2 corrections since (9 d)", created_at: "2026-10-21T10:00:00.000Z" });
     const lines = buildDecisionDigest(s, NOW, ENV)!.text.split("\n");
-    expect(lines).toEqual(expect.arrayContaining(["· corrections 1 · abandoned 1 · clarify rate 50%", "· unattached: rating 1", "· deferred 2", "· silent: review_unsure, lesson_unfollowed", "· wiki disarmed: 1 topics", "· embeddings unavailable: 1 days"]));
+    expect(lines).toEqual(expect.arrayContaining(["· corrections 1 · abandoned 1 · clarify rate 50%", "· unattached: rating 1", "· deferred 2", "· silent: review_unsure, lesson_unfollowed", "· wiki disarmed: 1 topics",
+      "· embeddings unavailable: 1 days", "· inapplicable top 1", "· lessons not holding 1"]));
     expect(lines.some((l) => l.includes("dig_deeper"))).toBe(false); // it had a row in 7 days, so it is not silent
   });
   it("the offer transaction: offered_at is set for exactly the rendered ids after a queued enqueue; a duplicate or conflicting enqueue sets nothing; an already-offered id keeps its first value", () => {
@@ -4592,6 +4669,19 @@ describe("buildDecisionDigest (2b-ii)", () => {
     expect(runDecisionDigestTick({ store: s2, chatId: "555", now: NOW, env: ENV })).toEqual({ ran: true, sent: false }); // conflict: another payload holds the key
     expect(s2.getImprovementProposal(more[0]!)?.offered_at).toBeNull();
   });
+  it("waits for the day's improve tick while it is running or stopped and under 30 min old; sends after the cap or once the tick is done (ruling 21)", () => {
+    const s = RunStore.openInMemory();
+    open(s, 1);
+    s.beginImproveTick("2026-10-21", "2026-10-21T10:50:00.000Z");                                   // running, 10 min old
+    expect(runDecisionDigestTick({ store: s, chatId: "555", now: NOW, env: ENV })).toEqual({ ran: false });
+    s.finishImproveTick("2026-10-21", "stopped", {}, NOW);                                            // budget-stopped, still young
+    expect(runDecisionDigestTick({ store: s, chatId: "555", now: NOW, env: ENV })).toEqual({ ran: false });
+    expect(runDecisionDigestTick({ store: s, chatId: "555", now: "2026-10-21T11:25:00.000Z", env: ENV })).toEqual({ ran: true, sent: true }); // 35 min after it started: the cap
+    const s2 = RunStore.openInMemory();
+    open(s2, 1);
+    s2.beginImproveTick("2026-10-21", "2026-10-21T10:50:00.000Z"); s2.finishImproveTick("2026-10-21", "done", {}, NOW);
+    expect(runDecisionDigestTick({ store: s2, chatId: "555", now: NOW, env: ENV })).toEqual({ ran: true, sent: true });
+  });
   it("resolveDigestAt survives: off → the default, a time → itself", () => {
     expect(resolveDigestAt({ HOUGE_DECISION_DIGEST_AT: "off" })).toBe("21:00");
     expect(resolveDigestAt({ HOUGE_DECISION_DIGEST_AT: "20:30" })).toBe("20:30");
@@ -4609,7 +4699,8 @@ The exact lines the builders render:
   `· fact saved · <quote ≤ 40> [↩️ Undo]` (`memoryUndoButton`), `· schedule <goal ≤ 40> moved to <H2>:00 · <evidence> [Revert]` (`dec:pr:<id>:rev`), `· ladder move <move> on <entry> · <evidence> [Revoke]` (`dec:lm:<move_id>:revoke`);
 - `**Proposals waiting**` lines: `<n>. <target> · <draft ≤ 120, redacted> · <evidence>` with `[✅ n] [🗑 n]` rows (`dec:pr:<id>:acc|dis`), then `+N more`;
 - `**Watch (7 d)**` lines: `· corrections <n> · abandoned <n> · clarify rate <p>%`, `· unattached: <signal> <n>, …` (from `improve_signal_skipped`), `· deferred <n>` (sum of tick details),
-  `· silent: review_unsure, lesson_unfollowed[, dig_deeper]` (families with zero rows in 7 days among those three), `· wiki disarmed: <n> topics` (improve.route rows with reason `wiki_disarmed`), `· embeddings unavailable: <n> days` (ticks with `embed_unavailable > 0`).
+  `· silent: review_unsure, lesson_unfollowed[, dig_deeper]` (families with zero rows in 7 days among those three), `· wiki disarmed: <n> topics` (improve.route rows with reason `wiki_disarmed`), `· embeddings unavailable: <n> days` (ticks with `embed_unavailable > 0`),
+  `· inapplicable top <n>` (improve.route rows with reason `inapplicable_top`; ruling 18: a rising count means the "applicable today" list is not being read), `· lessons not holding <n>` (proposals created in the window whose `evidence` starts with `lesson did not hold`; spec §7).
 - "since the last digest" = `DIGEST_WINDOW_MS` (24 h), as today's `decisionWindow`.
 
 `tests/decisions/status-view.test.ts`: `decisionStatusLines` gains `Proposals (30 d): open N · accepted N · dismissed N · expired N`;
@@ -4618,11 +4709,11 @@ count line appears in the digest text — Rev 7 removes those sections from the 
 count lines come from `countLines` over the same window as the digest's day" (assert `decisionStatusLines` lines equal
 `countLines(decisionWindow(store, now).rows)` prefixed, no digest text involved; codex B23 / senior W9).
 
-Three live-gate scripts assert the old digest sections and would break at the next run (senior W9): find them with
-`grep -ln "Unsure\|Counts (24 h)\|\*\*Health\*\*" scripts/live-gate-*.mjs` (expected: `live-gate-decisions-2a.mjs`,
-`live-gate-ladder-2b-hooks.mjs`, `live-gate-memory-write.mjs`) and change each digest check to the new contract: the
-header line, and either no message (an empty day) or only the three new section headers; a settle/injection count
-assertion moves to `decisionStatusLines`.
+Three scripts assert the old digest sections and would break at their next run (senior W9/W17, verified at HEAD):
+`scripts/live-gate-decisions-parity.mjs:358-397`, `scripts/live-gate-decisions-2a.mjs:506` and
+`scripts/check-ladder-2b-hooks-rollback.mjs:124`. Change each digest check to the new contract: the header line, and
+either no message (an empty day) or only the three new section headers; a settle/injection count assertion moves to
+`decisionStatusLines`. (`grep -ln "Unsure\|Counts (24 h)\|\*\*Health\*\*" scripts/*.mjs` confirms the list.)
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
@@ -4659,7 +4750,8 @@ export function buildDecisionDigest(store: RunStore, now: string, env: NodeJS.Pr
 `improvementsToday` reads `listJobsFinishedSince(since)` (pending_review → the drafted line with `skillButtons(job_id, "review")` and the id in `job_ids`; suggested → the plain line;
 promoted → the promoted line), `listProposalsResolvedSince(since)` with `state === "accepted"` (lesson → Undo from
 `result_json.change_id` via `memlaneUndoButton`; fact → `memoryUndoButton`; schedule → the Revert button
-`dec:pr:<id>:rev`; ladder → the Revoke button from `result_json.move_id`), each line's draft text through
+`dec:pr:<id>:rev`, the goal from `getScheduledTask(draft.schedule_id)` when the row still exists, else `schedule <id ≤ 12>`;
+ladder → the Revoke button from `result_json.move_id`), each line's draft text through
 `redactForImprove(store, …)` and cut (code points) at 80 / 40 chars as listed. `proposalsWaiting` reads
 `listOpenProposals()`, renders the first `DIGEST_PROPOSALS_MAX` with `[✅ n] [🗑 n]` rows and the `+N more` line, returns
 `ids` of the rendered ones only. `watchLines` as specified (7-day window: `listImproveSignalsSince`, `clarifyCounts`,
@@ -4667,7 +4759,16 @@ promoted → the promoted line), `listProposalsResolvedSince(since)` with `state
 `improve.route` with `reason_code === "wiki_disarmed"`); a line is omitted when every number on it is zero, except the
 first line, which renders when any of its three is non-zero.
 
-`runDecisionDigestTick`: inside the existing transaction, after `enqueueDigest` returns the queue status, set the offers:
+`runDecisionDigestTick`: before the latch check (ruling 21), wait for the day's improve tick:
+
+```ts
+export const DIGEST_WAIT_FOR_TICK_MS = 30 * 60_000;
+  // ruling 21: the tick runs before the digest (spec §3.1); a running or budget-stopped tick younger than the cap defers the digest to the next cycle
+  const tick = i.store.getImproveTick(date);
+  if (tick && tick.result !== "done" && tick.result !== "failed" && Date.parse(i.now) - Date.parse(tick.started_at) < DIGEST_WAIT_FOR_TICK_MS) return { ran: false };
+```
+
+then, inside the existing transaction, after `enqueueDigest` returns the queue status, set the offers:
 
 ```ts
   return i.store.inTransaction((): DigestTickResult => {
@@ -4694,7 +4795,7 @@ Run: `npx vitest run tests/decisions/ tests/telegram/` — Expected: PASS.
 
 ```bash
 npm run typecheck && npx vitest run --reporter=dot
-git add src/decisions/digest.ts src/decisions/status-view.ts tests/decisions/digest.test.ts tests/decisions/digest-helpers.test.ts tests/decisions/digest-2a.test.ts tests/decisions/status-view.test.ts scripts/live-gate-decisions-2a.mjs scripts/live-gate-ladder-2b-hooks.mjs scripts/live-gate-memory-write.mjs
+git add src/decisions/digest.ts src/decisions/status-view.ts tests/decisions/digest.test.ts tests/decisions/digest-helpers.test.ts tests/decisions/digest-2a.test.ts tests/decisions/status-view.test.ts scripts/live-gate-decisions-2a.mjs scripts/live-gate-decisions-parity.mjs scripts/check-ladder-2b-hooks-rollback.mjs
 git commit -m "feat(decisions): the digest as Improvements today / Proposals waiting / Watch with the offer transaction; proposal counts in /status; gate scripts follow (ladder 2b-ii Task 14)"
 ```
 
