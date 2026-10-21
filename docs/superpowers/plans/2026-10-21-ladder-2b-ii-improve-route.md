@@ -183,8 +183,9 @@ follows [2026-10-20-ladder-2b-hooks-settle.md](2026-10-20-ladder-2b-hooks-settle
   `src/jev/questions/improve.ts`.
 - Every producer and every tap handler never throws into its caller (catch, log `[improve] …`, event). The tick never
   throws into the daemon. Model calls run outside transactions; `store.inTransaction` is not re-entrant.
-- Logs carry no raw exception text (codex round 2): every `catch` in new or touched improvement code logs
-  `safeReason(e)` (`src/domain/error-code.ts`: a bounded code or name, never model or user text), never `e.message`.
+- Logs carry no exception text (codex rounds 2–3): every `catch` in new or touched improvement code logs
+  `errorCode(e)` (`src/domain/error-code.ts:5-8`: the error's `code` when it is a `[A-Z0-9_]{1,40}` token, else the
+  error's class name, else `unknown` — never `e.message`, which `safeReason` may pass through in a filtered form).
 - Every task: `npm run typecheck && npx vitest run --reporter=dot` green before its commit (the suite stays green at
   every task boundary). Functions under 50 lines. Commit trailer `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`.
   Stage by name. Conventional Commits, one concern per commit.
@@ -941,7 +942,7 @@ export function readLedgerEventsByTypeSince(db: LedgerDatabase, event_type: Ledg
       const value = (PLANNER_FAILED_VALUES as readonly string[]).includes(error_type) ? error_type : "other";
       this.insertImproveSignal({ signal: "planner_failed", value, run_id, chat_id: row.chat_id, about_run_id: run_id });
     } catch (e) {
-      console.error(`[improve] signal skipped: planner_failed (${safeReason(e)})`); // src/domain/error-code.ts: bounded, never raw text
+      console.error(`[improve] signal skipped: planner_failed (${errorCode(e)})`); // src/domain/error-code.ts: bounded, never raw text
     }
   }
 ```
@@ -1441,7 +1442,7 @@ Run: `npx vitest run tests/decisions/improve-signals.test.ts tests/decisions/tap
 
 ```ts
 import type { DecisionSignal } from "./types.js";
-import { safeReason } from "../domain/error-code.js";
+import { errorCode } from "../domain/error-code.js";
 import { OutcomeRejected } from "./outcomes.js";
 import type { ImproveSignalInsert, JevVerdictRow, RunStore } from "../run/run-store.js";
 
@@ -1457,7 +1458,7 @@ export function recordImproveSignal(store: RunStore, s: ImproveSignalInsert): bo
     return store.insertImproveSignal(s) > 0;
   } catch (e) {
     const code: SkipCode = e instanceof OutcomeRejected ? "refused" : "store_error";
-    console.error(`[improve] signal skipped: ${s.signal} (${code}${code === "store_error" ? `: ${safeReason(e)}` : ""})`);
+    console.error(`[improve] signal skipped: ${s.signal} (${code}${code === "store_error" ? `: ${errorCode(e)}` : ""})`);
     skipImproveSignal(store, s.signal, code, s.about_run_id ?? s.run_id);
     return false;
   }
@@ -1467,7 +1468,7 @@ export function skipImproveSignal(store: RunStore, signal: DecisionSignal, code:
   try {
     store.recordMemoryEvent("improve_signal_skipped", { signal, code, ...(run_id ? { run_id } : {}) }, "improve");
   } catch (e) {
-    console.error(`[improve] signal skipped: ${signal} (${code}); the event was not written: ${safeReason(e)}`);
+    console.error(`[improve] signal skipped: ${signal} (${code}); the event was not written: ${errorCode(e)}`);
   }
 }
 
@@ -1489,7 +1490,7 @@ function approvalSignal(store: RunStore, signal: "approval_denied" | "approval_e
     const chat_id = i.chat_id ?? chatOfRun(store, i.run_id);
     return recordImproveSignal(store, { signal, value: capability, run_id: i.run_id, chat_id, about_run_id: i.run_id, ...(i.now ? { created_at: i.now } : {}) });
   } catch (e) {
-    console.error(`[improve] signal skipped: ${signal} (store_error: ${safeReason(e)})`);
+    console.error(`[improve] signal skipped: ${signal} (store_error: ${errorCode(e)})`);
     skipImproveSignal(store, signal, "store_error", i.run_id);
     return false;
   }
@@ -3256,7 +3257,7 @@ export async function runImproveTick(d: ImproveTickDeps): Promise<ImproveTickRes
     result = await tickBody(d, counts);
   } catch (e) {
     result = "failed";
-    console.error(`[improve] tick failed: ${safeReason(e)}`); // import { safeReason } from "../domain/error-code.js"
+    console.error(`[improve] tick failed: ${errorCode(e)}`); // import { errorCode } from "../domain/error-code.js"
   }
   d.store.finishImproveTick(date, result, { ...counts }, d.now);
   d.store.recordMemoryEvent("improve_tick", { phase: "end", local_date: date, result, counts: { ...counts } }, "improve");
@@ -4397,7 +4398,7 @@ export function handleImprovementTap(store: RunStore, skills: SkillStore, event:
     try {
       text = tap.kind === "pr" ? proposalTap(store, skills, tap, chatOf(event), now) : tap.kind === "sk" ? jobTap(store, skills, tap, chatOf(event), now) : moveTap(store, tap, chatOf(event), now);
     } catch (e) {
-      console.error(`[improve] tap ${tap.kind}:${tap.action} failed: ${safeReason(e)}`); // import { safeReason } from "../domain/error-code.js"
+      console.error(`[improve] tap ${tap.kind}:${tap.action} failed: ${errorCode(e)}`); // import { errorCode } from "../domain/error-code.js"
     }
     const result = text === TAP_HANDLED_TEXT ? "handled" : text === TAP_FAILED_TEXT ? "failed" : "applied";
     store.insertImprovementTap({ subject_kind: tap.kind === "pr" ? "proposal" : tap.kind === "sk" ? "job" : "move", subject_id: tap.id, action: tap.action, telegram_callback_id: tap.callback, result, created_at: now });
