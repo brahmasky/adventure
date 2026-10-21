@@ -904,13 +904,26 @@ Methods (new section):
   }
 
   listLedgerEventsByTypeSince(event_type: LedgerEventType, sinceIso: string): LedgerEvent[] {
-    // map rows exactly as readLedgerEvents (run-ledger.ts) does: payload_json → payload, occurred_at kept
-    ...
+    return readLedgerEventsByTypeSince(this.db, event_type, sinceIso);
   }
 ```
 
-Read `readLedgerEvents` in `src/run/run-ledger.ts` and reuse its row mapper (export it if private, or add
-`readLedgerEventsByType(db, event_type, sinceIso)` beside it in run-ledger.ts and call that).
+with, in `src/run/run-ledger.ts` beside `readLedgerEventsByCorrelation` (`:424`), the same shape through the file's
+private `ledgerEventFromRow` mapper (`:433`):
+
+```ts
+/** 2b-ii §6.1 Watch: events of one type after `sinceIso` (run-less and run-bound alike), oldest first. */
+export function readLedgerEventsByTypeSince(db: LedgerDatabase, event_type: LedgerEventType, sinceIso: string): LedgerEvent[] {
+  return db.prepare(`
+    SELECT event_id, run_id, correlation_id, event_type, occurred_at, actor, sequence, payload_json
+    FROM ledger_events
+    WHERE event_type = ? AND occurred_at > ?
+    ORDER BY occurred_at ASC, sequence ASC, event_id ASC
+  `).all<LedgerEventRow>(event_type, sinceIso).map(ledgerEventFromRow);
+}
+```
+
+(the store imports it next to `appendLedgerEvent` at `run-store.ts:29`).
 
 `noteFailedPlannerRun` (private, beside `finishRun`):
 
