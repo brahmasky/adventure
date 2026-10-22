@@ -1,6 +1,6 @@
 # 🧭 CURRENT SYSTEM STATE — 2026-10-23 (read this first)
 
-**Jev version check: BUILT on `feat/jev-version-check` (not merged, not deployed); live gate PASS 2026-10-23.** Spec
+**Jev version check: MERGED and pushed 2026-10-23 (`43511e5`), `dist/` rebuilt; live after Paco's kickstart.** Spec
 `docs/superpowers/specs/2026-10-22-jev-version-check-design.md` Rev 3.4, plan `docs/superpowers/plans/2026-10-22-jev-version-check.md`.
 No version literal decides behaviour; a Jev version move is checked by a background job against Paco's anchor (about 45
 minutes, paced 1.5 s per call). Gate result: jev-1.14.0 **drifted** against the jev-1.13.0 anchor (category 0.892 vs its own
@@ -10,8 +10,7 @@ later version passes). Paco's Accept makes that version the reference (his label
 `5a18732` after five final reviewers + codex and two fix rounds: suite 383 files / 5313 tests; live gate re-run PASS
 (1.14.0 drifted again: route 0.610 vs its own 0.814; category passed, breadth and reasoning just under). Paco's: kickstart. Run in flight: none from
 this build. CLI: `houge jev anchor import | models | check [model] | accept <model>`.
-- [ ] Paco: the routing gap. Unprotected files that could bypass the arming result: `tree-policy.ts` (middle path),
-  `turn-handler-ladder.ts`, `core-worker.ts` (planAnswered), `gateway/jev-accept-commands.ts`, `telegram-daemon.ts` (anchor import call). Options: protect
+- [x] Routing gap: Paco 2026-10-23 chose no further protection (d); the unprotected callers stay self-writable by design.
   `turn-handler-ladder.ts`, or clamp the route inside the protected `src/decisions/jev-version-check.ts` (still behind an
   unprotected caller).
 - [ ] Flaky: the egress 100 ms timing test failed under parallel load several times (passes alone); loosen it or fake the clock.
