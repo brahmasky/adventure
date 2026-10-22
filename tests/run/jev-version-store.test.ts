@@ -86,7 +86,9 @@ describe("jev models", () => {
     expect(s.setJevModelState("m1", "checking", "trusted", '{"ok":1}', NOW)).toBe(true);
     expect(s.setJevModelState("m1", "checking", "drifted", "{}", NOW)).toBe(false);
     expect(s.getJevModel("m1")).toMatchObject({ state: "trusted", detail_json: '{"ok":1}', checked_at: NOW });
-    expect(() => s.setJevModelState("m1", "trusted", "bogus" as "trusted", "{}", NOW)).toThrow();
+    expect(s.setJevModelState("m1", "trusted", "checking", "{}", "2026-10-23T00:00:00.000Z")).toBe(true);
+    expect(s.getJevModel("m1")?.checked_at).toBe(NOW); // checked_at moves only on a terminal state, never on checking
+    expect(() => s.setJevModelState("m1", "checking", "bogus" as "trusted", "{}", NOW)).toThrow();
     s.close();
   });
 
@@ -124,12 +126,12 @@ describe("jev models", () => {
 describe("model-keyed check runs", () => {
   it("keys by (model, generation, entry, run): one generation's result is never read as another's", () => {
     const s = RunStore.open(fresh());
-    s.recordJevCheckRun({ model: "m1", generation: 1, entry_id: "e", run: "A", outcome: "ok", detail_json: "{}", created_at: NOW });
-    expect(s.getJevCheckRun("m1", 1, "e", "A")?.outcome).toBe("ok");
-    expect(s.getJevCheckRun("m1", 2, "e", "A")).toBeUndefined();
-    expect(s.getJevCheckRun("m2", 1, "e", "A")).toBeUndefined();
-    s.recordJevCheckRun({ model: "m1", generation: 1, entry_id: "e", run: "A", outcome: "bad", detail_json: "{}", created_at: NOW });
-    expect(s.getJevCheckRun("m1", 1, "e", "A")?.outcome).toBe("ok"); // first write wins: a replay cannot rewrite a recorded run
+    s.recordJevCheckRun({ model: "m1", generation: 1, entry_id: "memory.kind", run: "golden", outcome: "ok", detail_json: "{}", created_at: NOW });
+    expect(s.getJevCheckRun("m1", 1, "memory.kind", "golden")?.outcome).toBe("ok");
+    expect(s.getJevCheckRun("m1", 2, "memory.kind", "golden")).toBeUndefined();
+    expect(s.getJevCheckRun("m2", 1, "memory.kind", "golden")).toBeUndefined();
+    s.recordJevCheckRun({ model: "m1", generation: 1, entry_id: "memory.kind", run: "golden", outcome: "drift", detail_json: "{}", created_at: NOW });
+    expect(s.getJevCheckRun("m1", 1, "memory.kind", "golden")?.outcome).toBe("ok"); // first write wins: a replay cannot rewrite a recorded run
     s.close();
   });
 });

@@ -49,8 +49,13 @@ describe("slack(n, p) = max(0.05, 2.7 · sqrt(p(1−p)/n))", () => {
     expect(slack(301, 0.7375)).toBeCloseTo(2.7 * Math.sqrt((0.7375 * 0.2625) / 301), 10); // ≈ 0.0685, the route check
     expect(slack(30, 0.5)).toBeCloseTo(2.7 * Math.sqrt(0.25 / 30), 10);
   });
-  it("no sample is no bound (the judge fails such a check, it never passes on no evidence)", () => {
-    expect(slack(0, 0.9)).toBe(Infinity);
+  it("no sample is no bound: NaN, so any comparison against it is false (the judge fails such a check, never passes it on no evidence)", () => {
+    expect(slack(0, 0.9)).toBeNaN();
+    expect(slack(-1, 0.9)).toBeNaN();
+    expect(0.5 >= 0.9 - slack(0, 0.9)).toBe(false); // a caller that forgot the n guard still cannot pass on no evidence
+  });
+  it("the slack follows the observed side's n: diverging n gives a different bound", () => {
+    expect(slack(30, 0.8)).toBeGreaterThan(slack(300, 0.8));
   });
 });
 

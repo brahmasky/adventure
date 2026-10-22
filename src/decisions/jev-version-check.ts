@@ -215,9 +215,12 @@ export function laneCountsOf(run: CheckRun, label: (turn: string) => string | un
   return laneLabelCounts([...run].map(([turn, t]) => ({ routeKey: routeEffectKey(t.state, t.answers, bars), label: label(turn) })));
 }
 
-/** `max(0.05, 2.7 · sqrt(p(1−p)/n))`: z for 1 % per check over seven checks. No sample (n ≤ 0) is no bound: Infinity. */
+/**
+ * `max(0.05, 2.7 · sqrt(p(1−p)/n))`: z for 1 % per check over seven checks. No sample (n ≤ 0) is no bound: NaN, so any
+ * comparison against it is false and a caller that skipped the n guard still cannot pass a check on no evidence.
+ */
 export function slack(n: number, p: number): number {
-  if (!(n > 0)) return Infinity;
+  if (!(n > 0)) return Number.NaN;
   return Math.max(JEV_CHECK_SLACK_MIN, JEV_CHECK_Z * Math.sqrt((p * (1 - p)) / n));
 }
 

@@ -1204,7 +1204,10 @@ const JEV_VERSION_CHECK_DDL = `
     outcome TEXT NOT NULL,
     detail_json TEXT NOT NULL,
     created_at TEXT NOT NULL,
-    PRIMARY KEY (model, generation, entry_id, run)
+    PRIMARY KEY (model, generation, entry_id, run),
+    -- the job's vocabularies (spec §2.4-2.5): a tree answer per run (A, A2 canonical; B permuted) and anchor turn; one golden row per entry
+    CHECK ((entry_id = 'tree' AND outcome IN ('answered', 'failed') AND (run GLOB 'A:?*' OR run GLOB 'A2:?*' OR run GLOB 'B:?*'))
+      OR (entry_id IN ('tool.injection', 'memory.kind', 'turn.settle', 'improve.route') AND run = 'golden' AND outcome IN ('ok', 'drift', 'skipped')))
   );`;
 /** 2b-ii §2, §3.1, §3.3, §5.1, §5.2: the inbox, the tick latch and cursor, turn embeddings, proposals, jobs, taps. Additive (R13). */
 const IMPROVE_ROUTE_DDL = `
@@ -2599,7 +2602,7 @@ export class RunStore {
       WHERE actor_id = ?
         AND chat_id = ?
         AND decision = 'accepted'
-        AND command NOT IN ('decision_review', 'improvement_tap') -- review and improvement taps are exempt and never count (ruling 16; 2b-ii §6.3)
+        AND command NOT IN ('decision_review', 'improvement_tap', 'jev_accept_tap') -- review, improvement and Jev Accept taps are exempt and never count (ruling 16; 2b-ii §6.3; jev version check §2.6)
         AND occurred_at > ?
     `).get<{ count: number }>(input.actor_id, input.chat_id, windowStart);
     if ((windowRow?.count ?? 0) >= TELEGRAM_MAX_COMMANDS_PER_WINDOW) {
@@ -5202,9 +5205,23 @@ export class RunStore {
     return this.db.prepare(`SELECT model, first_seen_at, state, checked_at, attempts, detail_json, generation FROM jev_models ORDER BY first_seen_at, model`).all<JevModelRow>();
   }
 
-  /** Fenced on the previous state: false when another writer already moved the model. */
+  /** Fenced on the previous state: false when another writer already moved the model. `checked_at` moves only on a terminal state (not `checking`). */
   setJevModelState(model: string, from: JevModelState, to: JevModelState, detail_json: string, now: string): boolean {
-    return this.db.prepare(`UPDATE jev_models SET state = ?, detail_json = ?, checked_at = ? WHERE model = ? AND state = ?`).run(to, detail_json, now, model, from).changes > 0;
+    return this.db.prepare(`UPDATE jev_models SET state = ?, detail_json = ?, checked_at = CASE WHEN ? = 'checking' THEN checked_at ELSE ? END WHERE model = ? AND state = ?`)
+      .run(to, detail_json, to, now, model, from).changes > 0;
+  }
+
+  /** A running check's progress (spec §2.4): only while the model is `checking` at this generation; false otherwise. */
+  setJevModelProgress(model: string, generation: number, detail_json: string): boolean {
+    return this.db.prepare(`UPDATE jev_models SET detail_json = ? WHERE model = ? AND state = 'checking' AND generation = ?`).run(detail_json, model, generation).changes > 0;
+  }
+
+  /** The model the newest answered Jev call reported: what the alias served last (spec §2.6, `houge jev check`). */
+  latestJevAttemptModel(): string | undefined {
+    return this.db.prepare(`
+      SELECT json_extract(payload_json, '$.model') AS model FROM ledger_events
+      WHERE event_type = 'llm_attempt' AND json_extract(payload_json, '$.provider') = 'jev' AND json_extract(payload_json, '$.model') IS NOT NULL
+      ORDER BY rowid DESC LIMIT 1`).get<{ model: string }>()?.model;
   }
 
   bumpJevModelAttempts(model: string): void {
@@ -5236,10 +5253,16 @@ export class RunStore {
       GROUP BY model ORDER BY MAX(rowid)`).all<{ model: string; rowid: number }>(rowid);
   }
 
-  /** First write wins: a replay can never rewrite a recorded run of this generation. */
+  /** First write wins: a replay can never rewrite a recorded run of this generation. ON CONFLICT, not OR IGNORE: the vocabulary CHECK must still throw. */
   recordJevCheckRun(r: JevCheckRun): void {
-    this.db.prepare(`INSERT OR IGNORE INTO jev_check_runs (model, generation, entry_id, run, outcome, detail_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+    this.db.prepare(`INSERT INTO jev_check_runs (model, generation, entry_id, run, outcome, detail_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT (model, generation, entry_id, run) DO NOTHING`)
       .run(r.model, r.generation, r.entry_id, r.run, r.outcome, r.detail_json, r.created_at);
+  }
+
+  listJevCheckRuns(model: string, generation: number, entry_id: string): JevCheckRun[] {
+    return this.db.prepare(`SELECT model, generation, entry_id, run, outcome, detail_json, created_at FROM jev_check_runs WHERE model = ? AND generation = ? AND entry_id = ? ORDER BY run`)
+      .all<JevCheckRun>(model, generation, entry_id);
   }
 
   getJevCheckRun(model: string, generation: number, entry_id: string, run: string): JevCheckRun | undefined {
