@@ -9,13 +9,11 @@ daily tick (at the digest's time, before the digest, also when the digest is `of
 waits while a pass runs) decides each group: code rules first (the rule rung owns `review_bad`: unlocked entry → ladder
 proposal, locked → `nothing` / `locked_entry`), then Jev's `improve_target` (bar 0.67, Paco 2026-10-22), then a Tiny pick. The only
 automatic effect is a `_pending` skill draft after a recurrence (one job starts per tick, up to 3 queue a day, queued TTL 3
-days); the rest are proposals, taps on the digest. The digest has three sections (improvements, proposals waiting, watch
+days); the rest are proposals, taps on the digest. The digest has four sections (improvements, proposals waiting, Unsure with the ✅/❌ review taps, watch
 with failed-tick counts) and is scoped to its chat; `/status` keeps the counts plus the settle health line and Jev skips.
 Evidence: 372 files / 5086 tests passed, typecheck and build clean; improve-sanity on a 30-day copy PASS (planted 10/10, real
 window 7 groups, about 0.13 proposals a day, suggested bar 0.67); live gate `scripts/live-gate-improve-route.mjs`: cases 1–9 PASS on the final head; case 10 (memory-write gate): no branch effect, the gate is flaky on main too (pointer case rides the k3 distill retry).
-- [ ] Build: restore ✅/❌ review taps in the digest (Paco 2026-10-22: yes) so `review_bad` reaches the ladder target again.
-- [ ] Paco: the guard-list additions (an improve flag in `DISARM_FLAGS`; the improve tick, taps and skill-job files in `PROTECTED_FILES`). Jev-timeout incident: not wanted (Paco 2026-10-22).
-- Known gap: the digest offers no review taps, so no new `review_bad` signals until a review surface returns.
+- [x] Follow-ups (Paco 2026-10-22, branch `feat/improve-followups`, merge and kickstart owed): review taps are back (Unsure section; the ladder target is live again; `review_bad` left Watch's silent families); `HOUGE_IMPROVE_ENABLED` (default on, exact `false` off, in `DISARM_FLAGS`, Watch says `improvement tick off`); `src/skills/promote.ts` and `src/gateway/improvement-commands.ts` joined `PROTECTED_FILES`. Jev-timeout incident: not wanted.
 - Deferred: wiki handler (R5), model-route proposals (R10), `lesson_unfollowed` (R4). Next: stage 3.
 - Protected files touched: `src/decisions/` (outcomes, entry-ids, registry, egress, digest, status-view, improve-signals,
   entries/improve-route), `src/omp/bridge-handler.ts`, `src/jev/decide.ts`, `src/run/run-store.ts`, `src/run/run-ledger.ts`,

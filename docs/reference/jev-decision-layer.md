@@ -75,7 +75,9 @@ compare every persisted column with the pre-ladder build.
 When a handler falls back after the ladder decided (a lane that falls through to the planner, a card that fails to render), the `decisions` row keeps the ladder's verdict: it records what the ladder decided, not what the handler then did. The `jev_verdicts` row (`handler`, e.g. `fallthrough:<why>`) carries the handler's outcome.
 
 The daily decision digest (`HOUGE_DECISION_DIGEST_AT`, default 21:00) arrives in the operator chat: improvements today,
-proposals waiting for a tap, and a watch line. Since 2b-ii it offers no ✅ / ❌ review taps
+proposals waiting for a tap, an Unsure section (System One judgements within 0.15 of their bar, newest first, at most 8, in
+the digest's chat, one code-built line each with ✅ / ❌ review taps that write `review_ok` / `review_bad`, which the
+improvement tick turns into ladder proposals) and a watch line
 ([configuration.md](configuration.md#decision-ladder-adr-0030)).
 
 ## Noise band and tap labels
