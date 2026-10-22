@@ -1,6 +1,6 @@
 # Jev version check — no version literal in behaviour code; a version move is checked by code
 
-**Status:** Rev 3.1, 2026-10-22 (Rev 3 + senior r3, 1 blocker, and codex r3, 4 blockers). Paco's ask (2026-10-22):
+**Status:** Rev 3.2, 2026-10-22 (Rev 3.1 + codex r4, 2 blockers). Paco's ask (2026-10-22):
 "build the automatic check". His intent (2026-10-07, restated today): no hard-coded version decides behaviour, and a Jev
 version move must not stop him. This is Paco's decision, so ADR 0029 decision 5 and its 2026-10-07 amendment ("falls
 through until Paco approves rows") are replaced by §2 (ADR text in §6).
@@ -45,7 +45,8 @@ The check gates the triage tree only (the only model-gated decision). The four l
   import and stored in `jev_anchor_meta`.
 - `jev_models(model PRIMARY KEY, first_seen_at, state CHECK(state IN ('trusted','checking','deferred','drifted',
   'insufficient','accepted')), checked_at, attempts, detail_json)`. Seed: the anchor's own `model` value → `trusted`, but
-  only when the zh anchor holds ≥ 100 rebuilt turns with both an A and a B answer set (else `insufficient`). Data from the file, no literal in `src/`.
+  only when the zh anchor holds ≥ 100 rebuilt turns with both an A and a B answer set, and every imported A and B row
+  reports one and the same versioned model (else `insufficient`, as the replay report already rejects mixed models). Data from the file, no literal in `src/`.
   Fresh DB, no anchor → no `trusted` row → nothing armed.
 - Discovery cursor: `ledger_events.rowid` (sequence is per run).
 
@@ -85,8 +86,8 @@ c. **Paco's labels, as allowed counts** (anchor values stored at import): per la
    labelled turns routed to their lane than the anchor's − max(1, the anchor's own A-vs-B recall gap + 1)) pages only:
    losing recall is the safe direction (those turns fall back to the planner), and the anchor's recall is inside Jev's
    noise (senior r3: memory 11 → 9 between the anchor's own runs). The anchor's own B run must pass check c (a test).
-d. **Outcome.** All pass → `trusted`. A route-only failure (all six questions pass, the route check fails) disarms the
-   whole tree for that model (fail closed: the drift cannot be tied to one lane). A failure → `drifted`, the failing questions and lanes in `detail_json` (dependents
+d. **Outcome.** All pass → `trusted`. Any failure of the route check disarms the whole tree for that model, whether or not a
+   question also failed (fail closed: a route drift cannot be tied to one question's dependents). A failure → `drifted`, the failing questions and lanes in `detail_json` (dependents
    per §2.3), the rest armed; one alerted incident with the numbers and an Accept button. Anchor < 100 zh turns →
    `insufficient`, nothing armed for that model, one incident naming the import.
 e. **Ladder bars.** Each golden set runs on the candidate in check-specific runs keyed by model; every item's reported
