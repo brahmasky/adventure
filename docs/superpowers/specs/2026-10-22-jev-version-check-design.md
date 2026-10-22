@@ -1,90 +1,106 @@
 # Jev version check — no version literal in behaviour code; a version move is checked by code
 
-**Status:** Rev 1, 2026-10-22. Paco's ask (2026-10-22): "build the automatic check". Intent he set 2026-10-07 and
-restated today: no hard-coded version (omp, model, Jev) decides behaviour. ADR 0029's 2026-10-07 amendment kept
-calibration keyed on the reported Jev version and accepted "every lane falls through to the planner until Paco approves
-rows" on an alias move; TypeSafe moved `jev-latest` from `jev-1.13.0` to `jev-1.14.0` at 2026-10-22T02:33Z and that
-fallback is now live. This spec removes the version from every behaviour key and replaces Paco's manual re-approval with
-a measured check.
+**Status:** Rev 2, 2026-10-22 (Rev 1 + senior review r1, 4 blockers, and codex r1, 7 blockers). Paco's ask (2026-10-22):
+"build the automatic check". His intent (2026-10-07, restated today): no hard-coded version decides behaviour, and a Jev
+version move must not stop him. This is Paco's decision, so ADR 0029 decision 5 and its 2026-10-07 amendment ("falls
+through until Paco approves rows") are replaced by §2 (ADR text in §6).
 
-## 1. Facts (live system, 2026-10-22, read-only probes)
+## 1. Facts (live system 2026-10-22, read-only probes; senior r1 P1–P8)
 
-- Version literals that decide behaviour: 14 triage calibration rows (`src/jev/calibration.ts:28-45`, `model:
-  "jev-1.13.0"`), four ladder bars (`INJECTION_BAR`, `MEMORY_KIND_BAR`, `SETTLE_BAR`, `IMPROVE_BAR`, field `model`).
-  Comments naming `jev-1.13` (option-order bias notes) are history, not behaviour; they stay.
-- Arming today: `calibratedLang(question, hash, model, lang)` matches a row on the exact reported model
-  (`calibration.ts:72`); `treeArmed` (`tree-policy.ts:61`) arms each lane from those rows. The four bars apply whatever
-  the model; their golden ticks (`golden.ts`) open `decision_bar_stale` when the reported model differs from `bar.model`.
-- Alias-move page: `checkJevModelCalibrated` (`jev-incidents.ts:84`) opens `jev_model_uncalibrated` once per new model.
-- Reference evidence on the old version (`jev_decisions`, answers stored): triage zh 180, en 6, mixed 9; injection 541.
-  `jev_decisions` keeps `state_hash`, not the state; the tree replay (`triage-replay.ts:126`) rebuilds a turn's state from
-  the DB and re-asks the tree questions (cost ≈ $0.066 per 293 turns, ADR 0029 evidence).
-- Golden sets exist for `tool.injection`, `memory.kind`, `turn.settle` (`golden.ts`); none for `improve.route`.
-- Since the move: 3 injection and 1 improve call on 1.14.0; no triage call yet (the next Telegram turn falls back).
+- Version literals that decide behaviour: 18 triage calibration rows (`src/jev/calibration.ts:28-45`: the six tree
+  questions plus the status, answer and lookup pseudo-rows, zh and en), `NoiseBand.model`, and the `model` field of the
+  four ladder bars (`INJECTION_BAR`, `MEMORY_KIND_BAR`, `SETTLE_BAR`, `IMPROVE_BAR`). Comments naming `jev-1.13` stay.
+- Only the triage tree is gated by the model today: `calibratedLang` (`calibration.ts:72`) matches the exact reported model,
+  and `treeArmed` (`tree-policy.ts:61`) arms each lane from it. The four ladder bars apply whatever the model reports; a
+  model change opens `decision_bar_stale` from the golden ticks and never disarms (ADR 0030 R13: drift pages).
+- Reference evidence: the live `jev_decisions` holds only 26 zh, 1 en, 1 mixed tree turns on 1.13.0 with today's hashes.
+  The evidence Paco approved on, `.houge/jev-tree/replay.jsonl`, holds 301 turns on 1.13.0 (zh 258, en 30, mixed 13); all
+  six criteria hashes equal today's and all 301 states rebuild byte-identical; `labels.jsonl` beside it holds Paco's 111
+  labels. That replay is the reference.
+- Jev's own noise (1.13.0 against its permuted self, 301 turns): per-question top agreement 0.914 (category) to 0.96–0.99;
+  routed-lane agreement 0.78 (0.87 counting any cascade as equal). Absolute bars of 0.9 would fail a model against itself.
+- Every Jev call path writes an `llm_attempt` ledger row carrying the reported `model` (golden ticks included).
+- The alias served 1.13.0 and 1.14.0 within the same minute (02:33–02:34Z): two ids behind one alias is real.
+- The signal-path tick is awaited inside the Telegram poll loop; a multi-minute check must not run there.
 
 ## 2. Design
 
-### 2.1 Data
-New table `jev_models(model TEXT PRIMARY KEY, first_seen_at TEXT NOT NULL, state TEXT NOT NULL CHECK(state IN
-('trusted','checking','drifted','accepted')), checked_at TEXT, detail_json TEXT)`. Additive migration. Seed: one row
-`state='trusted'` for the model the current rows were approved on — a data row in the migration (history, not
-behaviour), derived from the existing `CALIBRATED_ROWS` model values before the field is removed, so the literal leaves
-`src/` with this change.
-- `trusted`: the reference version (calibration approved on it, or a check passed against a trusted one).
-- `checking`: seen, check pending or running. `drifted`: check failed (per question/entry detail). `accepted`: Paco
-  accepted a drifted version by command.
+### 2.1 Scope
+The check gates the triage tree only (the only model-gated decision). The four ladder bars and the noise band lose their
+`model` field and are never disarmed by a version move; their golden sets run against a new model and a drift pages
+(R13). No grace: an unchecked model leaves the tree unarmed (today's safe fallback) for the minutes the check takes.
 
-### 2.2 Keys without a version
-- `CalibrationRow` drops `model`; arming matches `(question_id, criteria_hash, lang)`. `HOUGE_JEV_CALIBRATION_FILE`
-  rows follow (a `model` field in the file is ignored, logged once).
-- `ProvisionalBar` drops `model`.
-- A question/entry is armed on the reported model when the model's state is `trusted` or `accepted`, or `checking`
-  (§2.4 grace), or `drifted` for a question the check did not flag. A `drifted` question/entry falls back as today.
-- The alias row rule stays: a reported model equal to the request alias never arms.
+### 2.2 Data (additive migration)
+- `jev_reference(turn_id, lang, question_id, criteria_hash, answer_json, model, imported_at, PRIMARY KEY(turn_id,
+  question_id))` and `jev_reference_labels(turn_id, category, by, at)`. Filled by `importJevReference(store, dir)` from
+  `.houge/jev-tree/replay.jsonl` + `labels.jsonl`: at daemon boot when the table is empty and the files exist, and by
+  `houge jev reference import`. Only rows whose criteria hash equals the live question's hash are imported.
+- `jev_models(model PRIMARY KEY, first_seen_at, state CHECK(state IN ('trusted','checking','drifted','insufficient',
+  'accepted')), checked_at, detail_json)`. Seed: the import marks the reference rows' own `model` value `trusted` — data
+  from the file, no literal in `src/`. Fresh DB with no reference → no `trusted` row → nothing armed (today's behaviour).
 
-### 2.3 Trigger
-Every answered Jev call (any point) passes `r.model` to `noteJevModel(store, model, now)`: unknown → insert `checking`,
-`first_seen_at`. One indexed read per call; no network. The check runs on the daemon's signal-path tick (never in a
-turn), at most one model at a time, retried next cycle on an outage (Jev error / 429 / timeout), budget 120 s per cycle.
+### 2.3 Keys without a version
+- `CalibrationRow` drops `model`: a row arms `(question_id, criteria_hash, lang)` (Paco's approval of the questions and
+  bars). `NoiseBand` and `ProvisionalBar` drop `model`. A `model` field in `HOUGE_JEV_CALIBRATION_FILE` is ignored, logged
+  once.
+- A tree question arms on a call when its row matches AND the call's reported model is `trusted` or `accepted` for that
+  question and language (per-question state in `detail_json`). The alias string itself never arms.
+- Dependencies: `category` failing disarms category, memory, status, answer, lookup; `sets_rule`/`rule_scope` failing
+  disarms rule (and status, which needs it); a gear question failing disarms gear. The pseudo-rows have no question of
+  their own: they ride on `category` plus their lane's absolute label check (§2.5 b).
 
-### 2.4 Grace while checking
-A `checking` model arms as if trusted for up to `JEV_CHECK_GRACE_MS = 24 h` from `first_seen_at`. Jev never gates an
-action (ADR 0029 monotone rule), so the worst case is lanes routing for a few hours on an unmeasured model. After 24 h
-without a finished check (persistent outage), the model is treated as `drifted` for everything and one alerted
-incident says so.
+### 2.4 Discovery and the job
+- Discovery: the signal-path tick reads `llm_attempt` rows (provider jev) since its cursor and inserts any unseen model as
+  `checking`. No hook in `decide.ts` (protected, documented never to write).
+- The check is a background job on its own promise (like the evolution lane), started by the tick, never awaited by it;
+  one model at a time; resumable (progress in `detail_json`); Jev outage → retried next start; stop signal honoured.
 
-### 2.5 The check
-Against the newest `trusted` (or `accepted`) model, the reference:
-1. **Triage.** Replay the last `JEV_CHECK_TURNS = 60` telegram turns that have reference answers on the reference model,
-   through the tree questions on the new model (the existing tree replay core, store copy semantics unchanged, no
-   writes to live verdict tables; results to a check table or the detail). Per question and language with ≥ 20
-   reference turns: top-option agreement ≥ `JEV_CHECK_TOP_AGREE = 0.9` and mean |Δp(top option of the reference)| ≤
-   `JEV_CHECK_MEAN_DP = 0.1`; and the routed lane (`routeTree` on both answer sets, same bars) agrees on ≥ 0.9 of turns.
-   A language with < 20 reference turns inherits the zh result (as `mixed` does today, spec 2026-10-06 §3.4).
-2. **Ladder bars.** Run each existing golden set on the new model: no `drift` outcome → pass for that entry.
-   `improve.route` has no golden set: it passes when triage passes (its bar is new and tunes on its own revisit).
-3. **Outcome.** All pass → `trusted`, one notice card "Jev moved to <model>; the check passed (n turns, agreement x)".
-   Some fail → `drifted` with the failing questions/entries in `detail_json`; those fall back; one alerted incident
-   with the numbers. The old `jev_model_uncalibrated` and `decision_bar_stale` kinds retire (their open rows resolve).
+### 2.5 The check (per language with ≥ 20 reference turns; zh and en today; `mixed` inherits zh as now)
+Run the reference turns' rebuilt states through the tree questions on the candidate model, twice (run A canonical, run B
+the existing permuted order). Only answers whose reported model equals the candidate count; a mixed-model batch is
+retried (the alias may serve the old id).
+a. **Relative to its own noise.** For each question: agreement(A, reference) ≥ agreement(A, B) − `JEV_CHECK_SLACK = 0.05`,
+   where agreement is: same top option (choice), same zone across the bar (noul), same level bucket (score). Same for the
+   full route effect (`routeTree` on both answer sets with today's bars: category, lane, role, effort, save, scope; a
+   cascade compares by its pair).
+b. **Absolute, on Paco's labels.** Against `jev_reference_labels`: no new turn routed to the memory or status lane that the
+   reference did not route there and Paco did not label so; answer-lane and lookup-lane precision against labels ≥ the
+   reference's precision − 0.05.
+c. **Outcome.** Pass → `trusted`; the candidate's run A answers become the next reference answers (labels stay the
+   anchor, so drift cannot accumulate silently). Fail → `drifted`, failing questions and lanes in `detail_json`, the rest
+   armed; one alerted incident with the numbers and an Accept button. A language with < 20 reference turns →
+   `insufficient` for that language (unarmed), one incident.
+d. **Ladder bars.** The candidate also runs each golden set (check-specific runs keyed by model, not the daily latch);
+   `improve.route` gets a golden set from the sanity script's planted groups. Drift → one incident per entry; never
+   disarms. `decision_bar_stale` retires.
+Cost: 2 × ~300 turns ≈ $0.15 per version move; time ≈ a few minutes on the background job.
 
 ### 2.6 Paco's controls
-`houge jev models` lists the table; `houge jev check <model>` re-runs a check; `houge jev accept <model>` marks a
-drifted model `accepted` (everything armed). Telegram: the incident card carries an Accept button (`dec:jv:<model>:acc`,
-chat-bound, once).
+`houge jev models` (states and numbers), `houge jev check <model>` (re-run), `houge jev accept <model>` (everything armed);
+the incident card's Accept button (`dec:jv:<model hash>:acc`, chat-bound, once). `jev_model_uncalibrated` is replaced by
+these incidents.
+
+### 2.7 Protected surface
+The check's thresholds, state machine and arming read live in `src/decisions/jev-version-check.ts` (under the protected
+`src/decisions/`); `src/jev/calibration.ts` and `src/jev/tree-policy.ts` join `PROTECTED_FILES` (they now read the gate).
 
 ## 3. Failure modes
-- Jev outage during the check → retry next cycle; grace bounds it; incident after 24 h.
-- Two ids behind the alias (canary) → each gets its own row and check; no alternation page.
-- Reference too thin (fresh DB) → no `trusted` row → nothing armed (today's behaviour with no rows).
-- Cost: ~60 turns × tree questions ≈ $0.02 per version move; golden sets as today.
+Reference files missing → no reference → nothing armed + one incident naming the import command. Two ids behind the alias →
+each has its own row; a `trusted` id arms its calls, the other's calls fall back until checked. Outage mid-check → resume.
+A model that never passes → stays `drifted`; Paco accepts or waits for the next move.
 
 ## 4. Tests and gate
-Unit: keys without version; `noteJevModel` idempotent; grace window; check pass/fail per question and per entry; a thin
-language inherits zh; incidents open/resolve; CLI/tap accept. Live gate on a VACUUM INTO copy with the real Jev: the
-reported model today is `jev-1.14.0` against the seeded `jev-1.13.0` reference — the gate runs the real check and prints
-the agreement numbers; PASS = the check completes and the arming result matches its verdict. Grep gate: no `jev-1.`
-literal in `src/` outside comments and the migration seed.
+Unit: no version in any key (and a test that greps `src/` for `jev-\d+\.\d+` outside comments and fails); import idempotent
+and hash-filtered; discovery from ledger rows; per-question/per-language arming and dependencies; self-baseline maths;
+label check; mixed-model retry; insufficient; incidents and Accept. Live gate on a VACUUM INTO copy with real Jev, the
+reference imported, candidate `jev-1.14.0`: PASS requires ≥ 200 zh reference turns compared, the check completes, arming
+matches its verdict, a shuffled-reference negative control FAILS the check, and the reference model against itself (if the
+alias still serves it; else run B against run A) PASSES.
 
 ## 5. Out of scope
-Recalibrating bar values on the new model (the 14-day revisits do that); omp and Claude model versions (already
-version-free: role lists resolved against the live catalog).
+Re-tuning bar values on a new model (their revisits do that); omp and Claude versions (already version-free).
+
+## 6. ADR 0029 text (decision 5 and the 2026-10-07 amendment, replaced)
+"Calibration approves questions and bars, not a model version. A Jev version move is checked by code against Paco's
+approved reference turns and labels; a version that agrees within Jev's own noise arms; a drift disarms only the drifting
+triage questions and pages him. Safety judges never disarm on a version move."
