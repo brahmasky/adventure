@@ -1,4 +1,4 @@
-# Jev version check — implementation plan
+# Jev version check — implementation plan (Rev 2: codex plan r1, 9 blockers + 4 warnings closed)
 
 > For agentic workers: REQUIRED SUB-SKILL: subagent-driven-development. Steps use `- [ ]`.
 
@@ -33,11 +33,17 @@ Files: `src/run/run-store.ts` (migration `2026-10-22-jev-version-check` + method
   `noteJevModel(model, now)` (INSERT OR IGNORE as `checking`), `getJevModel(model)`, `listJevModels()`,
   `setJevModelState(model, state, detail, now)` (fenced on the previous state), `bumpJevModelAttempts`,
   `jevAttemptModelsSince(rowid)` → `{ model, rowid }[]` from `ledger_events` `llm_attempt` provider `jev`, and the cursor.
+- Model-keyed check runs (the daily golden latch is `(local_date, entry_id)`, `run-store.ts:1072`, and cannot hold one
+  run per model): `jev_check_runs(model, entry_id, run, outcome, detail_json, created_at, PRIMARY KEY(model, entry_id,
+  run))` with `recordJevCheckRun` / `getJevCheckRun`; the daily golden tables are untouched.
 - Tests: additive migration on a DB with the 2b-ii tables; fenced state change; discovery reads models after the cursor
   only.
 
 ## Task 2 — Keys without a version
 Files: `src/jev/calibration.ts`, `src/jev/tree-policy.ts`, `src/decisions/types.ts`, `src/decisions/noise-band.ts`,
+`src/core/turn-handler-ladder.ts` (`treeNear`, :64-70: `bandFor` loses the model), `src/decisions/injection-judge.ts`
+(`nearInjection`, :128), `src/jev/triage-report.ts` (`candidateRows`, :242: rows without `model`), `src/jev/noise-measure.ts`
+(:36: generated band rows without `model`),
 the four entries (`tool-injection`, `memory-kind`, `turn-settle`, `improve-route`), `src/decisions/golden.ts`,
 `src/jev/jev-incidents.ts`, tests; new `tests/jev/no-version-literal.test.ts`.
 - `CalibrationRow`, `ProvisionalBar`, `NoiseBand` drop `model`; `calibratedLang(questionId, hash, lang, rows)`;
@@ -45,20 +51,22 @@ the four entries (`tool-injection`, `memory-kind`, `turn-settle`, `improve-route
 - Golden ticks: remove the `stale` / `decision_bar_stale` branch (spec §2.5 e retires it; drift incidents stay).
 - `checkJevModelCalibrated` and `jev_model_uncalibrated` retire (resolve any open rows in the migration of Task 1 or at
   boot); the call at `core-worker.ts:3214` goes.
-- Test: the literal grep (comments allowed: a match whose line, after trimming, starts with `*` or `//`).
+- Test: the literal grep; a match is allowed only on a comment line (after trimming it starts with `//`, `*` or `/*`,
+  which covers `/**`), so `src/jev/questions/tree.ts:86` and the other notes pass and any code use fails.
 - Until Task 3 lands, `treeArmed` keeps a model parameter but ignores it (keeps the build green between tasks).
 
 ## Task 3 — Arming through the check state (protected)
 Files: create `src/decisions/jev-version-check.ts` (arming part), modify `src/jev/tree-policy.ts`,
-`src/core/turn-handler-ladder.ts:97`, `src/capabilities/self-write-guard.ts` (add `src/jev/calibration.ts`,
+`src/core/turn-handler-ladder.ts` (`PlanInput` gains the arming result; :97), `src/core/core-worker.ts` (`planAnswered`,
+:3147-3151: computes `treeArmingFor(this.runStore, d, lang)` and passes it in; the `checkJevModel` call goes), `src/capabilities/self-write-guard.ts` (add `src/jev/calibration.ts`,
 `src/jev/tree-policy.ts`), tests `tests/decisions/jev-version-arming.test.ts`.
-- `treeArmingFor(store, model, lang): ModelArming` → per tree question `armed` from `jev_models` state: `trusted` /
+- `treeArmingFor(store, decision, lang): ModelArming` (spec §2.3: reads the reported model from the answered decision) → per tree question `armed` from `jev_models` state: `trusted` /
   `accepted` → all; `drifted` → all but `detail.failed_questions` and, when `detail.route_failed`, none; `checking`,
   `deferred`, `insufficient`, unknown → none; the request alias → none. `mixed` → zh; `en` → zh (spec §2.3).
 - `treeArmed(lang, rows, lanesOff, arming)` applies dependencies: category → memory, status, answer, lookup;
   sets_rule/rule_scope → rule, status, answer, lookup; any gear question → gear, answer, lookup; status additionally needs
   category (named behaviour change, its own test).
-- The ladder call site passes the decision's reported model to `treeArmingFor`; on any store error → `UNARMED` (logged).
+- `planAnswered` passes the decision itself; on any store error → `UNARMED` (logged with errorCode).
 
 ## Task 4 — Anchor import
 Files: create `src/jev/anchor-import.ts`, modify `src/cli.ts` (`houge jev anchor import`), `src/telegram/telegram-daemon.ts`
@@ -70,8 +78,9 @@ Files: create `src/jev/anchor-import.ts`, modify `src/cli.ts` (`houge jev anchor
   lacks either run; all rows one model (else nothing seeded).
 - Meta at import: per question and route, agreement(anchor A, anchor B); per lane wrong-route and recall counts on the
   labels for A and B (spec §2.5 c inputs).
-- Seed `jev_models` `trusted` for the anchor model when zh (+mixed) paired turns ≥ 100; else `insufficient` and one
-  incident naming the command. Idempotent: a second import with a non-empty anchor is a no-op with a message.
+- Seed `jev_models` `trusted` for the anchor model when zh paired turns alone ≥ 100 (mixed not counted); else
+  `insufficient` and one incident naming the command. Missing files at boot (and an empty anchor) → one incident naming
+  `houge jev anchor import` and the expected paths (spec §3), not a silent skip. Idempotent: a second import with a non-empty anchor is a no-op with a message.
 
 ## Task 5 — The check maths (pure)
 Files: `src/decisions/jev-version-check.ts` (maths part), tests `tests/decisions/jev-version-maths.test.ts`.
@@ -92,9 +101,18 @@ accept <model>`), the tap (`dec:jv:<hash>:acc`, parser + gateway, chat-bound, on
 - Job: one model at a time; send the anchor's stored states through the tree questions for runs A, A2 (canonical) and B
   (permuted) with `createJevClient` as the daemon builds it; only answers reporting the candidate count; a mixed batch
   retried ≤ 3 then `deferred`; resumable progress in `detail_json`; stop signal honoured; outage → retry next start.
-- Then the golden sets on the candidate (each item must report the candidate) → per-entry drift incident, never disarm.
+- Then the golden sets on the candidate via model-keyed runners (`runGoldenForModel(entry, model, client)` for
+  tool.injection, memory.kind, turn.settle, and a new `IMPROVE_GOLDEN` + runner for improve.route whose items the rule
+  rung abstains on — a test asserts `improveRule(item).abstain` for each) recorded in `jev_check_runs`; each item must
+  report the candidate → per-entry drift incident, never disarm.
 - Outcome → `setJevModelState`; one notice (pass: margins, recall drops) or one alerted incident (drift/insufficient:
-  numbers + Accept button). Accept → `accepted`.
+  numbers + Accept button). The Accept card is its own notification (not the generic `alertOpened` text): payload
+  `{ text, button_rows: [[{ text: "Accept <model>", callback_data: "dec:jv:<sha8 of model>:acc" }]] }`, through the
+  outbox and the rich renderer, to the operator chat; the tap is parsed by `parseJevAcceptCallback`, dispatched like the
+  improvement taps, chat-bound, `oncePerTrigger`, fenced on `drifted|insufficient` → `accepted`. Accept → `accepted`.
+- Tests (spec §4): import latest-line/ok/hash/state/count/one-model/paired; zero-denominator lane; recall drop in the
+  notice (not a page); resume after stop; mixed batch → deferred after 3; Accept replay refused; golden item reporting
+  another model → retried, never credited.
 
 ## Task 7 — Live gate
 File: `scripts/live-gate-jev-version.mjs` (model: `scripts/live-gate-improve-route.mjs` for copy/refusal/redaction).
@@ -106,4 +124,5 @@ File: `scripts/live-gate-jev-version.mjs` (model: `scripts/live-gate-improve-rou
 ## Task 8 — Docs (Paco's decision, no compromise amendments)
 `docs/decisions/0029-jev-system-one.md`: replace decisions 1 and 5 and the 2026-10-07 amendment's arming sentence with
 spec §6's text (a decision, so it belongs in the ADR); `docs/reference/configuration.md` (CLI commands, no new env var),
-`docs/reference/jev-decision-layer.md`, `CONTEXT.md` (Anchor), `tasks/todo.md`, `sessions.md`.
+`docs/reference/jev-decision-layer.md`, `CONTEXT.md` (Anchor), `README.md`, `docs/ROADMAP.md`, `tasks/todo.md`,
+`tasks/lessons.md` (the lesson: an ADR amendment is not done), `sessions.md`.
