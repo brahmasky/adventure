@@ -33,9 +33,10 @@
 // PASS: ≥ 190 deterministic pairs before 200 decided (candidates over-fetched by 30), 0 mismatches; the coverage floor
 // (every answered row reports a calibrated model; ≥ 100 armed turn.handler verdicts; the cascade rung ran); every stage-1
 // verdict and Jev row links its turn.handler decision; /status's decision counts (decisionStatusLines) show turn.handler;
-// the digest (2b-ii: Improvements today / Proposals waiting / Watch) is either no message (an empty day) or the header plus
-// only those three section headers, renders through the Telegram adapter with every button inside Telegram's 64 bytes, and
-// the tick sends once. The digest no longer offers the review taps, so the old tap checks are gone. Exit: 0 PASS · 1 FAIL · 2 setup error · 3 INCONCLUSIVE. Never opens the live DB
+// the digest (2b-ii: Improvements today / Proposals waiting / Unsure / Watch) is either no message (an empty day) or the header plus
+// only those four section headers, renders through the Telegram adapter with every button inside Telegram's 64 bytes, and
+// the tick sends once, each ✅ n / ❌ n pair is exactly `dec:rv:<offered id>:ok` / `:bad` (follow-up 1: the review taps are back), the button LABELLED ❌ writes one
+// review_bad outcome, the one labelled ✅ then writes nothing, and a stranger's tap is refused. Exit: 0 PASS · 1 FAIL · 2 setup error · 3 INCONCLUSIVE. Never opens the live DB
 // for writing: it is opened read-only, only for `VACUUM INTO` copies under the gate's temp root.
 // Egress (senior S8): CoreWorker is built without a broker, so the replayed Telegram texts and their stored context reach
 // TypeSafe redacted by shape only (sanitizeJevText), not by known secret values — the jev-tree gate's class. Approved by
@@ -356,8 +357,34 @@ function claimDigest(store) {
   return note;
 }
 
-/** Spec §13 row 1 "the digest renders": the queued payload through TelegramNotificationAdapter with a stub transport (codex S7); every button inside 64 bytes. */
-async function checkRender(g, note) {
+/**
+ * The ❌ tap is under test, not Jev's p distribution (senior B2, codex B3): when the dual run left no unsure verdict, the
+ * newest applied System One turn.handler judgement (reason `routed`, inside the digest's judgement allowlist) of this
+ * run is set to p 0.6 (the choice bar, inside [bar, bar + UNSURE_BAND)) on copy B only, and the output says so. Returns the
+ * chat of the run that owns the judgement: the digest offers a decision only to its own chat (follow-up 1).
+ */
+function ensureUnsure(g, runs) {
+  const mine = (d) => d.entry_id === "turn.handler" && d.rung === "system_one" && d.armed_mode === "on" && d.reason_code === "routed";
+  const all = runs.flatMap((r) => g.newSide.store.listDecisionsForRun(r)).filter(mine);
+  const bar = g.newMods.barOf(g.newMods.REGISTRY.find((e) => e.id === "turn.handler"));
+  const near = all.filter((d) => d.p !== null && bar !== undefined && d.p >= bar && d.p < bar + g.newMods.UNSURE_BAND).at(-1);
+  const target = near ?? all.at(-1);
+  if (!target) return null;
+  if (!near) {
+    guardCopy(g.pathB, g.root, g.live);
+    const db = new DatabaseSync(g.pathB);
+    try { db.prepare(`UPDATE decisions SET p = 0.6 WHERE decision_id = ?`).run(target.decision_id); } finally { db.close(); }
+    console.log(`  seeded: ${target.decision_id} set to p 0.6 on copy B so the digest offers one decision`);
+  }
+  return g.newSide.store.chatIdOfRun(target.run_id);
+}
+
+/**
+ * Spec §13 row 1 "the digest renders": the queued payload through TelegramNotificationAdapter with a stub transport (codex
+ * S7); every button inside 64 bytes. The review rows must be exactly, label AND callback together, `✅ <n>` ↔
+ * `dec:rv:<offered id>:ok` and `❌ <n>` ↔ `dec:rv:<offered id>:bad`, in offer order (codex #8): swapped labels fail.
+ */
+async function checkRender(g, note, digest) {
   const sent = [];
   const adapter = new g.newMods.TelegramNotificationAdapter({ sendMessage: async (input) => { sent.push(input); return { message_id: 1 }; } });
   await adapter.send(note);
@@ -365,25 +392,29 @@ async function checkRender(g, note) {
   check("digest render: HTML through the rich renderer", sent.length === 1 && sent[0].parse_mode === "HTML" && sent[0].text.includes("Decisions"), sent[0]?.text.split("\n")[0] ?? "nothing sent");
   const data = rows.flat().map((b) => b.callback_data ?? "");
   check("digest render: every button's callback_data is present and within 64 bytes", data.every((d) => d.length > 0 && Buffer.byteLength(d, "utf8") <= 64), `${data.length} button(s)`);
+  const reviewRows = rows.filter((r) => (r[0]?.callback_data ?? "").startsWith("dec:rv:")).map((r) => r.map((b) => ({ text: b.text, callback_data: b.callback_data })));
+  const want = digest.offered.decision_ids.map((id, k) => [{ text: `✅ ${k + 1}`, callback_data: `dec:rv:${id}:ok` }, { text: `❌ ${k + 1}`, callback_data: `dec:rv:${id}:bad` }]);
+  check("digest render: each review row is exactly ✅ <n> → dec:rv:<offered id>:ok and ❌ <n> → dec:rv:<offered id>:bad", JSON.stringify(reviewRows) === JSON.stringify(want), `${reviewRows.length} row(s), ${want.length} offered`);
+  return reviewRows;
 }
 
-const SECTION_HEADERS = new Set(["**Improvements today**", "**Proposals waiting**", "**Watch (7 d)**"]);
-/** 2b-ii contract: no message, or the dated header and only the three new section headers. */
+const SECTION_HEADERS = new Set(["**Improvements today**", "**Proposals waiting**", "**Unsure** (✅ right · ❌ wrong)", "**Watch (7 d)**"]);
+/** Contract: no message, or the dated header and only the four section headers. */
 function digestShapeOk(digest) {
   if (digest === null) return true;
   const lines = digest.text.split("\n");
   return /^🪜 \*\*Decisions — \d{4}-\d{2}-\d{2}\*\*$/.test(lines[0]) && lines.slice(1).filter((l) => l.startsWith("**")).every((l) => SECTION_HEADERS.has(l));
 }
 
-async function checkDigest(g) {
+async function checkDigest(g, chat) {
   const now = new Date().toISOString();
   const status = g.newMods.decisionStatusLines(g.newSide.store, now);
   check("/status decisions: the counts show turn.handler", status.some((l) => l.startsWith("· turn.handler ")), status[1] ?? "no decision section");
-  const digest = g.newMods.buildDecisionDigest(g.newSide.store, now, process.env, "p6op");
-  check("digest: no message on an empty day, else the header and only the three new sections", digestShapeOk(digest), digest ? digest.text.split("\n")[0] : "null (empty day)");
+  const digest = g.newMods.buildDecisionDigest(g.newSide.store, now, process.env, chat);
+  check("digest: no message on an empty day, else the header and only the four sections", digestShapeOk(digest), digest ? digest.text.split("\n")[0] : "null (empty day)");
   const env = { ...process.env, HOUGE_DECISION_DIGEST_AT: "00:00" };
-  const first = g.newMods.runDecisionDigestTick({ store: g.newSide.store, chatId: "p6op", now, env });
-  const again = g.newMods.runDecisionDigestTick({ store: g.newSide.store, chatId: "p6op", now, env });
+  const first = g.newMods.runDecisionDigestTick({ store: g.newSide.store, chatId: chat, now, env });
+  const again = g.newMods.runDecisionDigestTick({ store: g.newSide.store, chatId: chat, now, env });
   const note = claimDigest(g.newSide.store);
   if (!first.ran) {
     // ruling 21: only a young (< 30 min) running or stopped improve tick on copy B may defer the digest
@@ -395,11 +426,43 @@ async function checkDigest(g) {
   check("digest tick: sends once per local date", again.ran === false && first.sent === (digest !== null), JSON.stringify({ first, again }));
   if (digest === null) return cannotRun("digest render", "an empty day: no digest message to render");
   check("digest tick: one outbox message to the operator chat", note !== null && note.payload.text === digest.text, note ? note.idempotency_key : "none");
-  if (note) await checkRender(g, note);
+  const rows = note ? await checkRender(g, note, digest) : [];
+  return { digest, rows };
 }
 
+function tapUpdate(m, from, data, id) {
+  const allowlist = { users: [{ telegram_user_id: 111, identity_id: "p6" }], chats: [{ telegram_chat_id: 222, label: "p6", allowed_identity_ids: ["p6"] }] };
+  return m.normalizeTelegramUpdate({ update_id: 7_000_000 + id, callback_query: { id: `p6cb${id}`, from: { id: from }, message: { message_id: 1, chat: { id: 222 } }, data } }, allowlist);
+}
+
+/**
+ * The RENDERED buttons go into the gateway, picked by their visible label (codex #8): the button Paco sees as ❌ must
+ * write review_bad, the one he sees as ✅ must then write nothing.
+ */
+function checkTap(g, shown) {
+  const offered = shown?.digest?.offered.decision_ids ?? [];
+  if (offered.length === 0) { cannotRun("❌ tap", "nothing was offered even after seeding (copy B has no applied jev-rung turn.handler row)"); return; }
+  const row = shown.rows[0] ?? [];
+  const bad = row.find((b) => b.text.startsWith("❌"))?.callback_data;
+  const ok = row.find((b) => b.text.startsWith("✅"))?.callback_data;
+  if (!ok || !bad) { cannotRun("❌ tap", "the digest rendered no ✅/❌ pair to tap"); return; }
+  const id = offered[0];
+  const gw = new g.newMods.Gateway(g.newSide.store);
+  const first = tapUpdate(g.newMods, 111, bad, 1);
+  if (first.ok) gw.intake(first.event);
+  const second = tapUpdate(g.newMods, 111, ok, 2);
+  if (second.ok) gw.intake(second.event);
+  const outcomes = g.newSide.store.listDecisionOutcomes(id).map((o) => `${o.signal}:${o.value}:${o.source}`);
+  check("❌ tap: writes exactly one review_bad outcome; the second tap writes nothing", outcomes.length === 1 && outcomes[0] === "review_bad:turn.handler:paco", outcomes.join(",") || "none");
+  const stranger = tapUpdate(g.newMods, 999, bad, 3);
+  if (stranger.ok) gw.intake(stranger.event);
+  const after = g.newSide.store.listDecisionOutcomes(id).length;
+  check("❌ tap: a stranger's tap is refused by the allowlist and writes nothing", stranger.ok === false && after === outcomes.length, `outcomes ${outcomes.length} → ${after}`);
+}
+
+
 async function setup(args) {
-  const newMods = await loadBuild(NEW_DIST, ["config/load-env.js", "config/disarm-posture.js", "decisions/digest.js", "decisions/status-view.js", "run/schedule-spec.js", "triggers/telegram-trigger-adapter.js",
+  const newMods = await loadBuild(NEW_DIST, ["config/load-env.js", "config/disarm-posture.js", "decisions/digest.js", "decisions/registry.js", "decisions/status-view.js", "run/schedule-spec.js", "triggers/telegram-trigger-adapter.js",
     "jev/calibration.js", "notifications/telegram-notification-adapter.js"]);
   newMods.loadHougeEnv();
   if (!process.env.TYPESAFE_API_KEY) throw new Error("TYPESAFE_API_KEY is not set (HOUGE_ENV_FILE?)");
@@ -439,7 +502,8 @@ async function main() {
     const t = await dualRun(g, items, args.limit);
     reportDualRun(t, g.retries);
     reportCoverage(coverage(g, t.newRuns));
-    await checkDigest(g);
+    const chat = ensureUnsure(g, t.newRuns) ?? "p6op";
+    checkTap(g, await checkDigest(g, chat));
   } finally { g.oldSide.store.close(); g.newSide.store.close(); }
   return verdict();
 }

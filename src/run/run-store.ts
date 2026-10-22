@@ -5419,6 +5419,11 @@ export class RunStore {
     `).get<{ n: number }>(sinceIso, lane)?.n ?? 0;
   }
 
+  /** The chat a run notifies (telegram runs only carry one); null for a run without a chat. */
+  chatIdOfRun(run_id: string): string | null {
+    return this.db.prepare(`SELECT json_extract(notify_json, '$.chat_id') AS chat_id FROM runs WHERE run_id = ?`).get<{ chat_id: string | number | null }>(run_id)?.chat_id?.toString() ?? null;
+  }
+
   userTurnTextForRun(run_id: string): string | undefined {
     return this.db.prepare(`SELECT text FROM chat_turns WHERE run_id = ? AND role = 'user' ORDER BY created_at ASC LIMIT 1`).get<{ text: string }>(run_id)?.text;
   }

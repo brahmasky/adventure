@@ -13,9 +13,9 @@ import type { AnyEntry, DecidedBy } from "./types.js";
 
 /**
  * The daily decision digest (2b-ii §6.1): Improvements today (what the ladder saved or moved, each with its Undo / Revert /
- * Revoke), Proposals waiting (at most 8, with Accept / Dismiss) and Watch (7-day numbers). Counts, health and trust live in
+ * Revoke), Proposals waiting (at most 8, with Accept / Dismiss), Unsure (System One judgements near their bar, with the ✅ / ❌ review taps) and Watch (7-day numbers). Counts, health and trust live in
  * `/status`. One message per local date at HOUGE_DECISION_DIGEST_AT, through the outbox and the rich renderer; skipped when all
- * three sections are empty; waits for the day's improve tick (ruling 21). No enable flag (R13): the time is the only knob, and
+ * four sections are empty; waits for the day's improve tick (ruling 21). No enable flag (R13): the time is the only knob, and
  * `off` (Paco 2026-10-14) switches the summary off; the ledger under it is unchanged.
  */
 export const DEFAULT_DIGEST_AT = "21:00";
@@ -183,10 +183,9 @@ export const DIGEST_WAIT_FOR_TICK_MS = 30 * 60_000;
 export const DIGEST_PR_PREFIX = "dec:pr:";
 export const DIGEST_LM_PREFIX = "dec:lm:";
 const LESSON_NOT_HOLDING = "lesson did not hold";
-// final fix D7: review_bad has no producer since the ✅/❌ surface left the digest; Watch names it while it stays dark
-const SILENT_FAMILIES = ["review_unsure", "lesson_unfollowed", "dig_deeper", "review_bad"] as const;
+const SILENT_FAMILIES = ["review_unsure", "lesson_unfollowed", "dig_deeper"] as const;
 
-export interface Digest { text: string; button_rows: NotificationButton[][]; offered: { proposal_ids: string[]; job_ids: string[] } }
+export interface Digest { text: string; button_rows: NotificationButton[][]; offered: { proposal_ids: string[]; job_ids: string[]; decision_ids: string[] } }
 interface Section { lines: string[]; button_rows: NotificationButton[][] }
 
 /** Code points, not UTF-16 units: a split surrogate pair would make Telegram reject the HTML send. */
@@ -281,6 +280,18 @@ export function proposalsWaiting(store: RunStore, chatId?: string): Section & { 
   return { lines, button_rows, ids: shown.map((p) => p.proposal_id) };
 }
 
+/**
+ * The Unsure section: System One judgements within UNSURE_BAND of their bar over the 24 h window, each with ✅ / ❌ (the review
+ * taps; `ids` are the rendered decisions, the only ones a tap is accepted for). A line is code-built (entry, verdict, p): never
+ * model or Paco text. Taps are chat-bound like the proposals', so a decision whose run belongs to another chat is not shown.
+ */
+export function unsureSection(store: RunStore, now: string, chatId?: string): Section & { ids: string[] } {
+  const mine = decisionWindow(store, now).rows.filter((r) => chatId === undefined || (r.run_id !== null && store.chatIdOfRun(r.run_id) === chatId));
+  const shown = unsureOf(mine);
+  const lines = shown.map((r, k) => `${k + 1}. ${r.entry_id} → ${r.verdict} · p ${(r.p ?? 0).toFixed(2)}`);
+  return { lines, button_rows: shown.map((r, k) => reviewButtons(r.decision_id, k + 1)), ids: shown.map((r) => r.decision_id) };
+}
+
 const countOf = (rows: readonly { signal: string }[], signal: string): number => rows.filter((r) => r.signal === signal).length;
 const sumDetail = (ticks: readonly { detail: Record<string, unknown> }[], key: string): number =>
   ticks.reduce((a, t) => a + (typeof t.detail[key] === "number" ? t.detail[key] : 0), 0);
@@ -323,13 +334,16 @@ export function buildDecisionDigest(store: RunStore, now: string, env: NodeJS.Pr
   const tz = resolveDisplayZone(env);
   const today = improvementsToday(store, new Date(Date.parse(now) - DIGEST_WINDOW_MS).toISOString(), chatId);
   const waiting = proposalsWaiting(store, chatId);
+  const unsure = unsureSection(store, now, chatId);
   const watch = watchLines(store, now);
-  if (today.lines.length + waiting.lines.length + watch.length === 0) return null;
+  if (today.lines.length + waiting.lines.length + unsure.lines.length + watch.length === 0) return null;
   const sections = [`🪜 **Decisions — ${formatInstantInZone(now, tz).slice(0, 10)}**`];
   if (today.lines.length > 0) sections.push(["**Improvements today**", ...today.lines].join("\n"));
   if (waiting.lines.length > 0) sections.push(["**Proposals waiting**", ...waiting.lines].join("\n"));
+  if (unsure.lines.length > 0) sections.push(["**Unsure** (✅ right · ❌ wrong)", ...unsure.lines].join("\n"));
   if (watch.length > 0) sections.push([`**Watch (${WATCH_WINDOW_DAYS} d)**`, ...watch].join("\n"));
-  return { text: sections.join("\n\n"), button_rows: [...today.button_rows, ...waiting.button_rows], offered: { proposal_ids: waiting.ids, job_ids: today.job_ids } };
+  return { text: sections.join("\n\n"), button_rows: [...today.button_rows, ...waiting.button_rows, ...unsure.button_rows],
+    offered: { proposal_ids: waiting.ids, job_ids: today.job_ids, decision_ids: unsure.ids } };
 }
 
 export interface DigestTickInput { store: RunStore; chatId: string | null; now: string; env?: NodeJS.ProcessEnv }
@@ -349,7 +363,7 @@ export function runDecisionDigestTick(i: DigestTickInput): DigestTickResult {
     if (i.store.getDecisionDigest(date)) return { ran: false };
     const queued = digest !== null && enqueueDigest(i.store, chatId, date, digest) === "queued";
     if (queued && digest) { i.store.markProposalsOffered(digest.offered.proposal_ids, i.now); i.store.markJobsOffered(digest.offered.job_ids, i.now); }
-    i.store.recordDecisionDigest({ local_date: date, sent: queued, offered: [], created_at: i.now });
+    i.store.recordDecisionDigest({ local_date: date, sent: queued, offered: queued && digest ? digest.offered.decision_ids : [], created_at: i.now });
     return { ran: true, sent: queued };
   });
 }

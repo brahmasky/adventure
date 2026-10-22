@@ -1,13 +1,16 @@
 // Spec 2b-ii §6.1 (R1): three sections only — Improvements today (effects and accepted proposals since the last digest with
 // Undo/Revert/Revoke), Proposals waiting (≤ 8 open, oldest first, Accept/Dismiss, "+N more"), Watch (7-day numbers) — each
 // skipped when empty, the message skipped when all three are; drafts redacted; offered_at set inside the latch transaction
-// only after the outbox reported queued. The unsure list, counts, trust/noise, bar-stale and Health sections are gone.
+// only after the outbox reported queued. (Follow-up 1 brought the Unsure section back, below.) The counts, trust/noise, bar-stale and Health sections are gone.
 import { describe, expect, it } from "vitest";
-import { buildDecisionDigest, DIGEST_PROPOSALS_MAX, resolveDigestAt, runDecisionDigestTick } from "../../src/decisions/digest.js";
+import { barOf, buildDecisionDigest, DIGEST_PROPOSALS_MAX, resolveDigestAt, runDecisionDigestTick, UNSURE_MAX } from "../../src/decisions/digest.js";
+import { REGISTRY } from "../../src/decisions/registry.js";
+import { buildTypedTaskEvent } from "../../src/domain/types.js";
+import { Gateway } from "../../src/gateway/gateway.js";
 import { RunStore, type DecisionInsert } from "../../src/run/run-store.js";
 import { createTelegramTurn } from "../helpers/runs.js";
 import { drainOutbox } from "../helpers/omp-worker.js";
-import { parseImprovementCallback } from "../../src/triggers/telegram-command-parser.js";
+import { parseDecisionReviewCallback, parseImprovementCallback } from "../../src/triggers/telegram-command-parser.js";
 import { skillButtons } from "../../src/skills/promote.js";
 
 const ENV = { HOUGE_DISPLAY_TZ: "Australia/Sydney" };
@@ -31,10 +34,10 @@ describe("buildDecisionDigest (2b-ii)", () => {
     const d = buildDecisionDigest(s, NOW, ENV)!;
     const headers = d.text.split("\n").filter((l) => l.startsWith("**"));
     expect(headers).toEqual(["**Improvements today**", "**Proposals waiting**", "**Watch (7 d)**"]);
-    for (const gone of ["Unsure", "Counts (24 h)", "Health", "Bar stale", "Injection & trust", "Noise band"]) expect(d.text).not.toContain(gone);
+    for (const gone of ["Counts (24 h)", "Health", "Bar stale", "Injection & trust", "Noise band"]) expect(d.text).not.toContain(gone);
     expect(d.text).toContain("lesson saved: Answer in one line. · correction on 2026-10-21, scope answer");
     expect(buttons(d)).toEqual([`memlane:undo:${change.change_id}`, `dec:pr:${ids[0]}:acc`, `dec:pr:${ids[0]}:dis`, `dec:pr:${ids[1]}:acc`, `dec:pr:${ids[1]}:dis`]);
-    expect(d.offered).toEqual({ proposal_ids: ids, job_ids: [] });
+    expect(d.offered).toEqual({ proposal_ids: ids, job_ids: [], decision_ids: [] });
   });
   it("skips an empty day entirely: no message, latch sent 0", () => {
     const s = RunStore.openInMemory();
@@ -102,7 +105,7 @@ describe("buildDecisionDigest (2b-ii)", () => {
     expect(d.text).toContain("moved to 20:00 · 2 expiries at 11:00 (2026-10-19, 2026-10-20)");
     expect(d.text).toContain("ladder move retire_judge on turn.settle · 3 ❌ on turn.settle in 14 days");
     expect(buttons(d)).toEqual([`dec:sk:${drafted}:accept`, `dec:sk:${drafted}:dismiss`, `dec:pr:${sched}:rev`, `dec:lm:${move_id}:revoke`]);
-    expect(d.offered).toEqual({ proposal_ids: [], job_ids: [drafted] });
+    expect(d.offered).toEqual({ proposal_ids: [], job_ids: [drafted], decision_ids: [] });
   });
   it("Watch: corrections, abandoned, clarify rate, unattached by family, deferred, silent signals, wiki disarmed topics, embeddings unavailable days", () => {
     const s = RunStore.openInMemory();
@@ -118,7 +121,7 @@ describe("buildDecisionDigest (2b-ii)", () => {
     s.insertDecision({ ...D, verdict: "nothing", reason_code: "inapplicable_top", p: 0.8 });
     s.insertImprovementProposal({ decision_id: s.insertDecision(D), target: "lesson", scope: "answer", chat_id: "555", draft_json: JSON.stringify({ scope: "ask", text: "Shorter." }), evidence: "lesson did not hold: 2 corrections since (9 d)", created_at: "2026-10-21T10:00:00.000Z" });
     const lines = buildDecisionDigest(s, NOW, ENV)!.text.split("\n");
-    expect(lines).toEqual(expect.arrayContaining(["· corrections 1 · abandoned 1 · clarify rate 50%", "· unattached: rating 1", "· deferred 2", "· deferred on an outage 4", "· silent: review_unsure, lesson_unfollowed, review_bad", "· wiki disarmed: 1 topics",
+    expect(lines).toEqual(expect.arrayContaining(["· corrections 1 · abandoned 1 · clarify rate 50%", "· unattached: rating 1", "· deferred 2", "· deferred on an outage 4", "· silent: review_unsure, lesson_unfollowed", "· wiki disarmed: 1 topics",
       "· embeddings unavailable: 1 days", "· inapplicable top 1", "· lessons not holding 1"]));
     expect(lines.some((l) => l.includes("dig_deeper"))).toBe(false); // it had a row in 7 days, so it is not silent
     // final fix D7: nothing produces review_bad since the ✅/❌ surface left the digest, so Watch names it while it is dark
@@ -236,5 +239,66 @@ describe("finished jobs are scoped to the digest chat", () => {
     expect(s.getImprovementJob(mine)!.offered_at).toBe(NOW);
     expect(s.getImprovementJob(other)!.offered_at).toBeNull();
     expect(s.getImprovementJob(none)!.offered_at).toBeNull();
+  });
+});
+
+// Review taps return to the digest (2b-ii follow-up 1): the rebuild dropped the Unsure section, so offered was always [] and
+// wasDecisionOffered refused every tap; nothing produced review_ok / review_bad and the ladder target was dormant.
+describe("the Unsure section and the review taps", () => {
+  const BAR = barOf(REGISTRY.find((e) => e.id === "turn.settle")!)!;
+  const settleRow = (run_id: string | null, p: number, o: Partial<DecisionInsert> = {}): DecisionInsert => ({ ...D, entry_id: "turn.settle", stage: "settle", run_id, p, verdict: "ok", reason_code: "jev_claims_done", ...o });
+  const unsureDay = (s: RunStore, n = 1, run = createTelegramTurn(s, "m0").run_id) => Array.from({ length: n }, (_, k) => s.insertDecision(settleRow(run, BAR + 0.01 + k * 0.001, { created_at: `2026-10-21T0${k % 10}:30:00.000Z` })));
+
+  it("renders Unsure after Proposals waiting and before Watch; each ✅/❌ round-trips through parseDecisionReviewCallback and the line carries only code-built words", () => {
+    const s = RunStore.openInMemory();
+    open(s, 1);
+    const [id] = unsureDay(s);
+    s.insertImproveSignal({ signal: "correction", value: "answer", run_id: null, chat_id: "555", about_run_id: null, created_at: "2026-10-21T02:00:00.000Z" });
+    const d = buildDecisionDigest(s, NOW, ENV, "555")!;
+    expect(d.text.split("\n").filter((l) => l.startsWith("**"))).toEqual(["**Proposals waiting**", "**Unsure** (✅ right · ❌ wrong)", "**Watch (7 d)**"]);
+    expect(d.text).toContain(`1. turn.settle → ok · p ${(BAR + 0.01).toFixed(2)}`);
+    expect(d.text).not.toContain("m0"); // Paco's message text never enters the line
+    const review = buttons(d).filter((b) => b.startsWith("dec:rv:"));
+    expect(review.map((b) => parseDecisionReviewCallback(b))).toEqual([{ decision_id: id, label: "ok" }, { decision_id: id, label: "bad" }]);
+    expect(d.offered.decision_ids).toEqual([id]);
+  });
+  it("an Unsure section alone is a digest; rows outside the band, of another chat, or not applied are not shown; an empty section is omitted", () => {
+    const s = RunStore.openInMemory();
+    const run = createTelegramTurn(s, "x").run_id;
+    s.insertDecision(settleRow(run, BAR - 0.01));
+    s.insertDecision(settleRow(run, BAR + 0.2));
+    s.insertDecision(settleRow(run, BAR + 0.02, { armed_mode: "shadow" }));
+    expect(buildDecisionDigest(s, NOW, ENV, "555")).toBeNull();
+    const inBand = s.insertDecision(settleRow(run, BAR + 0.02));
+    expect(buildDecisionDigest(s, NOW, ENV, "555")!.offered.decision_ids).toEqual([inBand]);
+    expect(buildDecisionDigest(s, NOW, ENV, "999")).toBeNull();
+  });
+  it("shows at most 8, newest first", () => {
+    const s = RunStore.openInMemory();
+    const ids = unsureDay(s, 10);
+    const d = buildDecisionDigest(s, NOW, ENV, "555")!;
+    expect(d.offered.decision_ids).toEqual(ids.slice(2).reverse());
+    expect(d.button_rows.filter((r) => r[0]!.data.startsWith("dec:rv:"))).toHaveLength(UNSURE_MAX);
+  });
+  it("the tick latches the rendered decision ids as offered: a ❌ tap on one writes review_bad and reaches the improve inbox; a non-offered id is refused", () => {
+    const s = RunStore.openInMemory();
+    const run_id = createTelegramTurn(s, "x").run_id;
+    const [id] = unsureDay(s);
+    const other = s.insertDecision(settleRow(run_id, BAR + 0.9));
+    expect(runDecisionDigestTick({ store: s, chatId: "555", now: NOW, env: { ...ENV, HOUGE_DECISION_DIGEST_AT: "00:00" } })).toEqual({ ran: true, sent: true });
+    expect(s.getDecisionDigest("2026-10-21")!.offered).toEqual([id]);
+    const tap = (decision_id: string, label: string) => buildTypedTaskEvent({ source: "telegram", type: "decision_review", requested_by: { kind: "user", id: "paco" }, notify: { kind: "telegram", chat_id: "555" },
+      idempotency_key: `t${decision_id}`, source_reference: `t${decision_id}`, metadata: { telegram_update_id: 1, telegram_callback_id: `t${decision_id}`, decision_id, label } });
+    new Gateway(s).intake(tap(id!, "bad"), NOW);
+    new Gateway(s).intake(tap(other, "bad"), NOW);
+    expect(s.listDecisionOutcomes(id!).map((o) => [o.signal, o.value])).toEqual([["review_bad", "turn.settle"]]);
+    expect(s.listDecisionOutcomes(other)).toEqual([]);
+    s.mirrorOutcomesIntoInbox();
+    expect(s.listImproveSignalsSince("2026-10-01T00:00:00.000Z").filter((x) => x.signal === "review_bad").map((x) => x.value)).toEqual(["turn.settle"]);
+  });
+  it("review_bad is no longer in the silent families once it has a producer", () => {
+    const s = RunStore.openInMemory();
+    s.insertImproveSignal({ signal: "correction", value: "answer", run_id: null, chat_id: "555", about_run_id: null, created_at: "2026-10-21T02:00:00.000Z" });
+    expect(buildDecisionDigest(s, NOW, ENV)!.text).toMatch(/· silent: review_unsure, lesson_unfollowed, dig_deeper$/m);
   });
 });
