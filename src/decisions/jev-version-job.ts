@@ -59,6 +59,11 @@ export const JEV_JOB_OUTAGE_BACKOFF_MS = 10 * 60_000;
 export const JEV_DEFER_RETRY_MS = 3_600_000;
 export const JEV_DEFER_SERVED_ANSWERS = 5;
 export const JEV_MODEL_INCIDENT_KINDS: ReadonlySet<string> = new Set(["jev_model_drifted", "jev_model_insufficient"]);
+/** Final fix B1: a turn whose ask hits an outage on this many separate starts is recorded unanswered; the pass moves on. */
+export const JEV_TURN_OUTAGE_STARTS = 3;
+/** Final fix B2: a model `checking` longer than this from its generation's start pages once (a check takes ~45 min). */
+export const JEV_CHECK_STALL_MS = 3 * 3_600_000;
+const STALLED: ReadonlySet<string> = new Set(["jev_model_check_stalled"]);
 export const jevModelSubject = (model: string): string => `${JEV_INCIDENT_SUBJECT}:model:${model}`;
 /** The Accept button's model key: 8 hex of sha256, so callback data stays short and carries no model text. */
 export const modelHash = (model: string): string => createHash("sha256").update(model).digest("hex").slice(0, 8);
@@ -120,6 +125,7 @@ export function jevVersionTick(i: JevTickInput): { noted: string[]; started: str
   const log = logOf(i);
   let noted: string[] = [];
   try { noted = discoverJevModels(i.store, i.now()); } catch (e) { log(`jev version check: discovery failed: ${errorCode(e)}`); }
+  try { stallTick(i); } catch (e) { log(`jev version check: stall check failed: ${errorCode(e)}`); }
   if (lane.running || i.signal.aborted || Date.parse(i.now()) < lane.notBefore) return { noted, started: null };
   let model: string | undefined;
   try { model = nextModel(i.store, Date.parse(i.now())); } catch (e) { log(`jev version check: model read failed: ${errorCode(e)}`); }
@@ -130,6 +136,24 @@ export function jevVersionTick(i: JevTickInput): { noted: string[]; started: str
     .then((r) => { if (r === "outage") backOff(); }, (e: unknown) => { log(`jev version check: ${model} failed: ${errorCode(e)}`); backOff(); })
     .finally(() => { lane.running = null; });
   return { noted, started: model };
+}
+
+/**
+ * Final fix B2: the served model `checking` longer than JEV_CHECK_STALL_MS from its generation's start opens ONE alerted
+ * incident; any model that left `checking` (its check finished, or it deferred) has it resolved.
+ */
+function stallTick(i: Pick<JevJobDeps, "store" | "chatId" | "now">): void {
+  const now = i.now();
+  const served = i.store.latestJevAttemptModel()?.model;
+  for (const r of i.store.listJevModels()) {
+    if (r.state !== "checking") { resolveOpenIncidents(i.store, STALLED, jevModelSubject(r.model), now); continue; }
+    const p = progressOf(r.detail_json);
+    if (r.model !== served || !p?.started_at || p.generation !== r.generation || Date.parse(now) - Date.parse(p.started_at) <= JEV_CHECK_STALL_MS) continue;
+    const text = `**Stalled:** the Jev version check for ${r.model} is not finishing; lanes stay on the planner. Started ${p.started_at}; `
+      + `\`houge jev models\` shows its progress, \`houge jev accept ${r.model}\` arms it without the check.`;
+    const opened = openAlertedIncident(i.store, { kind: "jev_model_check_stalled", subject: jevModelSubject(r.model), detail: { model: r.model, generation: r.generation, started_at: p.started_at }, now, ...(i.chatId ? { env: {} } : {}) });
+    if (opened && i.chatId) notify(i, `jev_check:${r.model}:${r.generation}:stalled`, text);
+  }
 }
 
 /**
@@ -148,8 +172,11 @@ export async function runJevCheck(d: JevJobDeps, model: string): Promise<JevChec
   return finishCheck(d, model, g, anchor);
 }
 
-/** A running check's progress in `detail_json`: its generation, tree answers so far, and whether the one retry was spent. */
-interface Progress { generation: number; tree?: number; of?: number; retried?: boolean }
+/**
+ * A running check's progress in `detail_json`: its generation and when it started, tree answers so far, whether the one
+ * retry was spent, and the outage count per tree ask (final fix B1).
+ */
+interface Progress { generation: number; started_at?: string; tree?: number; of?: number; retried?: boolean; outages?: Record<string, number> }
 function progressOf(json: string | null): Progress | null {
   try {
     const p = (JSON.parse(json ?? "null") as { progress?: Progress } | null)?.progress;
@@ -167,10 +194,11 @@ function beginCheck(d: JevJobDeps, model: string): number | null {
   let row = d.store.getJevModel(model);
   if (row?.state === "deferred" && d.store.setJevModelState(model, "deferred", "checking", row.detail_json ?? "{}", d.now())) row = d.store.getJevModel(model);
   if (row?.state !== "checking") return null;
-  if (progressOf(row.detail_json)?.generation === row.generation) return row.generation;
+  const p = progressOf(row.detail_json);
+  if (p?.generation === row.generation) return p.started_at || writeProgress(d, model, row.generation, { started_at: d.now() }) ? row.generation : null;
   const g = d.store.bumpJevModelGeneration(model);
   d.store.bumpJevModelAttempts(model);
-  if (!d.store.setJevModelProgress(model, g, JSON.stringify({ progress: { generation: g, tree: 0 } }))) return null;
+  if (!d.store.setJevModelProgress(model, g, JSON.stringify({ progress: { generation: g, started_at: d.now(), tree: 0 } }))) return null;
   resolveOpenIncidents(d.store, JEV_MODEL_INCIDENT_KINDS, jevModelSubject(model), d.now()); // a new check's outcome pages afresh
   logOf(d)(`jev version check: ${model} check started (generation ${g})`);
   return g;
@@ -262,8 +290,21 @@ function recordTreeAnswer(d: JevJobDeps, model: string, g: number, run: string, 
   }
   if (r.why === "stopped") return "stopped";
   if (r.why === "other_model") return defer(d, model, g, r.reported); // askTurn takes this case first; kept so the switch stays total
-  if (isOutage(r.failure)) return outage(d, model, r.failure);
+  if (isOutage(r.failure)) return turnOutage(d, model, g, run, r.failure);
   d.store.recordJevCheckRun({ ...row, outcome: "failed", detail_json: JSON.stringify({ reason: r.failure.reason, error_kind: r.failure.error_kind ?? null }) });
+  return null;
+}
+
+/** Final fix B1: an outage on one ask pauses the start, until the same ask has hit one on JEV_TURN_OUTAGE_STARTS starts: then it is unanswered. */
+function turnOutage(d: JevJobDeps, model: string, g: number, run: string, f: FailedAsk): JevCheckResult | null {
+  const outages = progressOf(d.store.getJevModel(model)?.detail_json ?? null)?.outages ?? {};
+  const n = (outages[run] ?? 0) + 1;
+  if (!writeProgress(d, model, g, { outages: { ...outages, [run]: n } })) return "skipped";
+  if (n < JEV_TURN_OUTAGE_STARTS) return outage(d, model, f);
+  openJevIncident(d.store, f, { source: "version_check", model });
+  d.store.recordJevCheckRun({ model, generation: g, entry_id: "tree", run, outcome: "failed", created_at: d.now(),
+    detail_json: JSON.stringify({ reason: f.reason, error_kind: f.error_kind ?? null, outages: n }) });
+  logOf(d)(`jev version check: ${model} ask unanswered after ${n} outages (${f.reason}/${f.error_kind ?? "-"})`);
   return null;
 }
 
@@ -285,7 +326,7 @@ function defer(d: JevJobDeps, model: string, g: number, reported: string): JevCh
 }
 
 /** A plain notice (no page, no button) to Paco's chat, or the operator chat when the job has none; logged when there is neither. */
-function notify(d: JevJobDeps, key: string, text: string): void {
+function notify(d: Pick<JevJobDeps, "store" | "chatId" | "log">, key: string, text: string): void {
   const chat = d.chatId ?? process.env.HOUGE_TELEGRAM_CHAT_ID?.trim();
   if (!chat) { logOf(d)("jev version check: no chat for the notice"); return; }
   d.store.enqueueNotification({ target: { kind: "telegram", chat_id: chat }, intent_type: "progress", idempotency_key: key, correlation_id: "jev-version-check", payload: { text } });

@@ -471,3 +471,41 @@ describe("canary days (final fix A)", () => {
     expect(JEV_DEFER_RETRY_MS).toBe(3_600_000);
   });
 });
+
+// Final fix B (adversarial 3, correctness Minor): a check that cannot finish reaches Paco once and never loops forever.
+describe("a stuck check (final fix B)", () => {
+  const TIMEOUT: JevResult = { ok: false, reason: "error", detail: "timed out", error_kind: "timeout" };
+
+  it("a turn that hits an outage on 3 separate starts is recorded as unanswered and the pass moves on", async () => {
+    const s = fresh(); seedAnchor(s); s.noteJevModel(CAND, NOW);
+    const f = fake({ fail: (k) => (indexOf(f.calls[k - 1]!.state) === 0 ? TIMEOUT : undefined) }); // turn 0 always times out, in every run
+    const results: string[] = [];
+    for (let start = 0; start < 12 && results.at(-1) !== "trusted"; start += 1) results.push(await runJevCheck(deps(s, f), CAND));
+    expect(results).toEqual(["outage", "outage", "outage", "outage", "outage", "outage", "trusted"]); // A, A2 and B of turn 0: three starts each
+    const g = s.getJevModel(CAND)!.generation;
+    const failed = treeRows(s, CAND, g).filter((r) => r.outcome === "failed");
+    expect(failed.map((r) => r.run).sort()).toEqual([`A2:${turnId(0)}`, `A:${turnId(0)}`, `B:${turnId(0)}`]);
+    expect(JSON.parse(failed[0]!.detail_json)).toMatchObject({ error_kind: "timeout", outages: 3 });
+    s.close();
+  });
+
+  it("a model checking for more than 3 h from its generation's start opens ONE alerted incident, resolved when the check finishes", async () => {
+    const s = fresh(); seedAnchor(s); s.noteJevModel(CAND, NOW); serve(s, CAND);
+    expect(await runJevCheck(deps(s, fake(), { signal: AbortSignal.abort() }), CAND)).toBe("stopped"); // the generation starts at NOW
+    let t = Date.parse(NOW) + 3 * 3_600_000 - 1;
+    const stopped = AbortSignal.abort(); // the tick only reads; no check starts
+    const tick = () => jevVersionTick({ store: s, makeClient: () => fake().client, signal: stopped, chatId: CHAT, now: () => new Date(t).toISOString(), golden: [], log: () => {}, paceMs: 0 });
+    tick();
+    expect(s.listOpenIncidents()).toEqual([]);
+    t += 2;
+    tick(); tick();
+    expect(s.listOpenIncidents().map((i) => [i.kind, i.subject])).toEqual([["jev_model_check_stalled", `jev:model:${CAND}`]]);
+    const sent = outbox(s);
+    expect(sent).toHaveLength(1);
+    expect(String(sent[0]!.payload.text)).toContain(`the Jev version check for ${CAND} is not finishing; lanes stay on the planner`);
+    expect(await runJevCheck(deps(s, fake(), { now: () => new Date(t).toISOString() }), CAND)).toBe("trusted");
+    tick();
+    expect(s.listOpenIncidents()).toEqual([]);
+    s.close();
+  });
+});
