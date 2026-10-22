@@ -559,9 +559,12 @@ plan: [2026-10-21-ladder-2b-ii-improve-route.md](../superpowers/plans/2026-10-21
     turn whose stored embedding is within the recurrence gate of any turn of the cluster, as well as on the 30-day shared
     turn id. A `failed` job never suppresses either check (a failure is not an answer); its idempotency key still blocks a
     second job for the same cluster.
-  - *Watch names `review_bad`* with the other silent families while no review surface produces it.
+  - *Watch names `review_bad`* with the other silent families while no review surface produces it. (Superseded 2026-10-22: the
+    Unsure section and its ✅/❌ taps returned to the digest, so `review_bad` is produced again and left the silent families.)
 - **Deferred:** the wiki handler (R5), model-route proposals (R10), `lesson_unfollowed` (R4), `trust_source` moves
   (ruling 9). **Revisit:** 14 days of rows for the bar and the gate (§11).
 - **Protected files touched:** `src/decisions/` (outcomes, entry-ids, registry, egress, digest, status-view,
   improve-signals, entries/improve-route), `src/omp/bridge-handler.ts`, `src/jev/decide.ts`, `src/run/run-store.ts`,
-  `src/run/run-ledger.ts`, this ADR and its index row. `src/gateway/` and `src/core/skill-job.ts` are not protected.
+  `src/run/run-ledger.ts`, this ADR and its index row. `src/core/skill-job.ts` is not protected. Follow-up, on Paco's word
+  (2026-10-22): `src/skills/promote.ts` (nothing reaches the active skills tree without Paco's tap) and
+  `src/gateway/improvement-commands.ts` (taps are chat-bound and state-fenced) joined `PROTECTED_FILES`; the rest of `src/gateway/` is not protected.
