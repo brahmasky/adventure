@@ -158,8 +158,8 @@ function liveInstantsOf(store: RunStore, run_id: string): { cut: string; before:
   return at ? { cut: at, before: at, built: at } : undefined;
 }
 
-/** The tree state the live path would have built for a stored turn (shape-only redaction: the CLI has no broker). */
-export function treeContextFor(store: RunStore, env: NodeJS.ProcessEnv, t: ReplayTurnRow): { built: ReturnType<typeof buildTreeState>; lastHougeTurn: LastHougeTurn; quotedTurn: QuotedTurn | null } {
+/** The tree state the live path would have built for a stored turn (shape-only redaction unless a `brokerRedact` is passed: the replay CLI has no broker). */
+export function treeContextFor(store: RunStore, env: NodeJS.ProcessEnv, t: ReplayTurnRow, brokerRedact?: (s: string) => string): { built: ReturnType<typeof buildTreeState>; lastHougeTurn: LastHougeTurn; quotedTurn: QuotedTurn | null } {
   const anchor = t.anchor ?? t.created_at;
   const { cut, before, built: builtAt } = liveInstantsOf(store, t.run_id) ?? { cut: anchor, before: anchor, built: anchor };
   const recent = store.getChatTurnsBefore(t.chat_id, resolveChatContextTurns(env), chatContextSince(env, new Date(cut)), before, t.run_id);
@@ -167,7 +167,7 @@ export function treeContextFor(store: RunStore, env: NodeJS.ProcessEnv, t: Repla
   const lastHougeTurn = lastHougeTurnOf(recent, nowMs);
   const quotedRow = t.quoted_turn_id ? store.getChatTurnById(t.quoted_turn_id) : undefined;
   const quotedTurn = quotedRow ? quotedTurnFromRow(quotedRow, nowMs) : null;
-  const built = buildTreeState({ userText: t.text, recentTurns: recent, turnChars: resolveChatContextTurnChars(env), modality: "text", lastHougeTurn, quotedTurn });
+  const built = buildTreeState({ userText: t.text, recentTurns: recent, turnChars: resolveChatContextTurnChars(env), modality: "text", lastHougeTurn, quotedTurn }, brokerRedact);
   return { built, lastHougeTurn, quotedTurn };
 }
 

@@ -1,0 +1,5 @@
+[
+  { "name": "memory rule, both runs", "state": { "latest_message": "以后请记住", "last_houge_turn": null, "quoted_turn": null }, "category": "memory", "setsRule": 0.95, "lane": "memory" },
+  { "name": "plain answer", "state": { "latest_message": "你好吗", "last_houge_turn": null, "quoted_turn": null }, "category": "answer", "setsRule": 0.05, "actions": 0, "lane": "answer" },
+  { "name": "think harder sends it to the planner", "state": { "latest_message": "think harder 你好吗", "last_houge_turn": null, "quoted_turn": null }, "category": "answer", "setsRule": 0.05, "lane": "planner" }
+]

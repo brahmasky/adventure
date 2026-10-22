@@ -329,8 +329,22 @@ if (command === "run") {
 } else if (command === `jev`) { // backticks: panel-judge-providers.test greps src for the double-quoted provider name; this is the subcommand, not a provider
   // Decision-tree calibration (spec 2026-10-06 §7): replay the six tree questions over history, label by hand, report the evidence.
   const sub = rest[0];
+  if (sub === "anchor" && rest[1] === "import") {
+    // Jev version check §2.2: import Paco's approved reference (idempotent; a non-empty anchor is a no-op).
+    const { importJevAnchor, ANCHOR_DIR } = await import("./jev/anchor-import.js");
+    const store = RunStore.open("houge.sqlite", storeOptions);
+    try {
+      const r = importJevAnchor(store, rest[2] ?? ANCHOR_DIR);
+      console.log(`jev anchor import: ${r.status}: ${r.message}`);
+      if (r.counts) console.log(JSON.stringify({ model: r.counts.model, turns: r.counts.turns, dropped: r.counts.dropped, labels: r.counts.labels, agreement: r.counts.agreement, lanes: r.counts.lanes }));
+      process.exitCode = r.status === "imported" || r.status === "noop" ? 0 : 1;
+    } finally {
+      store.close();
+    }
+    process.exit(process.exitCode ?? 0);
+  }
   if (rest[1] !== "triage" || !["replay", "label", "report"].includes(sub ?? "")) {
-    console.error("Usage: houge jev replay triage [--dry-run] [--max-usd N] [--limit N] [--permute] | houge jev label triage [--sample=N] | houge jev report triage");
+    console.error("Usage: houge jev anchor import [dir] | houge jev replay triage [--dry-run] [--max-usd N] [--limit N] [--permute] | houge jev label triage [--sample=N] | houge jev report triage");
     process.exit(1);
   }
   if (readTombstone()) {

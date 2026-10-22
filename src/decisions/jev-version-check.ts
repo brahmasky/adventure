@@ -5,8 +5,11 @@
  */
 import { errorCode } from "../domain/error-code.js";
 import type { Lang } from "../jev/intent-question.js";
-import { JEV_REQUEST_MODEL } from "../jev/jev-client.js";
-import { TREE_QUESTIONS } from "../jev/questions/tree.js";
+import { JEV_REQUEST_MODEL, type JevAnswer } from "../jev/jev-client.js";
+import { isBareAck } from "../omp/bare-ack.js";
+import { TREE_QUESTIONS, type LastHougeTurn } from "../jev/questions/tree.js";
+import type { Question } from "../jev/questions/types.js";
+import { preJudge, routeTree, thinkHarderIn, ACK_ROUTE, TREE_BAR_DEFAULTS, type Armed, type TreeBars } from "../jev/tree-policy.js";
 import type { JevModelRow } from "../run/run-store.js";
 
 /** The lanes a failed label check (§2.5 c) can disarm one by one. */
@@ -67,4 +70,80 @@ export function treeArmingFor(store: { getJevModel(model: string): JevModelRow |
     console.error(`jev: model check state read failed (${lang}): ${errorCode(e)}; tree unarmed`);
     return NOT_ARMED;
   }
+}
+
+// ── Agreement and label counts (spec §2.2 baselines, §2.5 checks a-c): the one place the formulas live ──
+
+/** Constants of the check (spec §2.5): the anchor's minimum zh turns, slack floor and z, mixed-model retries. */
+export const JEV_ANCHOR_MIN_ZH = 100;
+export const JEV_CHECK_SLACK_MIN = 0.05;
+export const JEV_CHECK_Z = 2.7;
+export const JEV_CHECK_MIXED_RETRIES = 3;
+
+/** Every tree lane armed: the route a check compares is the full effect, with today's bars. */
+export const CHECK_ARMED: Armed = { category: true, status: true, memory: true, gear: true, rule: true, answer: true, lookup: true };
+/** The name a question's bucket is compared under, and the route check's pseudo question id. */
+export const ROUTE_CHECK_ID = "route";
+
+const EPS = 1e-9;
+const topOption = (a: { probabilities: Record<string, number> }): string =>
+  Object.entries(a.probabilities).sort((x, y) => y[1] - x[1])[0]?.[0] ?? "";
+
+/**
+ * One answer's comparable bucket (spec §2.5): a choice its top option, a noul its zone across today's bars (yes, no, unsure),
+ * a score its level bucket (light, standard, heavy). null when the answer is missing or not the question's type.
+ */
+export function answerBucket(q: Question, a: JevAnswer | undefined, bars: TreeBars = TREE_BAR_DEFAULTS): string | null {
+  if (!a || a.type !== q.type) return null;
+  if (a.type === "choice") return topOption(a);
+  if (a.type === "noul") return a.noul + EPS >= bars.nounYes ? "yes" : a.noul - EPS <= bars.nounNo ? "no" : "unsure";
+  return a.score - EPS <= bars.gearLight ? "light" : a.score + EPS >= bars.gearHeavy ? "heavy" : "standard";
+}
+
+/** The Jev state fields the route check reads back (the stored anchor state is what checks send). */
+export interface RouteState { latest_message?: unknown; last_houge_turn?: unknown; quoted_turn?: unknown }
+
+/**
+ * The full route effect of one turn's answers as a comparable key (spec §2.5): category, lane, role, effort, save scope, a
+ * cascade by its pair. The turn's own think-harder, bare-ack and ack-after-answer facts come from its stored state.
+ */
+export function routeEffectKey(state: RouteState, answers: Record<string, JevAnswer>, bars: TreeBars = TREE_BAR_DEFAULTS): string {
+  const text = typeof state.latest_message === "string" ? state.latest_message : "";
+  const lastHougeTurn = (state.last_houge_turn ?? null) as LastHougeTurn;
+  const pre = preJudge({ text, lastHougeTurn, quoted: state.quoted_turn != null });
+  const fields = (r: { category: string | null; lane: string; role: string; effort: string | null; save: { scope: string } | null }, pair = ""): string =>
+    [r.category ?? "-", r.lane, r.role, r.effort ?? "-", r.save?.scope ?? "-", pair].join("/");
+  if (pre.kind === "ack_answer") return fields(ACK_ROUTE);
+  const plan = routeTree(answers, { bars, armed: CHECK_ARMED, thinkHarder: thinkHarderIn(text), bareAck: isBareAck(text) });
+  return plan.kind === "final" ? fields(plan.route) : fields(plan.base, `cascade:${plan.between.join("|")}`);
+}
+
+/** The lane a route key lands in (its second field); a cascade is the planner's. */
+export const laneOfKey = (key: string): string => key.split("/")[1] ?? "planner";
+
+/** Agreement between two answer sets over the turns both have: agree count and n. */
+export interface Agreement { agree: number; n: number }
+export function agreementOf<T>(pairs: ReadonlyArray<readonly [T | null, T | null]>): Agreement {
+  let agree = 0; let n = 0;
+  for (const [x, y] of pairs) {
+    if (x === null || y === null) continue;
+    n += 1;
+    if (x === y) agree += 1;
+  }
+  return { agree, n };
+}
+
+/** Per lane, over Paco's labelled turns: routes into the lane the label disagrees with, labelled turns routed to their lane. */
+export interface LaneLabelCount { wrong: number; recall: number; labelled: number }
+export function laneLabelCounts(turns: ReadonlyArray<{ routeKey: string; label: string | undefined }>): Record<DisarmableLane, LaneLabelCount> {
+  const out = Object.fromEntries(DISARMABLE_LANES.map((l) => [l, { wrong: 0, recall: 0, labelled: 0 }])) as Record<DisarmableLane, LaneLabelCount>;
+  for (const { routeKey, label } of turns) {
+    if (label === undefined) continue;
+    const routed = laneOfKey(routeKey);
+    for (const lane of DISARMABLE_LANES) {
+      if (label === lane) { out[lane].labelled += 1; if (routed === lane) out[lane].recall += 1; }
+      else if (routed === lane) out[lane].wrong += 1;
+    }
+  }
+  return out;
 }

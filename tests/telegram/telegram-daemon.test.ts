@@ -1155,7 +1155,8 @@ describe("the daemon's sweep wiring (M9)", () => {
       const controller = new AbortController(); controller.abort();
       await runTelegramDaemon({ store, projectRoot: root, omp: fakeOmp(root), allowlist: ALLOWLIST, stopSignal: controller.signal,
         telegramClient: { getUpdates: async () => [], sendMessage: async () => ({ message_id: 1 }) } as never });
-      expect(store.listOpenIncidents().map((i) => [i.kind, JSON.parse(i.detail_json).invalid])).toEqual([["omp_config_invalid", ["HOUGE_OMP_LEASE_TTL_S"]]]);
+      // boot also imports the Jev anchor: no reference files in this fixture project root, so that incident is expected and is not the subject
+      expect(store.listOpenIncidents().filter((i) => i.kind !== "jev_anchor_missing").map((i) => [i.kind, JSON.parse(i.detail_json).invalid])).toEqual([["omp_config_invalid", ["HOUGE_OMP_LEASE_TTL_S"]]]);
     } finally {
       store.close();
     }

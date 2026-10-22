@@ -5162,6 +5162,33 @@ export class RunStore {
     this.db.prepare(`INSERT INTO jev_anchor_meta (key, value_json) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json`).run(key, value_json);
   }
 
+  /**
+   * The anchor import, whole or not at all (spec §2.2): one transaction that refuses a non-empty anchor, clears any leftover
+   * states, labels and meta, writes every table and then seeds the anchor model `trusted`. The seed is explicit and fenced on
+   * the row's current state: discovery may already have noted the model as `checking` (its cursor starts at 0), and an
+   * INSERT OR IGNORE alone would leave it unarmed. Returns false when the anchor was not empty (nothing written).
+   */
+  importAnchor(a: { rows: JevAnchorRow[]; states: JevAnchorState[]; labels: JevAnchorLabel[]; meta: Record<string, string>; trustedModel: string; now: string }): boolean {
+    return this.inTransaction(() => {
+      if (!this.anchorEmpty()) return false;
+      for (const t of ["jev_anchor_states", "jev_anchor_labels", "jev_anchor_meta"]) this.db.exec(`DELETE FROM ${t}`);
+      const row = this.db.prepare(`INSERT INTO jev_anchor (turn_id, lang, question_id, criteria_hash, run, answer_json, model) VALUES (?, ?, ?, ?, ?, ?, ?)`);
+      for (const r of a.rows) row.run(r.turn_id, r.lang, r.question_id, r.criteria_hash, r.run, r.answer_json, r.model);
+      const st = this.db.prepare(`INSERT INTO jev_anchor_states (turn_id, lang, state_json, state_hash) VALUES (?, ?, ?, ?)`);
+      for (const r of a.states) st.run(r.turn_id, r.lang, r.state_json, r.state_hash);
+      const lb = this.db.prepare(`INSERT INTO jev_anchor_labels (turn_id, category, by, at) VALUES (?, ?, ?, ?)`);
+      for (const r of a.labels) lb.run(r.turn_id, r.category, r.by, r.at);
+      for (const [k, v] of Object.entries(a.meta)) this.setAnchorMeta(k, v);
+      this.db.prepare(`INSERT OR IGNORE INTO jev_models (model, first_seen_at, state) VALUES (?, ?, 'checking')`).run(a.trustedModel, a.now);
+      const cur = this.getJevModel(a.trustedModel);
+      if (cur !== undefined && cur.state !== "trusted") {
+        this.db.prepare(`UPDATE jev_models SET state = 'trusted', detail_json = ?, checked_at = ? WHERE model = ? AND state = ?`)
+          .run(JSON.stringify({ seeded: "anchor" }), a.now, a.trustedModel, cur.state);
+      }
+      return true;
+    });
+  }
+
   /** A model first seen in the ledger starts as `checking`; a known model is left exactly as it is. */
   noteJevModel(model: string, now: string): void {
     this.db.prepare(`INSERT OR IGNORE INTO jev_models (model, first_seen_at, state) VALUES (?, ?, 'checking')`).run(model, now);
