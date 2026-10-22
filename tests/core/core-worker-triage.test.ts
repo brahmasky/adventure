@@ -14,7 +14,7 @@ import type { TurnOutcomeSink } from "../../src/omp/planner-supervisor.js";
 import { RunStore } from "../../src/run/run-store.js";
 import type { ToolAdapterResult } from "../../src/tools/tool-registry.js";
 import { createQueuedTurnRun } from "../helpers/runs.js";
-import { kind } from "../helpers/triage-harness.js";
+import { kind, trustModel } from "../helpers/triage-harness.js";
 import { drainOutbox, ompWorker } from "../helpers/omp-worker.js";
 
 // Spec §2 / §6: ONE decision point per Telegram text turn. Every eligible, still-active exit writes exactly one `triage`
@@ -84,6 +84,7 @@ function setup(fetchImpl: unknown, env: Record<string, string> = ARM, o: { llm?:
   for (const [k, v] of Object.entries(env)) vi.stubEnv(k, v);
   vi.stubEnv("TYPESAFE_API_KEY", "test-key");
   const store = RunStore.openInMemory();
+  trustModel(store, REPORTED);
   const worker = ompWorker(store, mkdtempSync(join(tmpdir(), "htri-")), { llm: o.llm ?? lessonLlm(), jevFetch: fetchImpl as typeof fetch, ...(o.jevNow ? { jevNow: o.jevNow } : {}) });
   const claimed = (run_id: string, text: string, w: CoreWorker = worker) => {
     const claim = store.claimRun(run_id, "w", 120)!;
@@ -536,13 +537,18 @@ describe("triageTurn — arming, shadow and outages", () => {
     expect(store.getActiveLessons("ask")).toHaveLength(1);
     store.close();
   });
-  // Jev version check Task 2: calibration rows carry no model, so the tree arms for any reported id. Interim until Task 3
-  // gates arming on the per-model check state; Task 3 replaces this test with the gated behaviour.
-  it("a reported id the rows never named arms the same (the version is not a key; Task 3 gates it through the check)", async () => {
+  // Jev version check (spec §2.1, §2.3): the tree arms only for a model whose check state allows it. An unchecked id (an
+  // alias move before its check ran) falls back to the planner; once its check trusts it, the same turn arms.
+  it("an unchecked reported model: answered, uncalibrated, decision fallback; trusted, the same turn arms", async () => {
     const { store, worker, turn } = setup(treeSays({ ...RULE, model: "jev-1.14.0" }));
     const t = turn("以后回复短一点");
-    expect(await worker.triageTurn(t.input)).toMatchObject({ kind: "lane_reply" });
-    expect(triageRows(store, t.run_id)).toMatchObject([{ status: "answered", decision: "act" }]);
+    await worker.triageTurn(t.input);
+    expect(triageRows(store, t.run_id)).toMatchObject([{ status: "answered", decision: "fallback", verdict: "uncalibrated" }]);
+    expect(store.getActiveLessons("ask")).toHaveLength(0);
+    trustModel(store, "jev-1.14.0");
+    const t2 = turn("以后回复短一点");
+    expect(await worker.triageTurn(t2.input)).toMatchObject({ kind: "lane_reply" });
+    expect(triageRows(store, t2.run_id)).toMatchObject([{ status: "answered", decision: "act" }]);
     store.close();
   });
   // `jev_model_uncalibrated` retired: an alias move opens nothing, and a row an older build left open resolves on the next turn.

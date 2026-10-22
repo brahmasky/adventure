@@ -11,6 +11,7 @@ import { RunStore } from "../../src/run/run-store.js";
 import type { ToolAdapterResult } from "../../src/tools/tool-registry.js";
 import { createQueuedTurnRun } from "../helpers/runs.js";
 import { ompWorker } from "../helpers/omp-worker.js";
+import { trustModel } from "../helpers/triage-harness.js";
 
 // Stage B §4–§8 through the real worker: the verdict row must be truthful about what ran (a fall-through is never `act`),
 // the save and its verdict stay atomic, a killed turn leaves the record the finaliser's rules allow, and every lane reply
@@ -66,6 +67,7 @@ function setup(fetchImpl: unknown, o: { llm?: Llm; web?: Llm; http?: Llm } = {})
   vi.stubEnv("HOUGE_JEV_CALIBRATION_FILE", calibrationFile()); vi.stubEnv("HOUGE_JEV_GATE", "1");
   vi.stubEnv("HOUGE_JEV_ENABLED", "1"); vi.stubEnv("HOUGE_JEV_TRIAGE_ENABLED", "arm"); vi.stubEnv("TYPESAFE_API_KEY", "test-key");
   const store = RunStore.openInMemory();
+  trustModel(store, REPORTED);
   const worker = ompWorker(store, mkdtempSync(join(tmpdir(), "hlane-")), { llm: o.llm ?? laneLlm(), jevFetch: fetchImpl as typeof fetch,
     ...(o.web ? { web: o.web } : {}), ...(o.http ? { http: o.http } : {}) });
   const turn = (text: string, signal: AbortSignal = new AbortController().signal) => {

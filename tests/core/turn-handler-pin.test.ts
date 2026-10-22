@@ -78,7 +78,8 @@ const CASES: PinCase[] = [
   { name: "jev-parse", text: "以后回复短一点", fetch: jevNotJson },
   { name: "jev-transport-think-harder", text: "认真想：这个怎么办", fetch: jevDown },
   { name: "shadow", text: "以后回复短一点", fetch: () => treeSays(RULE), opts: { env: SHADOW } },
-  { name: "uncalibrated-model", text: "明天悉尼天气怎么样？", fetch: () => treeSays({ model: "jev-9.9.9" }) },
+  // Jev version check: a reported id with no check state (never seen, or not yet checked) arms nothing: the planner fallback.
+  { name: "unchecked-model", text: "明天悉尼天气怎么样？", fetch: () => treeSays({ model: "jev-9.9.9" }) },
   { name: "routed-other-light", text: "帮我整理一下这周的待办", fetch: () => treeSays({ category: cat({ other: 0.9 }) }) },
   { name: "routed-research-heavy", text: "帮我比较三款 NAS", fetch: () => treeSays({ category: cat({ research: 0.9 }), breadth: HEAVY, reasoning: HEAVY, actions: HEAVY }) },
   { name: "think-harder-correction", text: "认真想：再比较一下", fetch: () => treeSays({ category: cat({ research: 0.9 }) }), before: priorRouted },

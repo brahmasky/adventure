@@ -89,7 +89,9 @@ async function checkArmed(m) {
     const r = await jev({ state: { latest_message: "hello" }, questions: Object.fromEntries(m.TREE_QUESTIONS.map((q) => [q.id, m.toJevQuestion(q)])) });
     if (!r.ok) throw new Error(`model probe failed: ${r.reason}`);
     const rows = m.calibrationRows(process.env);
-    for (const lang of ["zh", "en"]) if (!m.treeArmed(lang, r.model, rows).memory) throw new Error(`the memory lane is not armed for ${r.model} (${lang}) on the committed rows`);
+    // Rows only: the reported model's check state is the jev version gate's (scripts/live-gate-jev-version.mjs).
+    const allQuestions = { questions: new Set(m.TREE_QUESTIONS.map((q) => q.id)), lanesDisarmed: new Set() };
+    for (const lang of ["zh", "en"]) if (!m.treeArmed(lang, rows, new Set(), allQuestions).memory) throw new Error(`the memory lane is not armed (${lang}) on the committed rows`);
     return r.model;
   } finally { mem.close(); }
 }

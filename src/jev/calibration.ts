@@ -45,6 +45,9 @@ export const CALIBRATED_ROWS: readonly CalibrationRow[] = [
   { question_id: "category:lookup", criteria_hash: "5eb9baea76fdff263944be72c196da9d90c4ab46ec8bab093a52a99b48d72148", lang: "en", approved: "Paco 2026-10-10", evidence: EVIDENCE_LANES },
 ];
 
+/** The legacy-`model` files already named on stderr: one line per file, not one per turn. */
+const LEGACY_MODEL_LOGGED = new Set<string>();
+
 /**
  * Arming sequence (spec §5.9; Codex plan review): production rows come ONLY from this constant, added by Paco's commit.
  * `HOUGE_JEV_CALIBRATION_FILE` (a JSON array of CalibrationRow; a legacy `model` field is ignored) exists for the live gate and a labelled shadow copy
@@ -57,8 +60,11 @@ export function calibrationRows(env: NodeJS.ProcessEnv): readonly CalibrationRow
   let parsed: unknown;
   try { parsed = JSON.parse(readFileSync(file, "utf8")); } catch { parsed = undefined; }
   if (Array.isArray(parsed) && parsed.every(isCalibrationRow)) {
-    // Rows written before the version left the key carry `model`: ignored, said once (a row's key is question, hash, lang).
-    if (parsed.some((r) => "model" in r)) console.error(`jev: HOUGE_JEV_CALIBRATION_FILE ${file}: the \`model\` field on a row is ignored`);
+    // Rows written before the version left the key carry `model`: ignored, said once per file (this runs every triage turn).
+    if (parsed.some((r) => "model" in r) && !LEGACY_MODEL_LOGGED.has(file)) {
+      LEGACY_MODEL_LOGGED.add(file);
+      console.error(`jev: HOUGE_JEV_CALIBRATION_FILE ${file}: the \`model\` field on a row is ignored`);
+    }
     return parsed;
   }
   // Unreadable or malformed = uncalibrated, never silent. The path only: the file's contents never reach a log.

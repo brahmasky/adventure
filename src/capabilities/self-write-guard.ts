@@ -96,6 +96,8 @@ export const PROTECTED_FILES: readonly string[] = [
   "src/telegram/self-write-action-handler.ts", // the authenticated merge-button path (M4) — same landing-sequence class
   "src/jev/decide.ts", // decision ladder 2a (senior W13): the injection judge's Jev call and re-ask; a weakened answer removes hostile taps
   "src/jev/jev-client.ts", // the response validation every Jev verdict passes through
+  "src/jev/calibration.ts", // Jev version check (spec 2026-10-22 §2.7): the arming rows the tree reads with the model's check state
+  "src/jev/tree-policy.ts", // Jev version check §2.7: treeArmed applies the check state and the lane dependencies
   // ── Operator stop switches (ADR 0018) — a self-write must never remove Paco's stop ──
   "houge.kill", // the /kill tombstone (gitignored runtime state, but a diff could still delete/replace it)
   "houge.disarm", // the /disarm posture file — same class

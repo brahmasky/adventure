@@ -5,7 +5,7 @@ import { RunStore } from "../../src/run/run-store.js";
 import { pinEnabledFlags, pinOmpEnv, shortTmp, tmpOmpDist, useFakeOmp } from "../helpers/omp-env.js";
 import { ompWorker, until } from "../helpers/omp-worker.js";
 import { createQueuedTurnRun } from "../helpers/runs.js";
-import { ARM, calibrationFile, cat, treeSays } from "../helpers/triage-harness.js";
+import { ARM, calibrationFile, cat, treeSays, trustModel } from "../helpers/triage-harness.js";
 
 // Consumer 11 (spec §5.3): a routed turn's first planner llm_attempt carries routed_by = its jev_verdicts row id — the join
 // every precision report reads. The pin sees the route's verdict id; this drives the real supervisor over triageTurn
@@ -32,6 +32,7 @@ describe("routed_by joins the planner's first model call to the verdict row", ()
     for (const [k, v] of Object.entries(ARM)) vi.stubEnv(k, v);
     useFakeOmp({ "*": { rpcText: "好的，已整理。" } }, tmp.dir);
     store = RunStore.openInMemory();
+    trustModel(store);
     const s = store;
     worker = ompWorker(s, tmp.dir, { jevFetch: treeSays({ category: cat({ other: 0.9 }) }) as unknown as typeof fetch });
     const run = createQueuedTurnRun(s, "帮我整理一下这周的待办");
@@ -55,6 +56,7 @@ describe("routed_by joins the planner's first model call to the verdict row", ()
     for (const [k, v] of Object.entries(ARM)) vi.stubEnv(k, v);
     useFakeOmp({ "*": { text: "放在书房更好。" } }, tmp.dir);
     store = RunStore.openInMemory();
+    trustModel(store);
     const s = store;
     const jevFetch = treeSays({ category: cat({ answer: 0.9 }) }) as unknown as typeof fetch;
     // llmAdapter left undefined: the default (production) seat, the way the daemon builds it

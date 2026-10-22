@@ -158,6 +158,7 @@ import {
   type RouteReason
 } from "../jev/tree-policy.js";
 import { decide as decideLadder } from "../decisions/decide.js";
+import { NOT_ARMED, treeArmingFor } from "../decisions/jev-version-check.js";
 import { INJECTION_TOTAL_MS } from "../decisions/entries/tool-injection.js";
 import { createInjectionJudge, type InjectionJudge } from "../decisions/injection-judge.js";
 import { isSkipReason, TURN_HANDLER, type TurnHandlerState, type TurnHandlerVerdict } from "../decisions/entries/turn-handler.js";
@@ -3142,13 +3143,14 @@ export class CoreWorker {
   }
 
   /**
-   * Jev answered: the pure policy, then (armed only, and only once the policy ran, as at 3bff437) the alias-move page.
-   * A throw in calibrationRows is the rung's throw (runAsync catches it): skipped `error`, as today (ruling 19).
+   * Jev answered: the pure policy, armed by the REPORTED model's check state (Jev version check spec §2.3; arm mode only:
+   * shadow arms nothing). A store error inside treeArmingFor leaves the tree unarmed, logged. A throw in calibrationRows
+   * is the rung's throw (runAsync catches it): skipped `error`, as today (ruling 19).
    */
   private planAnswered(i: TriageInput, lang: Lang, mode: JevTriageMode, d: AnsweredDecision, held: TriageHeld): RungResult<TurnHandlerVerdict, TreeDetail> {
     const rows = calibrationRows(process.env);
-    const out = planTree(d, { userText: i.userText, mode, lang, thinkHarder: held.thinkHarder, rows, lanesOff: resolveJevLanesOff(process.env) });
-    return out;
+    const arming = mode === "arm" ? treeArmingFor(this.runStore, d, lang) : NOT_ARMED;
+    return planTree(d, { userText: i.userText, mode, lang, thinkHarder: held.thinkHarder, rows, lanesOff: resolveJevLanesOff(process.env), arming });
   }
 
   /** The model rung (Decision 14): the Tiny pick between Jev's top two, only when the tree abstained below the choice bar. */

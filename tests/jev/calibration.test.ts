@@ -4,12 +4,14 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CALIBRATED_ROWS, calibratedLang, calibrationRows, type CalibrationRow } from "../../src/jev/calibration.js";
 import { JEV_REQUEST_MODEL } from "../../src/jev/jev-client.js";
-import { TREE_CATEGORY } from "../../src/jev/questions/tree.js";
+import { TREE_CATEGORY, TREE_QUESTIONS } from "../../src/jev/questions/tree.js";
 import { criteriaHash } from "../../src/jev/questions/types.js";
 import { TREE_ANSWER_ARM_ID, TREE_LOOKUP_ARM_ID, treeArmed } from "../../src/jev/tree-policy.js";
+import { NOT_ARMED, type ModelArming } from "../../src/decisions/jev-version-check.js";
 
-/** The versioned id Jev REPORTS (the request sends the moving alias `jev-latest`); calibration rows key on it. */
-const REPORTED = "jev-1.13.0";
+/** A model whose check state arms every tree question (trusted / accepted), as treeArmingFor returns it. */
+const TRUSTED: ModelArming = { questions: new Set(TREE_QUESTIONS.map((q) => q.id)), lanesDisarmed: new Set() };
+const NO_OFF = new Set<never>();
 const H = criteriaHash(TREE_CATEGORY);
 const row = (o: Partial<CalibrationRow> = {}): CalibrationRow =>
   ({ question_id: "category", criteria_hash: H, lang: "zh", approved: "test", evidence: "test", ...o });
@@ -24,7 +26,7 @@ describe("calibratedLang", () => {
     expect(calibratedLang("category", H, "en", rows)).toBeUndefined();
     expect(calibratedLang("category", H, "zh", rows)).toBe("zh");
   });
-  // Jev version check Task 2: a row's `model` is not part of its key. The version gate moves to the per-model check (Task 3).
+  // A row's `model` is not part of its key: the version gate is the per-model check state (treeArmingFor).
   it("a legacy `model` field on a row is not compared, whatever it names", () => {
     expect(calibratedLang("category", H, "zh", [row({ model: "anything" } as Partial<CalibrationRow>)])).toBe("zh");
     expect(calibratedLang("category", H, "zh", [row({ model: JEV_REQUEST_MODEL } as Partial<CalibrationRow>)])).toBe("zh");
@@ -32,7 +34,7 @@ describe("calibratedLang", () => {
   // Stage B §1 ruling 1: the build ships armed. A lane row on the wrong hash or model would leave a lane silently dark.
   it("the committed rows arm every tree decision and both stage B lanes in zh and en (Paco 2026-10-10)", () => {
     for (const lang of ["zh", "en"] as const) {
-      expect(treeArmed(lang, REPORTED, CALIBRATED_ROWS)).toEqual({ category: true, status: true, memory: true, gear: true, rule: true, answer: true, lookup: true });
+      expect(treeArmed(lang, CALIBRATED_ROWS, NO_OFF, TRUSTED)).toEqual({ category: true, status: true, memory: true, gear: true, rule: true, answer: true, lookup: true });
     }
     const lanes = CALIBRATED_ROWS.filter((r) => r.question_id === TREE_ANSWER_ARM_ID || r.question_id === TREE_LOOKUP_ARM_ID);
     expect(lanes).toHaveLength(4);
@@ -40,10 +42,11 @@ describe("calibratedLang", () => {
     for (const r of CALIBRATED_ROWS) expect(r).not.toHaveProperty("model");
   });
   // A reworded category question disarms the lanes with the rest; a stale lane row must not keep a lane live.
-  it("a stale criteria hash arms neither lane; another reported model arms the same (Task 3 gates it through the check)", () => {
+  // The rows no longer name a model: an unchecked model (no trusted check state) must not ride on them.
+  it("a stale criteria hash arms neither lane; an unchecked model arms nothing on the committed rows", () => {
     const stale = CALIBRATED_ROWS.map((r) => (r.question_id.startsWith("category:") ? { ...r, criteria_hash: "deadbeef" } : r));
-    expect(treeArmed("zh", REPORTED, stale)).toMatchObject({ answer: false, lookup: false });
-    expect(treeArmed("zh", "jev-9.9.9", CALIBRATED_ROWS)).toMatchObject({ answer: true, lookup: true }); // interim: model ignored until Task 3
+    expect(treeArmed("zh", stale, NO_OFF, TRUSTED)).toMatchObject({ answer: false, lookup: false });
+    expect(Object.values(treeArmed("zh", CALIBRATED_ROWS, NO_OFF, NOT_ARMED)).some(Boolean)).toBe(false);
   });
 });
 
@@ -55,16 +58,22 @@ describe("calibrationRows", () => {
     writeFileSync(f, JSON.stringify([row(), row({ lang: "en" })]));
     expect(calibrationRows({ HOUGE_JEV_CALIBRATION_FILE: f })).toHaveLength(2);
   });
-  // Rows written before the version left the key still carry `model`: it is ignored, loudly once, never an error.
-  it("a file row with a legacy `model` field is accepted, the field ignored, one stderr line", () => {
+  // Rows written before the version left the key still carry `model`: it is ignored, loudly once per file, never an error.
+  // calibrationRows runs on every answered triage turn, so a line per call would flood the daemon log.
+  it("a file row with a legacy `model` field is accepted, the field ignored, one stderr line per file however often it is read", () => {
     const err = vi.spyOn(console, "error").mockImplementation(() => {});
     const f = join(mkdtempSync(join(tmpdir(), "jev-cal-")), "legacy.json");
     writeFileSync(f, JSON.stringify([{ ...row(), model: "anything" }, { ...row({ lang: "en" }), model: "anything" }]));
     const rows = calibrationRows({ HOUGE_JEV_CALIBRATION_FILE: f });
     expect(rows).toHaveLength(2);
     expect(calibratedLang("category", H, "zh", rows)).toBe("zh");
+    expect(calibrationRows({ HOUGE_JEV_CALIBRATION_FILE: f })).toHaveLength(2);
     expect(err).toHaveBeenCalledTimes(1);
     expect(String(err.mock.calls[0]![0])).toContain("model");
+    const g = join(mkdtempSync(join(tmpdir(), "jev-cal-")), "legacy2.json");
+    writeFileSync(g, JSON.stringify([{ ...row(), model: "anything" }]));
+    calibrationRows({ HOUGE_JEV_CALIBRATION_FILE: g });
+    expect(err).toHaveBeenCalledTimes(2);
   });
   // An arming file of the wrong shape must arm nothing and must not fail silently; the stderr line names the path only.
   it.each([

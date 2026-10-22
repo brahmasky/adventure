@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fallbackOfSkip, jevSkipReason, planTree, treeDetailOf, urlRule, type AnsweredDecision, type PlanInput, type TreeDetail } from "../../src/core/turn-handler-ladder.js";
 import { decide } from "../../src/decisions/decide.js";
+import { NOT_ARMED } from "../../src/decisions/jev-version-check.js";
 import { TURN_GEAR } from "../../src/decisions/entries/turn-gear.js";
 import { TURN_HANDLER, type TurnHandlerState, type TurnHandlerVerdict } from "../../src/decisions/entries/turn-handler.js";
 import type { DecideResult, DecisionRecorder, RungResult } from "../../src/decisions/types.js";
@@ -11,7 +12,7 @@ import { cat } from "../helpers/triage-harness.js";
 // failure lands. Plan ruling 19: a throw before today's held.answered (arming, routeTree) fails with NO detail, so the turn
 // settles skipped `error` and Jev's rows are dropped, as at 3bff437; only a throw after it keeps the detail.
 const answered = (category = cat({ other: 0.9 })) => ({ status: "answered", model: "jev-1.13.0", answers: { category }, rows: [] }) as unknown as AnsweredDecision;
-const input = (o: Partial<PlanInput> = {}): PlanInput => ({ userText: "帮我整理一下这周的待办", mode: "shadow", lang: "zh", thinkHarder: false, rows: [], lanesOff: new Set(), ...o });
+const input = (o: Partial<PlanInput> = {}): PlanInput => ({ userText: "帮我整理一下这周的待办", mode: "shadow", lang: "zh", thinkHarder: false, rows: [], lanesOff: new Set(), arming: NOT_ARMED, ...o });
 
 describe("the pure glue", () => {
   it("fallbackOfSkip maps every Jev skip to a closed fallback reason", () => {

@@ -694,10 +694,10 @@ function checkNoPending(g) {
 /** F9: the merge run needs Paco's committed rows to arm category, rule, status and memory in both languages. */
 function checkCommittedArming(g) {
   const rows = g.m.calibrationRows(process.env);
-  check(`arming: reported model ${g.m.model} has committed calibration rows (else the alias moved: every decision falls through)`,
-    g.m.CALIBRATED_ROWS.some((r) => r.model === g.m.model));
+  // Rows only (rows carry no model since the Jev version check): the reported model's check state is the jev version gate's.
+  const allQuestions = { questions: new Set(g.m.TREE_QUESTIONS.map((q) => q.id)), lanesDisarmed: new Set() };
   for (const lang of ["zh", "en"]) {
-    const a = g.m.treeArmed(lang, g.m.model, rows);
+    const a = g.m.treeArmed(lang, rows, new Set(), allQuestions);
     check(`arming (${lang}): committed CALIBRATED_ROWS arm category, rule, status, memory, answer and lookup`,
       a.category && a.rule && a.status && a.memory && a.answer && a.lookup, JSON.stringify(a));
   }

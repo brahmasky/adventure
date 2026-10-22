@@ -1,9 +1,10 @@
+import type { DisarmableLane, ModelArming } from "../decisions/jev-version-check.js";
 import { isBareAck } from "../omp/bare-ack.js";
 import { calibratedLang, type CalibrationRow } from "./calibration.js";
 import type { Lang } from "./intent-question.js";
 import type { JevAnswer, JevChoiceAnswer } from "./jev-client.js";
 import {
-  CATEGORIES, TREE_ACTIONS, TREE_BREADTH, TREE_CATEGORY, TREE_QUESTIONS, TREE_REASONING, TREE_RULE_SCOPE, TREE_SETS_RULE, type Category,
+  CATEGORIES, TREE_ACTIONS, TREE_BREADTH, TREE_CATEGORY, TREE_REASONING, TREE_RULE_SCOPE, TREE_SETS_RULE, type Category,
   type LastHougeTurn
 } from "./questions/tree.js";
 import { criteriaHash, type Question } from "./questions/types.js";
@@ -49,37 +50,29 @@ export const TREE_STATUS_ARM_ID = "category:status";
 /** Stage B spec §2: the answer and lookup lanes' own keys, at the category hash; a `category` row alone never arms a lane. */
 export const TREE_ANSWER_ARM_ID = "category:answer";
 export const TREE_LOOKUP_ARM_ID = "category:lookup";
-const PSEUDO_ROW_IDS = [TREE_STATUS_ARM_ID, TREE_ANSWER_ARM_ID, TREE_LOOKUP_ARM_ID] as const;
-const NO_LANES_OFF: ReadonlySet<LaneSwitch> = new Set();
 
 /**
- * Each decision arms on its own rows (lessons.md 2026-10-06): `rule` on sets_rule + rule_scope, gear on its three
- * scores; the memory lane arms on category alone (the rule rows only sharpen its lesson scope, Rev 2.1 item 1). The
- * status lane also needs `rule` at route time (statusBranch). The
- * answer and lookup lanes arm on their pseudo-rows and are unarmed while listed in `lanesOff` (HOUGE_JEV_LANES_OFF).
+ * Each decision arms on its own rows (lessons.md 2026-10-06) AND on the reported model's check state (`arming`, read by
+ * `treeArmingFor`, src/decisions/jev-version-check.ts): `rule` on sets_rule + rule_scope, gear on its three scores;
+ * the memory lane on category alone (the rule rows only sharpen its lesson scope, Rev 2.1 item 1). Dependencies (Jev
+ * version check spec §2.3): category disarms memory, status, answer, lookup; rule disarms status, answer, lookup; gear
+ * disarms answer, lookup. The status lane needs category (named change 2026-10-22) and rule (statusBranch F6). The answer
+ * and lookup lanes arm on their pseudo-rows and are unarmed while listed in `lanesOff` (HOUGE_JEV_LANES_OFF) or disarmed
+ * by the model's label check.
  */
-export function treeArmed(lang: Lang, model: string, rows: readonly CalibrationRow[], lanesOff: ReadonlySet<LaneSwitch> = NO_LANES_OFF): Armed {
-  // Task 3: the per-model check state gates arming here; until then `model` is accepted and ignored.
-  void model;
-  const on = (qs: readonly Question[]): boolean => qs.every((q) => calibratedLang(q.id, criteriaHash(q), lang, rows) !== undefined);
+export function treeArmed(lang: Lang, rows: readonly CalibrationRow[], lanesOff: ReadonlySet<LaneSwitch>, arming: ModelArming): Armed {
+  const on = (qs: readonly Question[]): boolean =>
+    qs.every((q) => arming.questions.has(q.id) && calibratedLang(q.id, criteriaHash(q), lang, rows) !== undefined);
   const pseudo = (id: string): boolean => calibratedLang(id, criteriaHash(TREE_CATEGORY), lang, rows) !== undefined;
+  const lane = (l: DisarmableLane): boolean => !arming.lanesDisarmed.has(l);
   const category = on([TREE_CATEGORY]);
   const rule = on([TREE_SETS_RULE, TREE_RULE_SCOPE]);
+  const gear = on([TREE_BREADTH, TREE_REASONING, TREE_ACTIONS]);
+  const routed = (id: string, l: LaneSwitch): boolean => pseudo(id) && category && rule && gear && lane(l) && !lanesOff.has(l);
   return {
-    category, status: pseudo(TREE_STATUS_ARM_ID), memory: category, gear: on([TREE_BREADTH, TREE_REASONING, TREE_ACTIONS]), rule,
-    answer: pseudo(TREE_ANSWER_ARM_ID) && !lanesOff.has("answer"), lookup: pseudo(TREE_LOOKUP_ARM_ID) && !lanesOff.has("lookup")
+    category, rule, gear, memory: category && lane("memory"), status: pseudo(TREE_STATUS_ARM_ID) && category && rule && lane("status"),
+    answer: routed(TREE_ANSWER_ARM_ID, "answer"), lookup: routed(TREE_LOOKUP_ARM_ID, "lookup")
   };
-}
-
-/**
- * The rows that can arm a tree decision today: a tree question, or a pseudo-row (status, answer, lookup) at its current
- * criteria hash. A retired lane 1 row or a stale-hash row
- * is not one of these (it replaces lane 1's `armingRows`).
- */
-export function treeArmingRows(rows: readonly CalibrationRow[]): CalibrationRow[] {
-  const live = new Set(TREE_QUESTIONS.map((q) => `${q.id}\u0000${criteriaHash(q)}`));
-  for (const id of PSEUDO_ROW_IDS) live.add(`${id}\u0000${criteriaHash(TREE_CATEGORY)}`);
-  return rows.filter((r) => live.has(`${r.question_id}\u0000${r.criteria_hash}`));
 }
 
 /**

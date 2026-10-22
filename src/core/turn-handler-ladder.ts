@@ -9,6 +9,7 @@ import { LANE_LIMITS, routeTree, TREE_BAR_DEFAULTS, treeArmed, TWO_REQUEST_ACTIO
   type TreeBars } from "../jev/tree-policy.js";
 import { isBareAck } from "../omp/bare-ack.js";
 import { isSkipReason, type TurnHandlerVerdict } from "../decisions/entries/turn-handler.js";
+import type { ModelArming } from "../decisions/jev-version-check.js";
 import { answerValue, bandFor, nearBar, NOISE_BANDS, type NoiseBand } from "../decisions/noise-band.js";
 import type { DecideResult, FallbackReason, Reask, RungOutcome, RungResult } from "../decisions/types.js";
 
@@ -81,7 +82,9 @@ export function reaskOf(d: AnsweredDecision): Reask | undefined {
   return { kind: d.reask, pFirst: first ? topProbOf(first) : 0 };
 }
 
-export interface PlanInput { userText: string; mode: JevTriageMode; lang: Lang; thinkHarder: boolean; rows: readonly CalibrationRow[]; lanesOff: ReadonlySet<LaneSwitch> }
+/** `arming`: the reported model's check state (treeArmingFor, src/decisions/jev-version-check.ts); arm mode reads it, shadow arms nothing. */
+export interface PlanInput { userText: string; mode: JevTriageMode; lang: Lang; thinkHarder: boolean; rows: readonly CalibrationRow[]; lanesOff: ReadonlySet<LaneSwitch>;
+  arming: ModelArming }
 
 /**
  * Jev answered: arming, routeTree, urlRule — today's routeAnswered head (core-worker.ts:2782-2792 at 3bff437). Below the bar
@@ -94,7 +97,7 @@ export function planTree(d: AnsweredDecision, i: PlanInput): RungResult<TurnHand
   let plan: RoutePlan;
   try {
     opts = { bars: TREE_BAR_DEFAULTS, thinkHarder: i.thinkHarder, bareAck: isBareAck(i.userText) };
-    armed = i.mode === "arm" ? treeArmed(i.lang, d.model, i.rows, i.lanesOff) : UNARMED; // d.model: the REPORTED id
+    armed = i.mode === "arm" ? treeArmed(i.lang, i.rows, i.lanesOff, i.arming) : UNARMED;
     plan = routeTree(d.answers, { ...opts, armed });
   } catch (e) {
     console.error(`triage: threw: ${safeReason(e)}`); // today's line (the old triageTurn catch logged this throw); the ledger keeps only `threw`

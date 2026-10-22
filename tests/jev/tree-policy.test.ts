@@ -5,11 +5,13 @@ import { CATEGORIES, TREE_CATEGORY, TREE_QUESTIONS, type Category, type LastHoug
 import { criteriaHash } from "../../src/jev/questions/types.js";
 import {
   ACK_ROUTE, applyCascade, fallbackRoute, handOffRoute, preJudge, routeTree, thinkHarderIn, TREE_ANSWER_ARM_ID, TREE_BAR_DEFAULTS, TREE_LOOKUP_ARM_ID,
-  TREE_STATUS_ARM_ID, TREE_THRESHOLD_VERSION, treeArmed, treeArmingRows, type Armed, type Route, type RoutePlan
+  TREE_STATUS_ARM_ID, TREE_THRESHOLD_VERSION, treeArmed, type Armed, type Route, type RoutePlan
 } from "../../src/jev/tree-policy.js";
+import { NOT_ARMED, type ModelArming } from "../../src/decisions/jev-version-check.js";
 
-/** The versioned id a Jev response reports. Calibration keys on it; the request names the moving alias (JEV_REQUEST_MODEL). */
-const REPORTED = "jev-1.13.0";
+/** A model whose check state arms every tree question (trusted / accepted), as treeArmingFor returns it. */
+const TRUSTED: ModelArming = { questions: new Set(TREE_QUESTIONS.map((q) => q.id)), lanesDisarmed: new Set() };
+const NO_OFF = new Set<never>();
 
 // Spec §2.4 / §9 "Policy as a table": answers → lane, role, effort. Every bar is tested at its edge because a wrong
 // side of a bar either swallows a turn into a no-planner lane (memory / status) or under-powers a turn that changes
@@ -140,7 +142,7 @@ describe("routeTree — memory (a wrong `memory` swallows the turn: the strictes
     // inline rows: the file's `row` helper is local to the arming describe
     const catRows = (["zh", "en"] as const).map((lang): CalibrationRow => ({ question_id: "category", criteria_hash: criteriaHash(TREE_CATEGORY), lang,
       approved: "test", evidence: "test" }) as CalibrationRow);
-    expect(treeArmed("zh", REPORTED, catRows)).toMatchObject({ category: true, rule: false, memory: true });
+    expect(treeArmed("zh", catRows, NO_OFF, TRUSTED)).toMatchObject({ category: true, rule: false, memory: true });
   });
   it("a second request with no rule: saved first, then the planner (two_request)", () => {
     expect(route({ category: cat({ memory: 0.95 }), sets_rule: 0.05, actions: 1.5 })).toMatchObject({ lane: "planner", save: { scope: "ask" }, reason: "two_request" });
@@ -293,52 +295,55 @@ describe("preJudge (spec §2.1: code before the judge)", () => {
   });
 });
 
-describe("treeArmed (each decision arms on its own evidence)", () => {
+describe("treeArmed (each decision arms on its own evidence, and on the model's check state)", () => {
   const row = (question_id: string, criteria_hash: string, lang: "zh" | "en" = "zh"): CalibrationRow =>
     ({ question_id, criteria_hash, lang, approved: "test", evidence: "test" });
   const all = [...TREE_QUESTIONS.map((q) => row(q.id, criteriaHash(q))), row(TREE_STATUS_ARM_ID, criteriaHash(TREE_CATEGORY))];
+  const laneRows = [row(TREE_ANSWER_ARM_ID, criteriaHash(TREE_CATEGORY)), row(TREE_LOOKUP_ARM_ID, criteriaHash(TREE_CATEGORY))];
   const NONE: Armed = { category: false, status: false, memory: false, gear: false, rule: false, answer: false, lookup: false };
+  const armed = (rows: readonly CalibrationRow[], lang: "zh" | "en" | "mixed" = "zh", off: ReadonlySet<"answer" | "lookup"> = NO_OFF) => treeArmed(lang, rows, off, TRUSTED);
   it("every row → all armed; mixed inherits zh", () => {
     const stageA = { category: true, status: true, memory: true, gear: true, rule: true, answer: false, lookup: false };
-    expect(treeArmed("zh", REPORTED, all)).toEqual(stageA);
-    expect(treeArmed("mixed", REPORTED, all)).toEqual(stageA);
+    expect(armed(all)).toEqual(stageA);
+    expect(armed(all, "mixed")).toEqual(stageA);
   });
-  it("the status pseudo-row arms status only; the category row never arms status", () => {
-    expect(treeArmed("zh", REPORTED, [row(TREE_STATUS_ARM_ID, criteriaHash(TREE_CATEGORY))])).toEqual({ ...NONE, status: true });
-    expect(treeArmed("zh", REPORTED, all.filter((r) => r.question_id !== TREE_STATUS_ARM_ID)).status).toBe(false);
+  // Jev version check spec §2.3 / §7: the status lane now also needs category (it armed on its pseudo-row plus rule before).
+  it("the status pseudo-row arms status only with category and rule; the category row never arms status", () => {
+    expect(armed([row(TREE_STATUS_ARM_ID, criteriaHash(TREE_CATEGORY))])).toEqual(NONE);
+    expect(armed(all.filter((r) => r.question_id !== "category")).status).toBe(false);
+    expect(armed(all.filter((r) => r.question_id !== "sets_rule")).status).toBe(false);
+    expect(armed(all.filter((r) => r.question_id !== TREE_STATUS_ARM_ID)).status).toBe(false);
   });
   it("rule arms on the sets_rule + rule_scope rows alone, without the category row (F6)", () => {
     const ruleRows = TREE_QUESTIONS.filter((q) => q.id === "sets_rule" || q.id === "rule_scope").map((q) => row(q.id, criteriaHash(q)));
-    expect(treeArmed("zh", REPORTED, ruleRows)).toEqual({ ...NONE, rule: true });
-    expect(treeArmed("zh", REPORTED, all.filter((r) => r.question_id !== "rule_scope")).rule).toBe(false);
+    expect(armed(ruleRows)).toEqual({ ...NONE, rule: true });
+    expect(armed(all.filter((r) => r.question_id !== "rule_scope")).rule).toBe(false);
   });
   it("memory needs the category row alone (Rev 2.1 item 1); gear needs all three scores", () => {
-    expect(treeArmed("zh", REPORTED, all.filter((r) => r.question_id !== "rule_scope")).memory).toBe(true);
-    expect(treeArmed("zh", REPORTED, all.filter((r) => r.question_id !== "category")).memory).toBe(false);
-    expect(treeArmed("zh", REPORTED, all.filter((r) => r.question_id !== "actions")).gear).toBe(false);
+    expect(armed(all.filter((r) => r.question_id !== "rule_scope")).memory).toBe(true);
+    expect(armed(all.filter((r) => r.question_id !== "category")).memory).toBe(false);
+    expect(armed(all.filter((r) => r.question_id !== "actions")).gear).toBe(false);
   });
-  it("another language or a stale hash arms nothing; the model is ignored until Task 3 gates it through the check", () => {
-    expect(treeArmed("zh", "jev-1.14.0", all)).toEqual(treeArmed("zh", REPORTED, all));
-    expect(treeArmed("en", REPORTED, all)).toEqual(NONE);
-    expect(treeArmed("zh", REPORTED, [row("category", "deadbeef")]).category).toBe(false);
+  it("an unchecked model, another language or a stale hash arms nothing", () => {
+    expect(treeArmed("zh", [...all, ...laneRows], NO_OFF, NOT_ARMED)).toEqual(NONE);
+    expect(armed(all, "en")).toEqual(NONE);
+    expect(armed([row("category", "deadbeef")]).category).toBe(false);
   });
-  it("treeArmingRows keeps only a current tree row or the status pseudo-row at its current hash (the alias-move page reads these)", () => {
-    const retired = [row("category", "deadbeef"), row("lane", "0123abcd"), row("lane:status", "0123abcd"), row(TREE_STATUS_ARM_ID, "deadbeef")];
-    expect(treeArmingRows([...retired, ...all])).toEqual(all);
-    expect(treeArmingRows(retired)).toEqual([]);
+  it("a question the model's check left out is unarmed even with its row, and its dependants with it", () => {
+    const noBreadth: ModelArming = { questions: new Set(TREE_QUESTIONS.map((q) => q.id).filter((id) => id !== "breadth")), lanesDisarmed: new Set() };
+    expect(treeArmed("zh", [...all, ...laneRows], NO_OFF, noBreadth)).toEqual({ ...NONE, category: true, memory: true, rule: true, status: true });
+    const noMemory: ModelArming = { ...TRUSTED, lanesDisarmed: new Set(["memory"]) };
+    expect(treeArmed("zh", [...all, ...laneRows], NO_OFF, noMemory)).toEqual({ ...NONE, category: true, rule: true, gear: true, status: true, answer: true, lookup: true });
   });
-  // Stage B spec §2: a lane arms on its own pseudo-row at the category hash, so a `category` row alone never arms a lane, a hash or
-  // model change disarms both with the rest, and HOUGE_JEV_LANES_OFF unarms one lane without touching the others.
-  it("the lane pseudo-rows arm their lane only; a lane listed as off stays unarmed; a stale hash arms nothing", () => {
-    const laneRows = [row(TREE_ANSWER_ARM_ID, criteriaHash(TREE_CATEGORY)), row(TREE_LOOKUP_ARM_ID, criteriaHash(TREE_CATEGORY))];
-    expect(treeArmed("zh", REPORTED, laneRows)).toEqual({ ...NONE, answer: true, lookup: true });
-    expect(treeArmed("zh", REPORTED, all).answer).toBe(false);
-    expect(treeArmed("zh", REPORTED, [...all, ...laneRows], new Set(["answer"]))).toMatchObject({ answer: false, lookup: true });
-    expect(treeArmed("zh", REPORTED, [row(TREE_ANSWER_ARM_ID, "deadbeef")]).answer).toBe(false);
-  });
-  it("treeArmingRows keeps both lane pseudo-rows at the current category hash (the alias-move page counts them)", () => {
-    const laneRows = [row(TREE_ANSWER_ARM_ID, criteriaHash(TREE_CATEGORY)), row(TREE_LOOKUP_ARM_ID, criteriaHash(TREE_CATEGORY))];
-    expect(treeArmingRows([...laneRows, row(TREE_LOOKUP_ARM_ID, "deadbeef")])).toEqual(laneRows);
+  // Stage B spec §2: a lane arms on its own pseudo-row at the category hash (plus category, rule and gear, which routeTree
+  // also requires), so a `category` row alone never arms a lane, a hash change disarms both with the rest, and
+  // HOUGE_JEV_LANES_OFF unarms one lane without touching the others.
+  it("the lane pseudo-rows arm their lane only with the tree armed; a lane listed as off stays unarmed; a stale hash arms nothing", () => {
+    expect(armed(laneRows)).toEqual(NONE);
+    expect(armed([...all, ...laneRows])).toMatchObject({ answer: true, lookup: true });
+    expect(armed(all).answer).toBe(false);
+    expect(armed([...all, ...laneRows], "zh", new Set(["answer"]))).toMatchObject({ answer: false, lookup: true });
+    expect(armed([...all, row(TREE_ANSWER_ARM_ID, "deadbeef")]).answer).toBe(false);
   });
 });
 

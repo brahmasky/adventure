@@ -87,6 +87,14 @@ export function calibrationFile(): string {
     ({ question_id, criteria_hash, lang, approved: "test", evidence: "test" })))));
   return f;
 }
+/**
+ * Jev version check Task 3: the tree arms only for a model whose check state allows it. The harness marks REPORTED
+ * trusted, as the anchor seed does on the live DB; a case reporting another id runs unchecked (nothing armed).
+ */
+export function trustModel(store: RunStore, model: string = REPORTED): void {
+  store.noteJevModel(model, "2026-10-22T00:00:00Z");
+  store.setJevModelState(model, "checking", "trusted", "{}", "2026-10-22T00:00:00Z");
+}
 export const ARM: Record<string, string> = { HOUGE_JEV_ENABLED: "1", HOUGE_JEV_TRIAGE_ENABLED: "arm" };
 export const SHADOW: Record<string, string> = { HOUGE_JEV_ENABLED: "1", HOUGE_JEV_TRIAGE_ENABLED: "shadow" };
 
@@ -98,6 +106,7 @@ export function triageHarness(fetchImpl: unknown, o: HarnessOptions = {}) {
   vi.stubEnv("HOUGE_JEV_CALIBRATION_FILE", calibrationFile()); vi.stubEnv("HOUGE_JEV_GATE", "1"); vi.stubEnv("TYPESAFE_API_KEY", "test-key");
   for (const [k, v] of Object.entries(o.env ?? ARM)) vi.stubEnv(k, v);
   const store = o.broker ? RunStore.openInMemory({ redact: o.broker.redact }) : RunStore.openInMemory(); // boot wiring: the store and the worker share the broker's redactor
+  trustModel(store);
   const worker = ompWorker(store, mkdtempSync(join(tmpdir(), "hpin-")), { llm: o.llm ?? scriptedLlm(), jevFetch: fetchImpl as typeof fetch,
     ...(o.broker ? { broker: o.broker } : {}),
     ...(o.web ? { web: o.web } : {}), ...(o.jevNow ? { jevNow: o.jevNow } : {}) });
