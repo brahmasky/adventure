@@ -21,7 +21,7 @@ const PROBABILITY_ROUNDING = 0.005;
 const PROBABILITY_SUM_EPSILON = 1e-9;
 /** A model id is a short token (Codex B2): anything else is a parse failure, so a response that echoes
  *  prose in `model` can never be written to the audit or the ledger. */
-const JEV_MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/;
+export const JEV_MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/;
 
 export interface JevChoiceQuestion {
   type: "choice";
@@ -121,7 +121,7 @@ export function createJevClient(config: JevClientConfig): (req: JevRequest) => P
   };
 }
 
-type Validated<T> = { ok: true; value: T } | { ok: false; code: string };
+export type Validated<T> = { ok: true; value: T } | { ok: false; code: string };
 
 /**
  * The abort timer stays armed for the whole attempt — fetch AND the body read — and is cleared
@@ -204,8 +204,8 @@ function validateResponse(
   return { ok: true, value: { model: b.model, answers, input_tokens: usage.input_tokens, output_tokens } };
 }
 
-/** Per type, against the question that was asked: the answer's type must be the question's. */
-function validateAnswer(raw: unknown, q: JevQuestion): Validated<JevAnswer> {
+/** Per type, against the question that was asked: the answer's type must be the question's. Exported for the anchor import (version check). */
+export function validateAnswer(raw: unknown, q: JevQuestion): Validated<JevAnswer> {
   if (typeof raw !== "object" || raw === null) return { ok: false, code: "answer_not_object" };
   const a = raw as Record<string, unknown>;
   switch (q.type) {

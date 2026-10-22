@@ -2,7 +2,7 @@ import { appendFileSync, mkdtempSync, readFileSync, writeFileSync } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ANCHOR_COMMAND, bootJevAnchor, importJevAnchor } from "../../src/jev/anchor-import.js";
+import { ANCHOR_COMMAND, anchorCountsLines, bootJevAnchor, importJevAnchor } from "../../src/decisions/jev-anchor-import.js";
 import { stateHash } from "../../src/jev/decide.js";
 import { JEV_REQUEST_MODEL } from "../../src/jev/jev-client.js";
 import { criteriaHash } from "../../src/jev/questions/types.js";
@@ -210,6 +210,31 @@ describe("importJevAnchor", () => {
     expect(w.store.getJevModel(JEV_REQUEST_MODEL)).toBeUndefined();
   });
 
+  // Final fix F2 (security Minor): an anchor row is checked like a Jev response. A malformed model id or answer is a drop,
+  // never a throw (a raw stack at the CLI, a silent boot failure) and never NaN stored as Paco's reference.
+  it("an anchor model id that is not a Jev model id (JEV_MODEL_ID) drops the turn as invalid", () => {
+    const w = world(101);
+    const [bad] = w.turns;
+    const dir = full(w, { overA: (id) => (id === bad!.id ? { model: "jev x.1\n**bold**" } : {}) });
+    const r = importJevAnchor(w.store, dir, { env: {} });
+    expect(r.status).toBe("imported");
+    expect(r.counts?.dropped).toEqual({ invalid_a: 1 });
+    expect(w.store.listAnchorTurns()).not.toContain(bad!.id);
+  });
+
+  it("a malformed answer (a choice without probabilities, a noul that is not a number) is an invalid drop, not a throw", () => {
+    const w = world(102);
+    const [a, b] = w.turns;
+    const noProbs = { ...treeAnswers({ category: "memory" }), category: { type: "choice", choice: "memory", confidence: 0.9 } };
+    const nanNoul = { ...treeAnswers({ category: "memory" }), sets_rule: { type: "noul", noul: "high" } };
+    const dir = files({ A: w.turns.map((t) => row(w.store, t.id, t.lang, "A", t.id === a!.id ? { answers: noProbs } : {})),
+      B: w.turns.map((t) => row(w.store, t.id, t.lang, "B", t.id === b!.id ? { answers: nanNoul } : {})) });
+    let r: ReturnType<typeof importJevAnchor> | undefined;
+    expect(() => { r = importJevAnchor(w.store, dir, { env: {} }); }).not.toThrow();
+    expect(r?.counts?.dropped).toEqual({ invalid_a: 1, invalid_b: 1 });
+    expect(r?.status).toBe("imported");
+  });
+
   it("a successful import resolves the earlier missing / insufficient anchor incidents", () => {
     const w = world(100);
     importJevAnchor(w.store, join(mkdtempSync(join(tmpdir(), "anchor-")), "nope"), { env: {} });
@@ -227,6 +252,15 @@ describe("importJevAnchor", () => {
   });
 });
 
+describe("the import's printed counts (final fix F5)", () => {
+  it("label the stored baselines informational: the check recomputes its own from the stored anchor", () => {
+    const w = world(100);
+    const lines = anchorCountsLines(importJevAnchor(w.store, full(w), { env: {} }).counts!);
+    expect(lines[0]).toMatch(/"model":"jev-x\.1"/);
+    expect(lines[1]).toMatch(/^baselines \(informational: each check recomputes them over the turns it compared\): \{"agreement"/);
+  });
+});
+
 describe("bootJevAnchor", () => {
   it("missing files with an empty anchor open ONE incident naming the command and the paths, however often boot runs", () => {
     const store = RunStore.openInMemory();
@@ -238,7 +272,10 @@ describe("bootJevAnchor", () => {
     expect(open[0]!.kind).toBe("jev_anchor_missing");
     const text = open[0]!.detail_json;
     expect(text).toContain(ANCHOR_COMMAND);
-    expect(text).toContain(join(dir, "replay.jsonl"));
+    // final fix F3: the page leaves the host, so it names the files relative to the project root, never an absolute path
+    expect(JSON.parse(text).files).toEqual([".houge/jev-tree/replay.jsonl", ".houge/jev-tree/replay-permuted.jsonl", ".houge/jev-tree/labels.jsonl"]);
+    expect(text).not.toContain(dir);
+    expect(text).not.toContain(tmpdir());
     expect(store.anchorEmpty()).toBe(true);
   });
 

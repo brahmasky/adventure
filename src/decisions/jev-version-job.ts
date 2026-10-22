@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
 import { errorCode } from "../domain/error-code.js";
-import { ANCHOR_COMMAND } from "../jev/anchor-import.js";
+import { ANCHOR_COMMAND } from "./jev-anchor-import.js";
 import { JEV_INCIDENT_SUBJECT, openJevIncident, resolveJevIncidentsOnAnswer } from "../jev/jev-incidents.js";
 import type { JevAnswer, JevQuestion, JevRequest, JevResult } from "../jev/jev-client.js";
-import { toJevQuestion } from "../jev/questions/types.js";
+import { criteriaHash, toJevQuestion } from "../jev/questions/types.js";
 import { treeQuestions } from "../jev/triage-replay.js";
 import type { NotificationButton } from "../notifications/notification-types.js";
 import { openAlertedIncident, resolveOpenIncidents } from "../run/incident-alert.js";
@@ -181,6 +181,7 @@ export async function runJevCheck(d: JevJobDeps, model: string): Promise<JevChec
   const g = beginCheck(d, model);
   if (g === null) return "skipped";
   const anchor = loadAnchor(d.store);
+  if (anchor.stale.length > 0) return finishStale(d, model, g, anchor.stale);
   if (anchor.zh < JEV_ANCHOR_MIN_ZH) return finishInsufficient(d, model, g, anchor.zh);
   const tree = await runTree(d, model, g, anchor);
   if (tree !== "done") return tree;
@@ -222,8 +223,20 @@ function beginCheck(d: JevJobDeps, model: string): number | null {
 }
 
 interface AnchorTurn { turn: string; lang: string; state: RouteState }
-/** The anchor as a check reads it: the zh and mixed turns (en inherits zh's verdict, §7), runs A and B, Paco's labels. */
-interface AnchorSet { turns: AnchorTurn[]; zh: number; A: CheckRun; B: CheckRun; labels: Map<string, string> }
+/**
+ * The anchor as a check reads it: the zh and mixed turns (en inherits zh's verdict, §7), runs A and B, Paco's labels, and
+ * the tree questions whose stored criteria hash is not the live question's (final fix F4: A canonical, B permuted).
+ */
+interface AnchorSet { turns: AnchorTurn[]; zh: number; A: CheckRun; B: CheckRun; labels: Map<string, string>; stale: string[] }
+
+/** The question ids whose anchor rows carry a criteria hash other than the live question's (run A canonical, run B permuted). */
+function staleQuestions(store: RunStore): string[] {
+  const live = { A: hashesOf(false), B: hashesOf(true) };
+  const stale = new Set<string>();
+  for (const run of ["A", "B"] as const) for (const r of store.anchorAnswers(run)) if (live[run].get(r.question_id) !== r.criteria_hash) stale.add(r.question_id);
+  return [...stale].sort();
+}
+const hashesOf = (permute: boolean): Map<string, string> => new Map(treeQuestions(permute).map((q) => [q.id, criteriaHash(q)]));
 
 function loadAnchor(store: RunStore): AnchorSet {
   const turns = store.anchorStates().filter((s) => s.lang === "zh" || s.lang === "mixed")
@@ -240,7 +253,7 @@ function loadAnchor(store: RunStore): AnchorSet {
     }
     return m;
   };
-  return { turns, zh: turns.filter((t) => t.lang === "zh").length, A: run("A"), B: run("B"), labels: new Map(store.anchorLabels().map((l) => [l.turn_id, l.category])) };
+  return { turns, zh: turns.filter((t) => t.lang === "zh").length, A: run("A"), B: run("B"), labels: new Map(store.anchorLabels().map((l) => [l.turn_id, l.category])), stale: staleQuestions(store) };
 }
 
 type FailedAsk = Extract<CandidateAsk, { why: "failed" }>["failure"];
@@ -438,6 +451,14 @@ function finishInsufficient(d: JevJobDeps, model: string, g: number, zh: number)
   return markInsufficient(d, model, g, { reason: "anchor_too_small", zh_turns: zh, need: JEV_ANCHOR_MIN_ZH, command: ANCHOR_COMMAND },
     `**Jev version check: ${model} cannot be checked.** The anchor has ${zh} zh turns to compare (need ${JEV_ANCHOR_MIN_ZH}); nothing is armed on this model.\n`
     + `Import Paco's reference with \`${ANCHOR_COMMAND}\`; the check then runs by itself. Accept arms everything on ${model}.`);
+}
+
+/** Final fix F4: a tree question changed after the import, so the anchor answers another question; only a re-import fixes it. */
+function finishStale(d: JevJobDeps, model: string, g: number, questions: string[]): JevCheckResult {
+  logOf(d)(`jev version check: ${model} insufficient (anchor criteria stale: ${questions.join(", ")})`);
+  return markInsufficient(d, model, g, { reason: "anchor_criteria_stale", questions, command: `${ANCHOR_COMMAND} --replace` },
+    `**Jev version check: ${model} cannot be checked.** The anchor answers an older version of the tree questions ${questions.join(", ")}; nothing is armed on this model.\n`
+    + `Replay and label on today's questions, then \`${ANCHOR_COMMAND} --replace\`; the check then runs by itself. Accept arms everything on ${model}.`);
 }
 
 /**

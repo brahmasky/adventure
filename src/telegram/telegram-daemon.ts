@@ -30,7 +30,7 @@ import { evolutionLaneSettled, evolutionLaneSnapshot } from "../core/evolution-l
 import { reconcileJobsAtBoot, skillJobHooks } from "../core/skill-job.js";
 import type { TelegramAllowlist } from "../domain/types.js";
 import { Gateway } from "../gateway/gateway.js";
-import { ANCHOR_DIR, bootJevAnchor } from "../jev/anchor-import.js";
+import { ANCHOR_DIR, bootJevAnchor } from "../decisions/jev-anchor-import.js";
 import { warnUnknownJevLanesOff } from "../jev/jev-flags.js";
 import { embedText, resolveEmbedConfig } from "../llm/embeddings.js";
 import { resolveMediaIngestEnabled } from "../media/media-config.js";

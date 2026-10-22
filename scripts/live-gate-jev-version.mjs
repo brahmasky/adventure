@@ -46,7 +46,7 @@ function parseArgs(argv) {
 }
 
 async function load() {
-  const paths = ["config/load-env.js", "domain/error-code.js", "run/run-store.js", "jev/jev-client.js", "jev/anchor-import.js", "jev/questions/tree.js", "jev/questions/types.js",
+  const paths = ["config/load-env.js", "domain/error-code.js", "run/run-store.js", "jev/jev-client.js", "decisions/jev-anchor-import.js", "jev/questions/tree.js", "jev/questions/types.js",
     "jev/questions/improve.js", "jev/triage-replay.js", "decisions/jev-version-job.js", "decisions/jev-version-check.js", "decisions/golden.js", "decisions/entries/improve-route.js"];
   const m = Object.assign({}, ...(await Promise.all(paths.map((p) => import(join(DIST, p))))));
   const need = ["loadHougeEnv", "errorCode", "RunStore", "createJevClient", "importJevAnchor", "TREE_QUESTIONS", "toJevQuestion", "IMPROVE_TARGET", "runJevCheck", "treeArmingFor",

@@ -10,6 +10,8 @@ import {
 } from "../../src/decisions/jev-version-job.js";
 import type { JevAnswer, JevRequest, JevResult } from "../../src/jev/jev-client.js";
 import { CATEGORIES } from "../../src/jev/questions/tree.js";
+import { criteriaHash } from "../../src/jev/questions/types.js";
+import { treeQuestions } from "../../src/jev/triage-replay.js";
 import { RunStore, type JevAnchorRow, type JevAnchorState } from "../../src/run/run-store.js";
 import { treeAnswers } from "../helpers/jev-tree-answers.js";
 
@@ -32,12 +34,14 @@ const MEMORY_TURNS = 6; // turns 0..5: memory rules Paco labelled memory
 const anchorAnswers = (i: number): Record<string, JevAnswer> =>
   i < MEMORY_TURNS ? treeAnswers({ category: "memory", setsRule: 0.95 }) : treeAnswers({ category: PLANNER[i % PLANNER.length]! });
 
-function seedAnchor(store: RunStore, n = N): void {
+/** The criteria hash the live question has in run A (canonical) or B (permuted): what the import stored. */
+const hashOf = (run: "A" | "B", id: string): string => criteriaHash(treeQuestions(run === "B").find((q) => q.id === id)!);
+function seedAnchor(store: RunStore, n = N, lang: (i: number) => string = () => "zh"): void {
   const states: JevAnchorState[] = []; const rows: JevAnchorRow[] = [];
   for (let i = 0; i < n; i += 1) {
-    states.push({ turn_id: turnId(i), lang: "zh", state_json: JSON.stringify({ latest_message: `msg ${i}`, last_houge_turn: null, quoted_turn: null }), state_hash: `h${i}` });
+    states.push({ turn_id: turnId(i), lang: lang(i), state_json: JSON.stringify({ latest_message: `msg ${i}`, last_houge_turn: null, quoted_turn: null }), state_hash: `h${i}` });
     for (const run of ["A", "B"] as const) {
-      for (const [question_id, a] of Object.entries(anchorAnswers(i))) rows.push({ turn_id: turnId(i), lang: "zh", question_id, criteria_hash: "c", run, answer_json: JSON.stringify(a), model: ANCHOR_MODEL });
+      for (const [question_id, a] of Object.entries(anchorAnswers(i))) rows.push({ turn_id: turnId(i), lang: lang(i), question_id, criteria_hash: hashOf(run, question_id), run, answer_json: JSON.stringify(a), model: ANCHOR_MODEL });
     }
   }
   const labels = Array.from({ length: MEMORY_TURNS }, (_, i) => ({ turn_id: turnId(i), category: "memory", by: "paco", at: NOW }));
@@ -563,6 +567,27 @@ describe("golden runs (final fix D)", () => {
     s.openIncident({ kind: "decision_golden_drift", subject: "tool.injection", detail: {}, now: NOW });
     expect(resolveLegacyGoldenModelIncidents(s, NOW)).toBe(2);
     expect(s.listOpenIncidents().map((i) => i.subject)).toEqual(["tool.injection"]);
+    s.close();
+  });
+});
+
+// Final fix F4 (correctness Minor): a tree question whose criteria changed after the import makes the anchor answers to
+// another question; comparing them would page a false drift or pass on agreement that means nothing.
+describe("a stale anchor (final fix F4)", () => {
+  it("an anchor row whose criteria hash differs from the live question's is insufficient (anchor_criteria_stale), asks nothing, and names the re-import", async () => {
+    const path = join(mkdtempSync(join(tmpdir(), "hjvs-")), "h.sqlite");
+    const seed = RunStore.open(path); seedAnchor(seed); seed.close();
+    const db = new DatabaseSync(path);
+    db.prepare(`UPDATE jev_anchor SET criteria_hash = 'old' WHERE turn_id = ? AND question_id = 'breadth' AND run = 'B'`).run(turnId(3));
+    db.close();
+    const s = RunStore.open(path); s.noteJevModel(CAND, NOW);
+    const f = fake();
+    expect(await runJevCheck(deps(s, f), CAND)).toBe("insufficient");
+    expect(f.calls).toHaveLength(0);
+    expect(JSON.parse(s.getJevModel(CAND)!.detail_json!)).toMatchObject({ reason: "anchor_criteria_stale", questions: ["breadth"] });
+    const text = String(outbox(s)[0]!.payload.text);
+    expect(text).toContain("houge jev anchor import --replace");
+    expect(text).not.toMatch(/has \d+ zh turns/); // never the too-small text
     s.close();
   });
 });

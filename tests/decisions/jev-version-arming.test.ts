@@ -1,5 +1,5 @@
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { readdirSync, readFileSync } from "node:fs";
+import { join, sep } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { checkSelfWriteDiff, parseDiffRaw } from "../../src/capabilities/self-write-guard.js";
 import { NOT_ARMED, treeArmed, treeArmingFor, type JevDriftDetail } from "../../src/decisions/jev-version-check.js";
@@ -147,6 +147,14 @@ describe("self-write guard — the arming read", () => {
     for (const f of ["src/decisions/jev-version-check.ts", "src/jev/calibration.ts"]) {
       expect(checkSelfWriteDiff(parseDiffRaw(`:100644 100644 7898192 422c2b7 M\t${f}`)).allowed).toBe(false);
     }
+  });
+  it("every write of a model's check state or of the anchor lives under the protected src/decisions/ (final fix F1)", () => {
+    const root = join(import.meta.dirname, "..", "..", "src");
+    const writers = (readdirSync(root, { recursive: true }) as string[]).filter((f) => f.endsWith(".ts") && f !== join("run", "run-store.ts"))
+      .filter((f) => /\.(importAnchor|setJevModelState|replaceAnchorAnswer|setJevModelProgress|noteJevModel|bumpJevModelGeneration)\(/.test(readFileSync(join(root, f), "utf8")));
+    expect(writers.length).toBeGreaterThan(0);
+    for (const f of writers) expect(f.startsWith(`decisions${sep}`), f).toBe(true);
+    expect(checkSelfWriteDiff(parseDiffRaw(":100644 100644 7898192 422c2b7 M\tsrc/decisions/jev-anchor-import.ts")).allowed).toBe(false);
   });
   it("allows a self-write to the routing policy, tree-policy.ts", () => {
     expect(checkSelfWriteDiff(parseDiffRaw(":100644 100644 7898192 422c2b7 M\tsrc/jev/tree-policy.ts")).allowed).toBe(true);

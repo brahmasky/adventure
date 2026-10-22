@@ -331,14 +331,14 @@ if (command === "run") {
   const sub = rest[0];
   if (sub === "anchor" && rest[1] === "import") {
     // Jev version check §2.2: import Paco's approved reference (a non-empty anchor is a no-op; `--replace` clears it in the same transaction).
-    const { importJevAnchor, ANCHOR_DIR } = await import("./jev/anchor-import.js");
+    const { anchorCountsLines, importJevAnchor, ANCHOR_DIR } = await import("./decisions/jev-anchor-import.js");
     const args = rest.slice(2);
     const replace = args.includes("--replace");
     const store = RunStore.open("houge.sqlite", storeOptions);
     try {
       const r = importJevAnchor(store, args.find((a) => a !== "--replace") ?? ANCHOR_DIR, { replace });
       console.log(`jev anchor import: ${r.status}: ${r.message}`);
-      if (r.counts) console.log(JSON.stringify({ model: r.counts.model, turns: r.counts.turns, dropped: r.counts.dropped, labels: r.counts.labels, agreement: r.counts.agreement, lanes: r.counts.lanes }));
+      if (r.counts) for (const line of anchorCountsLines(r.counts)) console.log(line);
       process.exitCode = r.status === "imported" || r.status === "noop" ? 0 : 1;
     } finally {
       store.close();

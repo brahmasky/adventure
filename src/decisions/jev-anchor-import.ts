@@ -1,16 +1,16 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { agreementByCheck, answerBucket, JEV_ANCHOR_MIN_ZH, laneCountsOf, type Agreement, type CheckRun,
-  type DisarmableLane, type LaneLabelCount } from "../decisions/jev-version-check.js";
+  type DisarmableLane, type LaneLabelCount } from "./jev-version-check.js";
 import { errorCode } from "../domain/error-code.js";
 import { openAlertedIncident, resolveOpenIncidents } from "../run/incident-alert.js";
 import type { JevAnchorLabel, JevAnchorRow, JevAnchorState, ReplayTurnRow, RunStore } from "../run/run-store.js";
-import { stateHash } from "./decide.js";
-import { JEV_INCIDENT_SUBJECT } from "./jev-incidents.js";
-import { JEV_REQUEST_MODEL, type JevAnswer } from "./jev-client.js";
-import { criteriaHash } from "./questions/types.js";
-import { readDone } from "./replay-core.js";
-import { loadLabels, TREE_LABEL_SINCE, treeContextFor, treeQuestions, type TreeReplayRow } from "./triage-replay.js";
+import { stateHash } from "../jev/decide.js";
+import { JEV_INCIDENT_SUBJECT } from "../jev/jev-incidents.js";
+import { JEV_MODEL_ID, JEV_REQUEST_MODEL, validateAnswer, type JevAnswer } from "../jev/jev-client.js";
+import { criteriaHash, toJevQuestion, type Question } from "../jev/questions/types.js";
+import { readDone } from "../jev/replay-core.js";
+import { loadLabels, TREE_LABEL_SINCE, treeContextFor, treeQuestions, type TreeReplayRow } from "../jev/triage-replay.js";
 
 /**
  * Jev version check §2.2: Paco's approved reference, imported once; only Paco replaces it (`--replace`, or his Accept on a
@@ -36,7 +36,11 @@ interface Kept { turn: string; lang: string; a: TreeReplayRow; b: TreeReplayRow;
 
 const pathsOf = (dir: string): string[] => [ANCHOR_FILES.A, ANCHOR_FILES.B, ANCHOR_FILES.labels].map((f) => join(dir, f));
 
-/** One run's usable rows by turn: latest line per key, `ok` only, every question answered under today's hashes (A) or the permuted ones (B). */
+/**
+ * One run's usable rows by turn: latest line per key, `ok` only, a Jev model id (JEV_MODEL_ID, never the alias), every
+ * question answered under today's hashes (A) or the permuted ones (B) with an answer Jev's own client would accept (final
+ * fix F2: a malformed row is an invalid drop, never a throw and never NaN stored as the reference).
+ */
 function validRows(file: string, permute: boolean): { rows: Map<string, TreeReplayRow>; invalid: Set<string> } {
   const qs = treeQuestions(permute);
   const suffix = permute ? ":perm" : "";
@@ -44,11 +48,19 @@ function validRows(file: string, permute: boolean): { rows: Map<string, TreeRepl
   for (const [key, raw] of readDone(file, OK)) {
     const r = raw as unknown as TreeReplayRow;
     const turn = suffix && key.endsWith(suffix) ? key.slice(0, -suffix.length) : key;
-    const good = typeof r.model === "string" && r.model !== "" && r.model !== JEV_REQUEST_MODEL && typeof r.state_hash === "string" && r.answers !== undefined && r.criteria_hashes !== undefined
-      && qs.every((q) => r.criteria_hashes?.[q.id] === criteriaHash(q) && answerBucket(q, r.answers?.[q.id]) !== null) && (!suffix || key.endsWith(suffix));
-    if (good) rows.set(turn, r); else invalid.add(turn);
+    if (validRow(r, qs) && (!suffix || key.endsWith(suffix))) rows.set(turn, r); else invalid.add(turn);
   }
   return { rows, invalid };
+}
+
+function validRow(r: TreeReplayRow, qs: readonly Question[]): boolean {
+  if (typeof r.model !== "string" || !JEV_MODEL_ID.test(r.model) || r.model === JEV_REQUEST_MODEL || typeof r.state_hash !== "string") return false;
+  if (typeof r.answers !== "object" || r.answers === null || typeof r.criteria_hashes !== "object" || r.criteria_hashes === null) return false;
+  try {
+    return qs.every((q) => r.criteria_hashes?.[q.id] === criteriaHash(q) && validateAnswer(r.answers?.[q.id], toJevQuestion(q)).ok && answerBucket(q, r.answers?.[q.id]) !== null);
+  } catch {
+    return false;
+  }
 }
 
 /** Rebuild the state exactly as the replay did and as the live path would send it; "state_mismatch" when it differs from the replay's hash. */
@@ -104,7 +116,8 @@ export function importJevAnchor(store: RunStore, dir: string, opts: { env?: Node
   const files = pathsOf(dir);
   const missing = files.filter((f) => !existsSync(f));
   if (missing.length > 0) {
-    incident(store, "jev_anchor_missing", { missing: missing.length, paths: files }, opts.now);
+    // final fix F3: the page leaves the host, so the detail names the files relative to the project root, never an absolute path
+    incident(store, "jev_anchor_missing", { missing: missing.length, files: Object.values(ANCHOR_FILES).map((f) => `${ANCHOR_DIR}/${f}`) }, opts.now);
     return { status: "missing", message: `anchor files missing (${missing.length} of ${files.length}); nothing armed. Expected: ${files.join(", ")}. Run ${ANCHOR_COMMAND} once they exist` };
   }
   const A = validRows(files[0]!, false); const B = validRows(files[1]!, true);
@@ -138,6 +151,15 @@ function seedAnchor(store: RunStore, i: { kept: Kept[]; labels: Map<string, { ca
   if (done) resolveOpenIncidents(store, ANCHOR_INCIDENT_KINDS, INCIDENT_SUBJECT, now);
   return done ? { status: "imported", message: `anchor ${i.replace ? "replaced" : "imported"}: ${kept.length} turns, model seeded trusted`, counts }
     : { status: "noop", message: `the anchor is already imported; ${ANCHOR_COMMAND} --replace replaces it` };
+}
+
+/**
+ * The CLI's print of an import's counts. The baselines stored in `jev_anchor_meta` are informational (final fix F5): every
+ * check recomputes the anchor's baselines over exactly the turns it compared, so the stored ones are never read.
+ */
+export function anchorCountsLines(c: AnchorCounts): string[] {
+  return [JSON.stringify({ model: c.model, turns: c.turns, dropped: c.dropped, labels: c.labels }),
+    `baselines (informational: each check recomputes them over the turns it compared): ${JSON.stringify({ agreement: c.agreement, lanes: c.lanes })}`];
 }
 
 /** Daemon boot: import when the anchor is empty. A failure is logged with its code and boot continues (the tree just stays unarmed). */
