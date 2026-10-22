@@ -6,10 +6,12 @@ No version literal decides behaviour; a Jev version move is checked by a backgro
 minutes, paced 1.5 s per call). Gate result: jev-1.14.0 **drifted** against the jev-1.13.0 anchor (category 0.892 vs its own
 0.948; route 0.606 vs 0.844); labels fine, golden sets 4/4 ok, controls behaved. **On deploy the daemon will check 1.14.0,
 find the drift, and send Paco one alert with an Accept button** (the tree stays unarmed for 1.14.0 until he taps it or a
-later version passes). Suite 383 files / 5253 tests. Paco's: merge, rebuild `dist/`, kickstart. Run in flight: none from
+later version passes). Paco's Accept makes that version the reference (his labels stay the absolute check). Final head
+`5a18732` after five final reviewers + codex and two fix rounds: suite 383 files / 5313 tests; live gate re-run PASS
+(1.14.0 drifted again: route 0.610 vs its own 0.814; category passed, breadth and reasoning just under). Paco's: kickstart. Run in flight: none from
 this build. CLI: `houge jev anchor import | models | check [model] | accept <model>`.
-- [ ] Paco: the routing gap. `routeTree`'s caller `src/core/turn-handler-ladder.ts` is not protected and `tree-policy.ts`
-  is not (the middle path), so a self-write could change how an armed result is honoured. Options: protect
+- [ ] Paco: the routing gap. Unprotected files that could bypass the arming result: `tree-policy.ts` (middle path),
+  `turn-handler-ladder.ts`, `core-worker.ts` (planAnswered), `gateway/jev-accept-commands.ts`, `telegram-daemon.ts` (anchor import call). Options: protect
   `turn-handler-ladder.ts`, or clamp the route inside the protected `src/decisions/jev-version-check.ts` (still behind an
   unprotected caller).
 - [ ] Flaky: the egress 100 ms timing test failed under parallel load several times (passes alone); loosen it or fake the clock.

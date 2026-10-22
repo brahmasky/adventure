@@ -1732,6 +1732,9 @@ in the protected `src/decisions/jev-version-check.ts`). Reviews found: a stuck `
 (hence the pacing), a shutdown that waited past launchd's timeout, and a cascade scope missing from the route baseline.
 Live gate 2026-10-23 on a copy with live Jev (about 2 h, it runs the check twice plus three golden repeats): PASS.
 jev-1.14.0 DRIFTED against the jev-1.13.0 anchor (category 0.892 vs its own 0.948; route 0.606 vs 0.844), labels within
-allowance, golden sets 4/4 ok, shuffled-anchor control failed as required, self control passed. Final suite 383 files / 5253
-tests, typecheck clean. Known gaps: see `tasks/todo.md` (flaky egress timing test, golden-path pacing and shutdown cap
+allowance, golden sets 4/4 ok, shuffled-anchor control failed as required, self control passed. Then four parallel reviewers + codex found ~20 more (frozen anchor turning Accept into a weekly
+rubber stamp → Paco's Accept re-anchors; canary days deferring silently; a stuck check without a page; the anchor import
+self-writable → moved under `src/decisions/`; the live `urlRule` missing from the route compare); two fix rounds closed them,
+and a re-run live gate PASS on `5a18732` (route 0.610 vs 0.814, drifted again). Final suite 383 files / 5313 tests,
+typecheck clean. Known gaps: see `tasks/todo.md` (flaky egress timing test, golden-path pacing and shutdown cap
 untested, the unprotected caller). Still Paco's: kickstart, merge, the routing-gap question.
