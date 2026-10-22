@@ -48,7 +48,7 @@ The check gates the triage tree only (the only model-gated decision). The four l
   drop, never a throw; the missing-files incident names `.houge/jev-tree/<file>`, never an absolute path. The anchor
   changes only by Paco's hand: his Accept on a drifted or insufficient model re-anchors on it (§7), and
   `houge jev anchor import --replace [dir]` clears and re-imports in one transaction (a failed replace keeps the old
-  anchor). A check never re-anchors on its own (no chain drift).
+  anchor and leaves every model's state unchanged). A check never re-anchors on its own (no chain drift).
 - Anchor baseline per check (§2.5): agreement(anchor A, anchor B) and the label error/recall counts. **As built:** each check
   recomputes them over exactly the turns it compared; the copy the import stores in `jev_anchor_meta` is informational
   (the CLI labels it so) and never read. A check whose anchor rows carry a criteria hash other than the live question's
@@ -89,7 +89,9 @@ The check gates the triage tree only (the only model-gated decision). The four l
 - **Final fix (a stuck check):** a tree ask that hits an outage on 3 separate starts is recorded unanswered and the pass
   moves on (a per-ask count in the progress). The served model `checking` for more than 3 h from its generation's start
   opens ONE alerted `jev_model_check_stalled` incident ("the Jev version check for <model> is not finishing; lanes stay
-  on the planner"), resolved when the model leaves `checking`.
+  on the planner"), resolved when the model leaves `checking` or the alias stops serving it. **Round 2:** the 3 h are
+  measured from the latest resume after a deferral (`resumed_at` in the progress), not the generation's first start, so
+  a canary day does not page as a stall.
 
 ### 2.5 The check
 Send each anchor turn's stored state through the tree questions on the candidate, twice: run A canonical and run A2
@@ -118,7 +120,8 @@ e. **Ladder bars.** Each golden set runs on the candidate in check-specific runs
    go into the outcome notice or card only (no `decision_golden_drift` from the check; the daily ticks keep theirs, and
    boot resolves any `<entry>:<model>` incident an older build opened). A golden entry that did not run (another id after
    the retries, a malformed answer set, an outage) records nothing and stays pending for a later start; the model cannot
-   reach `trusted` while one is pending. `decision_bar_stale` retires.
+   reach `trusted` while one is pending. **Round 2 (controller ruling):** a malformed set or an outage on 3 starts is
+   recorded `skipped`, the check finishes, and the outcome message says "golden <entry> did not run". `decision_bar_stale` retires.
 Cost: 3 × ~300 turns ≈ $0.20 per version move. **As built:** asks are paced at 1.5 s per call (`JEV_CHECK_PACE_MS`, so the
 check cannot trip a 429 on Paco's live triage key), so a check takes about 45 minutes after a version move and the lanes
 fall back to the planner that long. The live gate ran about 2 h because it runs the check twice plus three golden repeats.
@@ -135,7 +138,10 @@ The check's thresholds, state machine and arming read live in `src/decisions/jev
 lane dependencies) lives in the protected `src/decisions/jev-version-check.ts`, and the routing policy only consumes its
 result. Residual: a self-write could change how `routeTree` honours the result, and the caller
 `src/core/turn-handler-ladder.ts` is unprotected too, as is the caller in `src/core/core-worker.ts` that hands
-`treeArmingFor`'s result to `planTree` (open question to Paco in `tasks/todo.md`).
+`treeArmingFor`'s result to `planTree` (open question to Paco in `tasks/todo.md`). Also unprotected (round 2, NEW4):
+`src/gateway/jev-accept-commands.ts` calls the protected `acceptJevModel` (which re-anchors) with the states it may accept
+from, and `src/telegram/telegram-daemon.ts` calls `importJevAnchor` at boot; and the check's route comparison depends on
+the unprotected `urlRule` in `src/core/turn-handler-ladder.ts` (it must match the live turn).
 
 ## 3. Failure modes
 Reference files missing → no reference → nothing armed + one incident naming the import command. Two ids behind the alias →

@@ -64,7 +64,7 @@ fall-through; **System Two (omp seats)** composes inside the lane code picked. C
    Calibration approves questions and bars, not a model version. A Jev version move is checked by code against Paco's
    approved reference turns and labels; a version that agrees within Jev's own noise arms; a drift disarms only the
    drifting triage questions and pages him. Safety judges never disarm on a version move. Paco's Accept on a drifted
-   version makes it the reference later versions are checked against (his decision, 2026-10-23).
+   or insufficient version makes it the reference later versions are checked against (his decision, 2026-10-23).
 6. **Jev is a free, non-generative leg outside the flat-rate chains**, metered under the ADR 0019 ceiling and fuse,
    treated as free by Paco until he says otherwise.
 7. **Lane order**, each its own spec → review → plan → build → live gate: (1) pre-planner triage with the memory lane —

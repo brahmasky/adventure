@@ -694,3 +694,69 @@ describe("job lifecycle (final fix G8)", () => {
     s.close();
   });
 });
+
+// Final fix round 2 (re-review NEW 1, 2, 3, served-only ruling).
+describe("final fix round 2", () => {
+  const isGolden = (req: JevRequest): boolean => !("category" in req.questions);
+  const stopped = AbortSignal.abort(); // a tick that only reads; no check starts
+  const tickAt = (s: RunStore, t: number) => jevVersionTick({ store: s, makeClient: () => fake().client, signal: stopped, chatId: CHAT, now: () => new Date(t).toISOString(), golden: [], log: () => {}, paceMs: 0 });
+  const stalls = (s: RunStore) => s.listOpenIncidents().filter((i) => i.kind === "jev_model_check_stalled").map((i) => i.subject);
+
+  it("NEW1: a golden entry that fails to run on 3 starts no longer holds the check: it finishes, the notice says it did not run, nothing disarmed", async () => {
+    const s = fresh(); seedAnchor(s); s.noteJevModel(CAND, NOW);
+    const bad = () => { const f = fake({ fail: (k) => (isGolden(f.calls[k - 1]!) ? PARSE_FAIL : undefined) }); return f; };
+    const results: string[] = [];
+    for (let k = 0; k < 3; k += 1) results.push(await runJevCheck(deps(s, bad(), { golden: ["memory.kind"] }), CAND));
+    expect(results).toEqual(["pending", "pending", "trusted"]);
+    expect(s.getJevModel(CAND)?.state).toBe("trusted");
+    expect(String(outbox(s)[0]!.payload.text)).toContain("memory.kind did not run");
+    s.close();
+  });
+
+  it("NEW1: a golden outage on 3 starts likewise finishes the check", async () => {
+    const s = fresh(); seedAnchor(s); s.noteJevModel(CAND, NOW);
+    const down = () => { const f = fake({ fail: (k) => (isGolden(f.calls[k - 1]!) ? { ok: false, reason: "error", detail: "HTTP 503", error_kind: "transport" } : undefined) }); return f; };
+    const results: string[] = [];
+    for (let k = 0; k < 3; k += 1) results.push(await runJevCheck(deps(s, down(), { golden: ["tool.injection"] }), CAND));
+    expect(results).toEqual(["outage", "outage", "trusted"]);
+    expect(String(outbox(s)[0]!.payload.text)).toContain("tool.injection did not run");
+    s.close();
+  });
+
+  it("NEW3: the stall timer counts from the latest resume after a deferral, not the generation's first start", async () => {
+    const s = fresh(); seedAnchor(s); s.noteJevModel(CAND, NOW);
+    const t0 = Date.parse(NOW);
+    expect(await runJevCheck(deps(s, fake({ model: () => "jev-old" })), CAND)).toBe("deferred"); // generation started at t0
+    const resumeAt = t0 + 2.5 * 3_600_000;
+    const stop = new AbortController();
+    const f = fake({ onCall: () => stop.abort() });
+    expect(await runJevCheck(deps(s, f, { signal: stop.signal, now: () => new Date(resumeAt).toISOString() }), CAND)).toBe("stopped"); // resumed, still checking
+    serve(s, CAND);
+    tickAt(s, t0 + 3 * 3_600_000 + 60_000);
+    expect(stalls(s)).toEqual([]);
+    tickAt(s, resumeAt + 3 * 3_600_000 + 1);
+    expect(stalls(s)).toEqual([`jev:model:${CAND}`]);
+    s.close();
+  });
+
+  it("served model only: a checking model the alias no longer serves never pages", async () => {
+    const s = fresh(); seedAnchor(s); s.noteJevModel(CAND, NOW);
+    expect(await runJevCheck(deps(s, fake(), { signal: AbortSignal.abort() }), CAND)).toBe("stopped");
+    serve(s, "jev-newer");
+    tickAt(s, Date.parse(NOW) + 4 * 3_600_000);
+    expect(stalls(s)).toEqual([]);
+    s.close();
+  });
+
+  it("NEW2: when the alias stops serving a checking model, its open stall incident resolves", async () => {
+    const s = fresh(); seedAnchor(s); s.noteJevModel(CAND, NOW); serve(s, CAND);
+    expect(await runJevCheck(deps(s, fake(), { signal: AbortSignal.abort() }), CAND)).toBe("stopped");
+    tickAt(s, Date.parse(NOW) + 4 * 3_600_000);
+    expect(stalls(s)).toEqual([`jev:model:${CAND}`]);
+    serve(s, "jev-newer");
+    tickAt(s, Date.parse(NOW) + 4 * 3_600_000 + 1);
+    expect(stalls(s)).toEqual([]);
+    expect(s.getJevModel(CAND)?.state).toBe("checking");
+    s.close();
+  });
+});

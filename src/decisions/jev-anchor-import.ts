@@ -139,7 +139,8 @@ function seedAnchor(store: RunStore, i: { kept: Kept[]; labels: Map<string, { ca
   const { kept, counts, model, now } = i;
   const zh = counts.turns.zh ?? 0;
   if (model === null || zh < JEV_ANCHOR_MIN_ZH) {
-    const cur = model === null ? undefined : (store.noteJevModel(model, now), store.getJevModel(model));
+    // round 2 (NEW6): a failed --replace keeps the old anchor, so every model's state stays as the old anchor left it
+    const cur = model === null || i.replace ? undefined : (store.noteJevModel(model, now), store.getJevModel(model));
     if (model !== null && cur && cur.state !== "insufficient" && cur.state !== "trusted" && cur.state !== "accepted") store.setJevModelState(model, cur.state, "insufficient", JSON.stringify({ zh_turns: zh }), now);
     incident(store, "jev_anchor_insufficient", { zh_turns: zh, need: JEV_ANCHOR_MIN_ZH }, now);
     return { status: "insufficient", message: `only ${zh} zh paired turns (need ${JEV_ANCHOR_MIN_ZH}); the model is insufficient, nothing armed`, counts };

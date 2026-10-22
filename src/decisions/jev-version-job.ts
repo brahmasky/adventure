@@ -164,8 +164,10 @@ function stallTick(i: Pick<JevJobDeps, "store" | "chatId" | "now">): void {
   const served = i.store.latestJevAttemptModel()?.model;
   for (const r of i.store.listJevModels()) {
     if (r.state !== "checking") { resolveOpenIncidents(i.store, STALLED, jevModelSubject(r.model), now); continue; }
+    if (r.model !== served) { resolveOpenIncidents(i.store, STALLED, jevModelSubject(r.model), now); continue; } // round 2 (NEW2): it cannot finish; nothing to page
     const p = progressOf(r.detail_json);
-    if (r.model !== served || !p?.started_at || p.generation !== r.generation || Date.parse(now) - Date.parse(p.started_at) <= JEV_CHECK_STALL_MS) continue;
+    const since = p?.resumed_at ?? p?.started_at; // round 2 (NEW3): from the latest resume after a deferral
+    if (!since || p?.generation !== r.generation || Date.parse(now) - Date.parse(since) <= JEV_CHECK_STALL_MS) continue;
     const text = `**Stalled:** the Jev version check for ${r.model} is not finishing; lanes stay on the planner. Started ${p.started_at}; `
       + `\`houge jev models\` shows its progress, \`houge jev accept ${r.model}\` arms it without the check.`;
     const opened = openAlertedIncident(i.store, { kind: "jev_model_check_stalled", subject: jevModelSubject(r.model), detail: { model: r.model, generation: r.generation, started_at: p.started_at }, now, ...(i.chatId ? { env: {} } : {}) });
@@ -194,7 +196,11 @@ export async function runJevCheck(d: JevJobDeps, model: string): Promise<JevChec
  * A running check's progress in `detail_json`: its generation and when it started, tree answers so far, whether the one
  * retry was spent, and the outage count per tree ask (final fix B1).
  */
-interface Progress { generation: number; started_at?: string; tree?: number; of?: number; retried?: boolean; outages?: Record<string, number> }
+interface Progress {
+  generation: number; started_at?: string; resumed_at?: string; tree?: number; of?: number; retried?: boolean; outages?: Record<string, number>;
+  /** Round 2 (NEW1): starts on which each golden entry failed to run. */
+  golden_fails?: Record<string, number>;
+}
 function progressOf(json: string | null): Progress | null {
   try {
     const p = (JSON.parse(json ?? "null") as { progress?: Progress } | null)?.progress;
@@ -210,10 +216,14 @@ function writeProgress(d: JevJobDeps, model: string, g: number, patch: Partial<P
 /** The generation this start works on: the stored progress's when it is the model's current one (resume, also after a deferral), else a new one (the old rows never count). */
 function beginCheck(d: JevJobDeps, model: string): number | null {
   let row = d.store.getJevModel(model);
-  if (row?.state === "deferred" && d.store.setJevModelState(model, "deferred", "checking", row.detail_json ?? "{}", d.now())) row = d.store.getJevModel(model);
+  let resumed = false;
+  if (row?.state === "deferred" && d.store.setJevModelState(model, "deferred", "checking", row.detail_json ?? "{}", d.now())) { row = d.store.getJevModel(model); resumed = true; }
   if (row?.state !== "checking") return null;
   const p = progressOf(row.detail_json);
-  if (p?.generation === row.generation) return p.started_at || writeProgress(d, model, row.generation, { started_at: d.now() }) ? row.generation : null;
+  if (p?.generation === row.generation) { // round 2 (NEW3): a resume after a deferral restarts the stall clock
+    const patch = { ...(p.started_at ? {} : { started_at: d.now() }), ...(resumed ? { resumed_at: d.now() } : {}) };
+    return Object.keys(patch).length === 0 || writeProgress(d, model, row.generation, patch) ? row.generation : null;
+  }
   const g = d.store.bumpJevModelGeneration(model);
   d.store.bumpJevModelAttempts(model);
   if (!d.store.setJevModelProgress(model, g, JSON.stringify({ progress: { generation: g, started_at: d.now(), tree: 0 } }))) return null;
@@ -384,8 +394,9 @@ async function runGoldens(d: JevJobDeps, model: string, g: number): Promise<JevC
     if (r.kind === "stopped") return "stopped";
     if (r.kind === "wrong_model") { reported = r.reported; continue; }
     if (r.kind === "failed") {
-      if (r.failure && isOutage(r.failure)) return outage(d, model, r.failure);
-      pending += 1; logOf(d)(`jev version check: ${model} golden ${entry} did not run (${r.failure?.error_kind ?? "malformed"}); pending`);
+      const why = goldenFailed(d, model, g, entry, r.failure);
+      if (why === "outage" || why === "skipped") return why;
+      if (why === "pending") pending += 1;
       continue;
     }
     resolveJevIncidentsOnAnswer(d.store);
@@ -393,6 +404,28 @@ async function runGoldens(d: JevJobDeps, model: string, g: number): Promise<JevC
   }
   if (reported !== null) return defer(d, model, g, reported);
   return pending > 0 ? "pending" : "done";
+}
+
+/**
+ * Round 2 (NEW1, controller ruling): a golden entry that failed to run (malformed or an outage) is retried at later starts;
+ * on the JEV_TURN_OUTAGE_STARTS-th start it is recorded `skipped` ("did not run" in the outcome message) and the check
+ * finishes without it. Golden results never disarm.
+ */
+function goldenFailed(d: JevJobDeps, model: string, g: number, entry: string, failure: FailedAsk | null): "outage" | "pending" | "skipped" | "recorded" {
+  const fails = progressOf(d.store.getJevModel(model)?.detail_json ?? null)?.golden_fails ?? {};
+  const n = (fails[entry] ?? 0) + 1;
+  if (!writeProgress(d, model, g, { golden_fails: { ...fails, [entry]: n } })) return "skipped";
+  const outageKind = failure !== null && isOutage(failure);
+  if (n < JEV_TURN_OUTAGE_STARTS) {
+    if (outageKind) { outage(d, model, failure); return "outage"; }
+    logOf(d)(`jev version check: ${model} golden ${entry} did not run (${failure?.error_kind ?? "malformed"}); pending`);
+    return "pending";
+  }
+  if (outageKind) openJevIncident(d.store, failure, { source: "version_check", model });
+  d.store.recordJevCheckRun({ model, generation: g, entry_id: entry, run: "golden", outcome: "skipped", created_at: d.now(),
+    detail_json: JSON.stringify({ did_not_run: true, error_kind: failure?.error_kind ?? "malformed", starts: n }) });
+  logOf(d)(`jev version check: ${model} golden ${entry} did not run on ${n} starts; the check goes on without it`);
+  return "recorded";
 }
 
 /** The candidate's three runs over the anchor turns, from this generation's answered rows only. */
@@ -488,7 +521,8 @@ export function marginLines(margins: Record<string, CheckMargin>): string[] {
 const recallLines = (drops: readonly RecallDrop[]): string[] =>
   drops.map((r) => `- ${r.lane} ${r.anchor} → ${r.candidate} (allowed drop ${r.allowed}; ${r.labelled} labelled)`);
 type Summary = { turns: number; zh_turns: number; golden: Record<string, string> };
-const goldenLine = (s: Summary): string[] => (Object.keys(s.golden).length > 0 ? [`Golden sets: ${Object.entries(s.golden).map(([e, o]) => `${e} ${o}`).join(" · ")}`] : []);
+const goldenLine = (s: Summary): string[] => (Object.keys(s.golden).length > 0
+  ? [`Golden sets: ${Object.entries(s.golden).map(([e, o]) => `${e} ${o === "skipped" ? "did not run" : o}`).join(" · ")}`] : []);
 const comparedLine = (s: Summary): string => `Compared ${s.turns} anchor turns (${s.zh_turns} zh). Margins (≥ 0 passes; a = close to the anchor, b = not noisier than it):`;
 
 function sendNotice(d: JevJobDeps, model: string, g: number, v: CheckVerdict, s: Summary): void {

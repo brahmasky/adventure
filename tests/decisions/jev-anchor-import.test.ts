@@ -123,6 +123,19 @@ describe("importJevAnchor", () => {
     expect(w.store.anchorAnswers("A")).toEqual(before); // nothing usable: the old anchor stays
   });
 
+  it("a --replace that fails validation (< 100 zh) keeps the old anchor and leaves every model's state unchanged (round 2, NEW6)", () => {
+    const w = world(100);
+    importJevAnchor(w.store, full(w), { env: {} });
+    w.store.noteJevModel("jev-other", "2026-10-22T00:00:00.000Z");
+    w.store.setJevModelState(MODEL, "trusted", "drifted", JSON.stringify({ failed_questions: ["category"], route_failed: false, lanes_disarmed: [] }), "2026-10-22T00:00:00.000Z");
+    const before = w.store.listJevModels();
+    const anchor = w.store.anchorAnswers("A");
+    const small = files({ A: w.turns.slice(0, 50).map((t) => row(w.store, t.id, t.lang, "A")), B: w.turns.slice(0, 50).map((t) => row(w.store, t.id, t.lang, "B")) });
+    expect(importJevAnchor(w.store, small, { env: {}, replace: true }).status).toBe("insufficient");
+    expect(w.store.anchorAnswers("A")).toEqual(anchor);
+    expect(w.store.listJevModels()).toEqual(before);
+  });
+
   it("the latest line per key wins and only ok lines count", () => {
     const w = world(101);
     const [first, second] = w.turns as [typeof w.turns[number], typeof w.turns[number]];
