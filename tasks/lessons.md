@@ -535,3 +535,12 @@ Rules Claude writes for itself after corrections. Review at session start.
   about the decider) was deterministic all along, so it belonged in the rule rung (ADR 0013). Rule: before tuning a model
   for a planted miss, ask whether the right answer is a pure function of the input; if so, write it as code and take the
   option out of the model's list.
+
+## ADR hygiene (2026-10-22)
+
+- **An ADR amendment is not done until you grep for what the intent forbids; a build compromise is a todo, not an ADR
+  line.** (Paco 2026-10-22, Jev version check) The first pass amended one decision sentence and left the old rule alive in
+  four other places (the decision text, the index row, the reference docs, the incident names), and the draft ADR text
+  recorded a workaround as if it were a decision. Rule: when an ADR changes, grep the repo for the old behaviour's words
+  (`jev_model_uncalibrated`, `decision_bar_stale`, a version literal) and replace each as current-state text; an ADR holds
+  Paco's decisions and invariants only, and what the build could not do goes in `tasks/todo.md`.

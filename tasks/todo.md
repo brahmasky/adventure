@@ -1,4 +1,23 @@
-# 🧭 CURRENT SYSTEM STATE — 2026-10-22 (read this first)
+# 🧭 CURRENT SYSTEM STATE — 2026-10-23 (read this first)
+
+**Jev version check: BUILT on `feat/jev-version-check` (not merged, not deployed); live gate PASS 2026-10-23.** Spec
+`docs/superpowers/specs/2026-10-22-jev-version-check-design.md` Rev 3.4, plan `docs/superpowers/plans/2026-10-22-jev-version-check.md`.
+No version literal decides behaviour; a Jev version move is checked by a background job against Paco's anchor (about 45
+minutes, paced 1.5 s per call). Gate result: jev-1.14.0 **drifted** against the jev-1.13.0 anchor (category 0.892 vs its own
+0.948; route 0.606 vs 0.844); labels fine, golden sets 4/4 ok, controls behaved. **On deploy the daemon will check 1.14.0,
+find the drift, and send Paco one alert with an Accept button** (the tree stays unarmed for 1.14.0 until he taps it or a
+later version passes). Suite 383 files / 5253 tests. Paco's: merge, rebuild `dist/`, kickstart. Run in flight: none from
+this build. CLI: `houge jev anchor import | models | check [model] | accept <model>`.
+- [ ] Paco: the routing gap. `routeTree`'s caller `src/core/turn-handler-ladder.ts` is not protected and `tree-policy.ts`
+  is not (the middle path), so a self-write could change how an armed result is honoured. Options: protect
+  `turn-handler-ladder.ts`, or clamp the route inside the protected `src/decisions/jev-version-check.ts` (still behind an
+  unprotected caller).
+- [ ] Flaky: the egress 100 ms timing test failed under parallel load several times (passes alone); loosen it or fake the clock.
+- [ ] `scripts/live-gate-decisions-parity.mjs` P6 baseline is stale (see the 2b-ii follow-ups below).
+- [ ] Test gaps from the Task 6 review: no test for the golden path's pacing and none for the 5 s shutdown cap.
+- [ ] ADR 0030 cleanup (R13 and the `decision_bar_stale` wording): a separate approved task after this ships.
+
+# Earlier block — 2026-10-22: decision ladder stage 2b-ii
 
 **Decision ladder stage 2b-ii (`improve.route`): LIVE 2026-10-22** (merged and pushed `6369948`, `dist/` rebuilt, Paco kickstarted
 with the digest back on at the 21:00 default; he signed off the 2b-i and 2b-ii ADR 0030 amendments and the ADR 0028 read-shape

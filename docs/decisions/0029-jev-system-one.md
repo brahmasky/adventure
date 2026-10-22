@@ -44,10 +44,10 @@ We add a third layer. **System One (Jev)** answers typed questions; **code** enf
 fall-through; **System Two (omp seats)** composes inside the lane code picked. Concretely:
 
 1. **One decision call per decision point**, carrying every question that point may need; code ignores answers it does
-   not use. A frozen question library with `criteria_hash`; thresholds keyed by `(question, criteria_hash, model,
-   language)`; a `decisions` row per answer (ids, probabilities, thresholds, outcome — never text); a generic replay
-   harness; a golden set in the invariant sweep. The request names the moving alias `jev-latest`; thresholds and
-   calibration rows key on the versioned model Jev reports (amended 2026-10-07; was pinned to `jev-1.13.0`).
+   not use. A frozen question library with `criteria_hash`; thresholds keyed by `(question, criteria_hash, language)`;
+   a `decisions` row per answer (ids, probabilities, thresholds, outcome — never text); a generic replay harness; a
+   golden set in the invariant sweep. The request names the moving alias `jev-latest`; the model Jev reports is recorded
+   on every row. Calibration approves questions and bars, not a model version (see decision 5).
 2. **Monotone safety.** Jev enters a security-bearing decision only as `ask := code_ask ∨ (jev_flag ∧ conf ≥ τ)`. It
    never produces `allow` or `deny`, never shortens an approval, never clears a taint, and never touches self-write,
    the reader wall's existence, the invariant sweep, the kill switch or `/approve` consumption. Cards show
@@ -60,8 +60,10 @@ fall-through; **System Two (omp seats)** composes inside the lane code picked. C
    Telegram text under the 2026-09-25 caps; web excerpts and mail/calendar fields are a new class that each needs
    Paco's explicit approval before its lane leaves shadow.
 5. **Shadow before arm, per question and per language**, with bars sized against the measured volume and reported with
-   Wilson lower bounds; a criteria or model change re-enters shadow; golden-set drift auto-disarms every Jev-added
-   behaviour.
+   Wilson lower bounds; a criteria change re-enters shadow; golden-set drift auto-disarms every Jev-added behaviour.
+   Calibration approves questions and bars, not a model version. A Jev version move is checked by code against Paco's
+   approved reference turns and labels; a version that agrees within Jev's own noise arms; a drift disarms only the
+   drifting triage questions and pages him. Safety judges never disarm on a version move.
 6. **Jev is a free, non-generative leg outside the flat-rate chains**, metered under the ADR 0019 ceiling and fuse,
    treated as free by Paco until he says otherwise.
 7. **Lane order**, each its own spec → review → plan → build → live gate: (1) pre-planner triage with the memory lane —
@@ -76,7 +78,7 @@ fall-through; **System Two (omp seats)** composes inside the lane code picked. C
 
 - Easier: adding a judgment call is a question plus a threshold row, not a branch; every decision is replayable from
   its row; Opus quota is spent on turns that need it; SP2's inflow lands in an existing triage lane.
-- Harder: thresholds are a maintained artefact (per question, hash, model, language); a criteria edit is a calibration
+- Harder: thresholds are a maintained artefact (per question, hash, language); a criteria edit is a calibration
   event; CJK needs its own evidence per question; one more provider in the audit, one more secret in the broker's use.
 - Constrained: no Jev-decided reconcile verdicts; no per-turn prompt assembly by Jev in v1; no `exfil_shape` through Jev;
   no Jev in any deny path, ever; nothing Jev does may be invisible to the ledger.
@@ -163,34 +165,24 @@ the 293 Telegram turns since 2026-07-02 ($0.066 with the permuted run): 10 confi
 instructions and 1 miss (a correction that also needed a schedule edit, which the lane cannot do; "Ask Houge anyway"
 covers it); 1 `status` verdict, correct; 12 `mixed` (save, then the planner answers); everything else fell through.
 Option-order bias: verdicts agree on 291 of 293 turns with the options reversed. `CALIBRATED_ROWS` now names `lane`,
-`complete`, `scope` and `lane:status` for zh and en on `jev-1.13.0`; a criteria or model change still disarms. The
+`complete`, `scope` and `lane:status` for zh and en on `jev-1.13.0`; a criteria change still disarms. The
 §5.9 report and labelling stay available for tuning the bars, not as an arming gate.
 
 **Accepted 2026-10-06.** On the running daemon (boot 9, `372f2ed`) Paco's first real memory instruction was triaged
 `memory/pure/act` (confidence 0.91), saved by the lane as an UPDATE of lesson #47 with no planner turn, and the card
 with Undo was delivered; no incident open. Operator reference: [jev-decision-layer.md](../reference/jev-decision-layer.md).
 
-## Amendment (2026-10-07): Jev model alias, calibration keyed by the reported model
+## Amendment (2026-10-07): Jev model alias
 
 - **Amendment 2026-10-07 — Jev model alias** (approved by Paco: no hard-coded model versions). Jev requests name
   TypeSafe's moving alias `jev-latest` instead of a pinned version. The response's `model` field reports the versioned
-  id behind the alias. It is validated by `JEV_MODEL_ID` and recorded as `jev_decisions.model_reported`. That reported id
-  is the key for calibration rows (§3.5), the replay reports and the live-shadow evidence. The safety argument is
-  unchanged: a row arms a question only for an exact `(question_id, criteria_hash, model, lang)`. When TypeSafe moves the
-  alias, the new reported id has no row, so every lane falls through to the planner until Paco approves rows for it. Jev
-  still never gates an action. A row naming the alias itself never arms (`calibratedLang`), because it would stay armed
-  across a move.
-- **The move pages Paco.** Losing the armed lanes would otherwise be silent. So, in `arm` mode only, an answered triage
-  call on a model that no row names, while rows exist for another model, opens an alerted incident
-  `jev_model_uncalibrated`: subject = the reported model, detail `{model, calibrated_models, note}`. The note reads
-  "Jev moved to <model>; the lanes fall back to the planner until new calibration rows are approved for it." The open
-  incident throttles it to one page per model. Shadow mode never opens it, since nothing is armed there.
-- **Which rows count.** Only rows that can arm a lane today: a current triage question (or the `lane:status` pseudo-row)
-  at its current criteria hash (`armingRows`). A stale-hash or unrelated row neither clears nor raises the page.
-- **Resolving it.** A model's incident resolves only once arming rows name that model, never because another calibrated id
-  answered in between: a canary serving two ids behind the alias must not re-page on every flip. When the calibrated set
-  is empty (no rows, or only alias rows), every open `jev_model_uncalibrated` resolves and nothing opens: nothing armed,
-  nothing lost. The invariant sweep never touches this kind.
+  id behind the alias. It is validated by `JEV_MODEL_ID` and recorded as `jev_decisions.model_reported`. A row arms a
+  question for `(question_id, criteria_hash, lang)` and holds for a reported model only while that model is `trusted`
+  (decision 5). When TypeSafe moves the alias, the new reported id is checked by code and arms only if it agrees with
+  Paco's approved reference. Jev still never gates an action.
+- **The move pages Paco only on a drift.** A version that agrees arms with one notice; a drift opens an alerted incident
+  with an Accept button (`jev_model_drifted`, or `jev_model_insufficient` when the reference is too small). Operator
+  reference: [jev-decision-layer.md](../reference/jev-decision-layer.md).
 - **The check cannot cost the answer.** It runs after the answered decision is held, inside a try/catch, so a failing
   check never loses the decision rows.
 - **Replay tools stop comparing against a pin.** A run's evidence is its own reported model, and a model change mid-run
@@ -221,7 +213,7 @@ Approved by Paco 2026-10-09 with the stage A merge.
   in Jev's state and the planner prompt; an unresolved quote is a ledger note (`quote_unresolved`), never a failure.
 - **Arming follows new rows.** The six tree questions have new criteria hashes, so lane 1's `CALIBRATED_ROWS` no longer
   arm anything. The tree arms per decision (`category`, `category:status`, `rule`, `gear`) on rows Paco commits after
-  `houge jev replay triage` on a DB copy, keyed on the reported model as before. Until then every turn routes
+  `houge jev replay triage` on a DB copy, as before. Until then every turn routes
   `uncalibrated` to the planner on Default, and the memory and status lanes do not act. The merge is gated on that
   commit and on the armed live gate passing with both lanes acting.
 - **The routing policy stays under `src/jev/`** (`tree-policy.ts`), not `src/policy/`: it produces no allow or deny, so it
@@ -242,9 +234,8 @@ Approved by Paco 2026-10-09 with the stage A merge.
   candidate plus 40 at random). With his labels: no turn misrouted into a lane (memory 7/7, status 2/2), category
   agreement 181/301, option-order agreement 276/301. The known weakness is research read as lookup (26 of 59), which
   routes a research turn to Fast instead of Thinking.
-- **Rows.** `CALIBRATED_ROWS` names all six tree questions plus `category:status` for zh and en on the model Jev
-  reported (14 rows, approved "Paco 2026-10-09"). The per-turn bars are unchanged and still send every unsure turn to
-  the planner on Default; a criteria or model change disarms, and an alias move pages (`jev_model_uncalibrated`).
+- **Rows.** `CALIBRATED_ROWS` names all six tree questions plus `category:status` for zh and en (14 rows, approved "Paco 2026-10-09"). The per-turn bars are unchanged and still send every unsure turn to
+  the planner on Default; a criteria change disarms, and an alias move is checked by code (decision 5).
 - **Probability sums allow rounding.** Jev rounds each probability to two decimals, so n options may sum up to
   n × 0.005 off 1. The client's fixed 0.01 tolerance (plus float error) had rejected a four-level 0.99 as `parse`,
   voiding the whole decision point on about 3% of calls (18 of 602 in the replay). The bound now scales with the option
@@ -259,7 +250,7 @@ Approved by Paco 2026-10-09 with the stage A merge.
 
 - **Lanes armed on Paco's word.** `answer` and `lookup` become lanes: code owns the steps, one Fast-role one-shot
   composes, no planner session and no tool in the model's hands. The build ships armed: `CALIBRATED_ROWS` gains
-  `category:answer` and `category:lookup` (zh and en, the category question's hash, the reported model), approved
+  `category:answer` and `category:lookup` (zh and en, the category question's hash), approved
   "Paco 2026-10-10". Evidence, from the 2026-10-09 replay re-scored under the lane rules (no new Jev call): the lanes take
   78 of 301 turns (answer 39, lookup 39); against Paco's labels lookup 7/7, answer 6/9; 26 of the 78 move from the planner
   on Default to the Fast role; about 5 of the 38 lookup takes are questions a search cannot answer, which the lane answers

@@ -212,10 +212,12 @@ not), `route_outcome` (`act`, `fallback`, `pin_failed`) and `handler_outcome` (`
 `planner_done` / `planner_failed` once the run ends; never left `pending`). A status render that throws settles as
 `fallthrough:render_failed` with route outcome `fallback`.
 
-Rows key on the model Jev **reports**, not the one requested: every request names the moving alias `jev-latest`. When
-TypeSafe moves the alias, the reported id has no row, so every question falls to uncalibrated (Default route) until Paco
-commits rows for the new id. In `arm` mode the first such answered call opens a `jev_model_uncalibrated` incident and pages
-once per model.
+Rows carry no model version: every request names the moving alias `jev-latest`, and the id Jev **reports** is recorded on
+each row. When TypeSafe moves the alias, a background job checks the new id against Paco's anchor (the approved replay and
+labels) and the tree is unarmed for it meanwhile: **about 45 minutes** (asks paced at 1.5 s), during which questions fall to
+uncalibrated (Default route). A version within Jev's noise arms with one notice; a drift disarms the failing questions and
+dependent lanes and opens one `jev_model_drifted` incident with an Accept button. `houge jev models | check | accept`; details
+in [configuration.md](configuration.md#jev-system-one-adr-0029).
 
 ## Reading a lane row
 
@@ -255,7 +257,7 @@ band; an `unverified` send-back is never offered for a tap.
 
 A daily golden tick (`runSettleGoldenTick`, `src/decisions/golden.ts`) asks the same request on eight synthetic items (four
 claims or promises that must send back, four clean replies that must settle) and fires on any question over its bar; a miss
-pages `decision_golden_drift:turn.settle`, a moved model pages `decision_bar_stale`, and neither disarms. Reading a row:
+pages `decision_golden_drift:turn.settle`, a moved model runs the golden sets on the new id and a drift pages `decision_golden_drift` (the old `decision_bar_stale` is retired); neither disarms. Reading a row:
 `decisions` where `entry = 'turn.settle'`; reasons, outcomes (`settle_sent_back`, `settle_unverified`, `settle_discarded`)
 and the settle detail are in [ADR 0030](../decisions/0030-decision-ladder.md)'s 2b-i amendment. Reason `pass_errored` (an
 errored pass 0 is never sent back) joins `budget` and `todo_unavailable` in the settle health count and the digest's Health
@@ -301,9 +303,9 @@ tick, not in a turn. Signals (corrections, ratings, denials and expiries, planne
 ## Arming
 
 **Armed 2026-10-09.** `CALIBRATED_ROWS` (`src/jev/calibration.ts`) holds 14 rows: the six tree questions plus
-`category:status`, zh and en, on the model Jev reported. Evidence: 301 replayed turns, 111 labelled by Paco, no turn
+`category:status`, zh and en (no version in a row; the version check arms per model). Evidence: 301 replayed turns, 111 labelled by Paco, no turn
 misrouted into a lane (memory 7/7, status 2/2), category agreement 181/301, option-order agreement 276/301; the known
-weakness is research read as lookup (26 of 59). Without rows for the reported model **nothing is armed**: every turn
+weakness is research read as lookup (26 of 59). Without rows, or for a model the version check has not trusted, **nothing is armed**: every turn
 routes `uncalibrated` to the planner on Default, and the memory and status lanes do not act. The sequence (for a new
 model or a criteria change) is build, then
 `houge jev replay triage` on a DB copy (a `--dry-run` first for the cost; it must run on a copy, because opening the DB
@@ -358,8 +360,7 @@ For a live kill with no restart, `/disarm` forces `HOUGE_JEV_ENABLED` off.
 
 A broken lane or a silent Jev outage must reach Paco:
 
-- Every Jev outage class pages (`jev_auth`, `jev_rate_limited`, `jev_overloaded`, `jev_question_invalid`, `jev_no_key`,
-  `jev_model_uncalibrated`), and the next answered call resolves it.
+- Every Jev outage class pages (`jev_auth`, `jev_rate_limited`, `jev_overloaded`, `jev_question_invalid`, `jev_no_key`), and the next answered call resolves it.
 - `jev_skip_rate`: half or more of at least 3 triage calls in 24 h failing silently. `ack_rule` skips are not calls.
 - `lane_fallthrough_rate`: half or more of at least 3 settled turns of one lane (memory, status, answer or lookup) in 24 h falling through
   to the planner. A fall-through is a verdict whose handler outcome starts `fallthrough:` or a lane turn closed

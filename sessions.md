@@ -1715,3 +1715,23 @@ consuming signals, Undo mislabelling `turn.handler`, an evening poll stall); thr
 spaces), a tick that latched failed on one bad group, and a digest that leaked cards across chats. Known gaps: the digest
 offers no review taps, so no new `review_bad` signals until a review surface returns; a Jev timeout opens no incident.
 Still Paco's: ADR sign-off, the bar (0.6 or 0.67), kickstart, the digest time, DISARM_FLAGS / PROTECTED_FILES additions.
+
+## 2026-10-22 to 2026-10-23: Jev version check, on `feat/jev-version-check`
+
+Paco's ask: no hard-coded version decides behaviour, and a Jev version move must not stop him. Spec
+`docs/superpowers/specs/2026-10-22-jev-version-check-design.md` Rev 3.4 (senior r4: 0 blockers; codex r6 ready), plan Rev
+2.1, eight tasks, each reviewed in two stages. Built: calibration rows and bars lose their `model` field; an immutable
+anchor (`jev_anchor*`, imported from Paco's approved replay, permuted replay and labels: 301 turns, 111 labels, jev-1.13.0
+trusted) and `jev_models` states; the signal-path tick discovers an unseen model and a background job (paced 1.5 s per
+call, about 45 minutes) checks it on seven agreement measures plus Paco's labels; `trusted` arms, `drifted` disarms the
+failing questions and dependents (a route drift disarms the whole tree) and pages once with an Accept button; the four
+ladder bars run their golden sets on a new model and page a drift without disarming. CLI: `houge jev anchor import | models
+| check | accept`. Paco's rulings: an ADR records his decisions only (ADR 0029 decisions 1 and 5 replaced, no compromise
+amendment); the middle path on the protected list (`calibration.ts` protected, `tree-policy.ts` not, the arming application
+in the protected `src/decisions/jev-version-check.ts`). Reviews found: a stuck `insufficient`, a self-caused 429 risk
+(hence the pacing), a shutdown that waited past launchd's timeout, and a cascade scope missing from the route baseline.
+Live gate 2026-10-23 on a copy with live Jev (about 2 h, it runs the check twice plus three golden repeats): PASS.
+jev-1.14.0 DRIFTED against the jev-1.13.0 anchor (category 0.892 vs its own 0.948; route 0.606 vs 0.844), labels within
+allowance, golden sets 4/4 ok, shuffled-anchor control failed as required, self control passed. Final suite 383 files / 5253
+tests, typecheck clean. Known gaps: see `tasks/todo.md` (flaky egress timing test, golden-path pacing and shutdown cap
+untested, the unprotected caller). Still Paco's: kickstart, merge, the routing-gap question.

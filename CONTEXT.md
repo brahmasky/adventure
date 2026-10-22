@@ -90,6 +90,8 @@ This file defines domain language for Houge architecture reviews and implementat
 
 **Withhold**: Replacing a passage of tool output with `[withheld: text aimed at the assistant]` before any model reads it.
 
+**Anchor**: Paco's approved reference for the Jev version check (ADR 0029): the replayed Telegram turns (run A canonical, run B permuted) with the answers Jev gave on the model he approved, each turn's rebuilt state, and his hand labels, stored in `jev_anchor*`. A new model's answers are compared with it, never with another model's; it is never replaced by a later model.
+
 **Noise band**: A reviewed per-question margin around a bar inside which a decision asks Jev once more and uses the mean (or, over tool input, the more cautious call).
 
 **Tap label**: A calibration label taken from Paco's ✅ on a front-door lane route; other taps are evidence only.

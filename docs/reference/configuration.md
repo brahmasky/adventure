@@ -974,18 +974,26 @@ code constants `TREE_BAR_DEFAULTS` (`src/jev/tree-policy.ts`; choice 0.6, `noul`
 confidence floor 0.7, gap floor 0.5, `rule_scope` 0.6, gear 1.2 / 2.5), stamped on every decision row as
 `TREE_THRESHOLD_VERSION`. A bar change is a code change.
 
-**Model: the alias, not a pin.** Every Jev request names TypeSafe's moving alias `jev-latest` (no hard-coded version,
-2026-10-07); the response's `model` field reports the versioned id behind it, and that **reported** id is what
-calibration rows, `jev_decisions.model_reported` and the replay reports key on. When TypeSafe moves the alias, the new
-id has no row, so every question falls to uncalibrated (Default route) until Paco approves rows for it: the first answered call
-on the new id opens a `jev_model_uncalibrated` incident (below).
+**Model: the alias, a version check.** Every Jev request names TypeSafe's moving alias `jev-latest`; the response's `model`
+field reports the versioned id behind it and is recorded as `jev_decisions.model_reported`. Calibration rows carry no
+version. When the alias moves, the daemon's signal-path tick notes the new id (`jev_models`, state `checking`) and a
+background job sends Paco's anchor turns (the approved replay and labels, imported by `houge jev anchor import`) through the
+tree questions on it, paced at 1.5 s per call: **a check takes about 45 minutes** (about $0.20), and the tree is unarmed for
+that model meanwhile. A version that agrees within Jev's own noise becomes `trusted` and arms with one notice; a drift
+(`drifted`) disarms the failing questions and their dependent lanes (any route-effect drift disarms the whole tree) and opens
+one alerted `jev_model_drifted` incident with an Accept button; too small a reference (`insufficient`) opens
+`jev_model_insufficient`. The four ladder bars never disarm on a move: their golden sets run on the new model and a drift
+pages `decision_golden_drift:<entry>`. Spec: `docs/superpowers/specs/2026-10-22-jev-version-check-design.md`.
+
+CLI (no new env var): `houge jev anchor import [dir]` (idempotent; the daemon also imports at boot when the anchor tables
+are empty), `houge jev models` (states and numbers), `houge jev check [model]` (queue a re-check; the daemon's next tick
+runs it), `houge jev accept <model>` (arm everything for that model on Paco's word).
 
 **Calibration rows are code, not env.** `CALIBRATED_ROWS` in `src/jev/calibration.ts` holds the arming rows, keyed
-`(question_id, criteria_hash, model, lang)`. The six tree questions have new criteria hashes, so **lane 1's rows armed
+`(question_id, criteria_hash, lang)` (no model version; the version check above decides per model whether they hold). The six tree questions have new criteria hashes, so **lane 1's rows armed
 nothing after the tree and were retired**. Paco committed the tree's 14 rows on 2026-10-09 (all six questions plus
-`category:status`, zh and en, on the model Jev reported) after the replay and his labels. On 2026-10-10 he added `category:answer` and `category:lookup` (zh and en): 18 rows; each lane arms on
-its own row. Without a row for the reported
-model, every armed turn routes `uncalibrated` to the planner on Default, and the memory and status lanes do not act. Each decision arms on its own
+`category:status`, zh and en) after the replay and his labels. On 2026-10-10 he added `category:answer` and `category:lookup` (zh and en): 18 rows; each lane arms on
+its own row. Without an arming row, or for a reported model that is not `trusted`, every armed turn routes `uncalibrated` to the planner on Default, and the memory and status lanes do not act. Each decision arms on its own
 rows: `category` (the six categories' routing), the pseudo-row `category:status` (`TREE_STATUS_ARM_ID`, the status
 lane), `rule` (`sets_rule` and `rule_scope` together) and `gear` (the three scores). The memory lane needs `category`
 and `rule`; the status lane needs `category:status` and `rule`, so a stated rule is never swallowed by a code reply;
@@ -1005,9 +1013,10 @@ denominator; carries `category`, `route_lane`, `role`, `verdict_id`, `decision`,
 
 **Incidents** (the first failure opens one and alerts Paco): `jev_auth`, `jev_rate_limited`, `jev_overloaded`,
 `jev_question_invalid`, `jev_no_key`, `triage_overrides` (three 🔍 Dig deeper taps on one lane in seven days; subject `jev:lane:<lane>`; it pages and disarms nothing),
-`triage_threw`, and `jev_model_uncalibrated` (subject = the reported model: Jev answered on a model no calibration row
-names while rows exist for another, i.e. the alias moved; `arm` mode only; one page per model; resolved once rows name
-that model, or when no calibrated rows remain; the sweep never touches it). The next answered Jev call resolves any open
+`triage_threw`, `jev_model_drifted` and `jev_model_insufficient` (subject = the reported model: the version check found a
+drift, or the reference was too small; the card carries an Accept button, `dec:jv:<model hash>:acc`, chat-bound and once;
+resolved when a new check of that model starts) and `jev_anchor_missing` / `jev_anchor_mixed_models` /
+`jev_anchor_insufficient` (the anchor import could not seed a reference). `jev_model_uncalibrated` is retired. The next answered Jev call resolves any open
 outage `jev_*` incident, and a lane's `triage_overrides` resolves once that lane's 7-day tap count is under three (checked after each tap, at each triage and by the sweep). The invariant
 sweep adds two rate kinds:
 

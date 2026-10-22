@@ -209,6 +209,8 @@ disarm; a confident memory turn with a second request runs the planner (`two_req
 a catch-up block; `HOUGE_JEV_LANES_OFF` switches one lane off. **Next:** stage C (`schedule` and `wiki` lanes, the research
 lane question), then Jev judges inside the planner loop (the next spec).
 
+**Delta 2026-10-23: the Jev version check is built** (`feat/jev-version-check`; spec 2026-10-22 Rev 3.4). No version literal decides behaviour: a Jev version move is checked by code against Paco's approved reference turns and labels (about 45 minutes), arms on agreement and pages once with an Accept button on a drift. Live gate PASS: jev-1.14.0 drifted against the 1.13.0 anchor. Next: ADR 0030 cleanup (a separate approved task), then the ladder's stage 3.
+
 **Delta 2026-10-19: the memory write is built** (`feat/memory-write`, not merged; spec 2026-10-15 Rev 3). "Remember this" is
 the ladder decision `memory.kind` (Jev, provisional bar 0.85): the memory lane writes rules and facts from Paco's thread, and
 any lane's save-first may write a fact. It is the prerequisite of decision-ladder stage 2b, and `improve.route`'s `fact` target

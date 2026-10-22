@@ -48,7 +48,9 @@ The check gates the triage tree only (the only model-gated decision). The four l
 - `jev_models(model PRIMARY KEY, first_seen_at, state CHECK(state IN ('trusted','checking','deferred','drifted',
   'insufficient','accepted')), checked_at, attempts, detail_json)`. Seed: the anchor's own `model` value → `trusted`, but
   only when the zh anchor holds ≥ 100 rebuilt turns with both an A and a B answer set, and every imported A and B row
-  reports one and the same versioned model (else `insufficient`, as the replay report already rejects mixed models). Data from the file, no literal in `src/`.
+  reports one and the same versioned model. **As built:** rows reporting more than one model seed nothing and import
+  nothing (status `mixed_models`, one incident), as the replay report already rejects mixed models; fewer than 100 zh
+  turns is `insufficient`. Data from the file, no literal in `src/`.
   Fresh DB, no anchor → no `trusted` row → nothing armed.
 - Discovery cursor: `ledger_events.rowid` (sequence is per run).
 
@@ -98,7 +100,9 @@ e. **Ladder bars.** Each golden set runs on the candidate in check-specific runs
    model must equal the candidate (else retried as above). `improve.route` gets a golden set of states that the rule rung
    abstains on, so each item reaches the Jev rung, with intended targets. Drift → one incident per entry; never disarms.
    `decision_bar_stale` retires.
-Cost: 3 × ~300 turns ≈ $0.20 per version move; a few minutes on the background job.
+Cost: 3 × ~300 turns ≈ $0.20 per version move. **As built:** asks are paced at 1.5 s per call (`JEV_CHECK_PACE_MS`, so the
+check cannot trip a 429 on Paco's live triage key), so a check takes about 45 minutes after a version move and the lanes
+fall back to the planner that long. The live gate ran about 2 h because it runs the check twice plus three golden repeats.
 
 ### 2.6 Paco's controls
 `houge jev models` (states and numbers), `houge jev check <model>` (re-run), `houge jev accept <model>` (everything armed);
@@ -107,7 +111,11 @@ these incidents.
 
 ### 2.7 Protected surface
 The check's thresholds, state machine and arming read live in `src/decisions/jev-version-check.ts` (under the protected
-`src/decisions/`); `src/jev/calibration.ts` and `src/jev/tree-policy.ts` join `PROTECTED_FILES` (they now read the gate).
+`src/decisions/`); `src/jev/calibration.ts` joins `PROTECTED_FILES` (it holds the arming rows the gate reads). **As built (Paco's middle path,
+2026-10-22):** `src/jev/tree-policy.ts` is NOT protected; the arming application (`treeArmed`: the check state and the
+lane dependencies) lives in the protected `src/decisions/jev-version-check.ts`, and the routing policy only consumes its
+result. Residual: a self-write could change how `routeTree` honours the result, and the caller
+`src/core/turn-handler-ladder.ts` is unprotected too (open question to Paco in `tasks/todo.md`).
 
 ## 3. Failure modes
 Reference files missing → no reference → nothing armed + one incident naming the import command. Two ids behind the alias →
