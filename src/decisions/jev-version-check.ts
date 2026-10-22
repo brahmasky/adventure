@@ -10,6 +10,7 @@ import { calibratedLang, type CalibrationRow } from "../jev/calibration.js";
 import type { Lang } from "../jev/intent-question.js";
 import { JEV_REQUEST_MODEL, type JevAnswer } from "../jev/jev-client.js";
 import { isBareAck } from "../omp/bare-ack.js";
+import { urlRule } from "../core/turn-handler-ladder.js"; // the live rule itself (a benign import cycle: both sides use the other only inside functions)
 import {
   TREE_ACTIONS, TREE_BREADTH, TREE_CATEGORY, TREE_QUESTIONS, TREE_REASONING, TREE_RULE_SCOPE, TREE_SETS_RULE, type LastHougeTurn
 } from "../jev/questions/tree.js";
@@ -148,7 +149,9 @@ export interface RouteState { latest_message?: unknown; last_houge_turn?: unknow
 
 /**
  * The full route effect of one turn's answers as a comparable key (spec §2.5): category, lane, role, effort, save scope, a
- * cascade by its pair. The turn's own think-harder, bare-ack and ack-after-answer facts come from its stored state.
+ * cascade by its pair. The turn's own think-harder, bare-ack and ack-after-answer facts come from its stored state, and a
+ * final route goes through the live urlRule exactly as the live turn does (final fix E: a lookup naming a URL is the
+ * planner's, turn-handler-ladder.ts `routed`).
  */
 export function routeEffectKey(state: RouteState, answers: Record<string, JevAnswer>, bars: TreeBars = TREE_BAR_DEFAULTS): string {
   const text = typeof state.latest_message === "string" ? state.latest_message : "";
@@ -157,8 +160,10 @@ export function routeEffectKey(state: RouteState, answers: Record<string, JevAns
   const fields = (r: { category: string | null; lane: string; role: string; effort: string | null; save: { scope: string } | null }, pair = ""): string =>
     [r.category ?? "-", r.lane, r.role, r.effort ?? "-", r.save?.scope ?? "-", pair].join("/");
   if (pre.kind === "ack_answer") return fields(ACK_ROUTE);
-  const plan = routeTree(answers, { bars, armed: CHECK_ARMED, thinkHarder: thinkHarderIn(text), bareAck: isBareAck(text) });
-  return plan.kind === "final" ? fields(plan.route) : fields(plan.base, `cascade:${plan.between.join("|")}:${plan.ruleScope ?? "-"}`);
+  const opts = { bars, thinkHarder: thinkHarderIn(text), bareAck: isBareAck(text) };
+  const plan = routeTree(answers, { ...opts, armed: CHECK_ARMED });
+  if (plan.kind === "cascade") return fields(plan.base, `cascade:${plan.between.join("|")}:${plan.ruleScope ?? "-"}`);
+  return fields(urlRule(plan.route, text, () => routeTree(answers, { ...opts, armed: { ...CHECK_ARMED, lookup: false } })));
 }
 
 /** The lane a route key lands in (its second field); a cascade is the planner's. */

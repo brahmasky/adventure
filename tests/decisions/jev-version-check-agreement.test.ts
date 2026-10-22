@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { agreementOf, answerBucket, laneLabelCounts, laneOfKey, routeEffectKey } from "../../src/decisions/jev-version-check.js";
+import { agreementByCheck, agreementOf, answerBucket, laneLabelCounts, laneOfKey, routeEffectKey } from "../../src/decisions/jev-version-check.js";
 import { TREE_ACTIONS, TREE_CATEGORY, TREE_SETS_RULE } from "../../src/jev/questions/tree.js";
 import { choiceAns, noulAns, scoreAns, treeAnswers } from "../helpers/jev-tree-answers.js";
 import { CATEGORIES } from "../../src/jev/questions/tree.js";
@@ -60,5 +60,24 @@ describe("laneLabelCounts", () => {
     ]);
     expect(c.memory).toEqual({ wrong: 1, recall: 1, labelled: 2 });
     expect(c.answer).toEqual({ wrong: 0, recall: 0, labelled: 1 });
+  });
+});
+
+// Final fix E (codex W1): the check's route is the live turn's route. The live turn sends a lookup naming a URL to the
+// planner (urlRule, turn-handler-ladder.ts); a check that skipped it would count those turns as lookup routes and compare
+// a lane the live path never takes.
+describe("routeEffectKey applies the live urlRule", () => {
+  const plain = { latest_message: "今天悉尼天气怎么样", last_houge_turn: null, quoted_turn: null };
+  const withUrl = { latest_message: "帮我看看 https://example.com/news 这页说什么", last_houge_turn: null, quoted_turn: null };
+  it("a lookup turn without a URL stays lookup; the same answers on a URL-shaped state go to the planner", () => {
+    const lookup = treeAnswers({ category: "lookup" });
+    expect(laneOfKey(routeEffectKey(plain, lookup))).toBe("lookup");
+    expect(laneOfKey(routeEffectKey(withUrl, lookup))).toBe("planner");
+  });
+  it("both sides of a comparison use the turn's state, so two lookup answers on a URL turn agree as planner routes", () => {
+    const a = new Map([["t1", { state: withUrl, answers: treeAnswers({ category: "lookup" }) }]]);
+    const b = new Map([["t1", { state: withUrl, answers: treeAnswers({ category: "lookup", p: 0.95 }) }]]);
+    expect(agreementByCheck(a, b).route).toEqual({ agree: 1, n: 1 });
+    expect(laneLabelCounts([{ routeKey: routeEffectKey(withUrl, treeAnswers({ category: "lookup" })), label: "lookup" }]).lookup).toEqual({ wrong: 0, recall: 0, labelled: 1 });
   });
 });
