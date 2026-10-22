@@ -9,7 +9,7 @@ import { DECISION_SIGNALS, type DecisionSignal, type Entry, type ProvisionalBar,
 /**
  * `improve.route` (2b-ii spec §4; parent §7.4; ADR 0030 decision 8): once a day, over the inbox's grouped signals, what
  * should Houge change? Rule rungs cause the only automatic effect (a recurrence → the skill-authoring job, started by the
- * tick on a rule-rung `skill`/`recurrence` row; plan ruling 1); Jev (one fixed choice question, bar 0.6) and the Tiny pick
+ * tick on a rule-rung `skill`/`recurrence` row; plan ruling 1); Jev (one fixed choice question, bar 0.67) and the Tiny pick
  * only propose. Fail-open on `nothing`; every signal is one of its outcomes (§4.4). Always recorded; the row's run is the
  * group's newest run.
  */
@@ -19,12 +19,12 @@ export type ImproveTarget = (typeof IMPROVE_TARGETS)[number];
 export const IMPROVE_REASONS = ["stale", "stated_rule_owned", "recurrence", "recurrence_lookup", "already_authored", "skill_exists", "expiry_pattern", "deferred_rate",
   "wiki_disarmed", "jev_choice", "tiny_pick", "below_bar", "no_text", "lane_busy", "inapplicable_top", "already_proposed", "review_bad", "locked_entry"] as const;
 export type ImproveReason = (typeof IMPROVE_REASONS)[number];
-export const IMPROVE_BAR_P = 0.6;
+export const IMPROVE_BAR_P = 0.67;
 export const IMPROVE_JEV_MS = 1_500;
 export const IMPROVE_TINY_MS = 8_000;
 /** R8: provisional until the sanity run and the 14-day revisit set it from real signal groups. */
 export const IMPROVE_BAR: ProvisionalBar = { kind: "provisional", question: IMPROVE_TARGET.id, criteriaHash: criteriaHash(IMPROVE_TARGET), model: "jev-1.13.0", p: IMPROVE_BAR_P,
-  source: "2b-ii spec R8: provisional 0.6 on improve_target; the sanity run (§9.3) and the 14-day revisit (§11) calibrate it" };
+  source: "2b-ii spec R8: 0.67 on improve_target, the sanity run's suggestion (lowest planted jev_choice p 0.72 − 0.05), signed off by Paco 2026-10-22; the 14-day revisit (§11) recalibrates it" };
 
 export interface ImproveState {
   signal: DecisionSignal; value: string; scope: string; count: number; count14d: number;
@@ -86,7 +86,7 @@ export function improveJevState(s: ImproveState): ImproveJevState {
 
 /**
  * Masking after the answer (codex round 2 N3): the overall top option decides when applicable and at or over the bar; an
- * inapplicable top abstains `inapplicable_top` (no runner-up can clear 0.6); an applicable top under the bar abstains
+ * inapplicable top abstains `inapplicable_top` (no runner-up can clear the bar); an applicable top under the bar abstains
  * `below_bar` with the two best applicable options for the Tiny pick. `p` is always the overall top's probability.
  */
 export function jevVerdictOf(a: JevChoiceAnswer, s: ImproveState): Rule {

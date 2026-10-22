@@ -6,7 +6,7 @@ import { criteriaHash, optionsOf } from "../../src/jev/questions/types.js";
 import { DECISION_SIGNALS, type AnyEntry } from "../../src/decisions/types.js";
 
 // Spec 2b-ii §4: one entry over mixed input, no monotone order, fail-open on `nothing`, every signal an outcome, a
-// provisional 0.6 bar on one fixed choice question (escape first), a Tiny pick below it. Rule order is the spec's §4.3 list.
+// 0.67 bar (Paco's sign-off 2026-10-22) on one fixed choice question (escape first), a Tiny pick below it. Rule order is the spec's §4.3 list.
 const base: ImproveState = { signal: "correction", value: "answer", scope: "answer", count: 1, count14d: 2, category: "answer", lane: "answer", capability: null,
   pacoText: "please keep answers shorter", toolSummary: "none", lastImprovement: null, recurrence: null, alreadyAuthored: false, skillExists: false, wikiArmed: false,
   scheduleHint: null, stale: false, statedRuleSaved: false, redacted: { pacoText: "please keep answers shorter" } };
@@ -25,10 +25,10 @@ describe("the improve.route entry", () => {
     for (const v of IMPROVE_TARGETS.filter((t) => t !== "nothing")) expect(e.effects[v]).toMatchObject({ kind: "proposal", reversible: true, announced: "card" });
     expect([...e.reasonCodes]).toEqual([...IMPROVE_REASONS]);
   });
-  it("the one fixed question: escape first, eight options, the bar hashes it at 0.6", () => {
+  it("the one fixed question: escape first, eight options, the bar hashes it at 0.67", () => {
     expect(optionsOf(IMPROVE_TARGET)).toEqual([...IMPROVE_TARGETS]);
     expect(IMPROVE_BAR).toMatchObject({ kind: "provisional", question: "improve_target", criteriaHash: criteriaHash(IMPROVE_TARGET), p: IMPROVE_BAR_P });
-    expect(IMPROVE_BAR_P).toBe(0.6);
+    expect(IMPROVE_BAR_P).toBe(0.67);
   });
   it("rule order: stale → stated_rule_owned → recurrence (already_authored / skill_exists / lookup → knowledge / skill) → expiry pattern → no_text → abstain", () => {
     expect(improveRule({ ...base, stale: true, statedRuleSaved: true })).toMatchObject({ verdict: "nothing", reason: "stale" });
@@ -67,6 +67,7 @@ describe("the improve.route entry", () => {
     expect(jevVerdictOf(answer({ lesson: 0.7, nothing: 0.2, fact: 0.1 }), base)).toMatchObject({ verdict: "lesson", reason: "jev_choice", p: 0.7 });
     expect(jevVerdictOf(answer({ schedule: 0.7, lesson: 0.2, nothing: 0.1 }), base)).toMatchObject({ verdict: "nothing", reason: "inapplicable_top", p: 0.7, detail: { top: "schedule", p: 0.7 } }); // ruling 18: an answer, so the row keeps the reason
     expect(jevVerdictOf(answer({ lesson: 0.45, fact: 0.3, schedule: 0.15, nothing: 0.1 }), base)).toMatchObject({ abstain: true, reason: "below_bar", detail: { top2: ["lesson", "fact"], p: 0.45 } });
-    expect(jevVerdictOf(answer({ nothing: 0.6, lesson: 0.4 }), base)).toMatchObject({ verdict: "nothing", reason: "jev_choice" });
+    expect(jevVerdictOf(answer({ nothing: 0.67, lesson: 0.33 }), base)).toMatchObject({ verdict: "nothing", reason: "jev_choice" }); // at the bar decides
+    expect(jevVerdictOf(answer({ nothing: 0.66, lesson: 0.34 }), base)).toMatchObject({ abstain: true, reason: "below_bar" }); // a hair under it goes to the Tiny pick
   });
 });
