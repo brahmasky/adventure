@@ -25,7 +25,7 @@ import { jevJobSettled, jevVersionTick, resolveLegacyGoldenModelIncidents } from
 import { errorCode } from "../domain/error-code.js";
 import { IMPROVE_JEV_MS } from "../decisions/entries/improve-route.js";
 import { runImproveTick } from "../improve/tick.js";
-import { createJevClient } from "../jev/jev-client.js";
+import { createJevClient, type JevRequest, type JevResult } from "../jev/jev-client.js";
 import { evolutionLaneSettled, evolutionLaneSnapshot } from "../core/evolution-lane.js";
 import { reconcileJobsAtBoot, skillJobHooks } from "../core/skill-job.js";
 import type { TelegramAllowlist } from "../domain/types.js";
@@ -114,6 +114,8 @@ export interface RunTelegramDaemonOptions {
   outboxPumpMs?: number;
   /** How often expired planner leases are recovered (default half of HOUGE_OMP_LEASE_TTL_S; B1). Tests shorten it. */
   leaseRecoveryMs?: number;
+  /** Injectable for tests ONLY: the Jev version check's client (final fix G1). Prod omits it and gets the audited TypeSafe client. */
+  jevCheckClient?: () => (req: JevRequest) => Promise<JevResult>;
   /** Injectable for tests ONLY: the contract probe runner (spec §5). Prod omits it and gets the real runner. */
   ompProbeRunner?: (d: Parameters<typeof createOmpProbeRunner>[0]) => Pick<OmpProbeRunner, "maybeProbe">;
 }
@@ -389,8 +391,8 @@ export const OUTBOX_INCIDENT_WINDOW_MS = 10 * 60_000;
 /** Shutdown waits at most this long for the Jev version check (launchd's ExitTimeOut is 40 s; the check is resumable). */
 export const JEV_JOB_SHUTDOWN_CAP_MS = 5_000;
 
-/** Resolves when `p` settles or after `ms`, whichever is first; the timer never holds the process. */
-function settledWithin(p: Promise<void>, ms: number): Promise<void> {
+/** Resolves when `p` settles or after `ms`, whichever is first; a rejection is swallowed; the timer never holds the process. Exported for its test. */
+export function settledWithin(p: Promise<void>, ms: number): Promise<void> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const cap = new Promise<void>((resolve) => { timer = setTimeout(resolve, ms); timer.unref(); });
   return Promise.race([p.catch(() => undefined), cap]).finally(() => clearTimeout(timer));
@@ -570,9 +572,9 @@ async function runImproveTickSafe(options: RunTelegramDaemonOptions, worker: Cor
 function runJevVersionTickSafe(options: RunTelegramDaemonOptions, chatId: string | null): void {
   try {
     jevVersionTick({ store: options.store, signal: options.stopSignal, chatId, now: () => new Date().toISOString(),
-      makeClient: () => createJevClient({ apiKey: options.broker ? options.broker.typesafeKey() : process.env.TYPESAFE_API_KEY,
+      makeClient: options.jevCheckClient ?? (() => createJevClient({ apiKey: options.broker ? options.broker.typesafeKey() : process.env.TYPESAFE_API_KEY,
         audit: options.store.llmAuditSink({ correlation_id: "jev-version-check", role: "triage" }), meteredBreached: () => options.store.meteredFuseLatched(),
-        retries: 3, timeoutMs: 15_000 }) });
+        retries: 3, timeoutMs: 15_000 })) });
   } catch (error) {
     console.error(`[telegram-daemon] jev version tick failed: ${errorCode(error)}`);
   }

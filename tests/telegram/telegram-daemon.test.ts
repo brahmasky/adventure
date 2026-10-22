@@ -8,7 +8,10 @@ import {
   tryStartEvolutionPipeline
 } from "../../src/core/evolution-lane.js";
 import { parseRatingHistory, RunStore } from "../../src/run/run-store.js";
-import { invariantSweepInput, runTelegramDaemon as runDaemon, sweepAndRearm } from "../../src/telegram/telegram-daemon.js";
+import { invariantSweepInput, JEV_JOB_SHUTDOWN_CAP_MS, runTelegramDaemon as runDaemon, settledWithin, sweepAndRearm } from "../../src/telegram/telegram-daemon.js";
+import { jevJobSettled, resetJevJobForTests } from "../../src/decisions/jev-version-job.js";
+import type { JevResult } from "../../src/jev/jev-client.js";
+import { seedJevAnchor } from "../helpers/jev-anchor.js";
 import {
   RATING_ACK_COMMENT_TEXT,
   RATING_ACK_TEXT,
@@ -1269,6 +1272,81 @@ describe("the daemon's sweep wiring (M9)", () => {
       expect(reset).toHaveBeenCalledTimes(2);
     } finally {
       store.close();
+    }
+  });
+});
+
+// Final fix G1/G2 (testing Imp): the Jev version check's daemon wiring. Deleting the tick call, awaiting it, passing the
+// wrong signal or dropping the chat would leave every unit test green; only these see it.
+describe("runTelegramDaemon — the Jev version check wiring (final fix G1, G2)", () => {
+  const CAND = "jev-cand";
+  afterEach(() => resetJevJobForTests());
+  const serve = (store: RunStore) => store.llmAuditSink({ correlation_id: "t", role: "triage" }).record({ provider: "jev", role: "", outcome: "ok", model: CAND, latency_ms: 1 });
+
+  it("a poll cycle starts the check without awaiting it; the hung client is called; the stop signal ends the check", async () => {
+    const store = RunStore.openInMemory();
+    const root = projectRoot();
+    try {
+      seedJevAnchor(store, "jev-anchor"); serve(store);
+      const controller = new AbortController();
+      let calls = 0; let polls = 0;
+      const hung = async (): Promise<JevResult> => { // parked until the daemon stops; then reports another id, so nothing is recorded
+        calls += 1;
+        await new Promise<void>((r) => { if (controller.signal.aborted) r(); else controller.signal.addEventListener("abort", () => r(), { once: true }); });
+        return { ok: true, model: "jev-elsewhere", answers: {}, input_tokens: 1, latency_ms: 1 };
+      };
+      await runTelegramDaemon({ store, projectRoot: root, omp: fakeOmp(root), allowlist: ALLOWLIST, stopSignal: controller.signal, jevCheckClient: () => hung,
+        telegramClient: { getUpdates: async () => { polls += 1; if (polls >= 2) { await until(() => calls > 0); controller.abort(); } return []; },
+          sendMessage: async () => ({ message_id: 1 }) } as never });
+      expect(polls).toBeGreaterThanOrEqual(2); // the cycle returned while the check's first ask was parked
+      expect(calls).toBe(1);
+      await jevJobSettled();
+      const row = store.getJevModel(CAND)!;
+      expect(row.state).toBe("checking"); // stopped, resumable
+      expect(store.listJevCheckRuns(CAND, row.generation, "tree")).toEqual([]);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("the allowlist's chat reaches the check: an insufficient card goes to it and binds Accept to it", async () => {
+    const store = RunStore.openInMemory();
+    const root = projectRoot();
+    try {
+      serve(store); // no anchor: the check ends insufficient at once, no Jev call
+      const controller = new AbortController();
+      const sent: Array<{ chat_id: unknown; text: string }> = [];
+      let polls = 0;
+      const never = (): never => { throw new Error("no Jev call expected"); };
+      await runTelegramDaemon({ store, projectRoot: root, omp: fakeOmp(root), allowlist: ALLOWLIST, stopSignal: controller.signal, jevCheckClient: () => never,
+        telegramClient: { getUpdates: async () => ((polls += 1) >= 2 ? stopWhen(controller, () => sent.some((m) => m.text.includes("cannot be checked"))) : []),
+          sendMessage: async (m: { chat_id: unknown; text: string }) => { sent.push(m); return { message_id: sent.length }; } } as never });
+      expect(sent.filter((m) => m.text.includes("cannot be checked")).map((m) => String(m.chat_id))).toEqual(["222"]);
+      expect(JSON.parse(store.getJevModel(CAND)!.detail_json!)).toMatchObject({ card_chat: "222" });
+    } finally {
+      store.close();
+    }
+  });
+
+  it("shutdown waits for the check at most JEV_JOB_SHUTDOWN_CAP_MS: at the cap on a pending job, at once on a settled one, a rejection swallowed, no timer left", async () => {
+    vi.useFakeTimers();
+    try {
+      let done = false;
+      void settledWithin(new Promise<void>(() => undefined), JEV_JOB_SHUTDOWN_CAP_MS).then(() => { done = true; });
+      await vi.advanceTimersByTimeAsync(JEV_JOB_SHUTDOWN_CAP_MS - 1);
+      expect(done).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(done).toBe(true);
+      expect(vi.getTimerCount()).toBe(0);
+      let early = false;
+      void settledWithin(Promise.resolve(), JEV_JOB_SHUTDOWN_CAP_MS).then(() => { early = true; });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(early).toBe(true);
+      await expect(settledWithin(Promise.reject(new Error("job failed")), JEV_JOB_SHUTDOWN_CAP_MS)).resolves.toBeUndefined();
+      expect(vi.getTimerCount()).toBe(0);
+      expect(JEV_JOB_SHUTDOWN_CAP_MS).toBe(5_000);
+    } finally {
+      vi.useRealTimers();
     }
   });
 });

@@ -5,6 +5,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseDriftDetail } from "../../src/decisions/jev-version-check.js";
+import { acceptJevModelCli } from "../../src/decisions/jev-version-controls.js";
 import {
   discoverJevModels, JEV_CHECK_PACE_MS, JEV_DEFER_RETRY_MS, resolveLegacyGoldenModelIncidents, JEV_JOB_OUTAGE_BACKOFF_MS, jevJobSettled, jevVersionTick, resetJevJobForTests, runJevCheck, type JevJobDeps
 } from "../../src/decisions/jev-version-job.js";
@@ -588,6 +589,108 @@ describe("a stale anchor (final fix F4)", () => {
     const text = String(outbox(s)[0]!.payload.text);
     expect(text).toContain("houge jev anchor import --replace");
     expect(text).not.toMatch(/has \d+ zh turns/); // never the too-small text
+    s.close();
+  });
+});
+
+// Final fix G4 (testing Imp): with no chat from the allowlist, a drift or an insufficient model still reaches Paco through
+// the operator chat (the incident's own alert), never a silent lanes-off; a pass with no chat does not throw.
+describe("no chat id (final fix G4)", () => {
+  const OPERATOR = "999";
+  afterEach(() => vi.unstubAllEnvs());
+  const driftAnswers = (i: number) => (i % 3 === 0 && i >= MEMORY_TURNS ? treeAnswers({ category: "lookup" }) : anchorAnswers(i));
+
+  it("drifted: one incident and its generic alert to the operator chat, no Accept button (no card_chat to bind it to)", async () => {
+    vi.stubEnv("HOUGE_TELEGRAM_CHAT_ID", OPERATOR);
+    const s = fresh(); seedAnchor(s); s.noteJevModel(CAND, NOW);
+    expect(await runJevCheck(deps(s, fake({ answer: driftAnswers }), { chatId: null }), CAND)).toBe("drifted");
+    expect(s.getJevModel(CAND)?.state).toBe("drifted");
+    expect(s.listOpenIncidents().map((i) => i.kind)).toEqual(["jev_model_drifted"]);
+    const sent = outbox(s);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.chat).toBe(OPERATOR);
+    expect(sent[0]!.payload.button_rows).toBeUndefined();
+    expect(String(sent[0]!.payload.text)).toMatch(/jev_model_drifted/);
+    s.close();
+  });
+
+  it("insufficient: one incident and its generic alert, no button", async () => {
+    vi.stubEnv("HOUGE_TELEGRAM_CHAT_ID", OPERATOR);
+    const s = fresh(); seedAnchor(s, 60); s.noteJevModel(CAND, NOW);
+    expect(await runJevCheck(deps(s, fake(), { chatId: null }), CAND)).toBe("insufficient");
+    expect(s.listOpenIncidents().map((i) => i.kind)).toEqual(["jev_model_insufficient"]);
+    const sent = outbox(s);
+    expect(sent.map((m) => [m.chat, m.payload.button_rows])).toEqual([[OPERATOR, undefined]]);
+    s.close();
+  });
+
+  it("trusted with no chat at all does not throw and still trusts the model", async () => {
+    vi.stubEnv("HOUGE_TELEGRAM_CHAT_ID", "");
+    const s = fresh(); seedAnchor(s); s.noteJevModel(CAND, NOW);
+    expect(await runJevCheck(deps(s, fake(), { chatId: null }), CAND)).toBe("trusted");
+    expect(outbox(s)).toEqual([]);
+    s.close();
+  });
+});
+
+// Final fix G5 (testing Imp): the check compares zh and mixed turns, counts only zh toward the 100, and never asks en.
+describe("language mix (final fix G5)", () => {
+  it("100 zh + 20 mixed + 10 en: asks 3 × 120 turns; the notice counts 120 turns, 100 zh", async () => {
+    const s = fresh(); seedAnchor(s, 130, (i) => (i < 100 ? "zh" : i < 120 ? "mixed" : "en")); s.noteJevModel(CAND, NOW);
+    const f = fake();
+    expect(await runJevCheck(deps(s, f), CAND)).toBe("trusted");
+    expect(f.calls).toHaveLength(3 * 120);
+    expect(f.calls.every((c) => indexOf(c.state) < 120)).toBe(true);
+    expect(String(outbox(s)[0]!.payload.text)).toContain("Compared 120 anchor turns (100 zh)");
+    s.close();
+  });
+
+  it("90 zh + 30 mixed is insufficient: mixed turns never count toward the 100", async () => {
+    const s = fresh(); seedAnchor(s, 120, (i) => (i < 90 ? "zh" : "mixed")); s.noteJevModel(CAND, NOW);
+    const f = fake();
+    expect(await runJevCheck(deps(s, f), CAND)).toBe("insufficient");
+    expect(f.calls).toHaveLength(0);
+    expect(JSON.parse(s.getJevModel(CAND)!.detail_json!)).toMatchObject({ reason: "anchor_too_small", zh_turns: 90 });
+    s.close();
+  });
+});
+
+// Final fix G8 (testing Minor): the job's lifecycle edges.
+describe("job lifecycle (final fix G8)", () => {
+  const isGolden = (req: JevRequest): boolean => !("category" in req.questions);
+
+  it("golden resume: a stop after the first entry never re-asks it", async () => {
+    const s = fresh(); seedAnchor(s); s.noteJevModel(CAND, NOW);
+    const stop = new AbortController();
+    const golden = ["tool.injection", "improve.route"] as const;
+    const first = fake({ onCall: (k) => { if (k === 3 * N + 1) stop.abort(); } }); // the injection set is one ask; stop right after it
+    expect(await runJevCheck(deps(s, first, { signal: stop.signal, golden }), CAND)).toBe("stopped");
+    const g = s.getJevModel(CAND)!.generation;
+    expect(s.getJevCheckRun(CAND, g, "tool.injection", "golden")).toBeDefined();
+    expect(s.getJevCheckRun(CAND, g, "improve.route", "golden")).toBeUndefined();
+    const second = fake();
+    expect(await runJevCheck(deps(s, second, { golden }), CAND)).toBe("trusted");
+    expect(second.calls.every(isGolden)).toBe(true);
+    expect(second.calls.some((c) => "i1" in c.questions)).toBe(false); // the injection set was not asked again
+    s.close();
+  });
+
+  it("an abort before the first golden item: stopped, no golden row", async () => {
+    const s = fresh(); seedAnchor(s); s.noteJevModel(CAND, NOW);
+    const stop = new AbortController();
+    const f = fake({ onCall: (k) => { if (k === 3 * N) stop.abort(); } });
+    expect(await runJevCheck(deps(s, f, { signal: stop.signal, golden: ["tool.injection"] }), CAND)).toBe("stopped");
+    expect(f.calls).toHaveLength(3 * N);
+    expect(s.getJevCheckRun(CAND, s.getJevModel(CAND)!.generation, "tool.injection", "golden")).toBeUndefined();
+    s.close();
+  });
+
+  it("a state moved mid-run (Paco's Accept) is never overwritten: the check ends skipped and sends nothing", async () => {
+    const s = fresh(); seedAnchor(s); s.noteJevModel(CAND, NOW);
+    const f = fake({ onCall: (k) => { if (k === 10) expect(acceptJevModelCli(s, CAND, NOW).ok).toBe(true); } });
+    expect(await runJevCheck(deps(s, f), CAND)).toBe("skipped");
+    expect(s.getJevModel(CAND)?.state).toBe("accepted");
+    expect(outbox(s)).toEqual([]);
     s.close();
   });
 });

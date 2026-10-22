@@ -204,6 +204,44 @@ describe("a killed lane turn (stage B §8 aborted)", () => {
   });
 });
 
+// Final fix G3: a lane the version check disarmed (lanes_disarmed) falls back while the others still route; Paco's Accept
+// arms everything again. Proven through the worker, not only at treeArmed level.
+describe("a version-check verdict through the worker (final fix G3)", () => {
+  const MEMORY: Says = { category: cat({ memory: 0.9 }), sets_rule: 0.95 };
+  const moveTo = (store: RunStore, state: "drifted" | "accepted", detail: unknown) =>
+    expect(store.setJevModelState(REPORTED, "trusted", state, JSON.stringify(detail), "2026-10-22T00:00:00Z")).toBe(true);
+  const disarmedMemory = { failed_questions: [], route_failed: false, lanes_disarmed: ["memory"] };
+  it("memory disarmed by check c: a stated rule goes to the planner, no lesson saved", async () => {
+    const s = setup(treeSays(MEMORY));
+    moveTo(s.store, "drifted", disarmedMemory);
+    const t = s.turn("以后回复短一点");
+    await s.worker.triageTurn(t.input);
+    expect(verdictOf(s.store, t.run_id)).toMatchObject({ category: "memory", lane: "planner" });
+    expect(s.store.getActiveLessons("ask")).toHaveLength(0);
+    s.store.close();
+  });
+  it("memory disarmed by check c: a lookup turn on the same model still takes the lookup lane", async () => {
+    const s = setup(treeSays(LOOKUP), { web: web() });
+    moveTo(s.store, "drifted", disarmedMemory);
+    const t = s.turn("明天悉尼天气怎么样？");
+    expect((await s.worker.triageTurn(t.input)).kind).toBe("lane_reply");
+    expect(verdictOf(s.store, t.run_id)).toMatchObject({ lane: "lookup", route_outcome: "act" });
+    s.store.close();
+  });
+  it("lookup disarmed: the same lookup turn goes to the planner; accepted (Paco's Accept) arms it again", async () => {
+    const s = setup(treeSays(LOOKUP), { web: web() });
+    moveTo(s.store, "drifted", { failed_questions: [], route_failed: false, lanes_disarmed: ["lookup"] });
+    const t = s.turn("明天悉尼天气怎么样？");
+    await s.worker.triageTurn(t.input);
+    expect(verdictOf(s.store, t.run_id)).toMatchObject({ category: "lookup", lane: "planner" });
+    expect(s.store.setJevModelState(REPORTED, "drifted", "accepted", "{}", "2026-10-22T00:00:00Z")).toBe(true);
+    const t2 = s.turn("明天悉尼天气怎么样？");
+    expect((await s.worker.triageTurn(t2.input)).kind).toBe("lane_reply");
+    expect(verdictOf(s.store, t2.run_id)).toMatchObject({ lane: "lookup", route_outcome: "act" });
+    s.store.close();
+  });
+});
+
 describe("the lookup lane through the worker (stage B §5)", () => {
   it("one search with its provenance row, the reader wall, a source line, the catch-up line; no loop_step", async () => {
     const seen: Array<Record<string, unknown>> = [];

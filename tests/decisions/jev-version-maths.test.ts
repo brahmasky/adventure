@@ -219,3 +219,47 @@ describe("checkOutcome: the state and detail the check writes (spec §2.5 d)", (
     expect(parseDriftDetail(o.detail_json)!.lanes_disarmed.every((l) => (DISARMABLE_LANES as readonly string[]).includes(l))).toBe(true);
   });
 });
+
+// Final fix G7 (testing Minor): each rule pinned at its edge, so an EPS, `<` vs `<=`, n/p swap or A/B mix-up mutant fails.
+describe("the check's edges (final fix G7)", () => {
+  const with1 = (id: string, g: Agreement): Record<string, Agreement> => ({ ...full(), [id]: g });
+  it("a margin of exactly 0 passes; one a millionth below fails", () => {
+    const at = (agree: number) => judge(input({ candVsAnchor: with1("category", { agree, n: 1_000_000 }), candSelf: with1("category", { agree: 1_000_000, n: 1_000_000 }) }));
+    expect(at(950_000).margins.category!.a).toBe(0);
+    expect(at(950_000).failed_questions).toEqual([]);
+    expect(at(949_999).failed_questions).toEqual(["category"]);
+  });
+  it("the slack takes the reference's rate: with the observed rate instead the same numbers would pass", () => {
+    const v = judge(input({ candVsAnchor: with1("category", { agree: 93, n: 100 }), candSelf: with1("category", { agree: 99, n: 100 }) }));
+    expect(v.failed_questions).toEqual(["category"]); // 0.93 < 0.99 − max(0.05, 2.7·sqrt(0.99·0.01/100)) = 0.94
+    expect(0.93 >= 0.99 - slack(100, 0.93)).toBe(true); // the swapped formula would have passed it
+  });
+  it("the slack takes the observed side's n: with the reference's n the same numbers would fail", () => {
+    const v = judge(input({ candVsAnchor: with1("category", { agree: 34, n: 50 }), candSelf: with1("category", { agree: 8000, n: 10_000 }) }));
+    expect(v.failed_questions).toEqual([]); // 0.68 ≥ 0.8 − slack(50, 0.8) ≈ 0.647
+    expect(0.68 >= 0.8 - slack(10_000, 0.8)).toBe(false);
+  });
+  it("check c on the status lane: anchor + 1 wrong routes passes, + 2 disarms", () => {
+    const cand = (wrong: number) => ({ ...ANCHOR_LANES.A, status: { wrong, recall: 2, labelled: 8 } });
+    expect(judge(input({ candLanes: cand(1) })).lanes_disarmed).toEqual([]);
+    expect(judge(input({ candLanes: cand(2) })).lanes_disarmed).toEqual(["status"]);
+  });
+  it("check c compares with the anchor's run A only, even when its run B had more wrong routes", () => {
+    const anchorLanes = { A: ANCHOR_LANES.A, B: { ...ANCHOR_LANES.B, lookup: { wrong: 5, recall: 7, labelled: 14 } } };
+    expect(judge(input({ anchorLanes, candLanes: { ...ANCHOR_LANES.A, lookup: { wrong: 2, recall: 7, labelled: 14 } } })).lanes_disarmed).toEqual(["lookup"]);
+  });
+  it("the recall allowance uses the anchor's A-vs-B gap either way round (B above A)", () => {
+    const anchorLanes = { A: { ...ANCHOR_LANES.A, memory: { wrong: 0, recall: 9, labelled: 25 } }, B: { ...ANCHOR_LANES.B, memory: { wrong: 0, recall: 13, labelled: 25 } } };
+    const drops = (recall: number) => judge(input({ anchorLanes, candLanes: { ...anchorLanes.A, memory: { wrong: 0, recall, labelled: 25 } } })).recall_drops;
+    expect(drops(4)).toEqual([]); // allowed max(2, |9 − 13| + 1) = 5
+    expect(drops(3)).toEqual([{ lane: "memory", anchor: 9, candidate: 3, allowed: 5, labelled: 25 }]);
+  });
+  it("a question failing both a and b is listed once; the route failing a alone or b alone fails the route", () => {
+    const low = { agree: 50, n: 100 };
+    const both = judge(input({ candVsAnchor: with1("category", low), candAB: { ...ANCHOR_AB, category: low } }));
+    expect(both.failed_questions).toEqual(["category"]);
+    expect(judge(input({ candVsAnchor: with1(ROUTE_CHECK_ID, low) })).route_failed).toBe(true);
+    expect(judge(input({ candAB: { ...ANCHOR_AB, [ROUTE_CHECK_ID]: low } })).route_failed).toBe(true);
+    expect(judge(input({ candAB: { ...ANCHOR_AB, [ROUTE_CHECK_ID]: low } })).failed_questions).toEqual([]);
+  });
+});

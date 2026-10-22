@@ -87,6 +87,25 @@ describe("handleJevAcceptTap", () => {
     expect(s.getJevModel(MODEL)?.state).toBe("accepted");
   });
 
+  // Final fix G8: the fence holds from every state a tap can meet, not only trusted.
+  it("a card tapped while a re-check runs (checking) or waits (deferred) accepts nothing", () => {
+    for (const state of ["checking", "deferred"] as const) {
+      const s = RunStore.openInMemory(); drifted(s);
+      expect(s.setJevModelState(MODEL, "drifted", state, JSON.stringify({ card_chat: CHAT }), NOW)).toBe(true); // card_chat kept: only the state fences
+      handleJevAcceptTap(s, tap(sha8(MODEL)), NOW);
+      expect(s.getJevModel(MODEL)?.state).toBe(state);
+      expect(replies(s)).toEqual([TAP_HANDLED_TEXT]);
+    }
+  });
+
+  it("a model whose card went to no chat (card_chat null) cannot be accepted by a tap from any chat", () => {
+    const s = RunStore.openInMemory(); drifted(s);
+    expect(s.setJevModelState(MODEL, "drifted", "drifted", JSON.stringify({ failed_questions: ["category"], route_failed: true, lanes_disarmed: [], card_chat: null }), NOW)).toBe(true);
+    handleJevAcceptTap(s, tap(sha8(MODEL)), NOW);
+    expect(s.getJevModel(MODEL)?.state).toBe("drifted");
+    expect(replies(s)).toEqual([TAP_HANDLED_TEXT]);
+  });
+
   it("an unknown hash is handled, nothing written", () => {
     const s = RunStore.openInMemory(); drifted(s);
     handleJevAcceptTap(s, tap("00000000"), NOW);

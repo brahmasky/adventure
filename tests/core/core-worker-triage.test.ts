@@ -551,6 +551,36 @@ describe("triageTurn — arming, shadow and outages", () => {
     expect(triageRows(store, t2.run_id)).toMatchObject([{ status: "answered", decision: "act" }]);
     store.close();
   });
+  // Final fix G3: the live path honours a drifted model's detail, not only trusted / unchecked. A regression that read the
+  // state but ignored the detail would arm a lane the check found drifting.
+  const drift = (store: RunStore, detail: { failed_questions: string[]; route_failed: boolean; lanes_disarmed: string[] }) =>
+    expect(store.setJevModelState(REPORTED, "trusted", "drifted", JSON.stringify(detail), "2026-10-22T00:00:00Z")).toBe(true);
+  it("a drifted model whose route check failed: a stated rule falls back to the planner (uncalibrated), nothing saved", async () => {
+    const { store, worker, turn } = setup(treeSays(RULE));
+    drift(store, { failed_questions: [], route_failed: true, lanes_disarmed: [] });
+    const t = turn("以后回复短一点");
+    expect(await worker.triageTurn(t.input)).toMatchObject({ kind: "fallthrough" });
+    expect(triageRows(store, t.run_id)).toMatchObject([{ status: "answered", decision: "fallback", verdict: "uncalibrated" }]);
+    expect(store.getActiveLessons("ask")).toHaveLength(0);
+    store.close();
+  });
+  it("a drifted model whose category failed: the memory lane (it needs category) falls back to the planner", async () => {
+    const { store, worker, turn } = setup(treeSays(RULE));
+    drift(store, { failed_questions: ["category"], route_failed: false, lanes_disarmed: [] });
+    const t = turn("以后回复短一点");
+    await worker.triageTurn(t.input);
+    expect(verdictOf(store, t.run_id)).toMatchObject({ lane: "planner", reason: "uncalibrated" });
+    expect(store.getActiveLessons("ask")).toHaveLength(0);
+    store.close();
+  });
+  it("a drifted model whose failed question is a gear score still routes the memory lane (category and rule armed)", async () => {
+    const { store, worker, turn } = setup(treeSays(RULE));
+    drift(store, { failed_questions: ["breadth"], route_failed: false, lanes_disarmed: [] });
+    const t = turn("以后回复短一点");
+    expect(await worker.triageTurn(t.input)).toMatchObject({ kind: "lane_reply" });
+    expect(verdictOf(store, t.run_id)).toMatchObject({ lane: "memory", route_outcome: "act" });
+    store.close();
+  });
   // `jev_model_uncalibrated` retired: an alias move opens nothing, and a row an older build left open resolves on the next turn.
   const uncalibrated = (store: RunStore) => store.listOpenIncidents().filter((i) => i.kind === "jev_model_uncalibrated");
   it("an alias move opens no jev_model_uncalibrated incident, and a legacy open one resolves on the next triage", async () => {

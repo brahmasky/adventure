@@ -41,6 +41,17 @@ describe("treeArmingFor: the reported model's check state arms the tree", () => 
   it.each(["checking", "deferred", "insufficient"] as const)("%s arms nothing", (state) => {
     expect(armedFor(storeWith(NEW, state), NEW)).toEqual(NONE);
   });
+  // Final fix G6: no version literal decides behaviour, proven by behaviour too: two ids that differ only in their version
+  // number (a newer-looking one and an older-looking one) arm exactly alike for the same check state.
+  it("two versions with the same check state arm identically, whatever their numbers", () => {
+    const states: Array<[JevModelState, JevDriftDetail | string]> = [["trusted", "{}"], ["accepted", "{}"], ["checking", "{}"], ["deferred", "{}"], ["insufficient", "{}"],
+      ["drifted", drift({ failed_questions: ["sets_rule"], lanes_disarmed: ["lookup"] })], ["drifted", drift({ route_failed: true })]];
+    for (const [state, detail] of states) {
+      const [hi, lo] = [armedFor(storeWith("jev-9.9.9", state, detail), "jev-9.9.9"), armedFor(storeWith("jev-0.0.1", state, detail), "jev-0.0.1")];
+      expect(lo, state).toEqual(hi);
+    }
+    expect(armedFor(RunStore.openInMemory(), "jev-9.9.9")).toEqual(armedFor(RunStore.openInMemory(), "jev-0.0.1"));
+  });
   // Only the reported id counts: another model's trusted row never arms this call.
   it("a trusted row for another model does not arm this one", () => {
     expect(armedFor(storeWith("jev-other", "trusted"), NEW)).toEqual(NONE);
