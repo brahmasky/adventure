@@ -1,6 +1,6 @@
 # Jev version check — no version literal in behaviour code; a version move is checked by code
 
-**Status:** Rev 3.3, 2026-10-22 (Rev 3.2 + senior r4: 0 blockers, 1 warning, 2 suggestions). Paco's ask (2026-10-22):
+**Status:** Rev 3.4, 2026-10-22 (Rev 3.3 + codex r5: 1 blocker; senior r4: 0 blockers). Paco's ask (2026-10-22):
 "build the automatic check". His intent (2026-10-07, restated today): no hard-coded version decides behaviour, and a Jev
 version move must not stop him. This is Paco's decision, so ADR 0029 decision 5 and its 2026-10-07 amendment ("falls
 through until Paco approves rows") are replaced by §2 (ADR text in §6).
@@ -37,8 +37,9 @@ The check gates the triage tree only (the only model-gated decision). The four l
   `importJevAnchor(store, dir)` from `.houge/jev-tree/replay.jsonl` (A), the permuted replay file (B) and `labels.jsonl`:
   latest line per key wins, `ok` lines only; A rows are validated against the live questions' hashes and B rows against
   the permuted questions' hashes (`treeQuestions(true)`); each turn's state is rebuilt from the DB at import with the
-  live path's redaction (the broker's redactor, as `core-worker.ts:3135` `this.broker.redact`; the import refuses to run
-  when the store has no broker redactor), and a turn whose rebuilt `state_hash`
+  live path's redaction: `store.redactSecretValues`, which is the broker's redactor when the secrets firewall is armed
+  (`cli.ts:34`, the live daemon's configuration) and the same no-op the live path applies when it is off, so a stored
+  state is byte-for-byte what the live path would send in either configuration, and a turn whose rebuilt `state_hash`
   differs from the anchor's is dropped; the stored state is what checks send, so they never depend on chat turns. Counts are logged. Runs at daemon boot when the tables are empty and the files
   exist, and as `houge jev anchor import`. The anchor is never replaced by a later model's answers: every check compares
   with Paco's approved set (no chain drift).
