@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseDriftDetail } from "../../src/decisions/jev-version-check.js";
 import {
-  discoverJevModels, JEV_CHECK_PACE_MS, JEV_JOB_OUTAGE_BACKOFF_MS, jevJobSettled, jevVersionTick, resetJevJobForTests, runJevCheck, type JevJobDeps
+  discoverJevModels, JEV_CHECK_PACE_MS, JEV_DEFER_RETRY_MS, JEV_JOB_OUTAGE_BACKOFF_MS, jevJobSettled, jevVersionTick, resetJevJobForTests, runJevCheck, type JevJobDeps
 } from "../../src/decisions/jev-version-job.js";
 import type { JevAnswer, JevRequest, JevResult } from "../../src/jev/jev-client.js";
 import { CATEGORIES } from "../../src/jev/questions/tree.js";
@@ -58,7 +58,7 @@ function genericAnswers(req: JevRequest): Record<string, JevAnswer> {
 type Answerer = (i: number, req: JevRequest) => Record<string, JevAnswer>;
 interface Fake { client: (r: JevRequest) => Promise<JevResult>; calls: JevRequest[] }
 /** A stub Jev: tree requests answered by `answer(turn index)`, reporting `model(call number)`; every call recorded. */
-function fake(o: { answer?: Answerer; model?: (call: number) => string; fail?: (call: number) => JevResult | undefined; onCall?: (call: number) => void } = {}): Fake {
+function fake(o: { answer?: Answerer; model?: (call: number, req: JevRequest) => string; fail?: (call: number) => JevResult | undefined; onCall?: (call: number) => void } = {}): Fake {
   const calls: JevRequest[] = [];
   const client = async (req: JevRequest): Promise<JevResult> => {
     calls.push(req);
@@ -68,7 +68,7 @@ function fake(o: { answer?: Answerer; model?: (call: number) => string; fail?: (
     if (failed) return failed;
     const i = indexOf(req.state);
     const answers = "category" in req.questions ? (o.answer ?? ((t) => anchorAnswers(t)))(i, req) : genericAnswers(req);
-    return { ok: true, model: o.model?.(k) ?? CAND, answers, input_tokens: 10, latency_ms: 1 };
+    return { ok: true, model: o.model?.(k, req) ?? CAND, answers, input_tokens: 10, latency_ms: 1 };
   };
   return { client, calls };
 }
@@ -153,11 +153,11 @@ describe("the background job (spec §2.4)", () => {
     s.close();
   });
 
-  it("a mixed batch is retried at most 3 times, then the model goes deferred; another model's answers are never recorded", async () => {
+  it("an ask is retried at most 3 times on another model, skipped, re-asked once at the end; no candidate answers → deferred, another model's answers never recorded", async () => {
     const s = fresh(); seedAnchor(s); s.noteJevModel(CAND, NOW);
     const f = fake({ model: () => "jev-old" });
     expect(await runJevCheck(deps(s, f), CAND)).toBe("deferred");
-    expect(f.calls).toHaveLength(4); // the first ask and 3 retries
+    expect(f.calls).toHaveLength(3 * N * 4 * 2); // every ask: the first try and 3 retries, then once more at the end of the pass
     const row = s.getJevModel(CAND)!;
     expect(row.state).toBe("deferred");
     expect(row.checked_at).toBe(NOW);
@@ -208,14 +208,14 @@ describe("the background job (spec §2.4)", () => {
     s.close();
   });
 
-  it("a deferred model is retried a day later, not at the next tick", async () => {
+  it("a deferred model is retried after the deferral wait (an hour), not at the next tick", async () => {
     const s = fresh(); seedAnchor(s); s.noteJevModel(CAND, NOW);
     expect(await runJevCheck(deps(s, fake({ model: () => "jev-old" })), CAND)).toBe("deferred");
     serve(s, CAND);
     let t = Date.parse(NOW) + 60_000;
     const tick = () => jevVersionTick({ store: s, makeClient: () => fake().client, signal: new AbortController().signal, chatId: CHAT, now: () => new Date(t).toISOString(), golden: [], log: () => {}, paceMs: 0 });
     expect(tick().started).toBeNull();
-    t = Date.parse(NOW) + 24 * 3_600_000 + 1;
+    t = Date.parse(NOW) + JEV_DEFER_RETRY_MS + 1;
     expect(tick().started).toBe(CAND);
     await jevJobSettled();
     expect(s.getJevModel(CAND)?.state).toBe("trusted");
@@ -381,7 +381,7 @@ describe("fix round 1", () => {
     const s = fresh(); seedAnchor(s); s.noteJevModel(CAND, NOW);
     expect(await runJevCheck(deps(s, fake({ model: () => "jev-old" })), CAND)).toBe("deferred");
     serve(s, "jev-newer");
-    const t = Date.parse(NOW) + 24 * 3_600_000 + 1;
+    const t = Date.parse(NOW) + JEV_DEFER_RETRY_MS + 1;
     const r = jevVersionTick({ store: s, makeClient: () => fake({ model: () => "jev-newer" }).client, signal: new AbortController().signal, chatId: CHAT, now: () => new Date(t).toISOString(), golden: [], log: () => {}, paceMs: 0 });
     expect(r.started).toBe("jev-newer");
     await jevJobSettled();
@@ -395,11 +395,79 @@ describe("fix round 1", () => {
     const g = s.getJevModel(CAND)!.generation;
     serve(s, CAND);
     const f = fake();
-    const t = Date.parse(NOW) + 24 * 3_600_000 + 1;
+    const t = Date.parse(NOW) + JEV_DEFER_RETRY_MS + 1;
     expect(jevVersionTick({ store: s, makeClient: () => f.client, signal: new AbortController().signal, chatId: CHAT, now: () => new Date(t).toISOString(), golden: [], log: () => {}, paceMs: 0 }).started).toBe(CAND);
     await jevJobSettled();
     expect(s.getJevModel(CAND)).toMatchObject({ state: "trusted", generation: g });
     expect(f.calls).toHaveLength(3 * N - 20);
     s.close();
+  });
+});
+
+// Final fix A (correctness Imp, adversarial 2): while the alias serves two ids the check must not stall the lanes silently.
+describe("canary days (final fix A)", () => {
+  const isTurn = (req: JevRequest, i: number): boolean => indexOf(req.state) === i;
+  const canaryText = /Jev is serving two versions; the check retries/;
+
+  it("a turn whose answers keep reporting another id is skipped, not a deferral: re-asked once at the end of the pass, and the check finishes", async () => {
+    const s = fresh(); seedAnchor(s); s.noteJevModel(CAND, NOW);
+    let oldTries = 0; // turn 7's first ask of run A: all four tries come back from the old id; its re-ask at the end reaches the candidate
+    const f = fake({ model: (_k, req) => (isTurn(req, 7) && oldTries < 4 ? (oldTries += 1, "jev-old") : CAND) });
+    expect(await runJevCheck(deps(s, f), CAND)).toBe("trusted");
+    expect(f.calls).toHaveLength(3 * N + 4);
+    expect(treeRows(s, CAND, s.getJevModel(CAND)!.generation).filter((r) => r.outcome === "answered")).toHaveLength(3 * N);
+    expect(outbox(s).map((m) => String(m.payload.text)).some((t) => canaryText.test(t))).toBe(false);
+    s.close();
+  });
+
+  it("a turn the alias never serves from the candidate is left unanswered after its one re-ask; enough zh turns still finish the check", async () => {
+    const s = fresh(); seedAnchor(s); s.noteJevModel(CAND, NOW);
+    const f = fake({ model: (_k, req) => (isTurn(req, 7) ? "jev-old" : CAND) });
+    expect(await runJevCheck(deps(s, f), CAND)).toBe("trusted");
+    expect(f.calls).toHaveLength(3 * (N - 1) + 3 * 4 * 2); // turn 7 in A, A2 and B: four tries, then four more at the end
+    s.close();
+  });
+
+  it("defers only when, after the whole pass, fewer than 100 zh turns have candidate answers in every run; one notice, no page", async () => {
+    const s = fresh(); seedAnchor(s); s.noteJevModel(CAND, NOW);
+    const f = fake({ model: (_k, req) => (indexOf(req.state) % 2 === 0 ? "jev-old" : CAND) }); // 60 of 120 zh turns reach the candidate
+    expect(await runJevCheck(deps(s, f), CAND)).toBe("deferred");
+    expect(s.getJevModel(CAND)?.state).toBe("deferred");
+    expect(s.listOpenIncidents()).toEqual([]); // a notice, never an alerted page
+    const sent = outbox(s);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.chat).toBe(CHAT);
+    expect(sent[0]!.payload.button_rows).toBeUndefined();
+    expect(String(sent[0]!.payload.text)).toContain(CAND);
+    expect(String(sent[0]!.payload.text)).toMatch(canaryText);
+    s.close();
+  });
+
+  it("a deferral again in the same check sends no second notice", async () => {
+    const s = fresh(); seedAnchor(s); s.noteJevModel(CAND, NOW);
+    expect(await runJevCheck(deps(s, fake({ model: () => "jev-old" })), CAND)).toBe("deferred");
+    expect(outbox(s)).toHaveLength(1);
+    expect(s.setJevModelState(CAND, "deferred", "checking", s.getJevModel(CAND)!.detail_json!, NOW)).toBe(true);
+    expect(await runJevCheck(deps(s, fake({ model: () => "jev-old" })), CAND)).toBe("deferred");
+    expect(outbox(s)).toEqual([]);
+    s.close();
+  });
+
+  it("a deferred model is retried sooner when the newest 5 Jev answers all report it", async () => {
+    const s = fresh(); seedAnchor(s); s.noteJevModel(CAND, NOW);
+    expect(await runJevCheck(deps(s, fake({ model: () => "jev-old" })), CAND)).toBe("deferred");
+    const tick = () => jevVersionTick({ store: s, makeClient: () => fake().client, signal: new AbortController().signal, chatId: CHAT, now: () => new Date(Date.parse(NOW) + 60_000).toISOString(), golden: [], log: () => {}, paceMs: 0 });
+    serve(s, "jev-old");
+    for (let k = 0; k < 4; k += 1) serve(s, CAND);
+    expect(tick().started).toBeNull(); // 4 of the newest 5 only
+    serve(s, CAND);
+    expect(tick().started).toBe(CAND);
+    await jevJobSettled();
+    expect(s.getJevModel(CAND)?.state).toBe("trusted");
+    s.close();
+  });
+
+  it("the deferral wait is an hour", () => {
+    expect(JEV_DEFER_RETRY_MS).toBe(3_600_000);
   });
 });

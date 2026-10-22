@@ -5227,6 +5227,14 @@ export class RunStore {
       ORDER BY rowid DESC LIMIT 1`).get<{ model: string; at: string }>();
   }
 
+  /** The models the newest `n` answered Jev calls reported, newest first (final fix A2: a deferred model retries early once the alias serves only it). */
+  latestJevAttemptModels(n: number): string[] {
+    return this.db.prepare(`
+      SELECT json_extract(payload_json, '$.model') AS model FROM ledger_events
+      WHERE event_type = 'llm_attempt' AND json_extract(payload_json, '$.provider') = 'jev' AND json_extract(payload_json, '$.model') IS NOT NULL
+      ORDER BY rowid DESC LIMIT ?`).all<{ model: string }>(n).map((r) => r.model);
+  }
+
   bumpJevModelAttempts(model: string): void {
     this.db.prepare(`UPDATE jev_models SET attempts = attempts + 1 WHERE model = ?`).run(model);
   }

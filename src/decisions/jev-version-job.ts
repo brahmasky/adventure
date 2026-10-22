@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { errorCode } from "../domain/error-code.js";
 import { ANCHOR_COMMAND } from "../jev/anchor-import.js";
 import { JEV_INCIDENT_SUBJECT, openJevIncident, resolveJevIncidentsOnAnswer } from "../jev/jev-incidents.js";
-import type { JevAnswer, JevRequest, JevResult } from "../jev/jev-client.js";
+import type { JevAnswer, JevQuestion, JevRequest, JevResult } from "../jev/jev-client.js";
 import { toJevQuestion } from "../jev/questions/types.js";
 import { treeQuestions } from "../jev/triage-replay.js";
 import type { NotificationButton } from "../notifications/notification-types.js";
@@ -52,8 +52,12 @@ const paceOf = (d: JevJobDeps) => (): Promise<void> => abortableSleep(d.paceMs ?
 
 /** After an outage the next start waits this long: the tick runs every poll cycle and must not hammer a down Jev. */
 export const JEV_JOB_OUTAGE_BACKOFF_MS = 10 * 60_000;
-/** A deferred model (the alias served another id) is retried on a later day. */
-export const JEV_DEFER_RETRY_MS = 24 * 3_600_000;
+/**
+ * A deferred model (the alias served another id for too many turns) is retried an hour later, or sooner once the newest
+ * JEV_DEFER_SERVED_ANSWERS Jev answers all report it (final fix A2: a canary day must not keep the lanes off for a day).
+ */
+export const JEV_DEFER_RETRY_MS = 3_600_000;
+export const JEV_DEFER_SERVED_ANSWERS = 5;
 export const JEV_MODEL_INCIDENT_KINDS: ReadonlySet<string> = new Set(["jev_model_drifted", "jev_model_insufficient"]);
 export const jevModelSubject = (model: string): string => `${JEV_INCIDENT_SUBJECT}:model:${model}`;
 /** The Accept button's model key: 8 hex of sha256, so callback data stays short and carries no model text. */
@@ -61,6 +65,7 @@ export const modelHash = (model: string): string => createHash("sha256").update(
 /** Keyed by the check's generation too: an old card cannot accept a newer drift Paco has not seen (≤ 29 bytes). */
 export const jevAcceptData = (model: string, generation: number): string => `dec:jv:${modelHash(model)}:${generation}:acc`;
 const TREE_RUNS = [["A", false], ["A2", false], ["B", true]] as const;
+const TREE_RUN_IDS = TREE_RUNS.map(([r]) => r);
 const PROGRESS_EVERY = 25;
 const GOLDEN_DRIFT: ReadonlySet<string> = new Set(["decision_golden_drift"]);
 
@@ -91,13 +96,17 @@ export function resetJevJobForTests(): void { lane.running = null; lane.notBefor
 
 /**
  * Requests always name the alias, so only the model it serves can be checked: the newest Jev answer in the ledger names it.
- * Checked when `checking`, or `deferred` a day ago; an older id the alias no longer serves is left as it is.
+ * Checked when `checking`, or `deferred` an hour ago (sooner when the newest Jev answers all report it); an older id the
+ * alias no longer serves is left as it is.
  */
 function nextModel(store: RunStore, nowMs: number): string | undefined {
   const served = store.latestJevAttemptModel()?.model;
   const r = served === undefined ? undefined : store.getJevModel(served);
   if (r?.state === "checking") return r.model;
-  return r?.state === "deferred" && (r.checked_at === null || nowMs - Date.parse(r.checked_at) > JEV_DEFER_RETRY_MS) ? r.model : undefined;
+  if (r?.state !== "deferred") return undefined;
+  if (r.checked_at === null || nowMs - Date.parse(r.checked_at) > JEV_DEFER_RETRY_MS) return r.model;
+  const newest = store.latestJevAttemptModels(JEV_DEFER_SERVED_ANSWERS);
+  return newest.length === JEV_DEFER_SERVED_ANSWERS && newest.every((m) => m === r.model) ? r.model : undefined;
 }
 
 export type JevTickInput = Omit<JevJobDeps, "client"> & { makeClient: () => JevJobDeps["client"] };
@@ -194,23 +203,54 @@ type FailedAsk = Extract<CandidateAsk, { why: "failed" }>["failure"];
 const isOutage = (f: FailedAsk): boolean =>
   f.reason !== "error" || !["parse", "malformed_question", "other", "model_missing", "model_refusal"].includes(f.error_kind ?? "");
 
-/** The tree runs (spec §2.5): each anchor turn's stored state through the six questions, canonical (A, A2) and permuted (B). */
+/** One tree ask: an anchor turn's stored state and one run's questions, recorded under `key` (`<run>:<turn>`). */
+interface TreeAsk { key: string; state: RouteState; questions: Record<string, JevQuestion> }
+/** The ask's end: a result that ends the start, null when recorded, or `other` when every try reported another id (nothing recorded). */
+async function askTurn(d: JevJobDeps, model: string, g: number, a: TreeAsk): Promise<JevCheckResult | null | { other: string }> {
+  const r = await askCandidate(d.client, { state: a.state, questions: a.questions }, model, { signal: d.signal, pace: paceOf(d) });
+  if (!r.ok && r.why === "other_model") return { other: r.reported };
+  return recordTreeAnswer(d, model, g, a.key, r);
+}
+
+/**
+ * The tree runs (spec §2.5): each anchor turn's stored state through the six questions, canonical (A, A2) and permuted (B).
+ * Final fix A1: an ask the alias keeps answering from another id is skipped, and re-asked once at the end of the pass.
+ */
 async function runTree(d: JevJobDeps, model: string, g: number, anchor: AnchorSet): Promise<JevCheckResult | "done"> {
   const done = new Set(d.store.listJevCheckRuns(model, g, "tree").map((r) => r.run));
+  const skipped: TreeAsk[] = [];
   let count = done.size;
   for (const [run, permute] of TREE_RUNS) {
     const questions = Object.fromEntries(treeQuestions(permute).map((q) => [q.id, toJevQuestion(q)]));
     for (const t of anchor.turns) {
-      const key = `${run}:${t.turn}`;
-      if (done.has(key)) continue;
-      const r = await askCandidate(d.client, { state: t.state, questions }, model, { signal: d.signal, pace: paceOf(d) });
-      const stop = recordTreeAnswer(d, model, g, key, r);
-      if (stop) return stop;
+      const a = { key: `${run}:${t.turn}`, state: t.state, questions };
+      if (done.has(a.key)) continue;
+      const r = await askTurn(d, model, g, a);
+      if (r !== null && typeof r === "object") { skipped.push(a); continue; }
+      if (r) return r;
       count += 1;
       if (count % PROGRESS_EVERY === 0 && !writeProgress(d, model, g, { tree: count, of: 3 * anchor.turns.length })) return "skipped";
     }
   }
-  return "done";
+  return reaskSkipped(d, model, g, anchor, skipped);
+}
+
+/** The skipped asks once more; then a deferral only when too few zh turns have the candidate's answers in every run. */
+async function reaskSkipped(d: JevJobDeps, model: string, g: number, anchor: AnchorSet, skipped: readonly TreeAsk[]): Promise<JevCheckResult | "done"> {
+  let reported: string | null = null;
+  for (const a of skipped) {
+    const r = await askTurn(d, model, g, a);
+    if (r !== null && typeof r === "object") { reported = r.other; continue; }
+    if (r) return r;
+  }
+  if (reported === null || candidateZh(d.store, model, g, anchor) >= JEV_ANCHOR_MIN_ZH) return "done";
+  return defer(d, model, g, reported);
+}
+
+/** The zh anchor turns the candidate answered in every tree run of this generation. */
+function candidateZh(store: RunStore, model: string, g: number, anchor: AnchorSet): number {
+  const answered = new Set(store.listJevCheckRuns(model, g, "tree").filter((r) => r.outcome === "answered").map((r) => r.run));
+  return anchor.turns.filter((t) => t.lang === "zh" && TREE_RUN_IDS.every((run) => answered.has(`${run}:${t.turn}`))).length;
 }
 
 function recordTreeAnswer(d: JevJobDeps, model: string, g: number, run: string, r: CandidateAsk): JevCheckResult | null {
@@ -221,18 +261,34 @@ function recordTreeAnswer(d: JevJobDeps, model: string, g: number, run: string, 
     return null;
   }
   if (r.why === "stopped") return "stopped";
-  if (r.why === "other_model") return defer(d, model, g, r.reported);
+  if (r.why === "other_model") return defer(d, model, g, r.reported); // askTurn takes this case first; kept so the switch stays total
   if (isOutage(r.failure)) return outage(d, model, r.failure);
   d.store.recordJevCheckRun({ ...row, outcome: "failed", detail_json: JSON.stringify({ reason: r.failure.reason, error_kind: r.failure.error_kind ?? null }) });
   return null;
 }
 
-/** Spec §2.4: answers kept reporting another model (the alias served the old id) after the retries → deferred, retried a day later. */
+/**
+ * Spec §2.4, final fix A2: the alias kept serving another id → deferred, retried an hour later (or sooner, nextModel). The
+ * state and ONE notice (per check generation, never an alerted page) commit together.
+ */
 function defer(d: JevJobDeps, model: string, g: number, reported: string): JevCheckResult {
   const progress = progressOf(d.store.getJevModel(model)?.detail_json ?? null) ?? { generation: g }; // kept: a later start resumes this generation
-  d.store.setJevModelState(model, "checking", "deferred", JSON.stringify({ reason: "other_model", reported, generation: g, progress }), d.now());
+  const written = d.store.inTransaction(() => {
+    if (!d.store.setJevModelState(model, "checking", "deferred", JSON.stringify({ reason: "other_model", reported, generation: g, progress }), d.now())) return false;
+    notify(d, `jev_check:${model}:${g}:deferred`, `**Jev version check: ${model} waits.** Jev is serving two versions; the check retries in an hour, `
+      + `or sooner once Jev answers only from ${model}. Nothing is armed on ${model} until it passes; those turns go to the planner.`);
+    return true;
+  });
+  if (!written) return "skipped";
   logOf(d)(`jev version check: ${model} deferred (answers reported ${reported})`);
   return "deferred";
+}
+
+/** A plain notice (no page, no button) to Paco's chat, or the operator chat when the job has none; logged when there is neither. */
+function notify(d: JevJobDeps, key: string, text: string): void {
+  const chat = d.chatId ?? process.env.HOUGE_TELEGRAM_CHAT_ID?.trim();
+  if (!chat) { logOf(d)("jev version check: no chat for the notice"); return; }
+  d.store.enqueueNotification({ target: { kind: "telegram", chat_id: chat }, intent_type: "progress", idempotency_key: key, correlation_id: "jev-version-check", payload: { text } });
 }
 
 /** An outage reaches Paco (the Jev outage incidents) and the check resumes at a later start. */
@@ -352,9 +408,7 @@ const comparedLine = (s: Summary): string => `Compared ${s.turns} anchor turns (
 function sendNotice(d: JevJobDeps, model: string, g: number, v: CheckVerdict, s: Summary): void {
   const drops = v.recall_drops.length > 0 ? ["Recall drops (reported only; nothing disarmed, those turns go to the planner):", ...recallLines(v.recall_drops)] : [];
   const text = [`**Jev version check: ${model} passed.** The triage tree arms on it.`, comparedLine(s), ...marginLines(v.margins), ...drops, ...goldenLine(s)].join("\n");
-  if (!d.chatId) return;
-  d.store.enqueueNotification({ target: { kind: "telegram", chat_id: d.chatId }, intent_type: "progress", idempotency_key: `jev_check:${model}:${g}:notice`,
-    correlation_id: "jev-version-check", payload: { text } });
+  notify(d, `jev_check:${model}:${g}:notice`, text);
 }
 
 function driftText(model: string, v: CheckVerdict, s: Summary): string {
