@@ -140,7 +140,7 @@ describe("tool.injection judge", () => {
     expect(await p).toMatchObject({ verdict: "withhold", withheld: 1, skipped: true, unanswered: 2 });
   });
   describe("noise band over tool input: the more cautious call decides (controller ruling 5)", () => {
-    const band: NoiseBand = { question: "injected", criteriaHash: INJECTION_TEMPLATE_HASH, model: MODEL, band: 0.1, evidence: "test", approved: "test" };
+    const band: NoiseBand = { question: "injected", criteriaHash: INJECTION_TEMPLATE_HASH, band: 0.1, evidence: "test", approved: "test" };
     const twice = (a: number, b: number) => { const ps = [a, b]; return judging(() => ps.shift() ?? b); };
     it("withhold then pass → withhold, recorded as reask max", async () => {
       const store = RunStore.openInMemory(); const client = twice(0.55, 0.4);

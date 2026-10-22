@@ -33,7 +33,7 @@ export function spreadStats(samples: readonly NoiseSample[]): NoiseStat[] {
 }
 
 export function candidateBandRows(stats: readonly NoiseStat[], date: string): string[] {
-  return stats.map((s) => JSON.stringify({ question: s.question, criteriaHash: s.criteriaHash, model: s.model, band: Math.ceil(s.p95Spread * 100 - 1e-9) / 100,
+  return stats.map((s) => JSON.stringify({ question: s.question, criteriaHash: s.criteriaHash, band: Math.ceil(s.p95Spread * 100 - 1e-9) / 100,
     evidence: `noise measure ${date}: ${s.requests} requests, max spread ${s.maxSpread.toFixed(3)}, p95 ${s.p95Spread.toFixed(3)}, mean ${s.meanSpread.toFixed(3)}`, approved: "" }));
 }
 

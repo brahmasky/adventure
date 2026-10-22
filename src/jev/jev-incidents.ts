@@ -1,8 +1,6 @@
-import { JEV_REQUEST_MODEL } from "./jev-client.js";
 import { JEV_PROVIDER } from "../llm/metered-pricing.js";
 import { openAlertedIncident, resolveOpenIncidents } from "../run/incident-alert.js";
 import type { RunStore } from "../run/run-store.js";
-import type { CalibrationRow } from "./calibration.js";
 import type { JevResult } from "./jev-client.js";
 
 /** Jev outage classes (ADR 0029 §3.3). The FIRST failure opens an alerted incident; dedupe/flap damping is openAlertedIncident's. */
@@ -69,23 +67,16 @@ export function resolveQuietTriageOverrides(store: RunStore, now: string = new D
   return resolved;
 }
 
-export const JEV_MODEL_UNCALIBRATED = "jev_model_uncalibrated";
-const UNCALIBRATED_KINDS: ReadonlySet<string> = new Set([JEV_MODEL_UNCALIBRATED]);
-
 /**
- * The request names TypeSafe's moving alias (`jev-latest`); calibration rows key on the REPORTED model. When the alias moves,
- * the new id has no row and every lane falls through to the planner: safe, but the armed lanes are lost silently. So an
- * answered call on a model with no row, while rows exist for another model, opens one alerted incident per model (the open
- * incident is the throttle). No rows at all = nothing armed = nothing lost: no page, and every open one resolves. A model's incident resolves only once
- * rows name THAT model (Paco approved it), never because another model answered: a canary serving two ids behind the alias
- * would otherwise open and resolve on alternating turns and re-page. A row naming the alias never arms (calibratedLang), so
- * it is not counted. The sweep never touches this kind (not in SWEEP_INCIDENT_KINDS).
+ * `jev_model_uncalibrated` retired (Jev version check): calibration no longer keys on the reported version, so an alias
+ * move is not a loss to page. The per-model check (spec 2026-10-22) owns that signal. An incident the old code left open
+ * resolves here, so it cannot linger forever with nothing left to clear it.
  */
-export function checkJevModelCalibrated(store: RunStore, model: string, rows: readonly CalibrationRow[], env: NodeJS.ProcessEnv = process.env): void {
-  const calibrated = [...new Set(rows.map((r) => r.model).filter((m) => m !== JEV_REQUEST_MODEL))].sort();
-  if (calibrated.length === 0) { resolveOpenIncidents(store, UNCALIBRATED_KINDS); return; } // nothing armed → nothing lost
-  for (const m of calibrated) resolveOpenIncidents(store, UNCALIBRATED_KINDS, m);
-  if (calibrated.includes(model)) return;
-  openAlertedIncident(store, { kind: JEV_MODEL_UNCALIBRATED, subject: model, env, detail: { model, calibrated_models: calibrated,
-    note: `Jev moved to ${model}; the lanes fall back to the planner until new calibration rows are approved for it.` } });
+export const RETIRED_JEV_MODEL_UNCALIBRATED = "jev_model_uncalibrated";
+export function resolveRetiredModelIncidents(store: RunStore, now: string = new Date().toISOString()): number {
+  let resolved = 0;
+  for (const open of store.listOpenIncidents()) {
+    if (open.kind === RETIRED_JEV_MODEL_UNCALIBRATED && store.resolveIncident(open.incident_id, now)) resolved += 1;
+  }
+  return resolved;
 }

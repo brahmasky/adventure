@@ -36,7 +36,7 @@ export type Announce = "card" | "none";
 export interface VerdictEffect { kind: EffectKind; reversible: boolean; announced: Announce; what?: string }
 
 /** Spec §4.2: a bar from an external measurement, kept in registry code; monotone or fail-open entries only. */
-export interface ProvisionalBar { kind: "provisional"; question: string; criteriaHash: string; model: string; p: number; source: string }
+export interface ProvisionalBar { kind: "provisional"; question: string; criteriaHash: string; p: number; source: string }
 /** ADR 0029's calibrated rows (calibration.ts), named by question id; `p` is the entry's single probability bar, when it has one. */
 export interface CalibratedBar { kind: "calibrated"; questionIds: readonly string[]; p?: number }
 export type BarRef = ProvisionalBar | CalibratedBar;

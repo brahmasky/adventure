@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { CalibrationRow } from "../../src/jev/calibration.js";
-import { JEV_REQUEST_MODEL, type JevAnswer, type JevChoiceAnswer } from "../../src/jev/jev-client.js";
+import { type JevAnswer, type JevChoiceAnswer } from "../../src/jev/jev-client.js";
 import { CATEGORIES, TREE_CATEGORY, TREE_QUESTIONS, type Category, type LastHougeTurn } from "../../src/jev/questions/tree.js";
 import { criteriaHash } from "../../src/jev/questions/types.js";
 import {
@@ -138,7 +138,7 @@ describe("routeTree — memory (a wrong `memory` swallows the turn: the strictes
   });
   it("treeArmed: memory arms from the category rows alone", () => {
     // inline rows: the file's `row` helper is local to the arming describe
-    const catRows = (["zh", "en"] as const).map((lang): CalibrationRow => ({ question_id: "category", criteria_hash: criteriaHash(TREE_CATEGORY), model: REPORTED, lang,
+    const catRows = (["zh", "en"] as const).map((lang): CalibrationRow => ({ question_id: "category", criteria_hash: criteriaHash(TREE_CATEGORY), lang,
       approved: "test", evidence: "test" }) as CalibrationRow);
     expect(treeArmed("zh", REPORTED, catRows)).toMatchObject({ category: true, rule: false, memory: true });
   });
@@ -294,8 +294,8 @@ describe("preJudge (spec §2.1: code before the judge)", () => {
 });
 
 describe("treeArmed (each decision arms on its own evidence)", () => {
-  const row = (question_id: string, criteria_hash: string, lang: "zh" | "en" = "zh", model = REPORTED): CalibrationRow =>
-    ({ question_id, criteria_hash, model, lang, approved: "test", evidence: "test" });
+  const row = (question_id: string, criteria_hash: string, lang: "zh" | "en" = "zh"): CalibrationRow =>
+    ({ question_id, criteria_hash, lang, approved: "test", evidence: "test" });
   const all = [...TREE_QUESTIONS.map((q) => row(q.id, criteriaHash(q))), row(TREE_STATUS_ARM_ID, criteriaHash(TREE_CATEGORY))];
   const NONE: Armed = { category: false, status: false, memory: false, gear: false, rule: false, answer: false, lookup: false };
   it("every row → all armed; mixed inherits zh", () => {
@@ -317,13 +317,10 @@ describe("treeArmed (each decision arms on its own evidence)", () => {
     expect(treeArmed("zh", REPORTED, all.filter((r) => r.question_id !== "category")).memory).toBe(false);
     expect(treeArmed("zh", REPORTED, all.filter((r) => r.question_id !== "actions")).gear).toBe(false);
   });
-  it("another model, another language, or a stale hash arms nothing", () => {
-    expect(treeArmed("zh", "jev-1.14.0", all)).toEqual(NONE);
+  it("another language or a stale hash arms nothing; the model is ignored until Task 3 gates it through the check", () => {
+    expect(treeArmed("zh", "jev-1.14.0", all)).toEqual(treeArmed("zh", REPORTED, all));
     expect(treeArmed("en", REPORTED, all)).toEqual(NONE);
     expect(treeArmed("zh", REPORTED, [row("category", "deadbeef")]).category).toBe(false);
-  });
-  it("rows naming the request alias never arm (they would stay armed across an alias move)", () => {
-    expect(treeArmed("zh", JEV_REQUEST_MODEL, all.map((r) => ({ ...r, model: JEV_REQUEST_MODEL })))).toEqual(NONE);
   });
   it("treeArmingRows keeps only a current tree row or the status pseudo-row at its current hash (the alias-move page reads these)", () => {
     const retired = [row("category", "deadbeef"), row("lane", "0123abcd"), row("lane:status", "0123abcd"), row(TREE_STATUS_ARM_ID, "deadbeef")];

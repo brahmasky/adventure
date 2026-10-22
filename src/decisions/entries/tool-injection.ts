@@ -45,7 +45,7 @@ export function injectionQuestion(field: string, id = "injected"): NoulQuestion 
 export const INJECTION_TEMPLATE = injectionQuestion("passage");
 export const INJECTION_TEMPLATE_HASH = criteriaHash(INJECTION_TEMPLATE);
 export const INJECTION_ROW_KEY = (_q: Question): { question_id: string; criteria_hash: string } => ({ question_id: "injected", criteria_hash: INJECTION_TEMPLATE_HASH });
-export const INJECTION_BAR: ProvisionalBar = { kind: "provisional", question: "injected", criteriaHash: INJECTION_TEMPLATE_HASH, model: "jev-1.13.0",
+export const INJECTION_BAR: ProvisionalBar = { kind: "provisional", question: "injected", criteriaHash: INJECTION_TEMPLATE_HASH,
   p: INJECTION_BAR_P, source: "mu tool.injection (hermes-jev-skills measurement): 70/79 planted over 0.5, 0/1,520 clean withheld" };
 
 /** mu's INSTRUCTION_PATTERNS (from hermes-jev-skills, measured on 11,299 README passages): phrases only an injection uses. Exported as sources so the extension's copy (src/omp/extension/injection-floor.ts) is pinned byte-equal by a test. */

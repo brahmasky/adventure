@@ -59,8 +59,10 @@ const NO_LANES_OFF: ReadonlySet<LaneSwitch> = new Set();
  * answer and lookup lanes arm on their pseudo-rows and are unarmed while listed in `lanesOff` (HOUGE_JEV_LANES_OFF).
  */
 export function treeArmed(lang: Lang, model: string, rows: readonly CalibrationRow[], lanesOff: ReadonlySet<LaneSwitch> = NO_LANES_OFF): Armed {
-  const on = (qs: readonly Question[]): boolean => qs.every((q) => calibratedLang(q.id, criteriaHash(q), model, lang, rows) !== undefined);
-  const pseudo = (id: string): boolean => calibratedLang(id, criteriaHash(TREE_CATEGORY), model, lang, rows) !== undefined;
+  // Task 3: the per-model check state gates arming here; until then `model` is accepted and ignored.
+  void model;
+  const on = (qs: readonly Question[]): boolean => qs.every((q) => calibratedLang(q.id, criteriaHash(q), lang, rows) !== undefined);
+  const pseudo = (id: string): boolean => calibratedLang(id, criteriaHash(TREE_CATEGORY), lang, rows) !== undefined;
   const category = on([TREE_CATEGORY]);
   const rule = on([TREE_SETS_RULE, TREE_RULE_SCOPE]);
   return {
@@ -71,8 +73,8 @@ export function treeArmed(lang: Lang, model: string, rows: readonly CalibrationR
 
 /**
  * The rows that can arm a tree decision today: a tree question, or a pseudo-row (status, answer, lookup) at its current
- * criteria hash. The alias-move page (`checkJevModelCalibrated`, jev-incidents.ts) reads only these, so a retired lane 1
- * row or a stale-hash row neither raises nor clears it (it replaces lane 1's `armingRows`).
+ * criteria hash. A retired lane 1 row or a stale-hash row
+ * is not one of these (it replaces lane 1's `armingRows`).
  */
 export function treeArmingRows(rows: readonly CalibrationRow[]): CalibrationRow[] {
   const live = new Set(TREE_QUESTIONS.map((q) => `${q.id}\u0000${criteriaHash(q)}`));

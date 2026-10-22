@@ -3,16 +3,15 @@ import type { JevAnswer, JevChoiceAnswer, JevScoreAnswer } from "../jev/jev-clie
 /**
  * The noise band (stage 2a, Addition B, Paco 2026-10-13). Jev answers byte-identical requests with different probabilities
  * (probe 2026-10-13: 0.59–0.65 on one message). A value within the band of a bar it is compared against asks Jev exactly
- * once more and the decision uses the mean. Bands are reviewed values (Paco's commit, like CALIBRATED_ROWS), keyed like a
- * calibration row, in the answer's own unit: a choice's top probability, a noul's p(yes), a score's expected level.
+ * once more and the decision uses the mean. Bands are reviewed values (Paco's commit, like CALIBRATED_ROWS), keyed by question and criteria hash (no model), in the answer's own unit: a choice's top probability, a noul's p(yes), a score's expected level.
  */
-export interface NoiseBand { question: string; criteriaHash: string; model: string; band: number; evidence: string; approved: string }
+export interface NoiseBand { question: string; criteriaHash: string; band: number; evidence: string; approved: string }
 
 /** Empty until Paco commits rows from scripts/measure-jev-noise.mjs. No row → no re-ask (today's behaviour). */
 export const NOISE_BANDS: readonly NoiseBand[] = [];
 
-export function bandFor(question: string, criteriaHash: string, model: string, bands: readonly NoiseBand[] = NOISE_BANDS): number | undefined {
-  return bands.find((b) => b.question === question && b.criteriaHash === criteriaHash && b.model === model)?.band;
+export function bandFor(question: string, criteriaHash: string, bands: readonly NoiseBand[] = NOISE_BANDS): number | undefined {
+  return bands.find((b) => b.question === question && b.criteriaHash === criteriaHash)?.band;
 }
 
 const EPS = 1e-9;

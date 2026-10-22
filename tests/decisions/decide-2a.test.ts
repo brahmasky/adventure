@@ -12,7 +12,7 @@ type V = "pass" | "withhold";
 const E: Entry<null, V> = {
   id: "test.judge", version: 1, stage: "post_tool", input: "tool", question: "q", verdicts: ["pass", "withhold"],
   ladder: [{ kind: "rule", name: "floor", decide: () => ({ abstain: true }) },
-    { kind: "system_one", name: "j", questions: [], bars: { kind: "provisional", question: "q", criteriaHash: "h", model: "m", p: 0.5, source: "s" }, timeoutMs: 100 }],
+    { kind: "system_one", name: "j", questions: [], bars: { kind: "provisional", question: "q", criteriaHash: "h", p: 0.5, source: "s" }, timeoutMs: 100 }],
   fail: "pass", monotone: { order: ["pass", "withhold"] }, defaultVerdict: "pass", alwaysRecord: true, outcomes: [], armed: { rule: "on", system_one: "on" },
   effects: { pass: { kind: "none", reversible: true, announced: "none" }, withhold: { kind: "tighten", reversible: true, announced: "none" } }, reasonCodes: []
 };

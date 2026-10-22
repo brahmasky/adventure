@@ -145,7 +145,7 @@ describe("formatTreeReport", () => {
     blocked(formatTreeReport(stale, new Map(), complete(rows), TREE_BAR_DEFAULTS, perm(rows)));
     const other = rows.map((r, i) => (i === 0 ? { ...r, model: "jev-0.9" } : r));
     blocked(formatTreeReport(other, new Map(), complete(rows), TREE_BAR_DEFAULTS, perm(rows)));
-    // F4: rows that REPORT the alias would key candidate rows on `jev-latest`, which calibratedLang never arms
+    // F4: rows that REPORT the alias do not name the model the evidence measured
     const alias = rows.map((r) => ({ ...r, model: "jev-latest" }));
     const aliasText = formatTreeReport(alias, new Map(), complete(rows), TREE_BAR_DEFAULTS, perm(alias));
     blocked(aliasText);
@@ -162,8 +162,8 @@ describe("formatTreeReport", () => {
     for (const q of TREE_QUESTIONS) expect(text).toContain(`"question_id":"${q.id}","criteria_hash":"${criteriaHash(q)}"`);
     expect(text).toContain(`"question_id":"category:status","criteria_hash":"${HASHES.category}"`);
     expect(text).toContain(`"approved":""`);
-    // keyed by the model the rows REPORTED, never the request alias (which calibratedLang refuses to arm)
-    expect(text).toContain(`"model":"${REPORTED}"`); expect(text).not.toContain(`"model":"jev-latest"`);
+    // a row's key is question, hash and language: the candidate rows carry no model
+    expect(text).not.toContain(`"model"`);
     expect(text).not.toContain(`"lang":"en"`); // no en turn in the fixture → no en rows
   });
 

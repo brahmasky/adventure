@@ -16,7 +16,7 @@ export type MemoryKindVerdict = MemoryKindOption;
 export const MEMORY_KIND_BAR_P = 0.85;
 /** Paco's R6: armed at ship on the memory lane's bar, no calibration sitting; a calibrated row may replace it when he commits one. */
 export const MEMORY_KIND_BAR: ProvisionalBar = { kind: "provisional", question: TREE_MEMORY_KIND.id, criteriaHash: criteriaHash(TREE_MEMORY_KIND),
-  model: "jev-1.13.0", p: MEMORY_KIND_BAR_P, source: "Paco R6 2026-10-17: the memory lane's bar (0.85), armed at ship; ADR 0030 amendment 2026-10-17" };
+  p: MEMORY_KIND_BAR_P, source: "Paco R6 2026-10-17: the memory lane's bar (0.85), armed at ship; ADR 0030 amendment 2026-10-17" };
 
 /** `jev`: memory_kind's answer from its own call (absent on the planner's tool, or when the call failed). `escapes`: may other/fix decide (the memory lane)? */
 export interface MemoryKindState { jev: JevAnswer | undefined; escapes: boolean }

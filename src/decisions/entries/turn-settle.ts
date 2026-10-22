@@ -33,7 +33,7 @@ export const DEADLINE_SHORT_MS = 60_000;
 export const settleQuestionsHash = (qs: readonly NoulQuestion[]): string =>
   criteriaHash({ id: "settle", type: "noul", instructions: qs.map((q) => `${q.id}: ${q.instructions}${q.criteria ? `\n  true: ${q.criteria.true}\n  false: ${q.criteria.false}` : ""}`).join("\n") });
 export const SETTLE_QUESTIONS_HASH = settleQuestionsHash(SETTLE_QUESTIONS);
-export const SETTLE_BAR: ProvisionalBar = { kind: "provisional", question: "settle", criteriaHash: SETTLE_QUESTIONS_HASH, model: "jev-1.13.0", p: SETTLE_BAR_P,
+export const SETTLE_BAR: ProvisionalBar = { kind: "provisional", question: "settle", criteriaHash: SETTLE_QUESTIONS_HASH, p: SETTLE_BAR_P,
   source: "calibration 2026-10-20 on 133 planner replies (30 days): set B at per-question bars 0.6/0.8/0.7/0.7 → probe 7/133 = 5.3%, 7/7 planted; sanity rerun 6/133 = 4.5%, 9/9 planted; see spec §3.3" };
 
 /** omp's todo list as get_state reports it (content kept only until the comparison; never recorded or sent). */

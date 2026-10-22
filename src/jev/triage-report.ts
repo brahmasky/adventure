@@ -215,7 +215,7 @@ function blockersOf(rows: TreeReplayRow[], ok: TreeReplayRow[], o: TreeReportOut
   const permOk = (permuted ?? []).filter((r) => r.status === "ok");
   const models = reportedModels([...ok, ...permOk]);
   if (models.length > 1) b.push(`more than one reported model (${models.join(", ")}): re-run into a fresh file`);
-  if (models.includes(JEV_REQUEST_MODEL)) b.push(`rows reported the request alias ${JEV_REQUEST_MODEL}, not a versioned model: candidate rows would never arm`);
+  if (models.includes(JEV_REQUEST_MODEL)) b.push(`rows reported the request alias ${JEV_REQUEST_MODEL}, not a versioned model: the evidence would not name the model it measured`);
   if (ok.some((r) => stale(r, hashesOf(false))) || permOk.some((r) => stale(r, hashesOf(true)))) b.push("rows asked with stale criteria wording: re-run into a fresh file");
   const covered = new Set(permOk.map((r) => r.turn_id));
   if (!permuted) b.push("permuted run missing");
@@ -229,9 +229,8 @@ const reportedModels = (rows: TreeReplayRow[]): string[] =>
   [...new Set(rows.filter((r) => r.status === "ok" && r.model !== undefined).map((r) => r.model!))].sort();
 
 /** Candidate rows for the six questions and the three lane pseudo-rows (status, answer, lookup), per language present,
- *  keyed by the one reported model (no blocker means exactly one); Paco fills `approved`. */
+ *  (a row's key is question, hash and language: no model); Paco fills `approved`. */
 function candidateRows(ok: TreeReplayRow[]): string[] {
-  const model = reportedModels(ok)[0]!;
   const pseudo = [TREE_STATUS_ARM_ID, TREE_ANSWER_ARM_ID, TREE_LOOKUP_ARM_ID].map((id) => [id, criteriaHash(TREE_CATEGORY)] as const);
   const ids = [...TREE_QUESTIONS.map((q) => [q.id, criteriaHash(q)] as const), ...pseudo];
   const out = ["CANDIDATE ROWS — evidence for Paco's decision, not a verdict; he fills `approved` and commits them into CALIBRATED_ROWS (src/jev/calibration.ts):"];
@@ -239,7 +238,7 @@ function candidateRows(ok: TreeReplayRow[]): string[] {
     const n = ok.filter((r) => (r.lang === "en" ? "en" : "zh") === lang).length; // `mixed` inherits zh (calibratedLang)
     if (n === 0) continue;
     for (const [question_id, criteria_hash] of ids) {
-      const row: CalibrationRow = { question_id, criteria_hash, model, lang, approved: "", evidence: `tree replay ${n} ${lang} turns` };
+      const row: CalibrationRow = { question_id, criteria_hash, lang, approved: "", evidence: `tree replay ${n} ${lang} turns` };
       out.push(JSON.stringify(row));
     }
   }

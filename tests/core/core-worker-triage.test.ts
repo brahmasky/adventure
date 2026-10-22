@@ -536,39 +536,23 @@ describe("triageTurn — arming, shadow and outages", () => {
     expect(store.getActiveLessons("ask")).toHaveLength(1);
     store.close();
   });
-  it("a model the rows do not name: answered, uncalibrated, decision fallback", async () => {
+  // Jev version check Task 2: calibration rows carry no model, so the tree arms for any reported id. Interim until Task 3
+  // gates arming on the per-model check state; Task 3 replaces this test with the gated behaviour.
+  it("a reported id the rows never named arms the same (the version is not a key; Task 3 gates it through the check)", async () => {
     const { store, worker, turn } = setup(treeSays({ ...RULE, model: "jev-1.14.0" }));
     const t = turn("以后回复短一点");
-    await worker.triageTurn(t.input);
-    expect(triageRows(store, t.run_id)).toMatchObject([{ status: "answered", decision: "fallback", verdict: "uncalibrated" }]);
-    expect(store.getActiveLessons("ask")).toHaveLength(0);
+    expect(await worker.triageTurn(t.input)).toMatchObject({ kind: "lane_reply" });
+    expect(triageRows(store, t.run_id)).toMatchObject([{ status: "answered", decision: "act" }]);
     store.close();
   });
-  // The request names `jev-latest`; calibration keys on the REPORTED id (shipped 2026-10-07, c026e5c). An alias move leaves
-  // every tree decision unarmed, which is safe but silent, so the answered call pages Paco once per model. The incident
-  // resolves only once rows name that model, never because a calibrated id answered in between (a canary would re-page).
+  // `jev_model_uncalibrated` retired: an alias move opens nothing, and a row an older build left open resolves on the next turn.
   const uncalibrated = (store: RunStore) => store.listOpenIncidents().filter((i) => i.kind === "jev_model_uncalibrated");
-  it("an alias move (arm): one jev_model_uncalibrated incident for the new id; a calibrated id answering leaves it open", async () => {
-    const m = { model: "jev-1.14.0" };
-    const { store, worker, turn } = setup(vi.fn(async (u?: unknown, i?: unknown) => treeSays({ model: m.model })(u, i)));
+  it("an alias move opens no jev_model_uncalibrated incident, and a legacy open one resolves on the next triage", async () => {
+    const { store, worker, turn } = setup(treeSays({ model: "jev-1.14.0" }));
+    store.openIncident({ kind: "jev_model_uncalibrated", subject: "jev-1.14.0", detail: {} });
     await worker.triageTurn(turn("明天天气怎么样").input);
-    await worker.triageTurn(turn("后天呢").input);
-    expect(uncalibrated(store)).toMatchObject([{ subject: "jev-1.14.0" }]);
-    m.model = REPORTED;
-    await worker.triageTurn(turn("大后天呢").input);
-    expect(uncalibrated(store)).toMatchObject([{ subject: "jev-1.14.0" }]);
+    expect(uncalibrated(store)).toHaveLength(0);
     store.close();
-  });
-  it("no page in shadow, and none when no live tree row exists (nothing armed, nothing lost)", async () => {
-    const shadow = setup(treeSays({ model: "jev-1.14.0" }), SHADOW);
-    await shadow.worker.triageTurn(shadow.turn("明天天气怎么样").input);
-    expect(uncalibrated(shadow.store)).toHaveLength(0);
-    shadow.store.close();
-    const ids = [...TREE_QUESTIONS.map((q) => q.id), TREE_STATUS_ARM_ID];
-    const bare = setup(treeSays({ model: "jev-1.14.0" }), ARM, { omit: ids });
-    await bare.worker.triageTurn(bare.turn("明天天气怎么样").input);
-    expect(uncalibrated(bare.store)).toHaveLength(0);
-    bare.store.close();
   });
   it("Jev 429: skipped{rate_limited}, incident jev_rate_limited, Default", async () => {
     const { store, worker, turn } = setup(vi.fn(async () => json(429, {})));

@@ -62,12 +62,12 @@ export const gapOf = (a: JevChoiceAnswer): number => { const s = Object.values(a
  * Addition B: any banded value within its band of a bar the decision uses asks Jev once more (src/jev/decide.ts reaskOnce).
  * `bands` defaults per call, so the reviewed rows are read when the closure runs, not when the module loads.
  */
-export function treeNear(questions: readonly Question[], bands: readonly NoiseBand[] = NOISE_BANDS): (answers: Record<string, JevAnswer>, model: string) => boolean {
-  return (answers, model) => questions.some((q) => {
+export function treeNear(questions: readonly Question[], bands: readonly NoiseBand[] = NOISE_BANDS): (answers: Record<string, JevAnswer>) => boolean {
+  return (answers) => questions.some((q) => {
     const a = answers[q.id];
     if (!a) return false;
     const hash = criteriaHash(q);
-    const near = (id: string, x: number, bars: readonly number[]): boolean => { const b = bandFor(id, hash, model, bands); return b !== undefined && nearBar(x, bars, b); };
+    const near = (id: string, x: number, bars: readonly number[]): boolean => { const b = bandFor(id, hash, bands); return b !== undefined && nearBar(x, bars, b); };
     if (near(q.id, answerValue(a), treeBarsFor(q.id, a))) return true;
     if (q.id !== "category" || a.type !== "choice") return false;
     return near(CATEGORY_CONFIDENCE, a.confidence, [TREE_BAR_DEFAULTS.minConf]) || near(CATEGORY_GAP, gapOf(a), [TREE_BAR_DEFAULTS.minGap]);

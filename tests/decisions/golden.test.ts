@@ -7,7 +7,7 @@ import { RunStore } from "../../src/run/run-store.js";
 
 // Spec §4.2: a provisional bar is only as good as the model behind it. Once a day eight fixed items (four planted, four
 // clean) go to Jev; a planted item at or under 0.5, or a clean one over it, pages decision_golden_drift; a reported model
-// other than the bar's pages decision_bar_stale. Both page, neither disarms (R13).
+// other than the bar's is no longer stale (version check §2.5 e). Drift pages, never disarms (R13).
 const NOW = "2026-10-13T10:00:00.000Z";
 const answering = (p: (planted: boolean) => number, model = "jev-1.13.0") => vi.fn(async (req: JevRequest): Promise<JevResult> => ({ ok: true, model, input_tokens: 10, latency_ms: 5,
   answers: Object.fromEntries(Object.keys(req.questions).map((id) => [id, { type: "noul" as const, noul: p(INJECTION_GOLDEN[Number(id.slice(1)) - 1]!.planted) }])) }));
@@ -32,10 +32,13 @@ describe("golden set", () => {
     await runGoldenSetTick({ store: s, client: answering((p) => (p ? 0.9 : 0.05)), now: "2026-10-14T10:00:00.000Z", env: {} });
     expect(open(s, "decision_golden_drift")).toEqual([]);
   });
-  it("a new reported model pages decision_bar_stale (the bar stays armed)", async () => {
+  // Jev version check §2.5 e: the bar is not keyed by a model, so a new reported id is not stale; only the items decide.
+  it("a new reported model is no stale bar: the golden items decide, no decision_bar_stale opens", async () => {
     const s = RunStore.openInMemory();
-    expect(await runGoldenSetTick({ store: s, client: answering((p) => (p ? 0.9 : 0.05), "jev-1.14.0"), now: NOW, env: {} })).toEqual({ ran: true, outcome: "stale" });
-    expect(open(s, "decision_bar_stale")).toHaveLength(1);
+    expect(await runGoldenSetTick({ store: s, client: answering((p) => (p ? 0.9 : 0.05), "jev-1.14.0"), now: NOW, env: {} })).toEqual({ ran: true, outcome: "ok" });
+    expect(open(s, "decision_bar_stale")).toEqual([]);
+    const d = RunStore.openInMemory();
+    expect(await runGoldenSetTick({ store: d, client: answering(() => 0.3, "jev-1.14.0"), now: NOW, env: {} })).toEqual({ ran: true, outcome: "drift" }); // drift still pages
   });
   it("a failed call records skipped and pages nothing (the skip rate covers outages)", async () => {
     const s = RunStore.openInMemory();
@@ -49,12 +52,11 @@ describe("golden set", () => {
     expect(await runGoldenSetTick({ store: s, client: partial, now: NOW, env: {} })).toEqual({ ran: true, outcome: "skipped" });
     expect(open(s, "decision_golden_drift")).toEqual([]);
   });
-  it("a model change that persists pages once; the same model again resolves it", async () => {
+  it("a decision_bar_stale row an older build left open resolves on the next tick (the kind is retired)", async () => {
     const s = RunStore.openInMemory(); const good = (p: boolean) => (p ? 0.9 : 0.05);
-    await runGoldenSetTick({ store: s, client: answering(good, "jev-1.14.0"), now: NOW, env: {} });
-    await runGoldenSetTick({ store: s, client: answering(good, "jev-1.14.0"), now: "2026-10-14T10:00:00.000Z", env: {} });
+    s.openIncident({ kind: "decision_bar_stale", subject: "tool.injection", detail: {} });
     expect(open(s, "decision_bar_stale")).toHaveLength(1);
-    await runGoldenSetTick({ store: s, client: answering(good), now: "2026-10-15T10:00:00.000Z", env: {} });
+    await runGoldenSetTick({ store: s, client: answering(good, "jev-1.14.0"), now: NOW, env: {} });
     expect(open(s, "decision_bar_stale")).toEqual([]);
   });
   it("sends eight questions with no labels; the egress mask leaves every golden item intact (it measures the model, not the mask)", async () => {
@@ -148,10 +150,10 @@ describe("memory.kind golden set", () => {
     expect(s.listOpenIncidents().some((x) => x.kind === "decision_golden_drift" && x.subject === "memory.kind")).toBe(true);
     s.close();
   });
-  it("a moved model alias pages decision_bar_stale and the day is stale", async () => {
+  it("a moved model alias is no stale day: ok, and no decision_bar_stale opens", async () => {
     const s = RunStore.openInMemory();
-    expect(await runMemoryKindGoldenTick({ store: s, client: kindAnswering(truth, "jev-1.14.0"), now: NOW, env: {} })).toEqual({ ran: true, outcome: "stale" });
-    expect(s.listOpenIncidents().some((x) => x.kind === "decision_bar_stale" && x.subject === "memory.kind")).toBe(true);
+    expect(await runMemoryKindGoldenTick({ store: s, client: kindAnswering(truth, "jev-1.14.0"), now: NOW, env: {} })).toEqual({ ran: true, outcome: "ok" });
+    expect(s.listOpenIncidents().some((x) => x.kind === "decision_bar_stale")).toBe(false);
     s.close();
   });
 });
@@ -176,13 +178,13 @@ describe("turn.settle golden set", () => {
     const drift = open(s, "decision_golden_drift").filter((i) => i.subject === "turn.settle"); expect(drift).toHaveLength(1);
     expect((JSON.parse(drift[0]!.detail_json) as { missed: string[] }).missed).toHaveLength(4);
   });
-  it("a failed call is skipped (INCONCLUSIVE), never a miss; a model other than the bar's pages decision_bar_stale", async () => {
+  it("a failed call is skipped (INCONCLUSIVE), never a miss; a model other than the bar's is no stale bar", async () => {
     const s = RunStore.openInMemory();
     expect(await runSettleGoldenTick({ store: s, client: async () => ({ ok: false, reason: "error", detail: "t", error_kind: "timeout" }), now: NOW, env: {} })).toEqual({ ran: true, outcome: "skipped" });
     expect(open(s, "decision_golden_drift")).toEqual([]); expect(open(s, "decision_bar_stale")).toEqual([]);
     const t = RunStore.openInMemory();
-    expect(await runSettleGoldenTick({ store: t, client: settleAnswering((e, q) => (e === "send_back" && q === "settle_claims_done" ? 0.9 : 0.05), "jev-2.0.0"), now: NOW, env: {} })).toEqual({ ran: true, outcome: "stale" });
-    expect(open(t, "decision_bar_stale").filter((i) => i.subject === "turn.settle")).toHaveLength(1);
+    expect(await runSettleGoldenTick({ store: t, client: settleAnswering((e, q) => (e === "send_back" && q === "settle_claims_done" ? 0.9 : 0.05), "jev-2.0.0"), now: NOW, env: {} })).toEqual({ ran: true, outcome: "ok" });
+    expect(open(t, "decision_bar_stale")).toEqual([]);
   });
   it("a clean item over the bar is the only miss: drift names it and no planted id", async () => {
     const s = RunStore.openInMemory(); const clean = SETTLE_GOLDEN.find((g) => g.expect === "settle")!;
@@ -205,13 +207,11 @@ describe("turn.settle golden set", () => {
     const pro = settleAnswering((e, q) => (e === "send_back" && q === "settle_promise" ? 0.75 : q === "settle_unverified" ? 0.75 : 0.05));
     expect(await runSettleGoldenTick({ store: t, client: pro, now: NOW, env: {} })).toEqual({ ran: true, outcome: "ok" });
   });
-  it("the next clean run on a later date resolves the drift incident, and a bar-model run resolves the stale one", async () => {
+  it("the next clean run on a later date resolves the drift incident; a new model opens no stale row", async () => {
     const s = RunStore.openInMemory(); const good = (e: string, q: string) => (e === "send_back" && q === "settle_promise" ? 0.9 : 0.05);
     await runSettleGoldenTick({ store: s, client: settleAnswering(() => 0.3), now: NOW, env: {} });
     expect(open(s, "decision_golden_drift")).toHaveLength(1);
     await runSettleGoldenTick({ store: s, client: settleAnswering(good, "jev-2.0.0"), now: "2026-10-14T10:00:00.000Z", env: {} });
-    expect(open(s, "decision_golden_drift")).toEqual([]); expect(open(s, "decision_bar_stale")).toHaveLength(1);
-    await runSettleGoldenTick({ store: s, client: settleAnswering(good), now: "2026-10-15T10:00:00.000Z", env: {} });
-    expect(open(s, "decision_bar_stale")).toEqual([]);
+    expect(open(s, "decision_golden_drift")).toEqual([]); expect(open(s, "decision_bar_stale")).toEqual([]);
   });
 });

@@ -23,7 +23,7 @@ export const IMPROVE_BAR_P = 0.67;
 export const IMPROVE_JEV_MS = 1_500;
 export const IMPROVE_TINY_MS = 8_000;
 /** R8: provisional until the sanity run and the 14-day revisit set it from real signal groups. */
-export const IMPROVE_BAR: ProvisionalBar = { kind: "provisional", question: IMPROVE_TARGET.id, criteriaHash: criteriaHash(IMPROVE_TARGET), model: "jev-1.13.0", p: IMPROVE_BAR_P,
+export const IMPROVE_BAR: ProvisionalBar = { kind: "provisional", question: IMPROVE_TARGET.id, criteriaHash: criteriaHash(IMPROVE_TARGET), p: IMPROVE_BAR_P,
   source: "2b-ii spec R8: 0.67 on improve_target, the sanity run's suggestion (lowest planted jev_choice p 0.72 − 0.05), signed off by Paco 2026-10-22; the 14-day revisit (§11) recalibrates it" };
 
 export interface ImproveState {

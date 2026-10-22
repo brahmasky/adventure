@@ -84,7 +84,7 @@ export function calibrationFile(): string {
   const ids = [...TREE_QUESTIONS.map((q) => [q.id, criteriaHash(q)] as const),
     ...[TREE_STATUS_ARM_ID, TREE_ANSWER_ARM_ID, TREE_LOOKUP_ARM_ID].map((id) => [id, criteriaHash(TREE_CATEGORY)] as const)];
   writeFileSync(f, JSON.stringify(ids.flatMap(([question_id, criteria_hash]) => (["zh", "en"] as const).map((lang) =>
-    ({ question_id, criteria_hash, model: REPORTED, lang, approved: "test", evidence: "test" })))));
+    ({ question_id, criteria_hash, lang, approved: "test", evidence: "test" })))));
   return f;
 }
 export const ARM: Record<string, string> = { HOUGE_JEV_ENABLED: "1", HOUGE_JEV_TRIAGE_ENABLED: "arm" };

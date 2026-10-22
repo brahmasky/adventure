@@ -50,10 +50,10 @@ describe("treeNear — every bar the lane rules use, confidence and gap included
     const hash = criteriaHash(TREE_CATEGORY);
     const bands = [{ question: "category:confidence", criteriaHash: hash, model: "jev-1.13.0", band: 0.05, evidence: "t", approved: "t" }];
     const answer = (confidence: number) => ({ category: { type: "choice" as const, choice: "answer", probabilities: { answer: 0.9, other: 0.1 }, confidence } });
-    expect(treeNear(TREE_QUESTIONS, bands)(answer(0.72), "jev-1.13.0")).toBe(true);
-    expect(treeNear(TREE_QUESTIONS, bands)(answer(0.9), "jev-1.13.0")).toBe(false);
+    expect(treeNear(TREE_QUESTIONS, bands)(answer(0.72))).toBe(true);
+    expect(treeNear(TREE_QUESTIONS, bands)(answer(0.9))).toBe(false);
     const gap = [{ ...bands[0]!, question: "category:gap", band: 0.05 }];
-    expect(treeNear(TREE_QUESTIONS, gap)({ category: { type: "choice", choice: "answer", probabilities: { answer: 0.74, other: 0.26 }, confidence: 0.9 } }, "jev-1.13.0")).toBe(true);
+    expect(treeNear(TREE_QUESTIONS, gap)({ category: { type: "choice", choice: "answer", probabilities: { answer: 0.74, other: 0.26 }, confidence: 0.9 } })).toBe(true);
   });
 });
 

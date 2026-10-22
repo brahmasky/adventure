@@ -21,7 +21,8 @@ describe("noise measurement", () => {
   });
   it("candidate rows round the p95 up to 0.01 and leave approved empty for Paco", () => {
     const rows = candidateBandRows(spreadStats([S([0.591, 0.652])]), "2026-10-13");
-    expect(JSON.parse(rows[0]!)).toMatchObject({ question: "category", criteriaHash: "h", model: "jev-1.13.0", band: 0.07, approved: "" });
+    expect(JSON.parse(rows[0]!)).toMatchObject({ question: "category", criteriaHash: "h", band: 0.07, approved: "" });
+    expect(JSON.parse(rows[0]!)).not.toHaveProperty("model");
   });
   it("a measurement with failed calls or two models is INCOMPLETE and prints no rows", () => {
     const stats = spreadStats([S([0.6, 0.62])]);

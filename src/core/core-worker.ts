@@ -148,13 +148,13 @@ import { calibrationRows, type CalibrationRow } from "../jev/calibration.js";
 import { decide, marginOf, persistDecisionRows, recordSkip, topProbOf, type JevDecisionInsert, type SkipReason } from "../jev/decide.js";
 import { createJevClient, type JevAnswer, type JevRequest, type JevResult } from "../jev/jev-client.js";
 import { resolveJevLanesOff, resolveJevTriageMode, type JevTriageMode } from "../jev/jev-flags.js";
-import { checkJevModelCalibrated, resolveQuietTriageOverrides } from "../jev/jev-incidents.js";
+import { resolveQuietTriageOverrides, resolveRetiredModelIncidents } from "../jev/jev-incidents.js";
 import { langOf, type Lang } from "../jev/intent-question.js";
 import {
   buildTreeState, lastHougeTurnOf, quotedTurnFromRow, TREE_CATEGORY, TREE_QUESTIONS, type Category, type LastHougeTurn, type QuotedTurn
 } from "../jev/questions/tree.js";
 import {
-  ACK_ROUTE, applyCascade, fallbackRoute, handOffRoute, preJudge, thinkHarderIn, TREE_THRESHOLD_VERSION, treeArmingRows, type Lane, type Route, type RoutePlan,
+  ACK_ROUTE, applyCascade, fallbackRoute, handOffRoute, preJudge, thinkHarderIn, TREE_THRESHOLD_VERSION, type Lane, type Route, type RoutePlan,
   type RouteReason
 } from "../jev/tree-policy.js";
 import { decide as decideLadder } from "../decisions/decide.js";
@@ -3095,6 +3095,7 @@ export class CoreWorker {
   private resolveQuietOverrides(): void {
     try {
       resolveQuietTriageOverrides(this.runStore);
+      resolveRetiredModelIncidents(this.runStore);
     } catch (e) {
       console.error(`triage: triage_overrides resolve failed: ${safeReason(e)}`);
     }
@@ -3147,8 +3148,6 @@ export class CoreWorker {
   private planAnswered(i: TriageInput, lang: Lang, mode: JevTriageMode, d: AnsweredDecision, held: TriageHeld): RungResult<TurnHandlerVerdict, TreeDetail> {
     const rows = calibrationRows(process.env);
     const out = planTree(d, { userText: i.userText, mode, lang, thinkHarder: held.thinkHarder, rows, lanesOff: resolveJevLanesOff(process.env) });
-    const reachedPolicy = !("failed" in out) || out.detail !== undefined;
-    if (mode === "arm" && reachedPolicy) this.checkJevModel(d.model, rows); // shadow arms nothing, so an alias move loses nothing there
     return out;
   }
 
@@ -3207,11 +3206,6 @@ export class CoreWorker {
     if (route.save) return this.saveThenRoute(i, state, lang, route, settleFor, held);
     const id = this.settleTriage(i, state, lang, settleFor(route, "none"));
     return { kind: "fallthrough", route: turnRoute(route, id), ...quoteField(held.quote) };
-  }
-
-  /** An alias move pages once (jev-incidents.ts), counting only the tree's live rows. Never fails the turn: the answer is held. */
-  private checkJevModel(model: string, rows: readonly CalibrationRow[]): void {
-    try { checkJevModelCalibrated(this.runStore, model, treeArmingRows(rows)); } catch (e) { console.error(`jev: model calibration check failed: ${safeReason(e)}`); }
   }
 
   /**

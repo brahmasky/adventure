@@ -4,16 +4,15 @@ import { answerValue, bandFor, meanAnswer, meanAnswers, nearBar, NOISE_BANDS, ty
 // Jev answers byte-identical requests with different probabilities (probe 2026-10-13: 0.59–0.65 on one message). A p that
 // close to a bar decides by noise; one more call and the mean halves the variance. The band is a reviewed value keyed like a
 // calibration row, so a wording or model move falls out of it (no band → no re-ask, today's behaviour).
-const B: NoiseBand = { question: "category", criteriaHash: "h1", model: "jev-1.13.0", band: 0.08, evidence: "e", approved: "Paco test" };
+const B: NoiseBand = { question: "category", criteriaHash: "h1", band: 0.08, evidence: "e", approved: "Paco test" };
 
 describe("noise band", () => {
   it("ships with no reviewed rows (Ruling 6: Paco commits them after the measurement)", () => {
     expect(NOISE_BANDS).toEqual([]);
   });
-  it("is keyed by question, criteria hash and reported model", () => {
-    expect(bandFor("category", "h1", "jev-1.13.0", [B])).toBe(0.08);
-    expect(bandFor("category", "h2", "jev-1.13.0", [B])).toBeUndefined();
-    expect(bandFor("category", "h1", "jev-1.14.0", [B])).toBeUndefined();
+  it("is keyed by question and criteria hash only (no model: a Jev version never decides behaviour)", () => {
+    expect(bandFor("category", "h1", [B])).toBe(0.08);
+    expect(bandFor("category", "h2", [B])).toBeUndefined();
   });
   it("near: within the band of any bar, inclusive", () => {
     expect(nearBar(0.65, [0.6], 0.08)).toBe(true);

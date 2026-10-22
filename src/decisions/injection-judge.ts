@@ -123,9 +123,9 @@ async function askPassages(d: JudgeDeps, i: JudgeInput, s: InjectionState, track
 
 const noulOf = (a: JevAnswer | undefined): number => (a?.type === "noul" ? a.noul : 0);
 
-function nearInjection(bands: readonly NoiseBand[]): (answers: Record<string, JevAnswer>, model: string) => boolean {
-  return (answers, model) => {
-    const band = bandFor("injected", INJECTION_TEMPLATE_HASH, model, bands);
+function nearInjection(bands: readonly NoiseBand[]): (answers: Record<string, JevAnswer>) => boolean {
+  return (answers) => {
+    const band = bandFor("injected", INJECTION_TEMPLATE_HASH, bands);
     return band !== undefined && Object.values(answers).some((a) => a.type === "noul" && nearBar(a.noul, [INJECTION_BAR_P], band));
   };
 }
