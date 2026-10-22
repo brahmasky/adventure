@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -1145,6 +1145,23 @@ describe("the daemon's sweep wiring (M9)", () => {
     } finally {
       store.close();
     }
+  });
+
+  it("boot reads the Jev anchor from the project root, not the cwd (a root holding files is read; one without opens jev_anchor_missing)", async () => {
+    const run = async (root: string): Promise<string[]> => {
+      const store = RunStore.openInMemory();
+      try {
+        const controller = new AbortController(); controller.abort();
+        await runDaemon({ store, projectRoot: root, omp: fakeOmp(root), allowlist: ALLOWLIST, stopSignal: controller.signal,
+          telegramClient: { getUpdates: async () => [], sendMessage: async () => ({ message_id: 1 }) } as never });
+        return store.listOpenIncidents().map((i) => i.kind).filter((k) => k.startsWith("jev_anchor"));
+      } finally { store.close(); }
+    };
+    expect(await run(projectRoot())).toEqual(["jev_anchor_missing"]);
+    const withFiles = projectRoot();
+    mkdirSync(join(withFiles, ".houge", "jev-tree"), { recursive: true });
+    for (const f of ["replay.jsonl", "replay-permuted.jsonl", "labels.jsonl"]) writeFileSync(join(withFiles, ".houge", "jev-tree", f), "");
+    expect(await run(withFiles)).toEqual(["jev_anchor_insufficient"]); // files found and read: no turns kept
   });
 
   it("boot validates the omp config: a malformed value opens omp_config_invalid before the first poll (B4)", async () => {

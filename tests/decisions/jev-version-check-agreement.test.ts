@@ -41,6 +41,16 @@ describe("routeEffectKey", () => {
   });
 });
 
+describe("routeEffectKey cascade", () => {
+  it("two cascades with the same pair but another confident rule_scope are different route effects", () => {
+    const s = { latest_message: "x", last_houge_turn: null, quoted_turn: null };
+    const below = (scope: "ask" | "research") => treeAnswers({ category: "research", p: 0.4, setsRule: 0.05, scope });
+    const [a, b] = [routeEffectKey(s, below("ask")), routeEffectKey(s, below("research"))];
+    expect(a).toContain("cascade:");
+    expect(a).not.toBe(b);
+  });
+});
+
 describe("laneLabelCounts", () => {
   it("counts wrong routes into a lane and labelled turns routed to their lane, unlabelled turns not at all", () => {
     const k = (lane: string): string => `x/${lane}/default/-/-/`;

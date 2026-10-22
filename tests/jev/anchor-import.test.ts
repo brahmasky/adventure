@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ANCHOR_COMMAND, bootJevAnchor, importJevAnchor } from "../../src/jev/anchor-import.js";
 import { stateHash } from "../../src/jev/decide.js";
+import { JEV_REQUEST_MODEL } from "../../src/jev/jev-client.js";
 import { criteriaHash } from "../../src/jev/questions/types.js";
 import { TREE_LABEL_SINCE, treeContextFor, treeQuestions } from "../../src/jev/triage-replay.js";
 import { RunStore } from "../../src/run/run-store.js";
@@ -63,18 +64,25 @@ const kinds = (s: RunStore): string[] => incidents(s).map((i) => i.kind);
 describe("importJevAnchor", () => {
   it("imports paired turns, seeds the anchor model trusted and stores the baselines", () => {
     const w = world(100);
-    const r = importJevAnchor(w.store, full(w), { env: {} });
+    const first = w.turns[0]!.id;
+    const dir = files({ A: w.turns.map((t) => row(w.store, t.id, t.lang, "A")),
+      B: w.turns.map((t) => row(w.store, t.id, t.lang, "B", t.id === first ? { answers: treeAnswers({ category: "answer" }) } : {})),
+      labels: [...w.turns.slice(0, 5).map((t) => ({ turn_id: t.id, category: "memory", by: "paco", at: "2026-10-09T00:00:00.000Z" })),
+        { turn_id: w.turns[5]!.id, category: "answer", by: "paco", at: "2026-10-09T00:00:00.000Z" }] });
+    const r = importJevAnchor(w.store, dir, { env: {} });
     expect(r.status).toBe("imported");
     expect(w.store.listAnchorTurns()).toHaveLength(102);
     expect(w.store.anchorAnswers("A")).toHaveLength(102 * 6);
     expect(w.store.anchorAnswers("B")).toHaveLength(102 * 6);
-    expect(w.store.anchorLabels()).toHaveLength(5);
+    expect(w.store.anchorLabels()).toHaveLength(6);
     expect(w.store.getJevModel(MODEL)?.state).toBe("trusted");
     const meta = JSON.parse(w.store.getAnchorMeta("baseline")!);
     expect(meta.turns).toEqual({ zh: 100, en: 2 });
-    expect(meta.agreement.category).toEqual({ agree: 102, n: 102 }); // identical A and B answers: full agreement
+    expect(meta.agreement.category).toEqual({ agree: 101, n: 102 }); // one turn's B run answers another category
     expect(meta.agreement.route.n).toBe(102);
-    expect(meta.lanes.A.memory).toMatchObject({ labelled: 5 });
+    // 5 labelled memory turns plus one labelled answer that A routes to memory (a wrong route); B loses the differing turn
+    expect(meta.lanes.A.memory).toEqual({ wrong: 1, recall: 5, labelled: 5 });
+    expect(meta.lanes.B.memory.recall).toBe(4);
     expect(kinds(w.store)).toEqual([]);
   });
 
@@ -165,6 +173,39 @@ describe("importJevAnchor", () => {
     expect(w.store.anchorEmpty()).toBe(true);
     expect(w.store.getJevModel(MODEL)?.state).toBe("insufficient");
     expect(kinds(w.store)).toEqual(["jev_anchor_insufficient"]);
+    expect(incidents(w.store)[0]!.detail_json).toContain(ANCHOR_COMMAND);
+  });
+
+  it("no kept turn at all is insufficient, never mixed_models", () => {
+    const w = world(3);
+    const dir = files({ A: [], B: [] });
+    expect(importJevAnchor(w.store, dir, { env: {} }).status).toBe("insufficient");
+    expect(kinds(w.store)).toEqual(["jev_anchor_insufficient"]);
+  });
+
+  it("the request alias is not a model: rows reporting it import nothing and arm nothing", () => {
+    const w = world(100);
+    const dir = files({ A: w.turns.map((t) => row(w.store, t.id, t.lang, "A", { model: JEV_REQUEST_MODEL })), B: w.turns.map((t) => row(w.store, t.id, t.lang, "B", { model: JEV_REQUEST_MODEL })) });
+    const r = importJevAnchor(w.store, dir, { env: {} });
+    expect(r.status).not.toBe("imported");
+    expect(w.store.anchorEmpty()).toBe(true);
+    expect(w.store.getJevModel(JEV_REQUEST_MODEL)).toBeUndefined();
+  });
+
+  it("a successful import resolves the earlier missing / insufficient anchor incidents", () => {
+    const w = world(100);
+    importJevAnchor(w.store, join(mkdtempSync(join(tmpdir(), "anchor-")), "nope"), { env: {} });
+    expect(kinds(w.store)).toEqual(["jev_anchor_missing"]);
+    expect(importJevAnchor(w.store, full(w), { env: {} }).status).toBe("imported");
+    expect(kinds(w.store)).toEqual([]);
+  });
+
+  it("a throw inside the transaction leaves every anchor table empty", () => {
+    const w = world(100);
+    const state = (turn_id: string) => ({ turn_id, lang: "zh", state_json: "{}", state_hash: "h" });
+    expect(() => w.store.importAnchor({ rows: [], states: [state("t"), state("t")], labels: [], meta: { baseline: "{}" }, trustedModel: MODEL, now: "n" })).toThrow();
+    expect([w.store.anchorEmpty(), w.store.anchorStates(), w.store.anchorLabels(), w.store.getAnchorMeta("baseline"), w.store.getJevModel(MODEL)])
+      .toEqual([true, [], [], undefined, undefined]);
   });
 });
 

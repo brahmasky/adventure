@@ -3,11 +3,11 @@ import { join } from "node:path";
 import { agreementOf, answerBucket, JEV_ANCHOR_MIN_ZH, laneLabelCounts, ROUTE_CHECK_ID, routeEffectKey, type Agreement,
   type DisarmableLane, type LaneLabelCount } from "../decisions/jev-version-check.js";
 import { errorCode } from "../domain/error-code.js";
-import { openAlertedIncident } from "../run/incident-alert.js";
+import { openAlertedIncident, resolveOpenIncidents } from "../run/incident-alert.js";
 import type { JevAnchorLabel, JevAnchorRow, JevAnchorState, ReplayTurnRow, RunStore } from "../run/run-store.js";
 import { stateHash } from "./decide.js";
 import { JEV_INCIDENT_SUBJECT } from "./jev-incidents.js";
-import type { JevAnswer } from "./jev-client.js";
+import { JEV_REQUEST_MODEL, type JevAnswer } from "./jev-client.js";
 import { criteriaHash } from "./questions/types.js";
 import { readDone } from "./replay-core.js";
 import { loadLabels, TREE_LABEL_SINCE, treeContextFor, treeQuestions, type TreeReplayRow } from "./triage-replay.js";
@@ -22,6 +22,7 @@ export const ANCHOR_DIR = ".houge/jev-tree";
 export const ANCHOR_FILES = { A: "replay.jsonl", B: "replay-permuted.jsonl", labels: "labels.jsonl" } as const;
 export const ANCHOR_COMMAND = "houge jev anchor import";
 const INCIDENT_SUBJECT = `${JEV_INCIDENT_SUBJECT}:anchor`;
+const ANCHOR_INCIDENT_KINDS: ReadonlySet<string> = new Set(["jev_anchor_missing", "jev_anchor_mixed_models", "jev_anchor_insufficient"]);
 const OK: ReadonlySet<string> = new Set(["ok"]);
 
 export type AnchorStatus = "imported" | "noop" | "missing" | "mixed_models" | "insufficient";
@@ -42,14 +43,14 @@ function validRows(file: string, permute: boolean): { rows: Map<string, TreeRepl
   for (const [key, raw] of readDone(file, OK)) {
     const r = raw as unknown as TreeReplayRow;
     const turn = suffix && key.endsWith(suffix) ? key.slice(0, -suffix.length) : key;
-    const good = typeof r.model === "string" && r.model !== "" && typeof r.state_hash === "string" && r.answers !== undefined && r.criteria_hashes !== undefined
+    const good = typeof r.model === "string" && r.model !== "" && r.model !== JEV_REQUEST_MODEL && typeof r.state_hash === "string" && r.answers !== undefined && r.criteria_hashes !== undefined
       && qs.every((q) => r.criteria_hashes?.[q.id] === criteriaHash(q) && answerBucket(q, r.answers?.[q.id]) !== null) && (!suffix || key.endsWith(suffix));
     if (good) rows.set(turn, r); else invalid.add(turn);
   }
   return { rows, invalid };
 }
 
-/** Rebuild the state exactly as the replay did and as the live path would send it; null when it differs from the replay's hash. */
+/** Rebuild the state exactly as the replay did and as the live path would send it; "state_mismatch" when it differs from the replay's hash. */
 function rebuild(store: RunStore, env: NodeJS.ProcessEnv, t: ReplayTurnRow, replayHash: string): { state: Record<string, unknown>; hash: string } | "state_mismatch" {
   const plain = treeContextFor(store, env, t).built;
   if (!plain.ok || stateHash(plain.state) !== replayHash) return "state_mismatch";
@@ -113,23 +114,22 @@ export function importJevAnchor(store: RunStore, dir: string, opts: { env?: Node
   const models = new Set(kept.flatMap((k) => [k.a.model, k.b.model]).filter((m): m is string => typeof m === "string"));
   const turns: Record<string, number> = {};
   for (const k of kept) turns[k.lang] = (turns[k.lang] ?? 0) + 1;
-  const model = models.size === 1 ? [...models][0]! : null;
+  const model = models.size === 1 ? [...models][0]! : null; // the request alias never counts: validRows drops its rows
   const labels = new Map([...loadLabels(files[2]!)].filter(([id]) => kept.some((k) => k.turn === id)));
   const counts: AnchorCounts = { model, turns, dropped, labels: labels.size, ...baselines(kept, labels) };
-  if (models.size !== 1) {
+  if (models.size > 1) { // mixed models seed nothing (task-4 brief; spec §2.2 says insufficient). Zero models is the insufficient case below.
     incident(store, "jev_anchor_mixed_models", { models: models.size, turns: kept.length }, opts.now);
     return { status: "mixed_models", message: `the anchor rows report ${models.size} models; nothing imported or armed`, counts };
   }
-  return seedAnchor(store, { kept, labels, counts, model: model!, now: opts.now ?? new Date().toISOString() });
+  return seedAnchor(store, { kept, labels, counts, model, now: opts.now ?? new Date().toISOString() });
 }
 
-function seedAnchor(store: RunStore, i: { kept: Kept[]; labels: Map<string, { category: string; by: string; at: string }>; counts: AnchorCounts; model: string; now: string }): AnchorImportResult {
+function seedAnchor(store: RunStore, i: { kept: Kept[]; labels: Map<string, { category: string; by: string; at: string }>; counts: AnchorCounts; model: string | null; now: string }): AnchorImportResult {
   const { kept, counts, model, now } = i;
   const zh = counts.turns.zh ?? 0;
-  if (zh < JEV_ANCHOR_MIN_ZH) {
-    store.noteJevModel(model, now);
-    const cur = store.getJevModel(model);
-    if (cur && cur.state !== "insufficient" && cur.state !== "trusted" && cur.state !== "accepted") store.setJevModelState(model, cur.state, "insufficient", JSON.stringify({ zh_turns: zh }), now);
+  if (model === null || zh < JEV_ANCHOR_MIN_ZH) {
+    const cur = model === null ? undefined : (store.noteJevModel(model, now), store.getJevModel(model));
+    if (model !== null && cur && cur.state !== "insufficient" && cur.state !== "trusted" && cur.state !== "accepted") store.setJevModelState(model, cur.state, "insufficient", JSON.stringify({ zh_turns: zh }), now);
     incident(store, "jev_anchor_insufficient", { zh_turns: zh, need: JEV_ANCHOR_MIN_ZH }, now);
     return { status: "insufficient", message: `only ${zh} zh paired turns (need ${JEV_ANCHOR_MIN_ZH}); the model is insufficient, nothing armed`, counts };
   }
@@ -137,6 +137,7 @@ function seedAnchor(store: RunStore, i: { kept: Kept[]; labels: Map<string, { ca
   const labels: JevAnchorLabel[] = [...i.labels].map(([turn_id, l]) => ({ turn_id, category: l.category, by: l.by, at: l.at }));
   const rows = kept.flatMap((k) => [...rowsOf(k, k.a, "A"), ...rowsOf(k, k.b, "B")]);
   const done = store.importAnchor({ rows, states, labels, meta: { baseline: JSON.stringify(counts) }, trustedModel: model, now });
+  if (done) resolveOpenIncidents(store, ANCHOR_INCIDENT_KINDS, INCIDENT_SUBJECT, now);
   return done ? { status: "imported", message: `anchor imported: ${kept.length} turns, model seeded trusted`, counts }
     : { status: "noop", message: "the anchor is already imported; it is never replaced" };
 }

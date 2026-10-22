@@ -115,7 +115,7 @@ export function routeEffectKey(state: RouteState, answers: Record<string, JevAns
     [r.category ?? "-", r.lane, r.role, r.effort ?? "-", r.save?.scope ?? "-", pair].join("/");
   if (pre.kind === "ack_answer") return fields(ACK_ROUTE);
   const plan = routeTree(answers, { bars, armed: CHECK_ARMED, thinkHarder: thinkHarderIn(text), bareAck: isBareAck(text) });
-  return plan.kind === "final" ? fields(plan.route) : fields(plan.base, `cascade:${plan.between.join("|")}`);
+  return plan.kind === "final" ? fields(plan.route) : fields(plan.base, `cascade:${plan.between.join("|")}:${plan.ruleScope ?? "-"}`);
 }
 
 /** The lane a route key lands in (its second field); a cascade is the planner's. */
