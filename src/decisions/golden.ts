@@ -1,4 +1,6 @@
 import type { JevAnswer, JevRequest, JevResult } from "../jev/jev-client.js";
+import { IMPROVE_TARGET } from "../jev/questions/improve.js";
+import { SETTLE_QUESTIONS } from "../jev/questions/settle.js";
 import { askSettle } from "../jev/settle-ask.js";
 import { buildTreeState, TREE_MEMORY_KIND } from "../jev/questions/tree.js";
 import { toJevQuestion } from "../jev/questions/types.js";
@@ -10,6 +12,8 @@ import { confidentMemoryKind, MEMORY_KIND_ID, type MemoryKindVerdict } from "./e
 import { SETTLE_QUESTION_BARS, TURN_SETTLE_ID } from "./entries/turn-settle.js";
 import { buildSettleState, settleJevState } from "./settle-state.js";
 import { INJECTION_BAR_P, injectionQuestion, TOOL_INJECTION_ID } from "./entries/tool-injection.js";
+import { IMPROVE_ROUTE_ID, improveJevState, type ImproveState, type ImproveTarget } from "./entries/improve-route.js";
+import { JEV_CHECK_MIXED_RETRIES } from "./jev-version-check.js";
 
 /**
  * tool.injection's golden set (spec §4.2; plan S4: a daily tick, not the sweep). Eight fixed items, held apart from the gate
@@ -39,9 +43,7 @@ export async function runGoldenSetTick(i: GoldenTickInput): Promise<{ ran: false
   const date = formatInstantInZone(i.now, resolveDisplayZone(env)).slice(0, 10);
   if (i.store.getGoldenRun(date, TOOL_INJECTION_ID)) return { ran: false };
   const items = i.items ?? INJECTION_GOLDEN;
-  const questions = items.map((_, j) => injectionQuestion(`p${j + 1}`, `i${j + 1}`));
-  const state: Record<string, string> = { source: "a fixed golden set", ...Object.fromEntries(items.map((g, j) => [`p${j + 1}`, redactForJudge(g.text, { brokerRedact: (x) => i.store.redactSecretValues(x) })])) };
-  const r = await i.client({ state, questions: Object.fromEntries(questions.map((q) => [q.id, toJevQuestion(q)])) });
+  const r = await i.client(injectionRequest(i.store, items));
   const answered = r.ok && items.every((_, j) => r.answers[`i${j + 1}`]?.type === "noul");
   const outcome: GoldenOutcome = r.ok && answered ? judgeGolden(i.store, r, i.now, env, items) : "skipped";
   if (!r.ok) console.error(`decisions: golden set skipped (${r.reason})`);
@@ -50,11 +52,23 @@ export async function runGoldenSetTick(i: GoldenTickInput): Promise<{ ran: false
   return { ran: true, outcome };
 }
 
+/** The one request of the injection set: every passage through the egress mask, one noul question each (`p<j>` → `i<j>`). */
+function injectionRequest(store: RunStore, items: readonly GoldenItem[]): JevRequest {
+  const questions = items.map((_, j) => injectionQuestion(`p${j + 1}`, `i${j + 1}`));
+  const state: Record<string, string> = { source: "a fixed golden set", ...Object.fromEntries(items.map((g, j) => [`p${j + 1}`, redactForJudge(g.text, { brokerRedact: (x) => store.redactSecretValues(x) })])) };
+  return { state, questions: Object.fromEntries(questions.map((q) => [q.id, toJevQuestion(q)])) };
+}
+
+/** Planted items the rung would not hold, and clean items it would. */
+function injectionMisses(answers: Record<string, JevAnswer>, items: readonly GoldenItem[]): { missed: string[]; falseHeld: string[] } {
+  const p = (j: number): number => { const a = answers[`i${j + 1}`]; return a?.type === "noul" ? a.noul : Number.NaN; };
+  return { missed: items.flatMap((g, j) => (g.planted && !(p(j) > INJECTION_BAR_P) ? [g.id] : [])),
+    falseHeld: items.flatMap((g, j) => (!g.planted && p(j) > INJECTION_BAR_P ? [g.id] : [])) };
+}
+
 function judgeGolden(store: RunStore, r: Extract<JevResult, { ok: true }>, now: string, env: NodeJS.ProcessEnv, items: readonly GoldenItem[]): GoldenOutcome {
-  const p = (j: number): number => { const a = r.answers[`i${j + 1}`]; return a?.type === "noul" ? a.noul : Number.NaN; };
   resolveOpenIncidents(store, STALE, TOOL_INJECTION_ID, now); // retired kind: a row the old code left open clears
-  const missed = items.flatMap((g, j) => (g.planted && !(p(j) > INJECTION_BAR_P) ? [g.id] : []));
-  const falseHeld = items.flatMap((g, j) => (!g.planted && p(j) > INJECTION_BAR_P ? [g.id] : []));
+  const { missed, falseHeld } = injectionMisses(r.answers, items);
   if (missed.length + falseHeld.length > 0) {
     openAlertedIncident(store, { kind: "decision_golden_drift", subject: TOOL_INJECTION_ID, detail: { entry: TOOL_INJECTION_ID, missed, false_withheld: falseHeld }, env, now });
     return "drift";
@@ -102,18 +116,27 @@ export async function runMemoryKindGoldenTick(i: Omit<GoldenTickInput, "items">)
 
 /** A transport failure or a missing / non-choice answer is INCONCLUSIVE, never a miss. */
 async function askGolden(i: Omit<GoldenTickInput, "items">, text: string): Promise<{ model: string; answer: JevAnswer } | { fail: string }> {
-  const built = buildTreeState({ userText: text, recentTurns: [], turnChars: 0, modality: "text", lastHougeTurn: null, quotedTurn: null },
-    (x) => i.store.redactSecretValues(x), [TREE_MEMORY_KIND]);
-  if (!built.ok) return { fail: built.skip };
-  const r = await i.client({ state: built.state, questions: { [TREE_MEMORY_KIND.id]: toJevQuestion(TREE_MEMORY_KIND) } });
+  const req = memoryKindRequest(i.store, text);
+  if ("skip" in req) return { fail: req.skip };
+  const r = await i.client(req);
   if (!r.ok) return { fail: r.reason };
   const answer = r.answers[TREE_MEMORY_KIND.id];
   return answer?.type === "choice" ? { model: r.model, answer } : { fail: "no_choice_answer" };
 }
 
+/** One memory.kind item in the live state shape (the tree state, asked the memory_kind question alone). */
+function memoryKindRequest(store: RunStore, text: string): JevRequest | { skip: string } {
+  const built = buildTreeState({ userText: text, recentTurns: [], turnChars: 0, modality: "text", lastHougeTurn: null, quotedTurn: null },
+    (x) => store.redactSecretValues(x), [TREE_MEMORY_KIND]);
+  return built.ok ? { state: built.state, questions: { [TREE_MEMORY_KIND.id]: toJevQuestion(TREE_MEMORY_KIND) } } : { skip: built.skip };
+}
+
+const memoryKindMissed = (answers: ReadonlyArray<JevAnswer | undefined>): string[] =>
+  MEMORY_KIND_GOLDEN.flatMap((g, j) => (confidentMemoryKind(answers[j])?.kind === g.expect ? [] : [g.id]));
+
 function judgeMemoryKindGolden(store: RunStore, answers: ReadonlyArray<{ model: string; answer: JevAnswer }>, now: string, env: NodeJS.ProcessEnv): GoldenOutcome {
   resolveOpenIncidents(store, STALE, MEMORY_KIND_ID, now);
-  const missed = MEMORY_KIND_GOLDEN.flatMap((g, j) => (confidentMemoryKind(answers[j]?.answer)?.kind === g.expect ? [] : [g.id]));
+  const missed = memoryKindMissed(answers.map((a) => a.answer));
   if (missed.length > 0) {
     openAlertedIncident(store, { kind: "decision_golden_drift", subject: MEMORY_KIND_ID, detail: { entry: MEMORY_KIND_ID, missed }, env, now });
     return "drift";
@@ -145,9 +168,7 @@ export async function runSettleGoldenTick(i: Omit<GoldenTickInput, "items">): Pr
   const answers: Array<{ model: string; answers: Record<string, number> }> = [];
   let failure: string | null = null;
   for (const g of SETTLE_GOLDEN) { // sequential: the first failure ends the run, no further quota spent
-    const state = buildSettleState({ run_id: "golden", text: g.reply, pass: 0, sentBack: false, trust: "clean", lastCallDenied: false, steerQueued: false, msLeft: 600_000, aborting: false, passErrored: false,
-      evidence: [], todoBefore: null, todoNow: null, pacoMessage: g.pacoMessage, attachmentsAccepted: 0 }, (x) => redactForJudge(x, { brokerRedact: (y) => i.store.redactSecretValues(y) }));
-    const r = await askSettle({ run_id: "golden", state: settleJevState(state), client: i.client, store: i.store });
+    const r = await askSettle({ run_id: "golden", state: settleGoldenState(i.store, g), client: i.client, store: i.store });
     if ("failed" in r) { failure = r.failed; break; }
     answers.push({ model: r.model, answers: r.answers });
   }
@@ -157,12 +178,106 @@ export async function runSettleGoldenTick(i: Omit<GoldenTickInput, "items">): Pr
   return { ran: true, outcome };
 }
 
+/** One settle item in the live state shape (reply, paco_message, tools: none), through the egress mask. */
+function settleGoldenState(store: RunStore, g: SettleGoldenItem): ReturnType<typeof settleJevState> {
+  return settleJevState(buildSettleState({ run_id: "golden", text: g.reply, pass: 0, sentBack: false, trust: "clean", lastCallDenied: false, steerQueued: false, msLeft: 600_000, aborting: false, passErrored: false,
+    evidence: [], todoBefore: null, todoNow: null, pacoMessage: g.pacoMessage, attachmentsAccepted: 0 }, (x) => redactForJudge(x, { brokerRedact: (y) => store.redactSecretValues(y) })));
+}
+
 /** Any question's p over ITS bar (the rung's rule): a planted item fires on it, a clean item misses on it. */
 const settleFires = (a: Record<string, number>): boolean => Object.entries(SETTLE_QUESTION_BARS).some(([id, bar]) => (a[id] ?? 0) > bar);
+const settleMissed = (answers: ReadonlyArray<Record<string, number>>): string[] =>
+  SETTLE_GOLDEN.flatMap((g, j) => (settleFires(answers[j]!) === (g.expect === "send_back") ? [] : [g.id]));
 function judgeSettleGolden(store: RunStore, answers: ReadonlyArray<{ model: string; answers: Record<string, number> }>, now: string, env: NodeJS.ProcessEnv): GoldenOutcome {
   resolveOpenIncidents(store, STALE, TURN_SETTLE_ID, now);
-  const missed = SETTLE_GOLDEN.flatMap((g, j) => (settleFires(answers[j]!.answers) === (g.expect === "send_back") ? [] : [g.id]));
+  const missed = settleMissed(answers.map((a) => a.answers));
   if (missed.length > 0) { openAlertedIncident(store, { kind: "decision_golden_drift", subject: TURN_SETTLE_ID, detail: { entry: TURN_SETTLE_ID, missed }, env, now }); return "drift"; }
   resolveOpenIncidents(store, DRIFT, TURN_SETTLE_ID, now);
   return "ok";
+}
+
+// ── The Jev version check's golden runs (spec 2026-10-22 §2.5 e): every entry's set on one candidate model ──
+
+/**
+ * improve.route's golden set: signals whose state the rule rung abstains on (not stale, no stated rule saved, no recurrence,
+ * no review_bad, no expiry pattern, Paco's words present), so each item reaches the Jev rung, with its intended target.
+ * Synthetic (the repo is public). The bar is provisional (R8), so an item is judged by its top option, not by the bar.
+ */
+export interface ImproveGoldenItem { id: string; expect: ImproveTarget; state: ImproveState }
+const improveItem = (id: string, signal: "correction" | "rating" | "dig_deeper", text: string, expect: ImproveTarget): ImproveGoldenItem => ({ id, expect, state: {
+  signal, value: signal === "rating" ? "1" : "answer", scope: "answer", count: 1, count14d: 1, category: "answer", lane: null, capability: null, pacoText: text,
+  toolSummary: "none", lastImprovement: null, recurrence: null, alreadyAuthored: false, skillExists: false, wikiArmed: false, scheduleHint: null,
+  stale: false, statedRuleSaved: false, redacted: { pacoText: text } } });
+export const IMPROVE_GOLDEN: readonly ImproveGoldenItem[] = [
+  improveItem("ir-lesson-zh", "correction", "以后回答我的时候先给结论，再讲理由，不要一上来就铺垫。", "lesson"),
+  improveItem("ir-lesson-en", "correction", "From now on, keep your answers to me short and put the conclusion first.", "lesson"),
+  improveItem("ir-fact-zh", "correction", "不对，我女儿的生日是三月十二日，不是三月二日，记住。", "fact"),
+  improveItem("ir-fact-en", "correction", "No, my brother's dog is called Biscuit, not Muffin. Remember that.", "fact"),
+  improveItem("ir-tool-en", "dig_deeper", "You still cannot open the PDF attachments I send you; you need a way to read them.", "tool_gap"),
+  improveItem("ir-nothing-en", "rating", "Thanks, that was fine.", "nothing")
+];
+
+/** The entries whose golden sets the version check runs on a candidate, keyed by model in `jev_check_runs`. */
+export const CHECK_GOLDEN_ENTRIES = [TOOL_INJECTION_ID, MEMORY_KIND_ID, TURN_SETTLE_ID, IMPROVE_ROUTE_ID] as const;
+export type CheckGoldenEntry = (typeof CHECK_GOLDEN_ENTRIES)[number];
+type JevFailure = Extract<JevResult, { ok: false }>;
+
+/** One request on the candidate: an answer reporting another model (the alias still served the old id) is retried at most `retries` times and never returned. */
+export type CandidateAsk = { ok: true; answers: Record<string, JevAnswer> } | { ok: false; why: "other_model"; reported: string } | { ok: false; why: "failed"; failure: JevFailure };
+export async function askCandidate(client: (r: JevRequest) => Promise<JevResult>, req: JevRequest, model: string, retries = JEV_CHECK_MIXED_RETRIES): Promise<CandidateAsk> {
+  let reported = "";
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    const r = await client(req);
+    if (!r.ok) return { ok: false, why: "failed", failure: r };
+    if (r.model === model) return { ok: true, answers: r.answers };
+    reported = r.model;
+  }
+  return { ok: false, why: "other_model", reported };
+}
+
+/** An entry's golden set as requests and a judge over their answers (null = an answer of the wrong shape: inconclusive, never a miss). */
+interface GoldenPlan { requests: JevRequest[]; missed: (answers: ReadonlyArray<Record<string, JevAnswer>>) => string[] | null }
+const nouls = (a: Record<string, JevAnswer>): Record<string, number> | null =>
+  SETTLE_QUESTIONS.every((q) => a[q.id]?.type === "noul") ? Object.fromEntries(SETTLE_QUESTIONS.map((q) => [q.id, (a[q.id] as { noul: number }).noul])) : null;
+const topOf = (a: JevAnswer | undefined): string | null =>
+  a?.type === "choice" ? (Object.entries(a.probabilities).sort((x, y) => y[1] - x[1])[0]?.[0] ?? null) : null;
+
+function goldenPlan(entry: CheckGoldenEntry, store: RunStore): GoldenPlan | null {
+  switch (entry) {
+    case TOOL_INJECTION_ID: return { requests: [injectionRequest(store, INJECTION_GOLDEN)], missed: ([a]) => {
+      if (!a || !INJECTION_GOLDEN.every((_, j) => a[`i${j + 1}`]?.type === "noul")) return null;
+      const m = injectionMisses(a, INJECTION_GOLDEN); return [...m.missed, ...m.falseHeld];
+    } };
+    case MEMORY_KIND_ID: {
+      const reqs = MEMORY_KIND_GOLDEN.map((g) => memoryKindRequest(store, g.text));
+      if (reqs.some((r) => "skip" in r)) return null;
+      return { requests: reqs as JevRequest[], missed: (as) => (as.every((a) => a[TREE_MEMORY_KIND.id]?.type === "choice") ? memoryKindMissed(as.map((a) => a[TREE_MEMORY_KIND.id])) : null) };
+    }
+    case TURN_SETTLE_ID: return { requests: SETTLE_GOLDEN.map((g) => ({ state: settleGoldenState(store, g), questions: Object.fromEntries(SETTLE_QUESTIONS.map((q) => [q.id, toJevQuestion(q)])) })),
+      missed: (as) => { const n = as.map(nouls); return n.every((x) => x !== null) ? settleMissed(n as Record<string, number>[]) : null; } };
+    case IMPROVE_ROUTE_ID: return { requests: IMPROVE_GOLDEN.map((g) => ({ state: improveJevState(g.state), questions: { [IMPROVE_TARGET.id]: toJevQuestion(IMPROVE_TARGET) } })),
+      missed: (as) => (as.every((a) => topOf(a[IMPROVE_TARGET.id]) !== null) ? IMPROVE_GOLDEN.flatMap((g, j) => (topOf(as[j]![IMPROVE_TARGET.id]) === g.expect ? [] : [g.id])) : null) };
+  }
+}
+
+export type ModelGoldenResult = { kind: "judged"; outcome: "ok" | "drift"; missed: string[] } | { kind: "wrong_model"; reported: string }
+  | { kind: "failed"; failure: JevFailure | null } | { kind: "stopped" };
+
+/**
+ * One entry's golden set on `model` (spec §2.5 e), sequential: every answer must report the candidate (another model's is
+ * retried, never credited); the first failed call ends the run (`failed`; null = a malformed answer set); the stop signal
+ * is checked between calls. Judged as the daily tick judges it; recording and incidents are the caller's.
+ */
+export async function runGoldenForModel(entry: CheckGoldenEntry, model: string, client: (r: JevRequest) => Promise<JevResult>, store: RunStore, signal?: AbortSignal): Promise<ModelGoldenResult> {
+  const plan = goldenPlan(entry, store);
+  if (plan === null) return { kind: "failed", failure: null };
+  const answers: Array<Record<string, JevAnswer>> = [];
+  for (const req of plan.requests) {
+    if (signal?.aborted) return { kind: "stopped" };
+    const r = await askCandidate(client, req, model);
+    if (!r.ok) return r.why === "other_model" ? { kind: "wrong_model", reported: r.reported } : { kind: "failed", failure: r.failure };
+    answers.push(r.answers);
+  }
+  const missed = plan.missed(answers);
+  return missed === null ? { kind: "failed", failure: null } : { kind: "judged", outcome: missed.length > 0 ? "drift" : "ok", missed };
 }
