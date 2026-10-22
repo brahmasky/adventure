@@ -204,16 +204,16 @@ function judgeSettleGolden(store: RunStore, answers: ReadonlyArray<{ model: stri
  * Synthetic (the repo is public). The bar is provisional (R8), so an item is judged by its top option, not by the bar.
  */
 export interface ImproveGoldenItem { id: string; expect: ImproveTarget; state: ImproveState }
-const improveItem = (id: string, signal: "correction" | "rating" | "dig_deeper", text: string, expect: ImproveTarget): ImproveGoldenItem => ({ id, expect, state: {
-  signal, value: signal === "rating" ? "1" : "answer", scope: "answer", count: 1, count14d: 1, category: "answer", lane: null, capability: null, pacoText: text,
+const improveItem = (id: string, signal: "correction" | "rating", text: string, expect: ImproveTarget): ImproveGoldenItem => ({ id, expect, state: {
+  signal, value: signal === "rating" ? "3" : "answer", scope: "answer", count: 1, count14d: 1, category: "answer", lane: null, capability: null, pacoText: text,
   toolSummary: "none", lastImprovement: null, recurrence: null, alreadyAuthored: false, skillExists: false, wikiArmed: false, scheduleHint: null,
   stale: false, statedRuleSaved: false, redacted: { pacoText: text } } });
 export const IMPROVE_GOLDEN: readonly ImproveGoldenItem[] = [
   improveItem("ir-lesson-zh", "correction", "以后回答我的时候先给结论，再讲理由，不要一上来就铺垫。", "lesson"),
   improveItem("ir-lesson-en", "correction", "From now on, keep your answers to me short and put the conclusion first.", "lesson"),
-  improveItem("ir-fact-zh", "correction", "不对，我女儿的生日是三月十二日，不是三月二日，记住。", "fact"),
+  improveItem("ir-fact-zh", "correction", "不对，我女儿的生日是三月十二日，不是三月二日。", "fact"),
   improveItem("ir-fact-en", "correction", "No, my brother's dog is called Biscuit, not Muffin. Remember that.", "fact"),
-  improveItem("ir-tool-en", "dig_deeper", "You still cannot open the PDF attachments I send you; you need a way to read them.", "tool_gap"),
+  improveItem("ir-tool-en", "correction", "You have no tool that can send a WhatsApp message, so you could not do it. Houge needs a WhatsApp sending tool built.", "tool_gap"),
   improveItem("ir-nothing-en", "rating", "Thanks, that was fine.", "nothing")
 ];
 
@@ -223,10 +223,16 @@ export type CheckGoldenEntry = (typeof CHECK_GOLDEN_ENTRIES)[number];
 type JevFailure = Extract<JevResult, { ok: false }>;
 
 /** One request on the candidate: an answer reporting another model (the alias still served the old id) is retried at most `retries` times and never returned. */
-export type CandidateAsk = { ok: true; answers: Record<string, JevAnswer> } | { ok: false; why: "other_model"; reported: string } | { ok: false; why: "failed"; failure: JevFailure };
-export async function askCandidate(client: (r: JevRequest) => Promise<JevResult>, req: JevRequest, model: string, retries = JEV_CHECK_MIXED_RETRIES): Promise<CandidateAsk> {
+export type CandidateAsk = { ok: true; answers: Record<string, JevAnswer> } | { ok: false; why: "other_model"; reported: string } | { ok: false; why: "failed"; failure: JevFailure }
+  | { ok: false; why: "stopped" };
+/** `pace` runs before every attempt (the version check spaces its asks); the stop signal is checked before each one too. */
+export interface AskOptions { retries?: number; signal?: AbortSignal; pace?: () => Promise<void> }
+export async function askCandidate(client: (r: JevRequest) => Promise<JevResult>, req: JevRequest, model: string, o: AskOptions = {}): Promise<CandidateAsk> {
   let reported = "";
-  for (let attempt = 0; attempt <= retries; attempt += 1) {
+  for (let attempt = 0; attempt <= (o.retries ?? JEV_CHECK_MIXED_RETRIES); attempt += 1) {
+    if (o.signal?.aborted) return { ok: false, why: "stopped" };
+    await o.pace?.();
+    if (o.signal?.aborted) return { ok: false, why: "stopped" };
     const r = await client(req);
     if (!r.ok) return { ok: false, why: "failed", failure: r };
     if (r.model === model) return { ok: true, answers: r.answers };
@@ -268,14 +274,14 @@ export type ModelGoldenResult = { kind: "judged"; outcome: "ok" | "drift"; misse
  * retried, never credited); the first failed call ends the run (`failed`; null = a malformed answer set); the stop signal
  * is checked between calls. Judged as the daily tick judges it; recording and incidents are the caller's.
  */
-export async function runGoldenForModel(entry: CheckGoldenEntry, model: string, client: (r: JevRequest) => Promise<JevResult>, store: RunStore, signal?: AbortSignal): Promise<ModelGoldenResult> {
+export async function runGoldenForModel(entry: CheckGoldenEntry, model: string, client: (r: JevRequest) => Promise<JevResult>, store: RunStore, signal?: AbortSignal,
+  pace?: () => Promise<void>): Promise<ModelGoldenResult> {
   const plan = goldenPlan(entry, store);
   if (plan === null) return { kind: "failed", failure: null };
   const answers: Array<Record<string, JevAnswer>> = [];
   for (const req of plan.requests) {
-    if (signal?.aborted) return { kind: "stopped" };
-    const r = await askCandidate(client, req, model);
-    if (!r.ok) return r.why === "other_model" ? { kind: "wrong_model", reported: r.reported } : { kind: "failed", failure: r.failure };
+    const r = await askCandidate(client, req, model, { ...(signal ? { signal } : {}), ...(pace ? { pace } : {}) });
+    if (!r.ok) return r.why === "stopped" ? { kind: "stopped" } : r.why === "other_model" ? { kind: "wrong_model", reported: r.reported } : { kind: "failed", failure: r.failure };
     answers.push(r.answers);
   }
   const missed = plan.missed(answers);

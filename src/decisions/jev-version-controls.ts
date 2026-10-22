@@ -34,10 +34,11 @@ export function acceptJevModelCli(store: RunStore, model: string, now: string): 
  * generation); the daemon's next tick runs it.
  */
 export function requestJevCheck(store: RunStore, model: string | undefined, now: string): ControlResult {
-  const served = store.latestJevAttemptModel();
-  if (!served) return { ok: false, message: "jev check: no Jev answer recorded yet, so the model behind the alias is unknown; nothing queued" };
+  const latest = store.latestJevAttemptModel();
+  if (!latest) return { ok: false, message: "jev check: no Jev answer recorded yet, so the model behind the alias is unknown; nothing queued" };
+  const served = latest.model;
   if (model !== undefined && model !== served) {
-    return { ok: false, message: `jev check: refused: the alias serves ${served} now, not ${model}; only the served model can be checked (houge jev check ${served})` };
+    return { ok: false, message: `jev check: refused: the alias serves ${served} (as of ${latest.at}, the newest Jev answer), not ${model}; only the served model can be checked (houge jev check ${served})` };
   }
   store.noteJevModel(served, now);
   const row = store.getJevModel(served)!;

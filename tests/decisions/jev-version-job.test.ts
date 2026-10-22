@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { mkdtempSync } from "node:fs";
@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseDriftDetail } from "../../src/decisions/jev-version-check.js";
 import {
-  discoverJevModels, JEV_JOB_OUTAGE_BACKOFF_MS, jevJobSettled, jevVersionTick, resetJevJobForTests, runJevCheck, type JevJobDeps
+  discoverJevModels, JEV_CHECK_PACE_MS, JEV_JOB_OUTAGE_BACKOFF_MS, jevJobSettled, jevVersionTick, resetJevJobForTests, runJevCheck, type JevJobDeps
 } from "../../src/decisions/jev-version-job.js";
 import type { JevAnswer, JevRequest, JevResult } from "../../src/jev/jev-client.js";
 import { CATEGORIES } from "../../src/jev/questions/tree.js";
@@ -75,8 +75,11 @@ function fake(o: { answer?: Answerer; model?: (call: number) => string; fail?: (
 
 const fresh = (): RunStore => RunStore.open(join(mkdtempSync(join(tmpdir(), "hjvj-")), "h.sqlite"));
 function deps(store: RunStore, f: Fake, o: Partial<JevJobDeps> = {}): JevJobDeps {
-  return { store, client: f.client, signal: new AbortController().signal, chatId: CHAT, now: () => NOW, golden: [], log: () => {}, ...o };
+  return { store, client: f.client, signal: new AbortController().signal, chatId: CHAT, now: () => NOW, golden: [], log: () => {}, paceMs: 0, ...o };
 }
+/** An answered Jev call in the ledger reporting `model`: what the alias served last. */
+const serve = (s: RunStore, model: string): void => s.llmAuditSink({ correlation_id: "t", role: "triage" }).record({ provider: "jev", role: "", outcome: "ok", model, latency_ms: 1 });
+const PARSE_FAIL: JevResult = { ok: false, reason: "error", detail: "bad", error_kind: "parse" };
 const outbox = (s: RunStore) => {
   const out: Array<{ chat: string; payload: Record<string, unknown> }> = [];
   for (let n = s.claimNextNotification("test", 30); n; n = s.claimNextNotification("test", 30)) {
@@ -87,6 +90,7 @@ const outbox = (s: RunStore) => {
 };
 const treeRows = (s: RunStore, model: string, generation: number) => s.listJevCheckRuns(model, generation, "tree");
 const sha8 = (m: string) => createHash("sha256").update(m).digest("hex").slice(0, 8);
+const acceptData = (s: RunStore, m: string) => `dec:jv:${sha8(m)}:${s.getJevModel(m)!.generation}:acc`;
 
 afterEach(() => resetJevJobForTests());
 
@@ -117,12 +121,12 @@ describe("discovery (spec §2.4): llm_attempt rows after the rowid cursor", () =
 
 describe("the background job (spec §2.4)", () => {
   it("starts from the tick without being awaited: the tick returns while the first Jev call is still in flight, and one model runs at a time", async () => {
-    const s = fresh(); seedAnchor(s); s.noteJevModel(CAND, NOW); s.noteJevModel("jev-other", NOW);
+    const s = fresh(); seedAnchor(s); s.noteJevModel("jev-other", NOW); serve(s, CAND);
     let release: () => void = () => {};
     const gate = new Promise<void>((r) => { release = r; });
     const f = fake();
     const slow = async (req: JevRequest): Promise<JevResult> => { await gate; return f.client(req); };
-    const tick = () => jevVersionTick({ store: s, makeClient: () => slow, signal: new AbortController().signal, chatId: CHAT, now: () => NOW, golden: [], log: () => {} });
+    const tick = () => jevVersionTick({ store: s, makeClient: () => slow, signal: new AbortController().signal, chatId: CHAT, now: () => NOW, golden: [], log: () => {}, paceMs: 0 });
     const first = tick();
     expect(first.started).toBe(CAND); // returned synchronously, the job's first call is parked on the gate
     expect(tick().started).toBeNull(); // one model at a time
@@ -175,8 +179,9 @@ describe("the background job (spec §2.4)", () => {
     const s = fresh(); seedAnchor(s); s.noteJevModel(CAND, NOW);
     let t = Date.parse(NOW);
     const clock = () => new Date(t).toISOString();
+    serve(s, CAND);
     const f = fake({ fail: (k) => (k === 10 ? { ok: false, reason: "error", detail: "HTTP 429", error_kind: "rate_limited" } : undefined) });
-    const tick = () => jevVersionTick({ store: s, makeClient: () => f.client, signal: new AbortController().signal, chatId: CHAT, now: clock, golden: [], log: () => {} });
+    const tick = () => jevVersionTick({ store: s, makeClient: () => f.client, signal: new AbortController().signal, chatId: CHAT, now: clock, golden: [], log: () => {}, paceMs: 0 });
     expect(tick().started).toBe(CAND);
     await jevJobSettled();
     expect(s.getJevModel(CAND)?.state).toBe("checking");
@@ -187,6 +192,7 @@ describe("the background job (spec §2.4)", () => {
     await jevJobSettled();
     expect(s.getJevModel(CAND)?.state).toBe("trusted");
     expect(f.calls).toHaveLength(3 * N + 1); // 9 answered, 1 failed, then the rest: nothing asked twice
+    expect(s.listOpenIncidents().map((i) => i.kind)).not.toContain("jev_rate_limited"); // the job's own answers clear the outage it opened
     s.close();
   });
 
@@ -205,8 +211,9 @@ describe("the background job (spec §2.4)", () => {
   it("a deferred model is retried a day later, not at the next tick", async () => {
     const s = fresh(); seedAnchor(s); s.noteJevModel(CAND, NOW);
     expect(await runJevCheck(deps(s, fake({ model: () => "jev-old" })), CAND)).toBe("deferred");
+    serve(s, CAND);
     let t = Date.parse(NOW) + 60_000;
-    const tick = () => jevVersionTick({ store: s, makeClient: () => fake().client, signal: new AbortController().signal, chatId: CHAT, now: () => new Date(t).toISOString(), golden: [], log: () => {} });
+    const tick = () => jevVersionTick({ store: s, makeClient: () => fake().client, signal: new AbortController().signal, chatId: CHAT, now: () => new Date(t).toISOString(), golden: [], log: () => {}, paceMs: 0 });
     expect(tick().started).toBeNull();
     t = Date.parse(NOW) + 24 * 3_600_000 + 1;
     expect(tick().started).toBe(CAND);
@@ -252,7 +259,7 @@ describe("the outcome (spec §2.5 d)", () => {
     const sent = outbox(s);
     expect(sent).toHaveLength(1); // the card only: never also the generic incident text
     expect(sent[0]!.chat).toBe(CHAT);
-    expect(sent[0]!.payload.button_rows).toEqual([[{ text: `Accept ${CAND}`, data: `dec:jv:${sha8(CAND)}:acc` }]]);
+    expect(sent[0]!.payload.button_rows).toEqual([[{ text: `Accept ${CAND}`, data: acceptData(s, CAND) }]]);
     expect(String(sent[0]!.payload.text)).toMatch(/drifted/);
     s.close();
   });
@@ -267,7 +274,8 @@ describe("the outcome (spec §2.5 d)", () => {
     const sent = outbox(s);
     expect(sent).toHaveLength(1);
     expect(String(sent[0]!.payload.text)).toContain("houge jev anchor import");
-    expect(sent[0]!.payload.button_rows).toEqual([[{ text: `Accept ${CAND}`, data: `dec:jv:${sha8(CAND)}:acc` }]]);
+    expect(acceptData(s, CAND)).toMatch(/^dec:jv:[0-9a-f]{8}:\d+:acc$/);
+    expect(sent[0]!.payload.button_rows).toEqual([[{ text: `Accept ${CAND}`, data: acceptData(s, CAND) }]]);
     s.close();
   });
 
@@ -309,5 +317,89 @@ describe("the check job writes only the agreed vocabularies", () => {
 describe("categories used by the fixtures exist", () => {
   it("lookup, research and memory are tree categories", () => {
     for (const c of ["lookup", "research", "memory", "status"]) expect(CATEGORIES).toContain(c);
+  });
+});
+
+describe("fix round 1", () => {
+  it("too few fully answered zh turns from the candidate is not the no-anchor case: retried once at the next start, then insufficient with its own reason and text", async () => {
+    const s = fresh(); seedAnchor(s); s.noteJevModel(CAND, NOW);
+    const failing = () => fake({ fail: (k) => (k > 30 ? PARSE_FAIL : undefined) });
+    expect(await runJevCheck(deps(s, failing()), CAND)).toBe("retrying");
+    expect(s.getJevModel(CAND)?.state).toBe("checking");
+    expect(outbox(s)).toEqual([]);
+    expect(await runJevCheck(deps(s, failing()), CAND)).toBe("insufficient");
+    const row = s.getJevModel(CAND)!;
+    expect(row.state).toBe("insufficient");
+    expect(JSON.parse(row.detail_json!)).toMatchObject({ reason: "answered_too_few", answered_zh: expect.any(Number) });
+    const text = String(outbox(s)[0]!.payload.text);
+    expect(text).not.toContain("anchor import"); // the anchor exists: never tell Paco to import it
+    expect(text).toContain("houge jev check");
+    s.close();
+  });
+
+  it("the retry re-asks the failed turns and can pass", async () => {
+    const s = fresh(); seedAnchor(s); s.noteJevModel(CAND, NOW);
+    expect(await runJevCheck(deps(s, fake({ fail: (k) => (k > 30 ? PARSE_FAIL : undefined) })), CAND)).toBe("retrying");
+    expect(await runJevCheck(deps(s, fake()), CAND)).toBe("trusted");
+    s.close();
+  });
+
+  it("insufficient (no anchor) → the anchor import moves it back to checking → the job trusts it", async () => {
+    const s = fresh(); s.noteJevModel(CAND, NOW);
+    expect(await runJevCheck(deps(s, fake()), CAND)).toBe("insufficient");
+    seedAnchor(s);
+    expect(s.getJevModel(CAND)).toMatchObject({ state: "checking", detail_json: "{}" });
+    expect(s.getJevModel(ANCHOR_MODEL)?.state).toBe("trusted");
+    expect(await runJevCheck(deps(s, fake()), CAND)).toBe("trusted");
+    s.close();
+  });
+
+  it("paces its asks (JEV_CHECK_PACE_MS) and the pause honours the stop signal", async () => {
+    vi.useFakeTimers();
+    try {
+      const s = fresh(); seedAnchor(s); s.noteJevModel(CAND, NOW);
+      const f = fake(); const stop = new AbortController();
+      const { paceMs: _zero, ...unpaced } = deps(s, f, { signal: stop.signal }); // the default pace
+      const run = runJevCheck(unpaced, CAND);
+      await vi.advanceTimersByTimeAsync(JEV_CHECK_PACE_MS - 1);
+      expect(f.calls).toHaveLength(0);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(f.calls).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(JEV_CHECK_PACE_MS);
+      expect(f.calls).toHaveLength(2);
+      stop.abort();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(await run).toBe("stopped");
+      expect(f.calls).toHaveLength(2);
+      s.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("only the model the alias serves is started: a deferred id the alias no longer serves is never retried", async () => {
+    const s = fresh(); seedAnchor(s); s.noteJevModel(CAND, NOW);
+    expect(await runJevCheck(deps(s, fake({ model: () => "jev-old" })), CAND)).toBe("deferred");
+    serve(s, "jev-newer");
+    const t = Date.parse(NOW) + 24 * 3_600_000 + 1;
+    const r = jevVersionTick({ store: s, makeClient: () => fake({ model: () => "jev-newer" }).client, signal: new AbortController().signal, chatId: CHAT, now: () => new Date(t).toISOString(), golden: [], log: () => {}, paceMs: 0 });
+    expect(r.started).toBe("jev-newer");
+    await jevJobSettled();
+    expect(s.getJevModel(CAND)?.state).toBe("deferred");
+    s.close();
+  });
+
+  it("resuming after a deferral keeps the generation and its recorded answers", async () => {
+    const s = fresh(); seedAnchor(s); s.noteJevModel(CAND, NOW);
+    expect(await runJevCheck(deps(s, fake({ model: (k) => (k > 20 ? "jev-old" : CAND) })), CAND)).toBe("deferred");
+    const g = s.getJevModel(CAND)!.generation;
+    serve(s, CAND);
+    const f = fake();
+    const t = Date.parse(NOW) + 24 * 3_600_000 + 1;
+    expect(jevVersionTick({ store: s, makeClient: () => f.client, signal: new AbortController().signal, chatId: CHAT, now: () => new Date(t).toISOString(), golden: [], log: () => {}, paceMs: 0 }).started).toBe(CAND);
+    await jevJobSettled();
+    expect(s.getJevModel(CAND)).toMatchObject({ state: "trusted", generation: g });
+    expect(f.calls).toHaveLength(3 * N - 20);
+    s.close();
   });
 });

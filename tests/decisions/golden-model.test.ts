@@ -18,6 +18,8 @@ describe("IMPROVE_GOLDEN", () => {
       expect(improveRule(g.state)).toEqual({ abstain: true });
       expect(applicableTargets(g.state)).toContain(g.expect);
     }
+    const nothing = IMPROVE_GOLDEN.find((g) => g.expect === "nothing")!;
+    expect(nothing.state).toMatchObject({ signal: "rating", value: "3" }); // a "fine" text with the top rating: no contradicting signal
   });
 });
 
@@ -27,6 +29,15 @@ describe("askCandidate", () => {
     const client = async (): Promise<JevResult> => { calls += 1; return { ok: true, model: "jev-old", answers: {}, input_tokens: 1, latency_ms: 1 }; };
     expect(await askCandidate(client, { state: {}, questions: {} }, "jev-new")).toEqual({ ok: false, why: "other_model", reported: "jev-old" });
     expect(calls).toBe(4);
+  });
+});
+
+describe("askCandidate and the stop signal", () => {
+  it("stops between retries once the signal aborts", async () => {
+    const stop = new AbortController(); let calls = 0;
+    const client = async (): Promise<JevResult> => { calls += 1; stop.abort(); return { ok: true, model: "jev-old", answers: {}, input_tokens: 1, latency_ms: 1 }; };
+    expect(await askCandidate(client, { state: {}, questions: {} }, "jev-new", { signal: stop.signal })).toEqual({ ok: false, why: "stopped" });
+    expect(calls).toBe(1);
   });
 });
 

@@ -368,7 +368,7 @@ export async function runTelegramDaemon(
   clearInterval(pump);
   clearInterval(recovery);
   await worker.shutdownPlanners();
-  await jevJobSettled(); // the check honours the stop signal: it ends after its in-flight Jev call (≤ the client timeout)
+  await settledWithin(jevJobSettled(), JEV_JOB_SHUTDOWN_CAP_MS); // capped: the check resumes from its rows, the flush and the evolution lane must not wait on Jev
   await flushLogged();
 
   // ⓪·3g: an evolution pipeline may still be running on the background lane — finish it
@@ -386,6 +386,15 @@ export async function runTelegramDaemon(
 }
 
 export const OUTBOX_INCIDENT_WINDOW_MS = 10 * 60_000;
+/** Shutdown waits at most this long for the Jev version check (launchd's ExitTimeOut is 40 s; the check is resumable). */
+export const JEV_JOB_SHUTDOWN_CAP_MS = 5_000;
+
+/** Resolves when `p` settles or after `ms`, whichever is first; the timer never holds the process. */
+function settledWithin(p: Promise<void>, ms: number): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const cap = new Promise<void>((resolve) => { timer = setTimeout(resolve, ms); timer.unref(); });
+  return Promise.race([p.catch(() => undefined), cap]).finally(() => clearTimeout(timer));
+}
 
 /** Half the planner lease TTL (a lease is recovered within 1.5 TTL of its last renewal); 60 s if the config cannot resolve. */
 function leaseRecoveryIntervalMs(): number {

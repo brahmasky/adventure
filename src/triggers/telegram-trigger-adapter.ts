@@ -277,7 +277,7 @@ function normalizeCallbackQuery(
   const improvement = parseImprovementCallback(callback.data);
   if (improvement) return { ok: true, event: buildImprovementTapEvent(update, callback, message.chat.id, auth.identity, improvement) };
   const jevAccept = parseJevAcceptCallback(callback.data);
-  if (jevAccept) return { ok: true, event: buildJevAcceptTapEvent(update, callback, message.chat.id, auth.identity, jevAccept.model_hash) };
+  if (jevAccept) return { ok: true, event: buildJevAcceptTapEvent(update, callback, message.chat.id, auth.identity, jevAccept) };
 
   const parsed = parseSelfWriteCallback(callback.data);
   if (!parsed) {
@@ -382,8 +382,8 @@ function buildImprovementTapEvent(
   });
 }
 
-/** A Jev version check card's Accept tap (spec 2026-10-22 §2.6): the model's hash rides in metadata. */
-function buildJevAcceptTapEvent(update: TelegramUpdate, callback: TelegramCallbackQuery, chat_id: number, identity: Identity, model_hash: string): TypedTaskEvent {
+/** A Jev version check card's Accept tap (spec 2026-10-22 §2.6): the model's hash and the check generation ride in metadata. */
+function buildJevAcceptTapEvent(update: TelegramUpdate, callback: TelegramCallbackQuery, chat_id: number, identity: Identity, tap: { model_hash: string; generation: number }): TypedTaskEvent {
   return buildTypedTaskEvent({
     source: "telegram",
     type: "jev_accept_tap",
@@ -391,7 +391,7 @@ function buildJevAcceptTapEvent(update: TelegramUpdate, callback: TelegramCallba
     notify: { kind: "telegram", chat_id: String(chat_id) },
     idempotency_key: `telegram:${update.update_id}:callback:${callback.id}`,
     source_reference: `telegram:update:${update.update_id}:callback:${callback.id}`,
-    metadata: { telegram_update_id: update.update_id, telegram_callback_id: callback.id, model_hash }
+    metadata: { telegram_update_id: update.update_id, telegram_callback_id: callback.id, model_hash: tap.model_hash, generation: tap.generation }
   });
 }
 

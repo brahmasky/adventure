@@ -17,9 +17,9 @@ const MODEL = "jev-new";
 const CHAT = "222";
 const sha8 = (m: string) => createHash("sha256").update(m).digest("hex").slice(0, 8);
 let cb = 0;
-const tap = (hash: string, chat = CHAT, callback = `cb${++cb}`) => buildTypedTaskEvent({ source: "telegram", type: "jev_accept_tap", requested_by: { kind: "user", id: "paco" },
+const tap = (hash: string, chat = CHAT, callback = `cb${++cb}`, generation = 0) => buildTypedTaskEvent({ source: "telegram", type: "jev_accept_tap", requested_by: { kind: "user", id: "paco" },
   notify: { kind: "telegram", chat_id: chat }, idempotency_key: `telegram:1:callback:${callback}`, source_reference: `telegram:update:1:callback:${callback}`,
-  metadata: { telegram_update_id: 1, telegram_callback_id: callback, model_hash: hash } });
+  metadata: { telegram_update_id: 1, telegram_callback_id: callback, model_hash: hash, generation } });
 const replies = (s: RunStore) => [...drainOutbox(s).values()].map((p) => String(p.text));
 
 function drifted(s: RunStore, state: "drifted" | "insufficient" = "drifted", chat = CHAT): void {
@@ -30,15 +30,16 @@ function drifted(s: RunStore, state: "drifted" | "insufficient" = "drifted", cha
 
 describe("parseJevAcceptCallback", () => {
   it("parses dec:jv:<8 hex>:acc and refuses every other shape", () => {
-    expect(parseJevAcceptCallback(`dec:jv:${sha8(MODEL)}:acc`)).toEqual({ model_hash: sha8(MODEL) });
-    for (const bad of ["dec:jv:abc:acc", `dec:jv:${sha8(MODEL)}:dis`, `dec:jv:${sha8(MODEL).toUpperCase()}:acc`, `dec:jv:${sha8(MODEL)}:acc:x`, `xdec:jv:${sha8(MODEL)}:acc`, 42, null]) {
+    expect(parseJevAcceptCallback(`dec:jv:${sha8(MODEL)}:7:acc`)).toEqual({ model_hash: sha8(MODEL), generation: 7 });
+    expect(`dec:jv:${sha8(MODEL)}:999999999:acc`.length).toBeLessThanOrEqual(64);
+    for (const bad of ["dec:jv:abc:1:acc", `dec:jv:${sha8(MODEL)}:acc`, `dec:jv:${sha8(MODEL)}:1:dis`, `dec:jv:${sha8(MODEL)}:x:acc`, `dec:jv:${sha8(MODEL).toUpperCase()}:1:acc`, `dec:jv:${sha8(MODEL)}:1:acc:x`, `xdec:jv:${sha8(MODEL)}:1:acc`, 42, null]) {
       expect(parseJevAcceptCallback(bad)).toBeNull();
     }
   });
   it("the adapter turns an allowlisted tap into a jev_accept_tap event and refuses a stranger", () => {
     const allowlist = { users: [{ telegram_user_id: 111, identity_id: "paco" }], chats: [{ telegram_chat_id: 222, label: "p", allowed_identity_ids: ["paco"] }] };
-    const u = (from: number) => normalizeTelegramUpdate({ update_id: 3000, callback_query: { id: "cbq_9", from: { id: from }, message: { message_id: 5, chat: { id: 222 } }, data: `dec:jv:${sha8(MODEL)}:acc` } }, allowlist);
-    expect(u(111)).toMatchObject({ ok: true, event: { type: "jev_accept_tap", notify: { chat_id: "222" }, metadata: { telegram_callback_id: "cbq_9", model_hash: sha8(MODEL) } } });
+    const u = (from: number) => normalizeTelegramUpdate({ update_id: 3000, callback_query: { id: "cbq_9", from: { id: from }, message: { message_id: 5, chat: { id: 222 } }, data: `dec:jv:${sha8(MODEL)}:3:acc` } }, allowlist);
+    expect(u(111)).toMatchObject({ ok: true, event: { type: "jev_accept_tap", notify: { chat_id: "222" }, metadata: { telegram_callback_id: "cbq_9", model_hash: sha8(MODEL), generation: 3 } } });
     expect(u(999)).toMatchObject({ ok: false, error: { code: "TELEGRAM_AUTH_DENIED" } });
   });
 });
@@ -75,6 +76,15 @@ describe("handleJevAcceptTap", () => {
     handleJevAcceptTap(s, tap(sha8(MODEL)), NOW);
     expect(s.getJevModel(MODEL)?.state).toBe("trusted"); // the fence: only drifted | insufficient → accepted
     expect(replies(s)).toEqual([TAP_HANDLED_TEXT]);
+  });
+
+  it("an old card (an earlier generation) cannot accept a newer drift Paco has not seen", () => {
+    const s = RunStore.openInMemory(); drifted(s);
+    s.bumpJevModelGeneration(MODEL);
+    handleJevAcceptTap(s, tap(sha8(MODEL), CHAT, undefined, 0), NOW);
+    expect(s.getJevModel(MODEL)?.state).toBe("drifted");
+    handleJevAcceptTap(s, tap(sha8(MODEL), CHAT, undefined, 1), NOW);
+    expect(s.getJevModel(MODEL)?.state).toBe("accepted");
   });
 
   it("an unknown hash is handled, nothing written", () => {

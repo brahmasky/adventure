@@ -5169,7 +5169,8 @@ export class RunStore {
    * The anchor import, whole or not at all (spec §2.2): one transaction that refuses a non-empty anchor, clears any leftover
    * states, labels and meta, writes every table and then seeds the anchor model `trusted`. The seed is explicit and fenced on
    * the row's current state: discovery may already have noted the model as `checking` (its cursor starts at 0), and an
-   * INSERT OR IGNORE alone would leave it unarmed. Returns false when the anchor was not empty (nothing written).
+   * INSERT OR IGNORE alone would leave it unarmed. Every other `insufficient` model goes back to `checking` (detail cleared)
+   * in the same transaction. Returns false when the anchor was not empty (nothing written).
    */
   importAnchor(a: { rows: JevAnchorRow[]; states: JevAnchorState[]; labels: JevAnchorLabel[]; meta: Record<string, string>; trustedModel: string; now: string }): boolean {
     return this.inTransaction(() => {
@@ -5188,6 +5189,8 @@ export class RunStore {
         this.db.prepare(`UPDATE jev_models SET state = 'trusted', detail_json = ?, checked_at = ? WHERE model = ? AND state = ?`)
           .run(JSON.stringify({ seeded: "anchor" }), a.now, a.trustedModel, cur.state);
       }
+      // a model that went `insufficient` for want of an anchor is checked now that one exists (the next tick), never left stuck
+      this.db.prepare(`UPDATE jev_models SET state = 'checking', detail_json = '{}' WHERE state = 'insufficient' AND model <> ?`).run(a.trustedModel);
       return true;
     });
   }
@@ -5216,12 +5219,12 @@ export class RunStore {
     return this.db.prepare(`UPDATE jev_models SET detail_json = ? WHERE model = ? AND state = 'checking' AND generation = ?`).run(detail_json, model, generation).changes > 0;
   }
 
-  /** The model the newest answered Jev call reported: what the alias served last (spec §2.6, `houge jev check`). */
-  latestJevAttemptModel(): string | undefined {
+  /** The model the newest answered Jev call reported, and when: what the alias served last (spec §2.6, `houge jev check`). */
+  latestJevAttemptModel(): { model: string; at: string } | undefined {
     return this.db.prepare(`
-      SELECT json_extract(payload_json, '$.model') AS model FROM ledger_events
+      SELECT json_extract(payload_json, '$.model') AS model, occurred_at AS at FROM ledger_events
       WHERE event_type = 'llm_attempt' AND json_extract(payload_json, '$.provider') = 'jev' AND json_extract(payload_json, '$.model') IS NOT NULL
-      ORDER BY rowid DESC LIMIT 1`).get<{ model: string }>()?.model;
+      ORDER BY rowid DESC LIMIT 1`).get<{ model: string; at: string }>();
   }
 
   bumpJevModelAttempts(model: string): void {
@@ -5258,6 +5261,11 @@ export class RunStore {
     this.db.prepare(`INSERT INTO jev_check_runs (model, generation, entry_id, run, outcome, detail_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT (model, generation, entry_id, run) DO NOTHING`)
       .run(r.model, r.generation, r.entry_id, r.run, r.outcome, r.detail_json, r.created_at);
+  }
+
+  /** A check's one retry of its failed tree turns (fix round 1): the failed rows go, so the next start asks those turns again. */
+  deleteFailedJevCheckRuns(model: string, generation: number): number {
+    return Number(this.db.prepare(`DELETE FROM jev_check_runs WHERE model = ? AND generation = ? AND entry_id = 'tree' AND outcome = 'failed'`).run(model, generation).changes);
   }
 
   listJevCheckRuns(model: string, generation: number, entry_id: string): JevCheckRun[] {

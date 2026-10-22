@@ -27,6 +27,7 @@ describe("houge jev check [model]", () => {
     const r = requestJevCheck(s, "jev-a", NOW);
     expect(r.ok).toBe(false);
     expect(r.message).toContain("jev-b");
+    expect(r.message).toContain(`as of ${NOW}`); // the served model is the newest ledger row: say how old
     expect(s.getJevModel("jev-a")?.state).toBe("checking"); // untouched
     s.close();
   });
