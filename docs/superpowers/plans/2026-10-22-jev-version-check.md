@@ -1,4 +1,4 @@
-# Jev version check — implementation plan (Rev 2: codex plan r1, 9 blockers + 4 warnings closed)
+# Jev version check — implementation plan (Rev 2.1: codex plan r1 and r2 closed)
 
 > For agentic workers: REQUIRED SUB-SKILL: subagent-driven-development. Steps use `- [ ]`.
 
@@ -34,8 +34,10 @@ Files: `src/run/run-store.ts` (migration `2026-10-22-jev-version-check` + method
   `setJevModelState(model, state, detail, now)` (fenced on the previous state), `bumpJevModelAttempts`,
   `jevAttemptModelsSince(rowid)` → `{ model, rowid }[]` from `ledger_events` `llm_attempt` provider `jev`, and the cursor.
 - Model-keyed check runs (the daily golden latch is `(local_date, entry_id)`, `run-store.ts:1072`, and cannot hold one
-  run per model): `jev_check_runs(model, entry_id, run, outcome, detail_json, created_at, PRIMARY KEY(model, entry_id,
-  run))` with `recordJevCheckRun` / `getJevCheckRun`; the daily golden tables are untouched.
+  run per model): `jev_check_runs(model, generation, entry_id, run, outcome, detail_json, created_at, PRIMARY KEY(model,
+  generation, entry_id, run))` with `recordJevCheckRun` / `getJevCheckRun`; `jev_models.generation INTEGER NOT NULL
+  DEFAULT 0` is bumped when a check starts, and only rows of the model's current generation are credited (a re-run or a
+  stopped partial run never reuses an older generation's results); the daily golden tables are untouched.
 - Tests: additive migration on a DB with the 2b-ii tables; fenced state change; discovery reads models after the cursor
   only.
 
@@ -98,6 +100,10 @@ Files: `src/decisions/jev-version-check.ts` (job part) or `src/decisions/jev-ver
 (start the job from the signal-path tick without awaiting it; boot), `src/cli.ts` (`houge jev models | check <model> |
 accept <model>`), the tap (`dec:jv:<hash>:acc`, parser + gateway, chat-bound, once), tests.
 - Discovery each tick: `jevAttemptModelsSince(cursor)` → `noteJevModel`; advance the cursor.
+- Which model: requests always name the alias `jev-latest` (`jev-client.ts:76,140`), so a check can only test the model
+  the alias serves now; answers reporting another id are filtered (retried ≤ 3, then `deferred`). `houge jev check` re-runs
+  the check for the model the alias currently serves; `houge jev check <model>` refuses with a message when `<model>` is
+  not what the alias serves.
 - Job: one model at a time; send the anchor's stored states through the tree questions for runs A, A2 (canonical) and B
   (permuted) with `createJevClient` as the daemon builds it; only answers reporting the candidate count; a mixed batch
   retried ≤ 3 then `deferred`; resumable progress in `detail_json`; stop signal honoured; outage → retry next start.
@@ -108,8 +114,10 @@ accept <model>`), the tap (`dec:jv:<hash>:acc`, parser + gateway, chat-bound, on
 - Outcome → `setJevModelState`; one notice (pass: margins, recall drops) or one alerted incident (drift/insufficient:
   numbers + Accept button). The Accept card is its own notification (not the generic `alertOpened` text): payload
   `{ text, button_rows: [[{ text: "Accept <model>", callback_data: "dec:jv:<sha8 of model>:acc" }]] }`, through the
-  outbox and the rich renderer, to the operator chat; the tap is parsed by `parseJevAcceptCallback`, dispatched like the
-  improvement taps, chat-bound, `oncePerTrigger`, fenced on `drifted|insufficient` → `accepted`. Accept → `accepted`.
+  outbox and the rich renderer, to the operator chat; the tap is parsed by `parseJevAcceptCallback` (`src/triggers/telegram-command-parser.ts`), becomes a
+  `TaskEventType` `jev_accept_tap` (`src/domain/types.ts`, the type pin test follows), is built in
+  `src/triggers/telegram-trigger-adapter.ts` after the improvement tap (:275 area), dispatched in `src/gateway/gateway.ts`
+  beside `improvement_tap` (:199 area), rate-limit exempt, handled in `src/gateway/jev-accept-commands.ts`, chat-bound, `oncePerTrigger`, fenced on `drifted|insufficient` → `accepted`. Accept → `accepted`.
 - Tests (spec §4): import latest-line/ok/hash/state/count/one-model/paired; zero-denominator lane; recall drop in the
   notice (not a page); resume after stop; mixed batch → deferred after 3; Accept replay refused; golden item reporting
   another model → retried, never credited.
