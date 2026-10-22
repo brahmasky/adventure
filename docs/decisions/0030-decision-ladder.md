@@ -301,9 +301,9 @@ This file is protected (ADR 0011); Paco asked for this amendment on 2026-10-17 (
 - **Revisit when added:** fact Undo taps exceed one in five fact saves over 30 days, or the golden set drifts twice in
   30 days.
 
-## Amendment (2026-10-20): stage 2b-i, extension hooks and `turn.settle` (for Paco's sign-off)
+## Amendment (2026-10-20): stage 2b-i, extension hooks and `turn.settle` (signed off by Paco 2026-10-22)
 
-This file is protected (ADR 0011); this amendment is drafted for Paco's hand. Spec:
+This file is protected (ADR 0011); this amendment was drafted for Paco's hand and signed off by him on 2026-10-22. Spec:
 [2026-10-19-ladder-2b-hooks-settle-design.md](../superpowers/specs/2026-10-19-ladder-2b-hooks-settle-design.md) (Rev 3 and
 its §3.3 calibration note); plan: [2026-10-20-ladder-2b-hooks-settle.md](../superpowers/plans/2026-10-20-ladder-2b-hooks-settle.md)
 (Rev 2.3, Rulings 1–16). Built on `feat/ladder-2b-hooks`; live only after merge, rebuild and kickstart.
@@ -468,7 +468,7 @@ regression; bracket it before touching code (`tasks/lessons.md`).
 pages `decision_golden_drift:turn.settle` and does not disarm (R13). A calibrated row may replace the provisional bars
 when Paco commits one.
 
-## Amendment (2026-10-22): stage 2b-ii, `improve.route` (drafted for Paco's sign-off)
+## Amendment (2026-10-22): stage 2b-ii, `improve.route` (signed off by Paco 2026-10-22)
 
 Spec: [2026-10-21-ladder-2b-ii-improve-route-design.md](../superpowers/specs/2026-10-21-ladder-2b-ii-improve-route-design.md) (Rev 7);
 plan: [2026-10-21-ladder-2b-ii-improve-route.md](../superpowers/plans/2026-10-21-ladder-2b-ii-improve-route.md). Decision 8 ("improvement as a decision") is unchanged; this is its first entry.
@@ -514,8 +514,8 @@ plan: [2026-10-21-ladder-2b-ii-improve-route.md](../superpowers/plans/2026-10-21
   and the new `codeShapes` rule: a standalone 6–8 digit run or a code after a code word). Tool text never leaves except a
   clean turn's reply as the distill's reference.
 - **Evidence.** The pre-merge sanity run (`scripts/improve-sanity.mjs`, a 30-day copy, real Jev): PASS, planted 10/10, the
-  real window 7 groups, about 0.13 proposals a day, suggested bar 0.67. `IMPROVE_BAR_P` stays the provisional 0.6 until
-  Paco signs off. Live gate `scripts/live-gate-improve-route.mjs` on a copy with live Jev and real seats: cases 1–9 PASS on
+  real window 7 groups, about 0.13 proposals a day, suggested bar 0.67. Paco set `IMPROVE_BAR_P` to 0.67 on 2026-10-22
+  (it was the provisional 0.6 at merge). Live gate `scripts/live-gate-improve-route.mjs` on a copy with live Jev and real seats: cases 1–9 PASS on
   the final head (`abaa2e8`). Case 10 (the memory-write gate is unchanged): no branch effect found, but the gate itself is
   flaky on main and branch alike — its pointer case depends on the distill seat's (kimi k3) retry citing the first opinion
   (main 4/4, branch 2/6 over the runs, same seat and input size, the same first-attempt `no_evidence` on both), and its

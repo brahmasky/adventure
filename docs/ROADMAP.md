@@ -278,7 +278,7 @@ or Revert for lessons, facts and schedules. The digest is now three sections: im
 line. Pre-merge sanity PASS (planted 10/10, real window 7 groups, about 0.13 proposals a day); live gate cases 1-9 PASS.
 **Known gap:** the digest no longer offers the review taps, so no new `review_bad` signals are produced until a review
 surface returns. **Deferred:** the wiki handler (R5), model-route proposals (R10), `lesson_unfollowed` (R4). ADR 0030
-amendment drafted for Paco's hand. Merge, `dist/` rebuild, kickstart, the digest time and the bar sign-off are Paco's.
+amendment signed off by Paco 2026-10-22; merged, live after his kickstart the same day, digest on; bar 0.67.
 **Next: stage 3** (migrate the remaining families onto the registry).
 
 **SP4 scope change (2026-10-04).** The lifecycle-gap research

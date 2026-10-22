@@ -1091,7 +1091,7 @@ most one skill-authoring job starts per tick, up to 3 queue per day, a queued jo
 its counts), `improvement_job` (each job transition), `improve_signal_skipped` (a producer that could not write an inbox
 row). A tap on a proposal or job card arrives as the `improvement_tap` task event. Tables (additive): `improve_signals`, `improve_ticks`,
 `improve_cursor`, `turn_embeddings`, `improvement_proposals`, `improvement_jobs`, `improvement_taps`. The bar for
-`improve_target` is code (`IMPROVE_BAR_P`, provisional 0.6); there is no env override. No new env var since the final fixes; the
+`improve_target` is code (`IMPROVE_BAR_P`, 0.67, set by Paco 2026-10-22 from the sanity run's suggestion); there is no env override. No new env var since the final fixes; the
 bounds are code constants: `IMPROVE_SEAT_DEADLINE_MS = 60 000` per seat call, `EMBED_PER_TICK_MAX = 50` embeds per call,
 `IMPROVE_GROUPS_PER_TICK = 40` per local date, a proposal blocks its (target, scope) for 14 days after a dismissal or expiry.
 An outage (Jev or a seat call) leaves a group unconsumed and counts `deferred_outage`. **`/disarm`** (`HOUGE_SKILLS_ENABLED`

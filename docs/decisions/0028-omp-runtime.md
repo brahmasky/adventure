@@ -259,7 +259,7 @@ change the architecture the spec describes:
 - Antigravity's weekly ceiling covers a shared Claude/GPT bucket; reader volume rides Gemini's bucket.
 - omp moves fast: there is no version pin (amendment 2026-10-07), update checks are off, and the frames and refusal
   texts Houge parses are re-checked by `live-gate-omp.mjs --smoke` after an upgrade. The sequential-tool attribute name and the omp config key semantics are verified at build.
-- The read text shape is omp's too (2026-10-21, drafted for Paco's sign-off): 18.12.3 added the hashline header and `N:`
+- The read text shape is omp's too (2026-10-21, signed off by Paco 2026-10-22): 18.12.3 added the hashline header and `N:`
   line prefixes to `read` results, and the secret mask missed a planted key at line start until it learned that form
   (ADR 0030, 2b-i gate case 9). The mask's line-start rule now accepts any non-letter run (up to 24 characters), and the
   bridge pages `omp_read_format_drift` once per omp version on the first succeeded read whose text is not in the tested
