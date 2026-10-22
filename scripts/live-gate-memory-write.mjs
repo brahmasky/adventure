@@ -51,7 +51,7 @@ async function loadModules() {
   const m = Object.assign({}, ...mods);
   const need = ["loadHougeEnv", "DISARM_FLAGS", "CoreWorker", "buildTypedTaskEvent", "Gateway", "RunStore", "resolveOmpConfig", "readOmpCatalog", "RoleResolver",
     "checkOmpVersion", "createJevClient", "toJevQuestion", "TREE_QUESTIONS", "treeArmed", "calibrationRows", "runEpisodicDistillPass", "oneShotAdapter",
-    "runMemoryKindGoldenTick"];
+    "runMemoryKindGoldenTick", "treeArmingFor"];
   const missing = need.filter((n) => m[n] === undefined);
   if (missing.length > 0) throw new Error(`dist/ lacks ${missing.join(", ")} (build the branch first)`);
   return m;
@@ -336,12 +336,28 @@ async function main() {
   }
 }
 
+/**
+ * Jev version check (Task 3 carry): the memory lane needs `treeArmingFor` to arm the model Jev REPORTED (category at least).
+ * Asserted before any turn is driven; when the copy does not arm it (a model the check has not passed yet), `accepted` is seeded
+ * on the COPY and labelled as a seed, not a check verdict. The live DB is never touched.
+ */
+function ensureModelArmed(m, store, model) {
+  const armed = () => m.treeArmingFor(store, { model }, "zh").questions.has("category");
+  const was = store.getJevModel(model)?.state ?? "none";
+  if (armed()) { console.log(`PASS treeArmingFor arms ${model} on the copy as it stands (state ${was})`); return; }
+  const now = new Date().toISOString();
+  store.noteJevModel(model, now);
+  store.setJevModelState(model, store.getJevModel(model).state, "accepted", JSON.stringify({ seeded: "live-gate" }), now);
+  check(`treeArmingFor arms ${model} after the gate's copy-only seed (was ${was}; NOT a check verdict)`, armed());
+}
+
 async function gate(m, args, root, live, repo) {
   gateEnv(m, root);
   const model = await checkArmed(m);
   const dbPath = join(root, "houge.sqlite");
   copyDb(live, dbPath);
   const store = m.RunStore.open(dbPath);
+  ensureModelArmed(m, store, model);
   const cfg = m.resolveOmpConfig(process.env);
   const version = m.checkOmpVersion(cfg);
   if (!version.ok) throw new Error(`omp startup check failed (${version.kind}): ${version.reason}`);

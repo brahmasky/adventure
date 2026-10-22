@@ -100,7 +100,7 @@ async function loadModules() {
     "isProposal", "criteriaHash", "JEV_INCIDENT_SUBJECT", "runTreeReplay", "detectViolations", "checkJevSkipRate", "JEV_NOT_ATTEMPT_REASONS",
     "JEV_SILENT_SKIP_REASONS", "ROLE_LISTS", "ALLOWED_PROVIDERS", "CHAT_ROLES", "matchOverride", "clampEffort", "STEP_UP", "readOmpCatalog",
     "RoleResolver", "resolveOmpConfig", "runModelRolesTick", "treeArmed", "TREE_STATUS_ARM_ID", "calibrationRows", "checkOmpVersion", "CASCADE_TIMEOUT_MS", "CATEGORIES",
-    "TREE_ANSWER_ARM_ID", "TREE_LOOKUP_ARM_ID", "LANE_WHYS"];
+    "TREE_ANSWER_ARM_ID", "TREE_LOOKUP_ARM_ID", "LANE_WHYS", "treeArmingFor"];
   const missing = need.filter((n) => m[n] === undefined);
   if (missing.length > 0) throw new Error(`dist/ lacks ${missing.join(", ")} (build the branch first)`);
   return m;
@@ -703,6 +703,25 @@ function checkCommittedArming(g) {
   }
 }
 
+/**
+ * Jev version check (Task 3 carry): the tree arms a call only when `treeArmingFor` arms the model Jev REPORTED. Asserted
+ * before any turn is driven. When the copy does not arm it (a fresh model the check has not passed), the default mode seeds
+ * `accepted` on the COPY, labelled as a seed and not a check verdict; --real-calibration FAILs instead (the merge run needs the
+ * live state to arm it). The live DB is never touched.
+ */
+function ensureModelArmed(m, store, strict) {
+  const armed = () => { const a = m.treeArmingFor(store, { model: m.model }, "zh"); return m.TREE_QUESTIONS.every((q) => a.questions.has(q.id)) && a.lanesDisarmed.size === 0; };
+  const state = () => store.getJevModel(m.model)?.state ?? "none";
+  if (armed()) { console.log(`PASS treeArmingFor arms ${m.model} on the copy as it stands (state ${state()})`); return; }
+  const was = state();
+  if (strict) { check(`treeArmingFor arms ${m.model} (--real-calibration needs the live state to arm it)`, false, `state ${was}`); return; }
+  const now = new Date().toISOString();
+  store.noteJevModel(m.model, now);
+  const row = store.getJevModel(m.model);
+  store.setJevModelState(m.model, row.state, "accepted", JSON.stringify({ seeded: "live-gate" }), now);
+  check(`treeArmingFor arms ${m.model} after the gate's copy-only seed (was ${was}; NOT a check verdict)`, armed(), `state ${state()}`);
+}
+
 async function setup(args) {
   const m = await loadModules();
   m.loadHougeEnv();
@@ -716,6 +735,7 @@ async function setup(args) {
   const dbPath = join(root, "houge.sqlite");
   copyDb(live, dbPath);
   const store = m.RunStore.open(dbPath);
+  ensureModelArmed(m, store, args.realCalibration);
   const cfg = m.resolveOmpConfig(process.env);
   const version = m.checkOmpVersion(cfg); // an unrunnable or silent omp refuses every planner spawn (no pin: Decision 13)
   if (!version.ok) throw new Error(`omp startup check failed (${version.kind}): ${version.reason}`);
