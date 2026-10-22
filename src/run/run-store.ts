@@ -1148,6 +1148,64 @@ const MEMORY_CHANGES_ADD_DDL = `
     undone_at TEXT,
     pruned_ids TEXT NOT NULL DEFAULT '[]'
   );`;
+export type JevAnchorRow = { turn_id: string; lang: string; question_id: string; criteria_hash: string; run: "A" | "B"; answer_json: string; model: string };
+export type JevAnchorState = { turn_id: string; lang: string; state_json: string; state_hash: string };
+export type JevAnchorLabel = { turn_id: string; category: string; by: string; at: string };
+export type JevModelState = "trusted" | "checking" | "deferred" | "drifted" | "insufficient" | "accepted";
+export type JevModelRow = { model: string; first_seen_at: string; state: JevModelState; checked_at: string | null; attempts: number; detail_json: string | null; generation: number };
+export type JevCheckRun = { model: string; generation: number; entry_id: string; run: string; outcome: string; detail_json: string; created_at: string };
+
+/** Jev version check §2.2, §2.4: Paco's approved anchor, the per-model check state and discovery cursor, model-keyed check runs. Additive. */
+const JEV_VERSION_CHECK_DDL = `
+  CREATE TABLE IF NOT EXISTS jev_anchor (
+    turn_id TEXT NOT NULL,
+    lang TEXT NOT NULL,
+    question_id TEXT NOT NULL,
+    criteria_hash TEXT NOT NULL,
+    run TEXT NOT NULL CHECK (run IN ('A', 'B')),
+    answer_json TEXT NOT NULL,
+    model TEXT NOT NULL,
+    PRIMARY KEY (turn_id, question_id, run)
+  );
+  CREATE TABLE IF NOT EXISTS jev_anchor_states (
+    turn_id TEXT PRIMARY KEY,
+    lang TEXT NOT NULL,
+    state_json TEXT NOT NULL,
+    state_hash TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS jev_anchor_labels (
+    turn_id TEXT PRIMARY KEY,
+    category TEXT NOT NULL,
+    by TEXT NOT NULL,
+    at TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS jev_anchor_meta (
+    key TEXT PRIMARY KEY,
+    value_json TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS jev_models (
+    model TEXT PRIMARY KEY,
+    first_seen_at TEXT NOT NULL,
+    state TEXT NOT NULL CHECK (state IN ('trusted', 'checking', 'deferred', 'drifted', 'insufficient', 'accepted')),
+    checked_at TEXT,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    detail_json TEXT,
+    generation INTEGER NOT NULL DEFAULT 0
+  );
+  CREATE TABLE IF NOT EXISTS jev_model_cursor (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    ledger_rowid INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS jev_check_runs (
+    model TEXT NOT NULL,
+    generation INTEGER NOT NULL,
+    entry_id TEXT NOT NULL,
+    run TEXT NOT NULL,
+    outcome TEXT NOT NULL,
+    detail_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (model, generation, entry_id, run)
+  );`;
 /** 2b-ii §2, §3.1, §3.3, §5.1, §5.2: the inbox, the tick latch and cursor, turn embeddings, proposals, jobs, taps. Additive (R13). */
 const IMPROVE_ROUTE_DDL = `
   CREATE TABLE IF NOT EXISTS improve_signals (
@@ -5050,6 +5108,118 @@ export class RunStore {
     return this.db.prepare(`SELECT 1 AS hit FROM improve_signals WHERE signal = ? AND about_run_id = ? LIMIT 1`).get<{ hit: number }>(signal, about_run_id) !== undefined;
   }
 
+  // ---- Jev version check: anchor, models, check runs (spec §2.2, §2.4) ----
+
+  anchorEmpty(): boolean {
+    return this.db.prepare(`SELECT 1 AS hit FROM jev_anchor LIMIT 1`).get<{ hit: number }>() === undefined;
+  }
+
+  insertAnchorRows(rows: JevAnchorRow[]): void {
+    this.inTransaction(() => {
+      const st = this.db.prepare(`INSERT INTO jev_anchor (turn_id, lang, question_id, criteria_hash, run, answer_json, model) VALUES (?, ?, ?, ?, ?, ?, ?)`);
+      for (const r of rows) st.run(r.turn_id, r.lang, r.question_id, r.criteria_hash, r.run, r.answer_json, r.model);
+    });
+  }
+
+  insertAnchorStates(rows: JevAnchorState[]): void {
+    this.inTransaction(() => {
+      const st = this.db.prepare(`INSERT INTO jev_anchor_states (turn_id, lang, state_json, state_hash) VALUES (?, ?, ?, ?)`);
+      for (const r of rows) st.run(r.turn_id, r.lang, r.state_json, r.state_hash);
+    });
+  }
+
+  insertAnchorLabels(rows: JevAnchorLabel[]): void {
+    this.inTransaction(() => {
+      const st = this.db.prepare(`INSERT INTO jev_anchor_labels (turn_id, category, by, at) VALUES (?, ?, ?, ?)`);
+      for (const r of rows) st.run(r.turn_id, r.category, r.by, r.at);
+    });
+  }
+
+  listAnchorTurns(lang?: string): string[] {
+    const rows = lang === undefined
+      ? this.db.prepare(`SELECT DISTINCT turn_id FROM jev_anchor ORDER BY turn_id`).all<{ turn_id: string }>()
+      : this.db.prepare(`SELECT DISTINCT turn_id FROM jev_anchor WHERE lang = ? ORDER BY turn_id`).all<{ turn_id: string }>(lang);
+    return rows.map((r) => r.turn_id);
+  }
+
+  anchorAnswers(run: "A" | "B"): JevAnchorRow[] {
+    return this.db.prepare(`SELECT turn_id, lang, question_id, criteria_hash, run, answer_json, model FROM jev_anchor WHERE run = ? ORDER BY turn_id, question_id`).all<JevAnchorRow>(run);
+  }
+
+  anchorStates(): JevAnchorState[] {
+    return this.db.prepare(`SELECT turn_id, lang, state_json, state_hash FROM jev_anchor_states ORDER BY turn_id`).all<JevAnchorState>();
+  }
+
+  anchorLabels(): JevAnchorLabel[] {
+    return this.db.prepare(`SELECT turn_id, category, by, at FROM jev_anchor_labels ORDER BY turn_id`).all<JevAnchorLabel>();
+  }
+
+  getAnchorMeta(key: string): string | undefined {
+    return this.db.prepare(`SELECT value_json FROM jev_anchor_meta WHERE key = ?`).get<{ value_json: string }>(key)?.value_json;
+  }
+
+  setAnchorMeta(key: string, value_json: string): void {
+    this.db.prepare(`INSERT INTO jev_anchor_meta (key, value_json) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json`).run(key, value_json);
+  }
+
+  /** A model first seen in the ledger starts as `checking`; a known model is left exactly as it is. */
+  noteJevModel(model: string, now: string): void {
+    this.db.prepare(`INSERT OR IGNORE INTO jev_models (model, first_seen_at, state) VALUES (?, ?, 'checking')`).run(model, now);
+  }
+
+  getJevModel(model: string): JevModelRow | undefined {
+    return this.db.prepare(`SELECT model, first_seen_at, state, checked_at, attempts, detail_json, generation FROM jev_models WHERE model = ?`).get<JevModelRow>(model);
+  }
+
+  listJevModels(): JevModelRow[] {
+    return this.db.prepare(`SELECT model, first_seen_at, state, checked_at, attempts, detail_json, generation FROM jev_models ORDER BY first_seen_at, model`).all<JevModelRow>();
+  }
+
+  /** Fenced on the previous state: false when another writer already moved the model. */
+  setJevModelState(model: string, from: JevModelState, to: JevModelState, detail_json: string, now: string): boolean {
+    return this.db.prepare(`UPDATE jev_models SET state = ?, detail_json = ?, checked_at = ? WHERE model = ? AND state = ?`).run(to, detail_json, now, model, from).changes > 0;
+  }
+
+  bumpJevModelAttempts(model: string): void {
+    this.db.prepare(`UPDATE jev_models SET attempts = attempts + 1 WHERE model = ?`).run(model);
+  }
+
+  /** Called when a check starts: only check runs of the returned generation are credited to this check. */
+  bumpJevModelGeneration(model: string): number {
+    return this.inTransaction(() => {
+      this.db.prepare(`UPDATE jev_models SET generation = generation + 1 WHERE model = ?`).run(model);
+      return this.db.prepare(`SELECT generation FROM jev_models WHERE model = ?`).get<{ generation: number }>(model)?.generation ?? 0;
+    });
+  }
+
+  getJevModelCursor(): number {
+    return this.db.prepare(`SELECT ledger_rowid FROM jev_model_cursor WHERE id = 1`).get<{ ledger_rowid: number }>()?.ledger_rowid ?? 0;
+  }
+
+  setJevModelCursor(ledger_rowid: number): void {
+    this.db.prepare(`INSERT INTO jev_model_cursor (id, ledger_rowid) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET ledger_rowid = excluded.ledger_rowid`).run(ledger_rowid);
+  }
+
+  /** `llm_attempt` rows from provider `jev` after the cursor, one per model with its latest rowid, so the cursor can move to the largest. */
+  jevAttemptModelsSince(rowid: number): Array<{ model: string; rowid: number }> {
+    return this.db.prepare(`
+      SELECT json_extract(payload_json, '$.model') AS model, MAX(rowid) AS rowid FROM ledger_events
+      WHERE rowid > ? AND event_type = 'llm_attempt' AND json_extract(payload_json, '$.provider') = 'jev'
+        AND json_extract(payload_json, '$.model') IS NOT NULL
+      GROUP BY model ORDER BY MAX(rowid)`).all<{ model: string; rowid: number }>(rowid);
+  }
+
+  /** First write wins: a replay can never rewrite a recorded run of this generation. */
+  recordJevCheckRun(r: JevCheckRun): void {
+    this.db.prepare(`INSERT OR IGNORE INTO jev_check_runs (model, generation, entry_id, run, outcome, detail_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+      .run(r.model, r.generation, r.entry_id, r.run, r.outcome, r.detail_json, r.created_at);
+  }
+
+  getJevCheckRun(model: string, generation: number, entry_id: string, run: string): JevCheckRun | undefined {
+    return this.db.prepare(`SELECT model, generation, entry_id, run, outcome, detail_json, created_at FROM jev_check_runs WHERE model = ? AND generation = ? AND entry_id = ? AND run = ?`)
+      .get<JevCheckRun>(model, generation, entry_id, run);
+  }
+
   getImproveCursor(): ImproveCursor {
     return this.db.prepare(`SELECT outcome_created_at, outcome_rowid FROM improve_cursor WHERE id = 1`).get<ImproveCursor>() ?? { outcome_created_at: "", outcome_rowid: 0 };
   }
@@ -7869,6 +8039,17 @@ export class RunStore {
     this.applyDecisionLadder2aMigration();
     this.applyMemoryWriteMigration();
     this.applyImproveRouteMigration();
+    this.applyJevVersionCheckMigration();
+  }
+
+  /** Jev version check: additive tables, guarded by IF NOT EXISTS like the 2b-ii migration. */
+  private applyJevVersionCheckMigration(): void {
+    const version = "2026-10-22-jev-version-check";
+    this.inTransaction(() => {
+      const applied = this.db.prepare(`SELECT version FROM schema_migrations WHERE version = ?`).get<{ version: string }>(version);
+      this.db.exec(JEV_VERSION_CHECK_DDL);
+      if (!applied) this.db.prepare(`INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)`).run(version, new Date().toISOString());
+    });
   }
 
   /** Decision ladder stage 2b-ii (improve.route): seven additive tables, guarded by IF NOT EXISTS like the 2a migration. */
