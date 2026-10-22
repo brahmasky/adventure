@@ -1,6 +1,6 @@
 # Jev version check — no version literal in behaviour code; a version move is checked by code
 
-**Status:** Rev 3, 2026-10-22 (Rev 2 + senior r2, 2 blockers, and codex r2, 3 blockers + 2 open). Paco's ask (2026-10-22):
+**Status:** Rev 3.1, 2026-10-22 (Rev 3 + senior r3, 1 blocker, and codex r3, 4 blockers). Paco's ask (2026-10-22):
 "build the automatic check". His intent (2026-10-07, restated today): no hard-coded version decides behaviour, and a Jev
 version move must not stop him. This is Paco's decision, so ADR 0029 decision 5 and its 2026-10-07 amendment ("falls
 through until Paco approves rows") are replaced by §2 (ADR text in §6).
@@ -18,7 +18,7 @@ through until Paco approves rows") are replaced by §2 (ADR text in §6).
   six criteria hashes equal today's and all 301 states rebuild byte-identical; `labels.jsonl` beside it holds Paco's 111
   labels. That replay is the reference.
 - Jev's own noise (1.13.0 against its permuted self, 301 turns): per-question top agreement 0.914 (category) to 0.96–0.99;
-  routed-lane agreement 0.78 (0.87 counting any cascade as equal). Absolute bars of 0.9 would fail a model against itself.
+  full route-effect agreement 0.731 (the measure §2.5 uses). Absolute bars of 0.9 would fail a model against itself.
 - Every Jev call path writes an `llm_attempt` ledger row carrying the reported `model` (golden ticks included).
 - The alias served 1.13.0 and 1.14.0 within the same minute (02:33–02:34Z): two ids behind one alias is real.
 - The signal-path tick is awaited inside the Telegram poll loop; a multi-minute check must not run there.
@@ -35,16 +35,17 @@ The check gates the triage tree only (the only model-gated decision). The four l
   with `run IN ('A','B')` (A = the canonical replay, B = the permuted replay), `jev_anchor_states(turn_id PRIMARY KEY,
   lang, state_json, state_hash)` and `jev_anchor_labels(turn_id PRIMARY KEY, category, by, at)`. Filled once by
   `importJevAnchor(store, dir)` from `.houge/jev-tree/replay.jsonl` (A), the permuted replay file (B) and `labels.jsonl`:
-  latest line per key wins, `ok` lines only, only rows whose criteria hash equals the live question's hash; each turn's
-  state is rebuilt from the DB at import and stored (the state Jev would be sent, already redacted by construction), so
-  later checks never depend on chat turns. Counts are logged. Runs at daemon boot when the tables are empty and the files
+  latest line per key wins, `ok` lines only; A rows are validated against the live questions' hashes and B rows against
+  the permuted questions' hashes (`treeQuestions(true)`); each turn's state is rebuilt from the DB at import with the
+  live path's redaction (`store.redactSecretValues`, as `core-worker.ts:3134`), and a turn whose rebuilt `state_hash`
+  differs from the anchor's is dropped; the stored state is what checks send, so they never depend on chat turns. Counts are logged. Runs at daemon boot when the tables are empty and the files
   exist, and as `houge jev anchor import`. The anchor is never replaced by a later model's answers: every check compares
   with Paco's approved set (no chain drift).
 - Anchor baseline per check (§2.5): agreement(anchor A, anchor B) and the label error/recall counts, computed once at
   import and stored in `jev_anchor_meta`.
 - `jev_models(model PRIMARY KEY, first_seen_at, state CHECK(state IN ('trusted','checking','deferred','drifted',
   'insufficient','accepted')), checked_at, attempts, detail_json)`. Seed: the anchor's own `model` value → `trusted`, but
-  only when the zh anchor holds ≥ 100 rebuilt turns (else `insufficient`). Data from the file, no literal in `src/`.
+  only when the zh anchor holds ≥ 100 rebuilt turns with both an A and a B answer set (else `insufficient`). Data from the file, no literal in `src/`.
   Fresh DB, no anchor → no `trusted` row → nothing armed.
 - Discovery cursor: `ledger_events.rowid` (sequence is per run).
 
@@ -80,9 +81,12 @@ per check over seven checks).
 a. **Close to the anchor:** agreement(cand A, anchor A) ≥ agreement(cand A, cand A2) − slack.
 b. **Not noisier than the anchor:** agreement(cand A, cand B) ≥ agreement(anchor A, anchor B) − slack.
 c. **Paco's labels, as allowed counts** (anchor values stored at import): per lane (memory, status, answer, lookup) the
-   candidate's wrong routes into that lane ≤ the anchor's + 1, and the labelled turns it still routes there ≥ the
-   anchor's − 1; a lane the anchor used that the candidate never routes to fails (no zero-denominator pass).
-d. **Outcome.** All pass → `trusted`. A failure → `drifted`, the failing questions and lanes in `detail_json` (dependents
+   candidate's wrong routes into that lane ≤ the anchor's + 1 — this disarms that lane on failure. A recall drop (fewer
+   labelled turns routed to their lane than the anchor's − max(1, the anchor's own A-vs-B recall gap + 1)) pages only:
+   losing recall is the safe direction (those turns fall back to the planner), and the anchor's recall is inside Jev's
+   noise (senior r3: memory 11 → 9 between the anchor's own runs). The anchor's own B run must pass check c (a test).
+d. **Outcome.** All pass → `trusted`. A route-only failure (all six questions pass, the route check fails) disarms the
+   whole tree for that model (fail closed: the drift cannot be tied to one lane). A failure → `drifted`, the failing questions and lanes in `detail_json` (dependents
    per §2.3), the rest armed; one alerted incident with the numbers and an Accept button. Anchor < 100 zh turns →
    `insufficient`, nothing armed for that model, one incident naming the import.
 e. **Ladder bars.** Each golden set runs on the candidate in check-specific runs keyed by model; every item's reported
@@ -111,8 +115,9 @@ line per key, ok only, hash filter, state rebuilt, counts, ≥ 100 zh to seed); 
 `treeArmingFor` with dependencies (incl. the status-lane change); slack maths; checks a–c including zero-denominator and
 the ratchet-free anchor; mixed-model retry bound → deferred; insufficient; incidents and Accept. Live gate on a VACUUM
 INTO copy with real Jev, the anchor imported, candidate = whatever `jev-latest` reports: PASS requires ≥ 200 zh anchor
-turns compared, the check completes, arming matches its verdict, a shuffled-anchor negative control FAILS, and the
-candidate's A2 against its A (self control) passes check a.
+turns compared, the check completes, arming matches its verdict, a shuffled-anchor negative control FAILS, and a self
+control PASSES: the full check re-run with the candidate's own run A as the anchor and fresh runs as the candidate
+(≈ $0.10 more). The per-check margins are printed.
 
 ## 5. Out of scope
 Re-tuning bar values on a new model (their revisits do that); omp and Claude versions (already version-free).
@@ -128,3 +133,7 @@ triage questions and pages him. Safety judges never disarm on a version move."
 - The anchor never rolls forward — after several version moves the model may legitimately diverge from 2026-10 answers
   and page; Paco then accepts or re-labels.
 - Status lane needs `category` — one more way the status lane falls back.
+- A category drift under ~5 % of turns may pass (caught about 2 times in 3) — such a small drift on routing is within
+  what Jev's own noise already does day to day.
+- A recall drop pages and does not disarm — a model that quietly stops routing to a lane keeps the lane armed (the
+  planner takes those turns) until Paco looks.
