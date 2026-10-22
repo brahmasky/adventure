@@ -343,8 +343,26 @@ if (command === "run") {
     }
     process.exit(process.exitCode ?? 0);
   }
+  if (sub === "models" || sub === "check" || sub === "accept") {
+    // Jev version check §2.6: Paco's controls. `check` only queues; the daemon's next tick runs the check.
+    const C = await import("./decisions/jev-version-controls.js");
+    const store = RunStore.open("houge.sqlite", storeOptions);
+    try {
+      const now = new Date().toISOString();
+      if (sub === "models") console.log(C.formatJevModels(store));
+      else if (sub === "accept" && !rest[1]) { console.error("Usage: houge jev accept <model>"); process.exitCode = 1; }
+      else {
+        const r = sub === "check" ? C.requestJevCheck(store, rest[1], now) : C.acceptJevModelCli(store, rest[1]!, now);
+        (r.ok ? console.log : console.error)(r.message);
+        process.exitCode = r.ok ? 0 : 1;
+      }
+    } finally {
+      store.close();
+    }
+    process.exit(process.exitCode ?? 0);
+  }
   if (rest[1] !== "triage" || !["replay", "label", "report"].includes(sub ?? "")) {
-    console.error("Usage: houge jev anchor import [dir] | houge jev replay triage [--dry-run] [--max-usd N] [--limit N] [--permute] | houge jev label triage [--sample=N] | houge jev report triage");
+    console.error("Usage: houge jev models | houge jev check [model] | houge jev accept <model> | houge jev anchor import [dir] | houge jev replay triage [--dry-run] [--max-usd N] [--limit N] [--permute] | houge jev label triage [--sample=N] | houge jev report triage");
     process.exit(1);
   }
   if (readTombstone()) {

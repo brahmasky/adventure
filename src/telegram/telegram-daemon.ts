@@ -21,6 +21,7 @@ import { sharedOmpVersionCache } from "../omp/omp-version-cache.js";
 import { stableHash } from "../domain/canonical.js";
 import type { RoleResolver } from "../omp/role-resolver.js";
 import { runGoldenSetTick, runMemoryKindGoldenTick, runSettleGoldenTick } from "../decisions/golden.js";
+import { jevJobSettled, jevVersionTick } from "../decisions/jev-version-job.js";
 import { errorCode } from "../domain/error-code.js";
 import { IMPROVE_JEV_MS } from "../decisions/entries/improve-route.js";
 import { runImproveTick } from "../improve/tick.js";
@@ -367,6 +368,7 @@ export async function runTelegramDaemon(
   clearInterval(pump);
   clearInterval(recovery);
   await worker.shutdownPlanners();
+  await jevJobSettled(); // the check honours the stop signal: it ends after its in-flight Jev call (≤ the client timeout)
   await flushLogged();
 
   // ⓪·3g: an evolution pipeline may still be running on the background lane — finish it
@@ -518,6 +520,7 @@ async function runSignalPathTick(
     // builder's cheap enforcement read) once per cycle; the 0→1 transition enqueues ONE
     // alert, delivered by the outbox flush right after this tick.
     checkMeteredCeiling({ store: options.store, ...(chatId ? { chatId } : {}), now });
+    runJevVersionTickSafe(options, chatId); // never awaited: the check runs minutes on its own promise, outside the poll loop
     await runGoldenTick(options, now);
     await runMemoryKindGolden(options, now);
     await runSettleGolden(options, now);
@@ -547,6 +550,21 @@ async function runImproveTickSafe(options: RunTelegramDaemonOptions, worker: Cor
       embed: (text) => embedText(text, cfg), embedModel: cfg.model, skills: new SkillStore({ root: join(options.projectRoot, "skills") }), jobs: skillJobHooks });
   } catch (error) {
     console.error(`[telegram-daemon] improve tick failed: ${errorCode(error)}`);
+  }
+}
+
+/**
+ * Jev version check §2.4: discovery, then the next model's check started on its own promise (synchronous; the tick never
+ * awaits it). The client is built only when a check starts, as the daemon builds every Jev client. Its own catch.
+ */
+function runJevVersionTickSafe(options: RunTelegramDaemonOptions, chatId: string | null): void {
+  try {
+    jevVersionTick({ store: options.store, signal: options.stopSignal, chatId, now: () => new Date().toISOString(),
+      makeClient: () => createJevClient({ apiKey: options.broker ? options.broker.typesafeKey() : process.env.TYPESAFE_API_KEY,
+        audit: options.store.llmAuditSink({ correlation_id: "jev-version-check", role: "triage" }), meteredBreached: () => options.store.meteredFuseLatched(),
+        retries: 3, timeoutMs: 15_000 }) });
+  } catch (error) {
+    console.error(`[telegram-daemon] jev version tick failed: ${errorCode(error)}`);
   }
 }
 
