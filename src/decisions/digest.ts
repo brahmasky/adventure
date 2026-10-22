@@ -4,6 +4,7 @@ import type { NotificationButton } from "../notifications/notification-types.js"
 import type { DecisionRow, ImprovementJobRow, ImprovementProposalRow, RunStore } from "../run/run-store.js";
 import { formatInstantInZone, resolveDisplayZone } from "../run/schedule-spec.js";
 import { skillButtons } from "../skills/promote.js";
+import { resolveImproveEnabled } from "../improve/flag.js";
 import { redactForImprove } from "./egress.js";
 import { REGISTRY } from "./registry.js";
 import { SETTLE_HEALTH_REASONS, TURN_SETTLE_ID } from "./entries/turn-settle.js";
@@ -297,7 +298,7 @@ const sumDetail = (ticks: readonly { detail: Record<string, unknown> }[], key: s
   ticks.reduce((a, t) => a + (typeof t.detail[key] === "number" ? t.detail[key] : 0), 0);
 
 /** Seven days of numbers that show the loop gaming or starving itself (§6.1); a line with only zeros is left out. */
-export function watchLines(store: RunStore, now: string): string[] {
+export function watchLines(store: RunStore, now: string, env: NodeJS.ProcessEnv = process.env): string[] {
   const since = daysBefore(now, WATCH_WINDOW_DAYS);
   const signals = store.listImproveSignalsSince(since);
   const ticks = store.listImproveTicksSince(since);
@@ -315,6 +316,7 @@ export function watchLines(store: RunStore, now: string): string[] {
   const embedDays = ticks.filter((t) => sumDetail([t], "embed_unavailable") > 0).length;
   const c = { corrections: countOf(signals, "correction"), abandoned: countOf(signals, "abandoned"), rate: total > 0 ? Math.round((100 * clarify) / total) : 0 };
   const lines: Array<[number, string]> = [
+    [resolveImproveEnabled(env) ? 0 : 1, "· improvement tick off"], // HOUGE_IMPROVE_ENABLED=false: the loop is stopped, never silently
     [c.corrections + c.abandoned + c.rate, `· corrections ${c.corrections} · abandoned ${c.abandoned} · clarify rate ${c.rate}%`],
     [skipped.size, `· unattached: ${[...skipped].sort(([a], [b]) => a.localeCompare(b)).map(([k, n]) => `${k} ${n}`).join(", ")}`],
     [sumDetail(ticks, "deferred"), `· deferred ${sumDetail(ticks, "deferred")}`],
@@ -335,7 +337,7 @@ export function buildDecisionDigest(store: RunStore, now: string, env: NodeJS.Pr
   const today = improvementsToday(store, new Date(Date.parse(now) - DIGEST_WINDOW_MS).toISOString(), chatId);
   const waiting = proposalsWaiting(store, chatId);
   const unsure = unsureSection(store, now, chatId);
-  const watch = watchLines(store, now);
+  const watch = watchLines(store, now, env);
   if (today.lines.length + waiting.lines.length + unsure.lines.length + watch.length === 0) return null;
   const sections = [`🪜 **Decisions — ${formatInstantInZone(now, tz).slice(0, 10)}**`];
   if (today.lines.length > 0) sections.push(["**Improvements today**", ...today.lines].join("\n"));

@@ -377,3 +377,40 @@ describe("runImproveTick", () => {
     expect(embed).toHaveBeenCalledTimes(6);
   });
 });
+
+// Follow-up 2: HOUGE_IMPROVE_ENABLED (default ON; only the exact word false, any case, turns it off; read live every tick, so /disarm
+// reaches a running daemon). Off means nothing at all: the loop learns from Paco's taps and writes proposals, so the STOP switch covers it.
+describe("HOUGE_IMPROVE_ENABLED", () => {
+  const work = (s: RunStore) => {
+    const d = s.insertDecision(D({}));
+    s.insertDecisionOutcome({ decision_id: d, signal: "review_bad", value: "turn.handler", source: "paco", created_at: "2026-10-21T03:00:00.000Z" });
+    correction(s);
+  };
+  it("off: no mirror, no model or Jev call, no proposal, no job, no latch row, no ledger event; one log line per local date", async () => {
+    const s = RunStore.openInMemory();
+    work(s);
+    const client = vi.fn(jev({ lesson: 0.9 }));
+    const seats = { pick: llm("lesson"), distill: llm("{}"), classify: llm("{}"), compose: llm(""), verify: llm("") };
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const off = deps(s, { client, llm: seats, env: { ...ENV, HOUGE_IMPROVE_ENABLED: "FALSE" } });
+    expect(await runImproveTick(off)).toEqual({ ran: false });
+    expect(await runImproveTick({ ...off, now: "2026-10-21T12:00:00.000Z" })).toEqual({ ran: false });
+    expect(log.mock.calls.filter((c) => String(c[0]).includes("HOUGE_IMPROVE_ENABLED"))).toHaveLength(1);
+    await runImproveTick({ ...off, now: "2026-10-22T12:00:00.000Z" });
+    expect(log.mock.calls.filter((c) => String(c[0]).includes("HOUGE_IMPROVE_ENABLED"))).toHaveLength(2);
+    log.mockRestore();
+    expect(client).not.toHaveBeenCalled();
+    for (const seat of Object.values(seats)) expect(seat).not.toHaveBeenCalled();
+    expect(s.listImproveSignalsSince("2026-01-01T00:00:00.000Z").filter((x) => x.signal === "review_bad")).toEqual([]); // nothing mirrored
+    expect(s.getImproveTick("2026-10-21")).toBeUndefined();
+    expect(events(s)).toEqual([]);
+    expect(s.listOpenProposals()).toEqual([]);
+  });
+  it("unset, empty, true and any other word keep the tick on: only the exact word false is silence", async () => {
+    for (const v of [undefined, "", "true", "off", "0", "no", "falsee"]) {
+      const s = RunStore.openInMemory();
+      work(s);
+      expect(await runImproveTick(deps(s, { env: { ...ENV, ...(v === undefined ? {} : { HOUGE_IMPROVE_ENABLED: v }) } }))).toMatchObject({ ran: true });
+    }
+  });
+});

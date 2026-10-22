@@ -302,3 +302,12 @@ describe("the Unsure section and the review taps", () => {
     expect(buildDecisionDigest(s, NOW, ENV)!.text).toMatch(/· silent: review_unsure, lesson_unfollowed, dig_deeper$/m);
   });
 });
+
+describe("the Watch line for a switched-off improvement tick", () => {
+  it("says improvement tick off, so the silence is never silent, and an otherwise empty day is still sent", () => {
+    const s = RunStore.openInMemory();
+    expect(buildDecisionDigest(s, NOW, ENV)).toBeNull();
+    const d = buildDecisionDigest(s, NOW, { ...ENV, HOUGE_IMPROVE_ENABLED: "false" })!;
+    expect(d.text).toContain("**Watch (7 d)**\n· improvement tick off");
+  });
+});

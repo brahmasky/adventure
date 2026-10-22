@@ -10,6 +10,7 @@ import type { JevRequest, JevResult } from "../jev/jev-client.js";
 import type { ProposalTarget, RunStore } from "../run/run-store.js";
 import { formatInstantInZone, resolveDisplayZone } from "../run/schedule-spec.js";
 import { resolveSkillsEnabled, type SkillStore } from "../skills/skill-store.js";
+import { resolveImproveEnabled } from "./flag.js";
 import { computeAbandonment } from "./abandonment.js";
 import { decideImprove, deferredRecorder, isJevOutage, type RecordPatch, type TickLlm } from "./decide-improve.js";
 import { buildImproveState, groupSignals, RECURRENCE_WINDOW_DAYS, type SignalGroup } from "./groups.js";
@@ -63,7 +64,17 @@ export function improveTickDue(store: RunStore, env: NodeJS.ProcessEnv, now: str
   return t === undefined || t.result === "running" || t.result === "stopped" ? date : null;
 }
 
+let offLoggedFor = "";
+/** Switched off: nothing runs and nothing is written; one log line per local date (the Watch line says it too). */
+function noteOff(d: ImproveTickDeps): void {
+  const date = formatInstantInZone(d.now, resolveDisplayZone(d.env)).slice(0, 10);
+  if (offLoggedFor === date) return;
+  offLoggedFor = date;
+  console.log(`[improve] tick off: HOUGE_IMPROVE_ENABLED=false (${date})`);
+}
+
 export async function runImproveTick(d: ImproveTickDeps): Promise<ImproveTickResult> {
+  if (!resolveImproveEnabled(d.env)) { noteOff(d); return { ran: false }; }
   const date = improveTickDue(d.store, d.env, d.now);
   if (!date || d.store.beginImproveTick(date, d.now) === "done") return { ran: false };
   d.store.recordMemoryEvent("improve_tick", { phase: "start", local_date: date }, "improve");

@@ -53,7 +53,9 @@ export const DISARM_FLAGS: readonly string[] = [
   // switch covers it like the radar's calls.
   "HOUGE_MEDIA_INGEST_ENABLED",
   // Jev System One master (ADR 0029): /disarm switches every Jev lane off in one write.
-  "HOUGE_JEV_ENABLED"
+  "HOUGE_JEV_ENABLED",
+  // 2b-ii follow-up: the improvement tick turns Paco's taps into proposals and skill jobs — an evolution surface the STOP switch covers.
+  "HOUGE_IMPROVE_ENABLED"
   // omp runtime (spec 2026-09-30, D2): the money track (extwork, bounty) and the live Jev shadow
   // are deleted, so their flags left this set; omp itself has no arming flag (the cutover is hard).
 ];
