@@ -7,7 +7,7 @@ import type { CoreWorker } from "../../src/core/core-worker.js";
 import { LANE_PREFACE, REWRITE_INSTRUCTION } from "../../src/core/lanes/lane-compose.js";
 import { CATEGORIES, MEMORY_KIND_OPTIONS, TREE_CATEGORY, TREE_QUESTIONS, type Category, type MemoryKindOption } from "../../src/jev/questions/tree.js";
 import { criteriaHash } from "../../src/jev/questions/types.js";
-import { TREE_ANSWER_ARM_ID, TREE_LOOKUP_ARM_ID, TREE_STATUS_ARM_ID } from "../../src/jev/tree-policy.js";
+import { TREE_ANSWER_ARM_ID, TREE_LOOKUP_ARM_ID, TREE_STATUS_ARM_ID } from "../../src/decisions/jev-version-check.js";
 import type { TurnModality } from "../../src/media/media-config.js";
 import type { TurnOutcomeSink } from "../../src/omp/planner-supervisor.js";
 import { RunStore } from "../../src/run/run-store.js";

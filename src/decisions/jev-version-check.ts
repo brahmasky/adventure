@@ -1,15 +1,22 @@
 /**
  * The Jev version check (spec 2026-10-22 §2): a Jev version move is checked by code against Paco's approved reference
  * turns; the triage tree arms on a call only when the model Jev REPORTED for that call has a state that allows it.
- * This file holds the arming read (Task 3); the check itself joins it later. Protected (src/decisions/): the gate.
+ * This file holds the arming (the model's check state, the calibration rows and the lane dependencies, all applied here:
+ * Paco's middle path 2026-10-22) and the check's maths. Protected (src/decisions/): the gate. tree-policy.ts only routes
+ * on the `Armed` computed here and stays self-writable.
  */
 import { errorCode } from "../domain/error-code.js";
+import { calibratedLang, type CalibrationRow } from "../jev/calibration.js";
 import type { Lang } from "../jev/intent-question.js";
 import { JEV_REQUEST_MODEL, type JevAnswer } from "../jev/jev-client.js";
 import { isBareAck } from "../omp/bare-ack.js";
-import { TREE_QUESTIONS, type LastHougeTurn } from "../jev/questions/tree.js";
-import type { Question } from "../jev/questions/types.js";
-import { preJudge, routeTree, thinkHarderIn, ACK_ROUTE, TREE_BAR_DEFAULTS, type Armed, type TreeBars } from "../jev/tree-policy.js";
+import {
+  TREE_ACTIONS, TREE_BREADTH, TREE_CATEGORY, TREE_QUESTIONS, TREE_REASONING, TREE_RULE_SCOPE, TREE_SETS_RULE, type LastHougeTurn
+} from "../jev/questions/tree.js";
+import { criteriaHash, type Question } from "../jev/questions/types.js";
+import {
+  preJudge, routeTree, thinkHarderIn, ACK_ROUTE, TREE_BAR_DEFAULTS, type Armed, type LaneSwitch, type TreeBars
+} from "../jev/tree-policy.js";
 import type { JevModelRow } from "../run/run-store.js";
 
 /** The lanes a failed label check (§2.5 c) can disarm one by one. */
@@ -41,14 +48,20 @@ export function parseDriftDetail(json: string | null): JevDriftDetail | null {
 
 /**
  * A model's row → its arming: trusted / accepted arm every question; drifted arms all but its failed questions and lanes,
- * none when the route check failed; checking, deferred, insufficient and no row arm nothing (fail closed).
+ * none when the route check failed; checking, deferred, insufficient and no row arm nothing (fail closed). An unreadable
+ * drift detail arms nothing and is logged once per model and check generation.
  */
+/** The models (by check generation) whose unreadable detail is already on stderr: one line each, not one per turn. */
+const unreadableLogged = new Set<string>();
+
 export function armingOf(row: JevModelRow | undefined): ModelArming {
   if (row?.state === "trusted" || row?.state === "accepted") return { questions: new Set(TREE_IDS), lanesDisarmed: new Set() };
   if (row?.state !== "drifted") return NOT_ARMED;
   const d = parseDriftDetail(row.detail_json);
   if (d === null) {
-    console.error(`jev: drifted model ${row.model}: detail unreadable; tree unarmed`);
+    const key = `${row.model}#${row.generation}`;
+    if (!unreadableLogged.has(key)) console.error(`jev: drifted model ${row.model}: detail unreadable; tree unarmed`);
+    unreadableLogged.add(key);
     return NOT_ARMED;
   }
   if (d.route_failed) return NOT_ARMED;
@@ -70,6 +83,36 @@ export function treeArmingFor(store: { getJevModel(model: string): JevModelRow |
     console.error(`jev: model check state read failed (${lang}): ${errorCode(e)}; tree unarmed`);
     return NOT_ARMED;
   }
+}
+
+/** The status lane's own arming key: the category question's hash under a distinct id, so a `category` row never arms status. */
+export const TREE_STATUS_ARM_ID = "category:status";
+/** Stage B spec §2: the answer and lookup lanes' own keys, at the category hash; a `category` row alone never arms a lane. */
+export const TREE_ANSWER_ARM_ID = "category:answer";
+export const TREE_LOOKUP_ARM_ID = "category:lookup";
+
+/**
+ * What the tree may act on: each decision arms on its own calibration rows (lessons.md 2026-10-06) AND on the reported
+ * model's check state (`arming`, from `treeArmingFor`): `rule` on sets_rule + rule_scope, gear on its three scores, the
+ * memory lane on category alone (the rule rows only sharpen its lesson scope, Rev 2.1 item 1). Dependencies (spec §2.3):
+ * category disarms memory, status, answer, lookup; rule disarms status, answer, lookup; gear disarms answer, lookup. The
+ * status lane needs category (named change 2026-10-22) and rule (statusBranch F6). The answer and lookup lanes arm on their
+ * pseudo-rows and are unarmed while listed in `lanesOff` (HOUGE_JEV_LANES_OFF) or disarmed by the model's label check.
+ * Computed only here (protected); tree-policy.ts routes on the result.
+ */
+export function treeArmed(lang: Lang, rows: readonly CalibrationRow[], lanesOff: ReadonlySet<LaneSwitch>, arming: ModelArming): Armed {
+  const on = (qs: readonly Question[]): boolean =>
+    qs.every((q) => arming.questions.has(q.id) && calibratedLang(q.id, criteriaHash(q), lang, rows) !== undefined);
+  const pseudo = (id: string): boolean => calibratedLang(id, criteriaHash(TREE_CATEGORY), lang, rows) !== undefined;
+  const lane = (l: DisarmableLane): boolean => !arming.lanesDisarmed.has(l);
+  const category = on([TREE_CATEGORY]);
+  const rule = on([TREE_SETS_RULE, TREE_RULE_SCOPE]);
+  const gear = on([TREE_BREADTH, TREE_REASONING, TREE_ACTIONS]);
+  const routed = (id: string, l: LaneSwitch): boolean => pseudo(id) && category && rule && gear && lane(l) && !lanesOff.has(l);
+  return {
+    category, rule, gear, memory: category && lane("memory"), status: pseudo(TREE_STATUS_ARM_ID) && category && rule && lane("status"),
+    answer: routed(TREE_ANSWER_ARM_ID, "answer"), lookup: routed(TREE_LOOKUP_ARM_ID, "lookup")
+  };
 }
 
 // ── Agreement and label counts (spec §2.2 baselines, §2.5 checks a-c): the one place the formulas live ──
@@ -147,3 +190,4 @@ export function laneLabelCounts(turns: ReadonlyArray<{ routeKey: string; label: 
   }
   return out;
 }
+

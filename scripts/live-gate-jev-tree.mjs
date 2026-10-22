@@ -93,7 +93,7 @@ async function loadModules() {
     "config/load-env.js", "config/disarm-posture.js", "core/core-worker.js", "domain/types.js", "gateway/gateway.js",
     "run/run-store.js", "jev/jev-client.js", "jev/questions/tree.js", "jev/questions/types.js", "jev/jev-incidents.js",
     "jev/triage-replay.js", "run/invariant-sweep.js", "omp/model-roles.js", "omp/model-catalog.js", "omp/role-resolver.js",
-    "omp/omp-config.js", "omp/model-roles-tick.js", "jev/tree-policy.js", "jev/calibration.js", "omp/omp-version.js", "core/lanes/lane-types.js"
+    "omp/omp-config.js", "omp/model-roles-tick.js", "jev/tree-policy.js", "jev/calibration.js", "decisions/jev-version-check.js", "omp/omp-version.js", "core/lanes/lane-types.js"
   ].map((p) => import(`../dist/${p}`)));
   const m = Object.assign({}, ...mods);
   const need = ["loadHougeEnv", "DISARM_FLAGS", "CoreWorker", "buildTypedTaskEvent", "Gateway", "RunStore", "createJevClient", "toJevQuestion", "CALIBRATED_ROWS", "TREE_QUESTIONS",

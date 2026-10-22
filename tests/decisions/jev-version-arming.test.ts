@@ -2,12 +2,13 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { checkSelfWriteDiff, parseDiffRaw } from "../../src/capabilities/self-write-guard.js";
-import { NOT_ARMED, treeArmingFor, type JevDriftDetail } from "../../src/decisions/jev-version-check.js";
+import { NOT_ARMED, treeArmed, treeArmingFor, type JevDriftDetail } from "../../src/decisions/jev-version-check.js";
 import { CALIBRATED_ROWS } from "../../src/jev/calibration.js";
 import type { Lang } from "../../src/jev/intent-question.js";
 import { JEV_REQUEST_MODEL } from "../../src/jev/jev-client.js";
 import { TREE_QUESTIONS } from "../../src/jev/questions/tree.js";
-import { treeArmed, type Armed } from "../../src/jev/tree-policy.js";
+import * as treePolicy from "../../src/jev/tree-policy.js";
+import type { Armed } from "../../src/jev/tree-policy.js";
 import { RunStore, type JevModelState } from "../../src/run/run-store.js";
 
 // Jev version check Task 3 (spec §2.3, §2.5 d): the triage tree arms on a call only when the model Jev REPORTED for that
@@ -86,10 +87,18 @@ describe("treeArmingFor: a drifted model arms only what did not drift, with depe
   });
   it("an unreadable drift detail fails closed: nothing armed, one line naming no detail text", () => {
     const err = vi.spyOn(console, "error").mockImplementation(() => {});
-    expect(armedFor(storeWith(NEW, "drifted", "not json"), NEW)).toEqual(NONE);
-    expect(armedFor(storeWith(NEW, "drifted", JSON.stringify({ failed_questions: "category" })), NEW)).toEqual(NONE);
+    expect(armedFor(storeWith("jev-bad-a", "drifted", "not json"), "jev-bad-a")).toEqual(NONE);
+    expect(armedFor(storeWith("jev-bad-b", "drifted", JSON.stringify({ failed_questions: "category" })), "jev-bad-b")).toEqual(NONE);
     expect(err).toHaveBeenCalledTimes(2);
     expect(String(err.mock.calls[0]![0])).not.toContain("not json");
+  });
+  // Every turn reads the arming: an unreadable row would otherwise write one stderr line per turn until a new check.
+  it("the unreadable-detail line is written once per model, not once per turn", () => {
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    const store = storeWith("jev-bad-memo", "drifted", "not json");
+    for (let i = 0; i < 5; i += 1) expect(armedFor(store, "jev-bad-memo")).toEqual(NONE);
+    expect(err).toHaveBeenCalledTimes(1);
+    expect(String(err.mock.calls[0]![0])).toContain("jev-bad-memo");
   });
 });
 
@@ -118,10 +127,11 @@ describe("treeArmed: the status lane also needs category (named behaviour change
 
 // Residual named in spec §2.3: the caller is not protected and could skip the gate. The turn path must read it.
 describe("the live turn path reads the gate", () => {
-  it("core-worker's planAnswered computes treeArmingFor and planTree passes it to treeArmed", () => {
+  it("core-worker's planAnswered computes treeArmingFor and planTree passes it to the protected treeArmed", () => {
     const src = (f: string) => readFileSync(join(import.meta.dirname, "..", "..", "src", f), "utf8");
     expect(src("core/core-worker.ts")).toMatch(/treeArmingFor\(this\.runStore, d, lang\)/);
     expect(src("core/turn-handler-ladder.ts")).toMatch(/treeArmed\(i\.lang, i\.rows, i\.lanesOff, i\.arming\)/);
+    expect(src("core/turn-handler-ladder.ts")).toMatch(/import \{[^}]*\btreeArmed\b[^}]*\} from "\.\.\/decisions\/jev-version-check\.js"/);
   });
   it("every tree question is covered by the arming set", () => {
     const trusted = treeArmingFor(storeWith(NEW, "trusted"), { model: NEW }, "zh");
@@ -129,11 +139,21 @@ describe("the live turn path reads the gate", () => {
   });
 });
 
-// Spec §2.7: the files that read the gate are Paco's hand; a self-write that arms an unchecked model must be refused.
+// Spec §2.7 as Paco decided it (2026-10-22, the middle path): the arming (check state, calibration rows, lane dependencies)
+// is computed only in the protected module, so a self-write that arms an unchecked model must be refused; the routing
+// policy in tree-policy.ts only consumes the result and stays self-writable.
 describe("self-write guard — the arming read", () => {
-  it("hard-denies a self-write touching the arming module, calibration.ts or tree-policy.ts", () => {
-    for (const f of ["src/decisions/jev-version-check.ts", "src/jev/calibration.ts", "src/jev/tree-policy.ts"]) {
+  it("hard-denies a self-write touching the arming module or calibration.ts", () => {
+    for (const f of ["src/decisions/jev-version-check.ts", "src/jev/calibration.ts"]) {
       expect(checkSelfWriteDiff(parseDiffRaw(`:100644 100644 7898192 422c2b7 M\t${f}`)).allowed).toBe(false);
     }
+  });
+  it("allows a self-write to the routing policy, tree-policy.ts", () => {
+    expect(checkSelfWriteDiff(parseDiffRaw(":100644 100644 7898192 422c2b7 M\tsrc/jev/tree-policy.ts")).allowed).toBe(true);
+  });
+  it("tree-policy.ts computes no arming: no treeArmed, no calibration rows, no check state", () => {
+    expect("treeArmed" in treePolicy).toBe(false);
+    const src = readFileSync(join(import.meta.dirname, "..", "..", "src", "jev", "tree-policy.ts"), "utf8");
+    expect(src).not.toMatch(/calibration\.js|calibratedLang|jev-version-check\.js|ModelArming|_ARM_ID/);
   });
 });

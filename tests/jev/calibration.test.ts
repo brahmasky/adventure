@@ -6,8 +6,7 @@ import { CALIBRATED_ROWS, calibratedLang, calibrationRows, type CalibrationRow }
 import { JEV_REQUEST_MODEL } from "../../src/jev/jev-client.js";
 import { TREE_CATEGORY, TREE_QUESTIONS } from "../../src/jev/questions/tree.js";
 import { criteriaHash } from "../../src/jev/questions/types.js";
-import { TREE_ANSWER_ARM_ID, TREE_LOOKUP_ARM_ID, treeArmed } from "../../src/jev/tree-policy.js";
-import { NOT_ARMED, type ModelArming } from "../../src/decisions/jev-version-check.js";
+import { NOT_ARMED, TREE_ANSWER_ARM_ID, TREE_LOOKUP_ARM_ID, treeArmed, type ModelArming } from "../../src/decisions/jev-version-check.js";
 
 /** A model whose check state arms every tree question (trusted / accepted), as treeArmingFor returns it. */
 const TRUSTED: ModelArming = { questions: new Set(TREE_QUESTIONS.map((q) => q.id)), lanesDisarmed: new Set() };

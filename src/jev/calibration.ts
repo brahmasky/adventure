@@ -11,8 +11,8 @@ import type { Lang } from "./intent-question.js";
 /**
  * One arming row. `question_id` is a tree question id (`category`, `sets_rule`, `rule_scope`, `breadth`, `reasoning`,
  * `actions`) or a lane pseudo-id at the category question's hash: `category:status`, `category:answer`, `category:lookup`
- * (tree-policy.ts TREE_STATUS_ARM_ID / TREE_ANSWER_ARM_ID / TREE_LOOKUP_ARM_ID). Lanes clear different bars, so no row
- * implies another. Every lane also needs the `sets_rule` + `rule_scope` rows (tree-policy.ts treeArmed `rule`).
+ * (src/decisions/jev-version-check.ts TREE_STATUS_ARM_ID / TREE_ANSWER_ARM_ID / TREE_LOOKUP_ARM_ID). Lanes clear different bars, so no row
+ * implies another. Every lane also needs the `sets_rule` + `rule_scope` rows (jev-version-check.ts treeArmed `rule`).
  */
 export interface CalibrationRow { question_id: string; criteria_hash: string; lang: "zh" | "en"; approved: string; evidence: string }
 

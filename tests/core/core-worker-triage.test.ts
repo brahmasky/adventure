@@ -9,7 +9,7 @@ import { Gateway } from "../../src/gateway/gateway.js";
 import { JEV_INCIDENT_SUBJECT } from "../../src/jev/jev-incidents.js";
 import { CATEGORIES, TREE_CATEGORY, TREE_QUESTIONS, type Category } from "../../src/jev/questions/tree.js";
 import { criteriaHash } from "../../src/jev/questions/types.js";
-import { TREE_STATUS_ARM_ID } from "../../src/jev/tree-policy.js";
+import { TREE_STATUS_ARM_ID } from "../../src/decisions/jev-version-check.js";
 import type { TurnOutcomeSink } from "../../src/omp/planner-supervisor.js";
 import { RunStore } from "../../src/run/run-store.js";
 import type { ToolAdapterResult } from "../../src/tools/tool-registry.js";

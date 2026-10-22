@@ -5,11 +5,11 @@ import type { JevTriageMode } from "../jev/jev-flags.js";
 import type { Lang } from "../jev/intent-question.js";
 import type { JevAnswer, JevChoiceAnswer } from "../jev/jev-client.js";
 import { criteriaHash, type Question } from "../jev/questions/types.js";
-import { LANE_LIMITS, routeTree, TREE_BAR_DEFAULTS, treeArmed, TWO_REQUEST_ACTIONS, type Armed, type LaneSwitch, type Route, type RoutePlan,
+import { LANE_LIMITS, routeTree, TREE_BAR_DEFAULTS, TWO_REQUEST_ACTIONS, type Armed, type LaneSwitch, type Route, type RoutePlan,
   type TreeBars } from "../jev/tree-policy.js";
 import { isBareAck } from "../omp/bare-ack.js";
 import { isSkipReason, type TurnHandlerVerdict } from "../decisions/entries/turn-handler.js";
-import type { ModelArming } from "../decisions/jev-version-check.js";
+import { treeArmed, type ModelArming } from "../decisions/jev-version-check.js";
 import { answerValue, bandFor, nearBar, NOISE_BANDS, type NoiseBand } from "../decisions/noise-band.js";
 import type { DecideResult, FallbackReason, Reask, RungOutcome, RungResult } from "../decisions/types.js";
 

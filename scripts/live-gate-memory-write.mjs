@@ -46,7 +46,7 @@ const SAID = /已记下|记下了|已保存|已经记住|I've saved|I have saved
 async function loadModules() {
   const mods = await Promise.all(["config/load-env.js", "config/disarm-posture.js", "core/core-worker.js", "domain/types.js", "gateway/gateway.js",
     "run/run-store.js", "omp/omp-config.js", "omp/model-catalog.js", "omp/role-resolver.js", "omp/omp-version.js", "jev/jev-client.js",
-    "jev/questions/tree.js", "jev/questions/types.js", "jev/tree-policy.js", "jev/calibration.js", "capabilities/episodic-extract.js", "llm/registry.js",
+    "jev/questions/tree.js", "jev/questions/types.js", "jev/tree-policy.js", "jev/calibration.js", "decisions/jev-version-check.js", "capabilities/episodic-extract.js", "llm/registry.js",
     "decisions/golden.js"].map((p) => import(`../dist/${p}`)));
   const m = Object.assign({}, ...mods);
   const need = ["loadHougeEnv", "DISARM_FLAGS", "CoreWorker", "buildTypedTaskEvent", "Gateway", "RunStore", "resolveOmpConfig", "readOmpCatalog", "RoleResolver",

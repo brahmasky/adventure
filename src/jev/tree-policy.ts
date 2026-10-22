@@ -1,13 +1,6 @@
-import type { DisarmableLane, ModelArming } from "../decisions/jev-version-check.js";
 import { isBareAck } from "../omp/bare-ack.js";
-import { calibratedLang, type CalibrationRow } from "./calibration.js";
-import type { Lang } from "./intent-question.js";
 import type { JevAnswer, JevChoiceAnswer } from "./jev-client.js";
-import {
-  CATEGORIES, TREE_ACTIONS, TREE_BREADTH, TREE_CATEGORY, TREE_REASONING, TREE_RULE_SCOPE, TREE_SETS_RULE, type Category,
-  type LastHougeTurn
-} from "./questions/tree.js";
-import { criteriaHash, type Question } from "./questions/types.js";
+import { CATEGORIES, type Category, type LastHougeTurn } from "./questions/tree.js";
 
 /**
  * The tree's routing policy (spec §2.4): Jev's probabilities in, a lane and a model role out. Pure: code owns every bar
@@ -44,36 +37,11 @@ export interface TreeBars { choice: number; nounYes: number; nounNo: number; mem
 export const TREE_BAR_DEFAULTS: TreeBars = { choice: 0.6, nounYes: 0.8, nounNo: 0.2, memory: 0.85, status: 0.8, minConf: 0.7, minGap: 0.5,
   ruleScope: 0.6, gearLight: 1.2, gearHeavy: 2.5 };
 
-export interface Armed { category: boolean; status: boolean; memory: boolean; gear: boolean; rule: boolean; answer: boolean; lookup: boolean }
-/** The status lane's own arming key: the category question's hash under a distinct id, so a `category` row never arms status. */
-export const TREE_STATUS_ARM_ID = "category:status";
-/** Stage B spec §2: the answer and lookup lanes' own keys, at the category hash; a `category` row alone never arms a lane. */
-export const TREE_ANSWER_ARM_ID = "category:answer";
-export const TREE_LOOKUP_ARM_ID = "category:lookup";
-
 /**
- * Each decision arms on its own rows (lessons.md 2026-10-06) AND on the reported model's check state (`arming`, read by
- * `treeArmingFor`, src/decisions/jev-version-check.ts): `rule` on sets_rule + rule_scope, gear on its three scores;
- * the memory lane on category alone (the rule rows only sharpen its lesson scope, Rev 2.1 item 1). Dependencies (Jev
- * version check spec §2.3): category disarms memory, status, answer, lookup; rule disarms status, answer, lookup; gear
- * disarms answer, lookup. The status lane needs category (named change 2026-10-22) and rule (statusBranch F6). The answer
- * and lookup lanes arm on their pseudo-rows and are unarmed while listed in `lanesOff` (HOUGE_JEV_LANES_OFF) or disarmed
- * by the model's label check.
+ * What the routing policy may act on. Computed only by `treeArmed` in the protected src/decisions/jev-version-check.ts
+ * (the model's check state, the calibration rows, the lane dependencies; Paco's middle path 2026-10-22); routing consumes it.
  */
-export function treeArmed(lang: Lang, rows: readonly CalibrationRow[], lanesOff: ReadonlySet<LaneSwitch>, arming: ModelArming): Armed {
-  const on = (qs: readonly Question[]): boolean =>
-    qs.every((q) => arming.questions.has(q.id) && calibratedLang(q.id, criteriaHash(q), lang, rows) !== undefined);
-  const pseudo = (id: string): boolean => calibratedLang(id, criteriaHash(TREE_CATEGORY), lang, rows) !== undefined;
-  const lane = (l: DisarmableLane): boolean => !arming.lanesDisarmed.has(l);
-  const category = on([TREE_CATEGORY]);
-  const rule = on([TREE_SETS_RULE, TREE_RULE_SCOPE]);
-  const gear = on([TREE_BREADTH, TREE_REASONING, TREE_ACTIONS]);
-  const routed = (id: string, l: LaneSwitch): boolean => pseudo(id) && category && rule && gear && lane(l) && !lanesOff.has(l);
-  return {
-    category, rule, gear, memory: category && lane("memory"), status: pseudo(TREE_STATUS_ARM_ID) && category && rule && lane("status"),
-    answer: routed(TREE_ANSWER_ARM_ID, "answer"), lookup: routed(TREE_LOOKUP_ARM_ID, "lookup")
-  };
-}
+export interface Armed { category: boolean; status: boolean; memory: boolean; gear: boolean; rule: boolean; answer: boolean; lookup: boolean }
 
 /**
  * `lane_limits`: a lane-shaped turn over its limits (stage B); `two_request`: a rule with a second request (stage B).

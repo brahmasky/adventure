@@ -4,10 +4,10 @@ import { type JevAnswer, type JevChoiceAnswer } from "../../src/jev/jev-client.j
 import { CATEGORIES, TREE_CATEGORY, TREE_QUESTIONS, type Category, type LastHougeTurn } from "../../src/jev/questions/tree.js";
 import { criteriaHash } from "../../src/jev/questions/types.js";
 import {
-  ACK_ROUTE, applyCascade, fallbackRoute, handOffRoute, preJudge, routeTree, thinkHarderIn, TREE_ANSWER_ARM_ID, TREE_BAR_DEFAULTS, TREE_LOOKUP_ARM_ID,
-  TREE_STATUS_ARM_ID, TREE_THRESHOLD_VERSION, treeArmed, type Armed, type Route, type RoutePlan
+  ACK_ROUTE, applyCascade, fallbackRoute, handOffRoute, preJudge, routeTree, thinkHarderIn, TREE_BAR_DEFAULTS,
+  TREE_THRESHOLD_VERSION, type Armed, type Route, type RoutePlan
 } from "../../src/jev/tree-policy.js";
-import { NOT_ARMED, type ModelArming } from "../../src/decisions/jev-version-check.js";
+import { NOT_ARMED, TREE_ANSWER_ARM_ID, TREE_LOOKUP_ARM_ID, TREE_STATUS_ARM_ID, treeArmed, type ModelArming } from "../../src/decisions/jev-version-check.js";
 
 /** A model whose check state arms every tree question (trusted / accepted), as treeArmingFor returns it. */
 const TRUSTED: ModelArming = { questions: new Set(TREE_QUESTIONS.map((q) => q.id)), lanesDisarmed: new Set() };
