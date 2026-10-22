@@ -191,3 +191,102 @@ export function laneLabelCounts(turns: ReadonlyArray<{ routeKey: string; label: 
   return out;
 }
 
+// ── The check (spec §2.5): agreement per check, slack, checks a-c, the outcome. Pure. ──
+
+/** The seven checks (spec §2.5): the six tree questions and the route. */
+export const CHECK_IDS: readonly string[] = [...TREE_IDS, ROUTE_CHECK_ID];
+/** One anchor turn as a check sends it: the stored state and one run's answers. A run is keyed by turn id. */
+export interface CheckTurn { state: RouteState; answers: Record<string, JevAnswer> }
+export type CheckRun = ReadonlyMap<string, CheckTurn>;
+export type CheckAgreement = Record<string, Agreement>;
+export type LaneCounts = Record<DisarmableLane, LaneLabelCount>;
+
+/** Agreement of two runs per check (spec §2.5), over the turns both have; the route on the turn's stored state (run a's). */
+export function agreementByCheck(a: CheckRun, b: CheckRun, bars: TreeBars = TREE_BAR_DEFAULTS): CheckAgreement {
+  const both = [...a.keys()].filter((t) => b.has(t)).sort().map((t) => [a.get(t)!, b.get(t)!] as const);
+  const out: CheckAgreement = {};
+  for (const q of TREE_QUESTIONS) out[q.id] = agreementOf(both.map(([x, y]) => [answerBucket(q, x.answers[q.id], bars), answerBucket(q, y.answers[q.id], bars)] as const));
+  out[ROUTE_CHECK_ID] = agreementOf(both.map(([x, y]) => [routeEffectKey(x.state, x.answers, bars), routeEffectKey(x.state, y.answers, bars)] as const));
+  return out;
+}
+
+/** One run's routes against Paco's labels (`label(turn)`; undefined = unlabelled), per lane. */
+export function laneCountsOf(run: CheckRun, label: (turn: string) => string | undefined, bars: TreeBars = TREE_BAR_DEFAULTS): LaneCounts {
+  return laneLabelCounts([...run].map(([turn, t]) => ({ routeKey: routeEffectKey(t.state, t.answers, bars), label: label(turn) })));
+}
+
+/** `max(0.05, 2.7 · sqrt(p(1−p)/n))`: z for 1 % per check over seven checks. No sample (n ≤ 0) is no bound: Infinity. */
+export function slack(n: number, p: number): number {
+  if (!(n > 0)) return Infinity;
+  return Math.max(JEV_CHECK_SLACK_MIN, JEV_CHECK_Z * Math.sqrt((p * (1 - p)) / n));
+}
+
+/**
+ * The check's inputs: the anchor's baselines stored at import (agreement of its runs A and B, Paco's labels against each
+ * run) and the candidate's runs compared: A with the anchor's A, with its own A2 (the self control) and with its own B.
+ */
+export interface CheckInput {
+  anchorAB: CheckAgreement; anchorLanes: { A: LaneCounts; B: LaneCounts };
+  candVsAnchor: CheckAgreement; candSelf: CheckAgreement; candAB: CheckAgreement; candLanes: LaneCounts;
+}
+/** Per check: observed rate − (reference rate − slack); negative fails; null = nothing compared on a side (fails). */
+export interface CheckMargin { a: number | null; b: number | null }
+/** A lane whose recall fell below the anchor's − allowance (spec §2.5 c): notice data only, never a disarm. */
+export interface RecallDrop { lane: DisarmableLane; anchor: number; candidate: number; allowed: number; labelled: number }
+export interface CheckVerdict {
+  pass: boolean; failed_questions: string[]; route_failed: boolean; lanes_disarmed: DisarmableLane[];
+  recall_drops: RecallDrop[]; margins: Record<string, CheckMargin>;
+}
+
+const rateOf = (g: Agreement): number => g.agree / g.n;
+/** `observed ≥ reference − slack(observed n, reference rate)` as a margin; null when either side compared nothing. */
+function marginOf(observed: Agreement | undefined, reference: Agreement | undefined): number | null {
+  if (!observed || !reference || observed.n <= 0 || reference.n <= 0) return null;
+  const p = rateOf(reference);
+  return rateOf(observed) - (p - slack(observed.n, p));
+}
+const fails = (m: number | null): boolean => m === null || m < -EPS;
+
+/** Check c (spec §2.5 c): wrong routes over the anchor's + 1 disarm the lane; a recall drop is reported only. */
+function labelCheck(anchor: { A: LaneCounts; B: LaneCounts }, cand: LaneCounts): Pick<CheckVerdict, "lanes_disarmed" | "recall_drops"> {
+  const lanes_disarmed: DisarmableLane[] = []; const recall_drops: RecallDrop[] = [];
+  for (const lane of DISARMABLE_LANES) {
+    const a = anchor.A[lane]; const c = cand[lane];
+    if (c.wrong > a.wrong + 1) lanes_disarmed.push(lane);
+    const allowed = Math.max(2, Math.abs(a.recall - anchor.B[lane].recall) + 1);
+    if (c.recall < a.recall - allowed) recall_drops.push({ lane, anchor: a.recall, candidate: c.recall, allowed, labelled: c.labelled });
+  }
+  return { lanes_disarmed, recall_drops };
+}
+
+/**
+ * Spec §2.5 a-c. a: agreement(cand A, anchor A) ≥ agreement(cand A, cand A2) − slack; b: agreement(cand A, cand B) ≥
+ * agreement(anchor A, anchor B) − slack; slack on the observed side's n and the reference rate. A question failing a or b
+ * is named; the route failing either is `route_failed` (the whole tree, §2.5 d). c per lane. Recall drops never fail.
+ */
+export function judge(i: CheckInput): CheckVerdict {
+  const margins: Record<string, CheckMargin> = {};
+  const failed: string[] = [];
+  for (const id of CHECK_IDS) {
+    const m = { a: marginOf(i.candVsAnchor[id], i.candSelf[id]), b: marginOf(i.candAB[id], i.anchorAB[id]) };
+    margins[id] = m;
+    if (fails(m.a) || fails(m.b)) failed.push(id);
+  }
+  const c = labelCheck(i.anchorLanes, i.candLanes);
+  const failed_questions = failed.filter((id) => id !== ROUTE_CHECK_ID);
+  const route_failed = failed.includes(ROUTE_CHECK_ID);
+  return { pass: failed.length === 0 && c.lanes_disarmed.length === 0, failed_questions, route_failed, ...c, margins };
+}
+
+/**
+ * The state and `detail_json` a verdict writes (spec §2.5 d). The state follows what failed, never `pass` alone: a drifted
+ * row always names a failed question, the route or a lane (one naming nothing would arm the whole tree like a trusted one),
+ * so a verdict with nothing failed is `trusted`. The detail carries the margins and recall drops for the one notice.
+ */
+export function checkOutcome(v: CheckVerdict): { state: "trusted" | "drifted"; detail_json: string } {
+  const drifted = v.failed_questions.length > 0 || v.route_failed || v.lanes_disarmed.length > 0;
+  const notice = { margins: v.margins, recall_drops: v.recall_drops };
+  if (!drifted) return { state: "trusted", detail_json: JSON.stringify(notice) };
+  const detail: JevDriftDetail & typeof notice = { failed_questions: v.failed_questions, route_failed: v.route_failed, lanes_disarmed: v.lanes_disarmed, ...notice };
+  return { state: "drifted", detail_json: JSON.stringify(detail) };
+}

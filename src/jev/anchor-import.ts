@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { agreementOf, answerBucket, JEV_ANCHOR_MIN_ZH, laneLabelCounts, ROUTE_CHECK_ID, routeEffectKey, type Agreement,
+import { agreementByCheck, answerBucket, JEV_ANCHOR_MIN_ZH, laneCountsOf, type Agreement, type CheckRun,
   type DisarmableLane, type LaneLabelCount } from "../decisions/jev-version-check.js";
 import { errorCode } from "../domain/error-code.js";
 import { openAlertedIncident, resolveOpenIncidents } from "../run/incident-alert.js";
@@ -78,15 +78,10 @@ function selectTurns(store: RunStore, env: NodeJS.ProcessEnv, A: ReturnType<type
 
 /** The anchor's own baselines (spec §2.2): agreement(A, B) per question and for the route, and Paco's labels as per-lane counts for A and for B. */
 function baselines(kept: Kept[], labels: Map<string, { category: string }>): Pick<AnchorCounts, "agreement" | "lanes"> {
-  const agreement: Record<string, Agreement> = {};
-  for (const q of treeQuestions(false)) {
-    agreement[q.id] = agreementOf(kept.map((k) => [answerBucket(q, k.a.answers?.[q.id]), answerBucket(q, k.b.answers?.[q.id])] as const));
-  }
-  const key = (k: Kept, r: TreeReplayRow): string => routeEffectKey(k.state, r.answers as Record<string, JevAnswer>);
-  agreement[ROUTE_CHECK_ID] = agreementOf(kept.map((k) => [key(k, k.a), key(k, k.b)] as const));
-  const lane = (run: "a" | "b"): Record<DisarmableLane, LaneLabelCount> =>
-    laneLabelCounts(kept.map((k) => ({ routeKey: key(k, k[run]), label: labels.get(k.turn)?.category })));
-  return { agreement, lanes: { A: lane("a"), B: lane("b") } };
+  const run = (r: "a" | "b"): CheckRun => new Map(kept.map((k) => [k.turn, { state: k.state, answers: k[r].answers as Record<string, JevAnswer> }]));
+  const [A, B] = [run("a"), run("b")];
+  const label = (turn: string): string | undefined => labels.get(turn)?.category;
+  return { agreement: agreementByCheck(A, B), lanes: { A: laneCountsOf(A, label), B: laneCountsOf(B, label) } };
 }
 
 const rowsOf = (k: Kept, r: TreeReplayRow, run: "A" | "B"): JevAnchorRow[] =>
