@@ -430,7 +430,7 @@ function tooFewAnswered(d: JevJobDeps, model: string, g: number, answered: numbe
   logOf(d)(`jev version check: ${model} insufficient (${answered} of ${anchorZh} zh turns answered)`);
   return markInsufficient(d, model, g, { reason: "answered_too_few", answered_zh: answered, anchor_zh: anchorZh, need: JEV_ANCHOR_MIN_ZH },
     `**Jev version check: ${model} answered too few turns.** It answered ${answered} of ${anchorZh} zh anchor turns fully (need ${JEV_ANCHOR_MIN_ZH}), after one retry; nothing is armed on this model.\n`
-    + `\`houge jev check\` runs the check again. Accept arms everything on ${model}.`);
+    + `\`houge jev check\` runs the check again. Accept arms everything on ${model} and makes its answers the reference the next Jev version is checked against.`);
 }
 
 // ── Paco's one message per outcome (spec §2.5 d): a notice on a pass; one incident with an Accept card otherwise ──
@@ -457,7 +457,7 @@ function driftText(model: string, v: CheckVerdict, s: Summary): string {
     v.lanes_disarmed.length > 0 ? `lanes ${v.lanes_disarmed.join(", ")}` : ""].filter(Boolean).join("; ");
   const drops = v.recall_drops.length > 0 ? ["Recall drops (reported only):", ...recallLines(v.recall_drops)] : [];
   return [`**Jev version check: ${model} drifted.** Unarmed on this model: ${what}. The rest stays armed.`, comparedLine(s), ...marginLines(v.margins), ...drops, ...goldenLine(s),
-    `Accept arms everything on ${model}.`].join("\n");
+    `Accept arms everything on ${model} and makes its answers the reference the next Jev version is checked against.`].join("\n");
 }
 
 /** One alerted incident whose page is the Accept card (its own notification, never also the generic incident text). */

@@ -105,6 +105,24 @@ describe("importJevAnchor", () => {
     expect(w.store.anchorAnswers("A")).toHaveLength(before);
   });
 
+  it("--replace (Paco-run, final fix C3) clears the anchor and re-imports in one transaction; a failed replace keeps the old anchor", () => {
+    const w = world(100);
+    importJevAnchor(w.store, full(w), { env: {} });
+    w.store.setAnchorMeta("anchor_model", JSON.stringify({ model: "jev-accepted" }));
+    const relabelled = full(w, { labels: [{ turn_id: w.turns[0]!.id, category: "answer", by: "paco", at: "2026-10-23T00:00:00.000Z" }],
+      overA: () => ({ answers: treeAnswers({ category: "answer" }) }) });
+    const r = importJevAnchor(w.store, relabelled, { env: {}, replace: true });
+    expect(r.status).toBe("imported");
+    expect(w.store.anchorLabels()).toEqual([{ turn_id: w.turns[0]!.id, category: "answer", by: "paco", at: "2026-10-23T00:00:00.000Z" }]);
+    expect(new Set(w.store.anchorAnswers("A").filter((a) => a.question_id === "category").map((a) => JSON.parse(a.answer_json).choice))).toEqual(new Set(["answer"]));
+    expect(w.store.anchorAnswers("A")).toHaveLength(102 * 6);
+    expect(w.store.getAnchorMeta("anchor_model")).toBeUndefined();
+    const before = w.store.anchorAnswers("A");
+    const empty = files({ A: [], B: [] });
+    expect(importJevAnchor(w.store, empty, { env: {}, replace: true }).status).toBe("insufficient");
+    expect(w.store.anchorAnswers("A")).toEqual(before); // nothing usable: the old anchor stays
+  });
+
   it("the latest line per key wins and only ok lines count", () => {
     const w = world(101);
     const [first, second] = w.turns as [typeof w.turns[number], typeof w.turns[number]];

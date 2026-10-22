@@ -13,7 +13,7 @@ import { oncePerTrigger, replyTo } from "./memory-commands.js";
  * model's detail), only on the check generation the card showed and a model still `drifted` or `insufficient` (fenced), and
  * answers "Already handled." otherwise.
  */
-export const JEV_ACCEPTED_TEXT = (model: string): string => `✅ Accepted ${model}: the triage tree arms everything on it.`;
+export const JEV_ACCEPTED_TEXT = (model: string): string => `✅ Accepted ${model}: the triage tree arms everything on it, and its answers are the reference the next Jev version is checked against.`;
 const chatOf = (e: TypedTaskEvent): string => (e.notify.kind === "telegram" ? e.notify.chat_id : "");
 
 function cardChat(detail: string | null): string | null {

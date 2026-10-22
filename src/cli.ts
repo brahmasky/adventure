@@ -330,11 +330,13 @@ if (command === "run") {
   // Decision-tree calibration (spec 2026-10-06 §7): replay the six tree questions over history, label by hand, report the evidence.
   const sub = rest[0];
   if (sub === "anchor" && rest[1] === "import") {
-    // Jev version check §2.2: import Paco's approved reference (idempotent; a non-empty anchor is a no-op).
+    // Jev version check §2.2: import Paco's approved reference (a non-empty anchor is a no-op; `--replace` clears it in the same transaction).
     const { importJevAnchor, ANCHOR_DIR } = await import("./jev/anchor-import.js");
+    const args = rest.slice(2);
+    const replace = args.includes("--replace");
     const store = RunStore.open("houge.sqlite", storeOptions);
     try {
-      const r = importJevAnchor(store, rest[2] ?? ANCHOR_DIR);
+      const r = importJevAnchor(store, args.find((a) => a !== "--replace") ?? ANCHOR_DIR, { replace });
       console.log(`jev anchor import: ${r.status}: ${r.message}`);
       if (r.counts) console.log(JSON.stringify({ model: r.counts.model, turns: r.counts.turns, dropped: r.counts.dropped, labels: r.counts.labels, agreement: r.counts.agreement, lanes: r.counts.lanes }));
       process.exitCode = r.status === "imported" || r.status === "noop" ? 0 : 1;
@@ -362,7 +364,7 @@ if (command === "run") {
     process.exit(process.exitCode ?? 0);
   }
   if (rest[1] !== "triage" || !["replay", "label", "report"].includes(sub ?? "")) {
-    console.error("Usage: houge jev models | houge jev check [model] | houge jev accept <model> | houge jev anchor import [dir] | houge jev replay triage [--dry-run] [--max-usd N] [--limit N] [--permute] | houge jev label triage [--sample=N] | houge jev report triage");
+    console.error("Usage: houge jev models | houge jev check [model] | houge jev accept <model> | houge jev anchor import [--replace] [dir] | houge jev replay triage [--dry-run] [--max-usd N] [--limit N] [--permute] | houge jev label triage [--sample=N] | houge jev report triage");
     process.exit(1);
   }
   if (readTombstone()) {

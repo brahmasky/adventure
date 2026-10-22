@@ -5170,10 +5170,12 @@ export class RunStore {
    * states, labels and meta, writes every table and then seeds the anchor model `trusted`. The seed is explicit and fenced on
    * the row's current state: discovery may already have noted the model as `checking` (its cursor starts at 0), and an
    * INSERT OR IGNORE alone would leave it unarmed. Every other `insufficient` model goes back to `checking` (detail cleared)
-   * in the same transaction. Returns false when the anchor was not empty (nothing written).
+   * in the same transaction. Returns false when the anchor was not empty (nothing written). `replace` (Paco's
+   * `houge jev anchor import --replace`, final fix C3) clears the whole anchor first, in the same transaction.
    */
-  importAnchor(a: { rows: JevAnchorRow[]; states: JevAnchorState[]; labels: JevAnchorLabel[]; meta: Record<string, string>; trustedModel: string; now: string }): boolean {
+  importAnchor(a: { rows: JevAnchorRow[]; states: JevAnchorState[]; labels: JevAnchorLabel[]; meta: Record<string, string>; trustedModel: string; now: string; replace?: boolean }): boolean {
     return this.inTransaction(() => {
+      if (a.replace) this.db.exec(`DELETE FROM jev_anchor`);
       if (!this.anchorEmpty()) return false;
       for (const t of ["jev_anchor_states", "jev_anchor_labels", "jev_anchor_meta"]) this.db.exec(`DELETE FROM ${t}`);
       const row = this.db.prepare(`INSERT INTO jev_anchor (turn_id, lang, question_id, criteria_hash, run, answer_json, model) VALUES (?, ?, ?, ?, ?, ?, ?)`);
@@ -5193,6 +5195,12 @@ export class RunStore {
       this.db.prepare(`UPDATE jev_models SET state = 'checking', detail_json = '{}' WHERE state = 'insufficient' AND model <> ?`).run(a.trustedModel);
       return true;
     });
+  }
+
+  /** Final fix C1 (Paco's Accept re-anchors): one anchor answer replaced by the accepted model's; its turn, state and criteria hash stay. */
+  replaceAnchorAnswer(r: { turn_id: string; question_id: string; run: "A" | "B"; answer_json: string; model: string }): boolean {
+    return this.db.prepare(`UPDATE jev_anchor SET answer_json = ?, model = ? WHERE turn_id = ? AND question_id = ? AND run = ?`)
+      .run(r.answer_json, r.model, r.turn_id, r.question_id, r.run).changes > 0;
   }
 
   /** A model first seen in the ledger starts as `checking`; a known model is left exactly as it is. */

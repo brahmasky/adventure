@@ -13,7 +13,8 @@ import { readDone } from "./replay-core.js";
 import { loadLabels, TREE_LABEL_SINCE, treeContextFor, treeQuestions, type TreeReplayRow } from "./triage-replay.js";
 
 /**
- * Jev version check §2.2: Paco's approved reference, imported once and never replaced. Each turn's state is rebuilt from the
+ * Jev version check §2.2: Paco's approved reference, imported once; only Paco replaces it (`--replace`, or his Accept on a
+ * drifted model, which re-anchors on that model's answers: jev-version-controls.ts). Each turn's state is rebuilt from the
  * DB with the live path's redactor (`store.redactSecretValues`, the broker's when the firewall is armed), the anchor's own
  * baselines are computed here (agreement of run A with run B, Paco's labels as per-lane counts) and the anchor model is
  * seeded `trusted` when the zh turns alone reach the minimum. Counts and enums only in every log and incident.
@@ -93,11 +94,13 @@ function incident(store: RunStore, kind: string, detail: Record<string, unknown>
 }
 
 /**
- * Import the anchor from `dir`. A non-empty anchor is a no-op; missing files, mixed models or too few zh turns write nothing
- * (so a fixed file can be imported later) and open one alerted incident naming the command; otherwise everything lands in one transaction.
+ * Import the anchor from `dir`. A non-empty anchor is a no-op unless `replace` (Paco's `--replace`, final fix C3: the old
+ * anchor is cleared in the same transaction as the new one lands); missing files, mixed models or too few zh turns write
+ * nothing (so a fixed file can be imported later, and a replace keeps the old anchor) and open one alerted incident naming
+ * the command; otherwise everything lands in one transaction.
  */
-export function importJevAnchor(store: RunStore, dir: string, opts: { env?: NodeJS.ProcessEnv; now?: string } = {}): AnchorImportResult {
-  if (!store.anchorEmpty()) return { status: "noop", message: "the anchor is already imported; it is never replaced" };
+export function importJevAnchor(store: RunStore, dir: string, opts: { env?: NodeJS.ProcessEnv; now?: string; replace?: boolean } = {}): AnchorImportResult {
+  if (!opts.replace && !store.anchorEmpty()) return { status: "noop", message: `the anchor is already imported; ${ANCHOR_COMMAND} --replace replaces it` };
   const files = pathsOf(dir);
   const missing = files.filter((f) => !existsSync(f));
   if (missing.length > 0) {
@@ -116,10 +119,10 @@ export function importJevAnchor(store: RunStore, dir: string, opts: { env?: Node
     incident(store, "jev_anchor_mixed_models", { models: models.size, turns: kept.length }, opts.now);
     return { status: "mixed_models", message: `the anchor rows report ${models.size} models; nothing imported or armed`, counts };
   }
-  return seedAnchor(store, { kept, labels, counts, model, now: opts.now ?? new Date().toISOString() });
+  return seedAnchor(store, { kept, labels, counts, model, now: opts.now ?? new Date().toISOString(), replace: opts.replace === true });
 }
 
-function seedAnchor(store: RunStore, i: { kept: Kept[]; labels: Map<string, { category: string; by: string; at: string }>; counts: AnchorCounts; model: string | null; now: string }): AnchorImportResult {
+function seedAnchor(store: RunStore, i: { kept: Kept[]; labels: Map<string, { category: string; by: string; at: string }>; counts: AnchorCounts; model: string | null; now: string; replace: boolean }): AnchorImportResult {
   const { kept, counts, model, now } = i;
   const zh = counts.turns.zh ?? 0;
   if (model === null || zh < JEV_ANCHOR_MIN_ZH) {
@@ -131,10 +134,10 @@ function seedAnchor(store: RunStore, i: { kept: Kept[]; labels: Map<string, { ca
   const states: JevAnchorState[] = kept.map((k) => ({ turn_id: k.turn, lang: k.lang, state_json: JSON.stringify(k.state), state_hash: k.hash }));
   const labels: JevAnchorLabel[] = [...i.labels].map(([turn_id, l]) => ({ turn_id, category: l.category, by: l.by, at: l.at }));
   const rows = kept.flatMap((k) => [...rowsOf(k, k.a, "A"), ...rowsOf(k, k.b, "B")]);
-  const done = store.importAnchor({ rows, states, labels, meta: { baseline: JSON.stringify(counts) }, trustedModel: model, now });
+  const done = store.importAnchor({ rows, states, labels, meta: { baseline: JSON.stringify(counts) }, trustedModel: model, now, replace: i.replace });
   if (done) resolveOpenIncidents(store, ANCHOR_INCIDENT_KINDS, INCIDENT_SUBJECT, now);
-  return done ? { status: "imported", message: `anchor imported: ${kept.length} turns, model seeded trusted`, counts }
-    : { status: "noop", message: "the anchor is already imported; it is never replaced" };
+  return done ? { status: "imported", message: `anchor ${i.replace ? "replaced" : "imported"}: ${kept.length} turns, model seeded trusted`, counts }
+    : { status: "noop", message: `the anchor is already imported; ${ANCHOR_COMMAND} --replace replaces it` };
 }
 
 /** Daemon boot: import when the anchor is empty. A failure is logged with its code and boot continues (the tree just stays unarmed). */
