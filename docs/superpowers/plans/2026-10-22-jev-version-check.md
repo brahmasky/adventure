@@ -113,7 +113,8 @@ accept <model>`), the tap (`dec:jv:<hash>:acc`, parser + gateway, chat-bound, on
   report the candidate → per-entry drift incident, never disarm.
 - Outcome → `setJevModelState`; one notice (pass: margins, recall drops) or one alerted incident (drift/insufficient:
   numbers + Accept button). The Accept card is its own notification (not the generic `alertOpened` text): payload
-  `{ text, button_rows: [[{ text: "Accept <model>", callback_data: "dec:jv:<sha8 of model>:acc" }]] }`, through the
+  `{ text, button_rows: [[{ text: "Accept <model>", data: "dec:jv:<sha8 of model>:acc" }]] }` (`NotificationButton`
+  uses `data`, as `reviewButtons` and `skillButtons` do), through the
   outbox and the rich renderer, to the operator chat; the tap is parsed by `parseJevAcceptCallback` (`src/triggers/telegram-command-parser.ts`), becomes a
   `TaskEventType` `jev_accept_tap` (`src/domain/types.ts`, the type pin test follows), is built in
   `src/triggers/telegram-trigger-adapter.ts` after the improvement tap (:275 area), dispatched in `src/gateway/gateway.ts`
