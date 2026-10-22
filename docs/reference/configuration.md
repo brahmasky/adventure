@@ -982,12 +982,22 @@ tree questions on it, paced at 1.5 s per call: **a check takes about 45 minutes*
 that model meanwhile. A version that agrees within Jev's own noise becomes `trusted` and arms with one notice; a drift
 (`drifted`) disarms the failing questions and their dependent lanes (any route-effect drift disarms the whole tree) and opens
 one alerted `jev_model_drifted` incident with an Accept button; too small a reference (`insufficient`) opens
-`jev_model_insufficient`. The four ladder bars never disarm on a move: their golden sets run on the new model and a drift
-pages `decision_golden_drift:<entry>`. Spec: `docs/superpowers/specs/2026-10-22-jev-version-check-design.md`.
+`jev_model_insufficient`. The four ladder bars never disarm on a move: their golden sets run on the new model and the
+results go into the check's one notice or card (the daily golden ticks keep paging `decision_golden_drift:<entry>`); a
+golden set that did not run stays pending and the model cannot be trusted until it runs. While the alias serves two ids
+(a canary day), an ask answered by the old id is skipped and re-asked at the end of the pass; the model is `deferred` only
+when fewer than 100 zh turns got the new id's answers, with one notice ("Jev is serving two versions; the check
+retries"), retried an hour later or once the newest 5 Jev answers all report it. An ask that hits an outage on 3 separate
+starts is left unanswered, and a check still running 3 h after it started opens one `jev_model_check_stalled` incident.
+**Paco's Accept** (tap or CLI) on a `drifted` or `insufficient` model also makes its answers the reference later versions
+are checked against (his labels stay); a `trusted` model never re-anchors. Spec:
+`docs/superpowers/specs/2026-10-22-jev-version-check-design.md`.
 
-CLI (no new env var): `houge jev anchor import [dir]` (idempotent; the daemon also imports at boot when the anchor tables
-are empty), `houge jev models` (states and numbers), `houge jev check [model]` (queue a re-check; the daemon's next tick
-runs it), `houge jev accept <model>` (arm everything for that model on Paco's word).
+CLI (no new env var): `houge jev anchor import [--replace] [dir]` (a non-empty anchor is a no-op unless `--replace`, which
+clears and re-imports in one transaction; the daemon also imports at boot when the anchor tables are empty; the printed
+baselines are informational, each check recomputes its own), `houge jev models` (states and numbers), `houge jev check
+[model]` (queue a re-check; the daemon's next tick runs it), `houge jev accept <model>` (arm everything for that model on
+Paco's word).
 
 **Calibration rows are code, not env.** `CALIBRATED_ROWS` in `src/jev/calibration.ts` holds the arming rows, keyed
 `(question_id, criteria_hash, lang)` (no model version; the version check above decides per model whether they hold). The six tree questions have new criteria hashes, so **lane 1's rows armed
@@ -1015,7 +1025,8 @@ denominator; carries `category`, `route_lane`, `role`, `verdict_id`, `decision`,
 `jev_question_invalid`, `jev_no_key`, `triage_overrides` (three 🔍 Dig deeper taps on one lane in seven days; subject `jev:lane:<lane>`; it pages and disarms nothing),
 `triage_threw`, `jev_model_drifted` and `jev_model_insufficient` (subject = the reported model: the version check found a
 drift, or the reference was too small; the card carries an Accept button, `dec:jv:<model hash>:acc`, chat-bound and once;
-resolved when a new check of that model starts) and `jev_anchor_missing` / `jev_anchor_mixed_models` /
+resolved when a new check of that model starts), `jev_model_check_stalled` (the served model's check has run more than
+3 h; resolved when it leaves `checking`) and `jev_anchor_missing` / `jev_anchor_mixed_models` /
 `jev_anchor_insufficient` (the anchor import could not seed a reference). `jev_model_uncalibrated` is retired. The next answered Jev call resolves any open
 outage `jev_*` incident, and a lane's `triage_overrides` resolves once that lane's 7-day tap count is under three (checked after each tap, at each triage and by the sweep). The invariant
 sweep adds two rate kinds:

@@ -216,8 +216,11 @@ Rows carry no model version: every request names the moving alias `jev-latest`, 
 each row. When TypeSafe moves the alias, a background job checks the new id against Paco's anchor (the approved replay and
 labels) and the tree is unarmed for it meanwhile: **about 45 minutes** (asks paced at 1.5 s), during which questions fall to
 uncalibrated (Default route). A version within Jev's noise arms with one notice; a drift disarms the failing questions and
-dependent lanes and opens one `jev_model_drifted` incident with an Accept button. `houge jev models | check | accept`; details
-in [configuration.md](configuration.md#jev-system-one-adr-0029).
+dependent lanes and opens one `jev_model_drifted` incident with an Accept button. Paco's Accept also makes the accepted
+version the reference the next one is checked against (his labels stay). A canary day (the alias serving two ids) defers
+the check with one notice and retries within the hour; a check that cannot finish pages once after 3 h.
+`houge jev models | check | accept`, `houge jev anchor import [--replace]`; details in
+[configuration.md](configuration.md#jev-system-one-adr-0029).
 
 ## Reading a lane row
 

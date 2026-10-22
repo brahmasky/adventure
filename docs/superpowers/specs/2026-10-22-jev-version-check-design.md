@@ -1,6 +1,7 @@
 # Jev version check — no version literal in behaviour code; a version move is checked by code
 
-**Status:** Rev 3.4, 2026-10-22 (Rev 3.3 + codex r5: 1 blocker; senior r4: 0 blockers). Paco's ask (2026-10-22):
+**Status:** Rev 3.5, 2026-10-23 (Rev 3.4 + the final fix wave after five whole-branch reviews: canary deferral, stuck
+check, Accept re-anchors, golden pending, URL rule, protected import; marked **Final fix** below). Paco's ask (2026-10-22):
 "build the automatic check". His intent (2026-10-07, restated today): no hard-coded version decides behaviour, and a Jev
 version move must not stop him. This is Paco's decision, so ADR 0029 decision 5 and its 2026-10-07 amendment ("falls
 through until Paco approves rows") are replaced by §2 (ADR text in §6).
@@ -41,10 +42,17 @@ The check gates the triage tree only (the only model-gated decision). The four l
   (`cli.ts:34`, the live daemon's configuration) and the same no-op the live path applies when it is off, so a stored
   state is byte-for-byte what the live path would send in either configuration, and a turn whose rebuilt `state_hash`
   differs from the anchor's is dropped; the stored state is what checks send, so they never depend on chat turns. Counts are logged. Runs at daemon boot when the tables are empty and the files
-  exist, and as `houge jev anchor import`. The anchor is never replaced by a later model's answers: every check compares
-  with Paco's approved set (no chain drift).
-- Anchor baseline per check (§2.5): agreement(anchor A, anchor B) and the label error/recall counts, computed once at
-  import and stored in `jev_anchor_meta`.
+  exist, and as `houge jev anchor import`. **Final fix:** the import lives in the protected `src/decisions/jev-anchor-import.ts`
+  (every write of a model's check state or of the anchor is under `src/decisions/`, a test scans `src/`); each row is
+  validated like a Jev response (`JEV_MODEL_ID`, the client's answer validator), a bad row being an `invalid_a`/`invalid_b`
+  drop, never a throw; the missing-files incident names `.houge/jev-tree/<file>`, never an absolute path. The anchor
+  changes only by Paco's hand: his Accept on a drifted or insufficient model re-anchors on it (§7), and
+  `houge jev anchor import --replace [dir]` clears and re-imports in one transaction (a failed replace keeps the old
+  anchor). A check never re-anchors on its own (no chain drift).
+- Anchor baseline per check (§2.5): agreement(anchor A, anchor B) and the label error/recall counts. **As built:** each check
+  recomputes them over exactly the turns it compared; the copy the import stores in `jev_anchor_meta` is informational
+  (the CLI labels it so) and never read. A check whose anchor rows carry a criteria hash other than the live question's
+  (A canonical, B permuted) ends `insufficient` with reason `anchor_criteria_stale` and names the `--replace` re-import.
 - `jev_models(model PRIMARY KEY, first_seen_at, state CHECK(state IN ('trusted','checking','deferred','drifted',
   'insufficient','accepted')), checked_at, attempts, detail_json)`. Seed: the anchor's own `model` value → `trusted`, but
   only when the zh anchor holds ≥ 100 rebuilt turns with both an A and a B answer set, and every imported A and B row
@@ -73,15 +81,23 @@ The check gates the triage tree only (the only model-gated decision). The four l
   `checking`. No hook in `decide.ts`.
 - The check is a background job on its own promise (like the evolution lane), started by the tick, never awaited by it;
   one model at a time; resumable (progress in `detail_json`); an outage retries on the next start; the stop signal is
-  honoured. A batch whose answers report another model (the alias served the old id) is retried at most 3 times, then
-  the model goes `deferred` (retried on a later day) and the job moves on.
+  honoured. A batch whose answers report another model (the alias served the old id) is retried at most 3 times.
+  **Final fix (canary days):** such an ask is then skipped, not a deferral, and re-asked once at the end of the pass; the
+  model goes `deferred` only when, after the pass, fewer than 100 zh turns have the candidate's answers in every run. A
+  deferral sends ONE notice per check generation ("Jev is serving two versions; the check retries"), never a page, and is
+  retried an hour later, or sooner once the newest 5 Jev answers all report the candidate.
+- **Final fix (a stuck check):** a tree ask that hits an outage on 3 separate starts is recorded unanswered and the pass
+  moves on (a per-ask count in the progress). The served model `checking` for more than 3 h from its generation's start
+  opens ONE alerted `jev_model_check_stalled` incident ("the Jev version check for <model> is not finishing; lanes stay
+  on the planner"), resolved when the model leaves `checking`.
 
 ### 2.5 The check
 Send each anchor turn's stored state through the tree questions on the candidate, twice: run A canonical and run A2
 canonical again (the self control), plus run B permuted. Only answers whose reported model equals the candidate count.
 Agreement per check: same top option (choice), same zone across the bar (noul), same level bucket (score); the route
 check compares the full route effect from `routeTree` with today's bars (category, lane, role, effort, save, scope; a
-cascade by its pair). Seven checks: six questions + route. `slack(n, p) = max(0.05, 2.7 · sqrt(p(1−p)/n))` (z for 1 %
+cascade by its pair), through the live `urlRule` exactly as the live turn applies it (**final fix**: a lookup naming a URL is
+a planner route on both sides). Seven checks: six questions + route. `slack(n, p) = max(0.05, 2.7 · sqrt(p(1−p)/n))` (z for 1 %
 per check over seven checks).
 a. **Close to the anchor:** agreement(cand A, anchor A) ≥ agreement(cand A, cand A2) − slack.
 b. **Not noisier than the anchor:** agreement(cand A, cand B) ≥ agreement(anchor A, anchor B) − slack.
@@ -98,8 +114,11 @@ d. **Outcome.** All pass → `trusted`, one notice with the margins and any reca
    `insufficient`, nothing armed for that model, one incident naming the import.
 e. **Ladder bars.** Each golden set runs on the candidate in check-specific runs keyed by model; every item's reported
    model must equal the candidate (else retried as above). `improve.route` gets a golden set of states that the rule rung
-   abstains on, so each item reaches the Jev rung, with intended targets. Drift → one incident per entry; never disarms.
-   `decision_bar_stale` retires.
+   abstains on, so each item reaches the Jev rung, with intended targets. Drift never disarms. **Final fix:** the results
+   go into the outcome notice or card only (no `decision_golden_drift` from the check; the daily ticks keep theirs, and
+   boot resolves any `<entry>:<model>` incident an older build opened). A golden entry that did not run (another id after
+   the retries, a malformed answer set, an outage) records nothing and stays pending for a later start; the model cannot
+   reach `trusted` while one is pending. `decision_bar_stale` retires.
 Cost: 3 × ~300 turns ≈ $0.20 per version move. **As built:** asks are paced at 1.5 s per call (`JEV_CHECK_PACE_MS`, so the
 check cannot trip a 429 on Paco's live triage key), so a check takes about 45 minutes after a version move and the lanes
 fall back to the planner that long. The live gate ran about 2 h because it runs the check twice plus three golden repeats.
@@ -115,7 +134,8 @@ The check's thresholds, state machine and arming read live in `src/decisions/jev
 2026-10-22):** `src/jev/tree-policy.ts` is NOT protected; the arming application (`treeArmed`: the check state and the
 lane dependencies) lives in the protected `src/decisions/jev-version-check.ts`, and the routing policy only consumes its
 result. Residual: a self-write could change how `routeTree` honours the result, and the caller
-`src/core/turn-handler-ladder.ts` is unprotected too (open question to Paco in `tasks/todo.md`).
+`src/core/turn-handler-ladder.ts` is unprotected too, as is the caller in `src/core/core-worker.ts` that hands
+`treeArmingFor`'s result to `planTree` (open question to Paco in `tasks/todo.md`).
 
 ## 3. Failure modes
 Reference files missing → no reference → nothing armed + one incident naming the import command. Two ids behind the alias →
@@ -143,8 +163,14 @@ triage questions and pages him. Safety judges never disarm on a version move."
 ## 7. Rulings (cost if wrong)
 - en inherits zh's verdict (30 anchor turns; a separate verdict false-drifts 66 % of moves) — an en-only drift goes
   unseen; en traffic is ~2 % of turns.
-- The anchor never rolls forward — after several version moves the model may legitimately diverge from 2026-10 answers
-  and page; Paco then accepts or re-labels.
+- **Paco's Accept re-anchors** (controller ruling, final fix 2026-10-23; replaces "the anchor never rolls forward"): an
+  Accept (tap or CLI) on a `drifted` or `insufficient` model puts that model's run A and run B answers from its current
+  check generation in place of the anchor's, turn by turn where it answered every question of both runs (the other turns
+  keep theirs; same turns, stored states and criteria hashes), in the same transaction as `accepted`; `anchor_model` is
+  recorded in `jev_anchor_meta`. Paco's labels are never replaced: they stay the absolute reference for check c. A model
+  that passed its own check (`trusted`) never re-anchors, and a CLI Accept from `checking` or `deferred` arms without
+  re-anchoring (no silent ratchet). Cost if wrong: one careless Accept makes a worse model the reference until Paco
+  re-imports with `--replace`.
 - Status lane needs `category` — one more way the status lane falls back.
 - A category drift under ~5 % of turns may pass (caught about 2 times in 3) — such a small drift on routing is within
   what Jev's own noise already does day to day.
