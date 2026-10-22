@@ -21,7 +21,7 @@ import { sharedOmpVersionCache } from "../omp/omp-version-cache.js";
 import { stableHash } from "../domain/canonical.js";
 import type { RoleResolver } from "../omp/role-resolver.js";
 import { runGoldenSetTick, runMemoryKindGoldenTick, runSettleGoldenTick } from "../decisions/golden.js";
-import { jevJobSettled, jevVersionTick } from "../decisions/jev-version-job.js";
+import { jevJobSettled, jevVersionTick, resolveLegacyGoldenModelIncidents } from "../decisions/jev-version-job.js";
 import { errorCode } from "../domain/error-code.js";
 import { IMPROVE_JEV_MS } from "../decisions/entries/improve-route.js";
 import { runImproveTick } from "../improve/tick.js";
@@ -411,6 +411,7 @@ function bootPlanners(worker: CoreWorker, options: RunTelegramDaemonOptions, now
   warnRetiredOmpChainVars(process.env);
   warnUnknownJevLanesOff(process.env);
   bootJevAnchor(options.store, join(options.projectRoot, ANCHOR_DIR)); // Jev version check §2.2: import the reference when the anchor is empty; a failure is logged, boot continues
+  try { resolveLegacyGoldenModelIncidents(options.store, now()); } catch (e) { console.error(`[telegram-daemon] golden incident cleanup failed: ${errorCode(e)}`); } // final fix D2
   worker.validateOmpConfig();
   worker.checkDaemonTmp(); // N1: a temp root inside a git repo pages and disables voice ingest
   recoverPlannerRuns(worker, now(), true);

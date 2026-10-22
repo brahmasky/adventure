@@ -31,8 +31,11 @@ export interface JevJobDeps {
   /** The pause before every ask (default JEV_CHECK_PACE_MS); tests pass 0. */
   paceMs?: number;
 }
-/** `retrying`: too few turns answered fully; the failed turns are asked once more at the next start. */
-export type JevCheckResult = "trusted" | "drifted" | "insufficient" | "deferred" | "stopped" | "outage" | "skipped" | "retrying";
+/**
+ * `retrying`: too few turns answered fully; the failed turns are asked once more at the next start. `pending`: a golden
+ * set did not run (a malformed answer set); it is retried at a later start, after the outage backoff (final fix D1).
+ */
+export type JevCheckResult = "trusted" | "drifted" | "insufficient" | "deferred" | "stopped" | "outage" | "skipped" | "retrying" | "pending";
 
 /**
  * The pause before each ask (runs and golden items alike): ~840 calls on Paco's TypeSafe key must not burst into a 429 that
@@ -73,6 +76,20 @@ const TREE_RUNS = [["A", false], ["A2", false], ["B", true]] as const;
 const TREE_RUN_IDS = TREE_RUNS.map(([r]) => r);
 const PROGRESS_EVERY = 25;
 const GOLDEN_DRIFT: ReadonlySet<string> = new Set(["decision_golden_drift"]);
+
+/**
+ * Final fix D2: the check no longer pages golden drift (its outcome notice or card carries it); boot resolves the
+ * `decision_golden_drift` incidents an older check opened under `<entry>:<model>`, which nothing else would ever close.
+ * The daily ticks' own incidents (subject = the bare entry id) stay. Returns how many were resolved.
+ */
+export function resolveLegacyGoldenModelIncidents(store: RunStore, now: string): number {
+  let n = 0;
+  for (const i of store.listOpenIncidents()) {
+    if (!GOLDEN_DRIFT.has(i.kind) || !CHECK_GOLDEN_ENTRIES.some((e) => i.subject.startsWith(`${e}:`))) continue;
+    n += resolveOpenIncidents(store, GOLDEN_DRIFT, i.subject, now);
+  }
+  return n;
+}
 
 const logOf = (d: Pick<JevJobDeps, "log">) => d.log ?? ((l: string) => console.error(l));
 
@@ -133,7 +150,7 @@ export function jevVersionTick(i: JevTickInput): { noted: string[]; started: str
   const backOff = (): void => { lane.notBefore = Date.parse(i.now()) + JEV_JOB_OUTAGE_BACKOFF_MS; };
   const { makeClient, ...rest } = i;
   lane.running = (async () => runJevCheck({ ...rest, client: makeClient() }, model))()
-    .then((r) => { if (r === "outage") backOff(); }, (e: unknown) => { log(`jev version check: ${model} failed: ${errorCode(e)}`); backOff(); })
+    .then((r) => { if (r === "outage" || r === "pending") backOff(); }, (e: unknown) => { log(`jev version check: ${model} failed: ${errorCode(e)}`); backOff(); })
     .finally(() => { lane.running = null; });
   return { noted, started: model };
 }
@@ -339,23 +356,30 @@ function outage(d: JevJobDeps, model: string, f: FailedAsk): JevCheckResult {
   return "outage";
 }
 
-/** Spec §2.5 e: each golden set on the candidate, one row per entry; a drift opens one incident per entry and never disarms. */
+/**
+ * Spec §2.5 e: each golden set on the candidate, one row per judged entry; a drift is reported in the outcome message and
+ * never disarms (final fix D2: no incident of its own). Final fix D1: an entry that did not run (another id after the
+ * retries, a malformed answer set, an outage) records nothing and stays pending for a later start; the model cannot
+ * finish while one is pending.
+ */
 async function runGoldens(d: JevJobDeps, model: string, g: number): Promise<JevCheckResult | "done"> {
+  let reported: string | null = null; let pending = 0;
   for (const entry of d.golden ?? CHECK_GOLDEN_ENTRIES) {
     if (d.store.getJevCheckRun(model, g, entry, "golden")) continue;
     if (d.signal.aborted) return "stopped";
     const r = await runGoldenForModel(entry, model, d.client, d.store, d.signal, paceOf(d));
     if (r.kind === "stopped") return "stopped";
-    if (r.kind === "wrong_model") return defer(d, model, g, r.reported);
-    if (r.kind === "failed" && r.failure && isOutage(r.failure)) return outage(d, model, r.failure);
-    const outcome = r.kind === "judged" ? r.outcome : "skipped";
-    if (r.kind === "judged") resolveJevIncidentsOnAnswer(d.store);
-    d.store.recordJevCheckRun({ model, generation: g, entry_id: entry, run: "golden", outcome, detail_json: JSON.stringify(r.kind === "judged" ? { missed: r.missed } : {}), created_at: d.now() });
-    const subject = `${entry}:${model}`;
-    if (outcome === "drift" && r.kind === "judged") openAlertedIncident(d.store, { kind: "decision_golden_drift", subject, detail: { entry, model, missed: r.missed }, chat_id: d.chatId, now: d.now() });
-    if (outcome === "ok") resolveOpenIncidents(d.store, GOLDEN_DRIFT, subject, d.now());
+    if (r.kind === "wrong_model") { reported = r.reported; continue; }
+    if (r.kind === "failed") {
+      if (r.failure && isOutage(r.failure)) return outage(d, model, r.failure);
+      pending += 1; logOf(d)(`jev version check: ${model} golden ${entry} did not run (${r.failure?.error_kind ?? "malformed"}); pending`);
+      continue;
+    }
+    resolveJevIncidentsOnAnswer(d.store);
+    d.store.recordJevCheckRun({ model, generation: g, entry_id: entry, run: "golden", outcome: r.outcome, detail_json: JSON.stringify({ missed: r.missed }), created_at: d.now() });
   }
-  return "done";
+  if (reported !== null) return defer(d, model, g, reported);
+  return pending > 0 ? "pending" : "done";
 }
 
 /** The candidate's three runs over the anchor turns, from this generation's answered rows only. */

@@ -1164,6 +1164,21 @@ describe("the daemon's sweep wiring (M9)", () => {
     expect(await run(withFiles)).toEqual(["jev_anchor_insufficient"]); // files found and read: no turns kept
   });
 
+  it("boot resolves the golden drift incidents an older Jev version check opened per model (final fix D2); the daily tick's own stays", async () => {
+    const store = RunStore.openInMemory();
+    const root = projectRoot();
+    try {
+      store.openIncident({ kind: "decision_golden_drift", subject: "tool.injection:jev-old", detail: {}, now: "2026-10-22T00:00:00.000Z" });
+      store.openIncident({ kind: "decision_golden_drift", subject: "tool.injection", detail: {}, now: "2026-10-22T00:00:00.000Z" });
+      const controller = new AbortController(); controller.abort();
+      await runDaemon({ store, projectRoot: root, omp: fakeOmp(root), allowlist: ALLOWLIST, stopSignal: controller.signal,
+        telegramClient: { getUpdates: async () => [], sendMessage: async () => ({ message_id: 1 }) } as never });
+      expect(store.listOpenIncidents().filter((i) => i.kind === "decision_golden_drift").map((i) => i.subject)).toEqual(["tool.injection"]);
+    } finally {
+      store.close();
+    }
+  });
+
   it("boot validates the omp config: a malformed value opens omp_config_invalid before the first poll (B4)", async () => {
     const store = RunStore.openInMemory();
     const root = projectRoot();

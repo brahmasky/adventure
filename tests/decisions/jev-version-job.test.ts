@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseDriftDetail } from "../../src/decisions/jev-version-check.js";
 import {
-  discoverJevModels, JEV_CHECK_PACE_MS, JEV_DEFER_RETRY_MS, JEV_JOB_OUTAGE_BACKOFF_MS, jevJobSettled, jevVersionTick, resetJevJobForTests, runJevCheck, type JevJobDeps
+  discoverJevModels, JEV_CHECK_PACE_MS, JEV_DEFER_RETRY_MS, resolveLegacyGoldenModelIncidents, JEV_JOB_OUTAGE_BACKOFF_MS, jevJobSettled, jevVersionTick, resetJevJobForTests, runJevCheck, type JevJobDeps
 } from "../../src/decisions/jev-version-job.js";
 import type { JevAnswer, JevRequest, JevResult } from "../../src/jev/jev-client.js";
 import { CATEGORIES } from "../../src/jev/questions/tree.js";
@@ -279,12 +279,15 @@ describe("the outcome (spec §2.5 d)", () => {
     s.close();
   });
 
-  it("a golden-set drift opens one incident for that entry and never disarms the tree", async () => {
+  it("a golden-set drift goes into the outcome notice only (no separate incident from the check) and never disarms the tree", async () => {
     const s = fresh(); seedAnchor(s); s.noteJevModel(CAND, NOW);
     expect(await runJevCheck(deps(s, fake(), { golden: ["tool.injection"] }), CAND)).toBe("trusted"); // the generic stub misses every planted item
     const g = s.getJevModel(CAND)!.generation;
     expect(s.getJevCheckRun(CAND, g, "tool.injection", "golden")?.outcome).toBe("drift");
-    expect(s.listOpenIncidents().map((i) => [i.kind, i.subject])).toEqual([["decision_golden_drift", `tool.injection:${CAND}`]]);
+    expect(s.listOpenIncidents()).toEqual([]); // the daily ticks keep their own golden incidents; the check pages nothing for it
+    const sent = outbox(s);
+    expect(sent).toHaveLength(1);
+    expect(String(sent[0]!.payload.text)).toMatch(/Golden sets: tool\.injection drift/);
     expect(s.getJevModel(CAND)?.state).toBe("trusted");
     s.close();
   });
@@ -506,6 +509,60 @@ describe("a stuck check (final fix B)", () => {
     expect(await runJevCheck(deps(s, fake(), { now: () => new Date(t).toISOString() }), CAND)).toBe("trusted");
     tick();
     expect(s.listOpenIncidents()).toEqual([]);
+    s.close();
+  });
+});
+
+// Final fix D (codex W2, adversarial 4, correctness Minor): a golden run that did not run is not a pass.
+describe("golden runs (final fix D)", () => {
+  const isGolden = (req: JevRequest): boolean => !("category" in req.questions);
+
+  it("a golden run that fails to run stays pending: no row, no outcome; the next start asks only the golden set and can then pass", async () => {
+    const s = fresh(); seedAnchor(s); s.noteJevModel(CAND, NOW);
+    const bad = fake({ fail: (k) => (isGolden(bad.calls[k - 1]!) ? PARSE_FAIL : undefined) });
+    expect(await runJevCheck(deps(s, bad, { golden: ["memory.kind"] }), CAND)).toBe("pending");
+    const g = s.getJevModel(CAND)!.generation;
+    expect(s.getJevModel(CAND)?.state).toBe("checking"); // never trusted while a golden entry is pending
+    expect(s.getJevCheckRun(CAND, g, "memory.kind", "golden")).toBeUndefined();
+    expect(outbox(s)).toEqual([]);
+    const good = fake();
+    expect(await runJevCheck(deps(s, good, { golden: ["memory.kind"] }), CAND)).toBe("trusted");
+    expect(good.calls.every(isGolden)).toBe(true); // the tree rows were kept
+    expect(s.getJevCheckRun(CAND, g, "memory.kind", "golden")?.outcome).toBeDefined();
+    s.close();
+  });
+
+  it("a golden outage pauses the start (backoff) and the golden entry is retried", async () => {
+    const s = fresh(); seedAnchor(s); s.noteJevModel(CAND, NOW);
+    const down = fake({ fail: (k) => (isGolden(down.calls[k - 1]!) ? { ok: false, reason: "error", detail: "HTTP 503", error_kind: "transport" } : undefined) });
+    expect(await runJevCheck(deps(s, down, { golden: ["tool.injection"] }), CAND)).toBe("outage");
+    expect(s.getJevModel(CAND)?.state).toBe("checking");
+    expect(await runJevCheck(deps(s, fake(), { golden: ["tool.injection"] }), CAND)).toBe("trusted");
+    s.close();
+  });
+
+  it("a pending golden run backs the tick off like an outage", async () => {
+    const s = fresh(); seedAnchor(s); s.noteJevModel(CAND, NOW); serve(s, CAND);
+    const bad = fake({ fail: (k) => (isGolden(bad.calls[k - 1]!) ? PARSE_FAIL : undefined) });
+    let t = Date.parse(NOW);
+    const tick = (c: Fake) => jevVersionTick({ store: s, makeClient: () => c.client, signal: new AbortController().signal, chatId: CHAT, now: () => new Date(t).toISOString(), golden: ["memory.kind"], log: () => {}, paceMs: 0 });
+    expect(tick(bad).started).toBe(CAND);
+    await jevJobSettled();
+    expect(tick(fake()).started).toBeNull();
+    t += JEV_JOB_OUTAGE_BACKOFF_MS + 1;
+    expect(tick(fake()).started).toBe(CAND);
+    await jevJobSettled();
+    expect(s.getJevModel(CAND)?.state).toBe("trusted");
+    s.close();
+  });
+
+  it("boot resolves the model-keyed golden drift incidents the old check left open; the daily ticks' own stay", () => {
+    const s = fresh();
+    s.openIncident({ kind: "decision_golden_drift", subject: `tool.injection:${CAND}`, detail: {}, now: NOW });
+    s.openIncident({ kind: "decision_golden_drift", subject: "memory.kind:jev-old", detail: {}, now: NOW });
+    s.openIncident({ kind: "decision_golden_drift", subject: "tool.injection", detail: {}, now: NOW });
+    expect(resolveLegacyGoldenModelIncidents(s, NOW)).toBe(2);
+    expect(s.listOpenIncidents().map((i) => i.subject)).toEqual(["tool.injection"]);
     s.close();
   });
 });
