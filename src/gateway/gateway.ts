@@ -47,6 +47,7 @@ import { handleMemLaneUndo, memLaneAskTurnEvent, recordTriageOverride } from "./
 import { resolveQuietTriageOverrides } from "../jev/jev-incidents.js";
 import { handleDecisionReview } from "./decision-commands.js";
 import { handleImprovementTap } from "./improvement-commands.js";
+import { handleJevAcceptTap } from "./jev-accept-commands.js";
 import { decisionListText, decisionStatusLines } from "../decisions/status-view.js";
 import { recordApprovalDenied, recordCorrection, recordImproveSignal, skipImproveSignal } from "../decisions/improve-signals.js";
 import type { NotificationPayload } from "../notifications/notification-types.js";
@@ -77,6 +78,7 @@ export type GatewayIntakeResult =
   | { ok: true; status: "lesson_change_undone"; run_id: string }
   | { ok: true; status: "decision_reviewed"; run_id: string }
   | { ok: true; status: "improvement_tapped"; run_id: string }
+  | { ok: true; status: "jev_accept_tapped"; run_id: string }
   | { ok: true; status: "memories_returned"; run_id: string }
   | { ok: true; status: "memory_forgotten"; run_id: string }
   | { ok: true; status: "models_returned"; run_id: string }
@@ -132,7 +134,7 @@ const APPROVAL_ID_ECHO_MAX = 48;
 const LOW_RATING_MAX = 1;
 
 /** ADR 0018 + decision ladder plan ruling 16: commands the per-chat rate limit never delays (kill; digest review taps). */
-const RATE_LIMIT_EXEMPT: ReadonlySet<string> = new Set(["kill", "decision_review", "improvement_tap"]);
+const RATE_LIMIT_EXEMPT: ReadonlySet<string> = new Set(["kill", "decision_review", "improvement_tap", "jev_accept_tap"]);
 
 export class Gateway {
   private readonly caps: GlobalBudgetCaps;
@@ -198,6 +200,7 @@ export class Gateway {
     if (event.type === "memlane_undo") return this.accepted(event, now, handleMemLaneUndo(this.runStore, event));
     if (event.type === "decision_review") return this.accepted(event, now, handleDecisionReview(this.runStore, event, now));
     if (event.type === "improvement_tap") return this.accepted(event, now, handleImprovementTap(this.runStore, this.skillStore, event, now));
+    if (event.type === "jev_accept_tap") return this.accepted(event, now, handleJevAcceptTap(this.runStore, event, now));
 
     if (event.type === "status") {
       return this.handleStatus(event, now);

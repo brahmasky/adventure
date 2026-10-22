@@ -4,7 +4,7 @@ import { MEDIA_MIME, MEDIA_PLACEHOLDER, type TelegramMediaRef } from "../media/m
 import { authorizeTelegramUpdate } from "./telegram-auth.js";
 import type { ApprovalCallback, SelfWriteCallbackAction, TelegramCommand } from "./telegram-command-parser.js";
 import type { ImprovementTap } from "./telegram-command-parser.js";
-import { parseApprovalCallback, parseDecisionReviewCallback, parseImprovementCallback, parseMemLaneCallback, parseMemoryUndoCallback, parseSelfWriteCallback, parseTelegramCommand } from "./telegram-command-parser.js";
+import { parseApprovalCallback, parseDecisionReviewCallback, parseImprovementCallback, parseJevAcceptCallback, parseMemLaneCallback, parseMemoryUndoCallback, parseSelfWriteCallback, parseTelegramCommand } from "./telegram-command-parser.js";
 
 export interface TelegramUpdate {
   update_id: number;
@@ -276,6 +276,8 @@ function normalizeCallbackQuery(
   if (review) return { ok: true, event: buildDecisionReviewTapEvent(update, callback, message.chat.id, auth.identity, review) };
   const improvement = parseImprovementCallback(callback.data);
   if (improvement) return { ok: true, event: buildImprovementTapEvent(update, callback, message.chat.id, auth.identity, improvement) };
+  const jevAccept = parseJevAcceptCallback(callback.data);
+  if (jevAccept) return { ok: true, event: buildJevAcceptTapEvent(update, callback, message.chat.id, auth.identity, jevAccept.model_hash) };
 
   const parsed = parseSelfWriteCallback(callback.data);
   if (!parsed) {
@@ -377,6 +379,19 @@ function buildImprovementTapEvent(
     idempotency_key: `telegram:${update.update_id}:callback:${callback.id}`,
     source_reference: `telegram:update:${update.update_id}:callback:${callback.id}`,
     metadata: { telegram_update_id: update.update_id, telegram_callback_id: callback.id, kind: tap.kind, id: tap.id, action: tap.action }
+  });
+}
+
+/** A Jev version check card's Accept tap (spec 2026-10-22 §2.6): the model's hash rides in metadata. */
+function buildJevAcceptTapEvent(update: TelegramUpdate, callback: TelegramCallbackQuery, chat_id: number, identity: Identity, model_hash: string): TypedTaskEvent {
+  return buildTypedTaskEvent({
+    source: "telegram",
+    type: "jev_accept_tap",
+    requested_by: identity,
+    notify: { kind: "telegram", chat_id: String(chat_id) },
+    idempotency_key: `telegram:${update.update_id}:callback:${callback.id}`,
+    source_reference: `telegram:update:${update.update_id}:callback:${callback.id}`,
+    metadata: { telegram_update_id: update.update_id, telegram_callback_id: callback.id, model_hash }
   });
 }
 

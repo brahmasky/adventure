@@ -362,6 +362,15 @@ export function parseImprovementCallback(data: unknown): ImprovementTap | null {
   return lm ? { kind: "lm", id: lm[1]!, action: "revoke" } : null;
 }
 
+const DEC_JEV_ACCEPT = /^dec:jv:([0-9a-f]{8}):acc$/;
+
+/** Jev version check §2.6: the Accept button on a drift / insufficient card, `dec:jv:<8 hex of sha256(model)>:acc` (19 bytes); anything else is null. */
+export function parseJevAcceptCallback(data: unknown): { model_hash: string } | null {
+  if (typeof data !== "string") return null;
+  const m = DEC_JEV_ACCEPT.exec(data);
+  return m ? { model_hash: m[1]! } : null;
+}
+
 type SplitShellWordsResult = { ok: true; words: string[] } | { ok: false; error: { code: "TELEGRAM_COMMAND_INVALID"; message: string } };
 
 function splitShellWords(input: string): SplitShellWordsResult {
