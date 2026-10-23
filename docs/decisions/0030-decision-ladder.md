@@ -1,6 +1,6 @@
 # ADR 0030: Decision ladder — every decision on one list, a ladder of deciders, improved from outcomes
 
-- **Status:** proposed 2026-10-12 (design approved by Paco section by section, 2026-10-12; rulings R12 (what Jev may cause depends on what it read) and R13 (no off switch, no designed shadow) the same day; the numbered rulings are in spec §2)
+- **Status:** accepted 2026-10-12 (design approved by Paco section by section, 2026-10-12; rulings R12 (what Jev may cause depends on what it read) and R13 (no off switch, no designed shadow) the same day; the numbered rulings are in spec §2); amended 2026-10-13 (stage 2a), 2026-10-17 (memory.kind), 2026-10-20/2026-10-21 (stage 2b-i), 2026-10-22 (stage 2b-ii), and 2026-10-23 (Jev version check: a model/version move is now judged by the protected version check instead of paging `decision_bar_stale`; `decision_bar_stale` is retired, left only to resolve incidents older builds opened)
 - **Date:** 2026-10-12
 - **Deciders:** Paco
 - **Amends:** [0029](0029-jev-system-one.md) (the front door becomes the `turn.handler` entry; decision 2 applications;
@@ -76,8 +76,11 @@ code-owned registry under `src/decisions/`. Everything else stays plain code (me
 9. **Bars.** A Jev rung arms on calibrated rows as ADR 0029 decision 5 requires, or on a **provisional bar** taken from
    an external measurement, kept in the entry's registry code, allowed only on monotone or fail-open entries, and covered
    by golden-set items in the invariant sweep. Golden-set drift pages (`decision_golden_drift:<entry>`) and does not
-   disarm. On a model or wording change a provisional rung stays armed on its bar, incident `decision_bar_stale:<entry>`
-   pages once naming the new model, and the digest flags the entry until Paco commits a calibrated row. The migrated
+   disarm. A model or wording change no longer pages `decision_bar_stale`: the Jev version check (2026-10-22 spec,
+   merged 2026-10-23) judges that move and, on drift, disarms the failing questions and their dependents, pages once
+   with Accept, and arms again on Paco's tap (or on a later model that passes). `decision_bar_stale` is retired — the
+   tick still resolves incidents an older build left open — and the digest flags the entry until Paco commits a calibrated
+   row. The migrated
    front door keeps ADR 0029 decision 5's existing disarm-on-model-move for its calibrated tree rows, unchanged.
 10. **No off switch, no shadow by design (R13).** Once built, the decision system is not switched off and no entry is
     designed to run in shadow: a new entry ships armed and stays armed. The runner's `shadow` mode exists only so the

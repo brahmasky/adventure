@@ -16,7 +16,7 @@ this build. CLI: `houge jev anchor import | models | check [model] | accept <mod
 - [ ] Flaky: the egress 100 ms timing test failed under parallel load several times (passes alone); loosen it or fake the clock.
 - [ ] `scripts/live-gate-decisions-parity.mjs` P6 baseline is stale (see the 2b-ii follow-ups below).
 - [ ] Test gaps from the Task 6 review: no test for the golden path's pacing and none for the 5 s shutdown cap.
-- [ ] ADR 0030 cleanup (R13 and the `decision_bar_stale` wording): a separate approved task after this ships.
+- [x] ADR 0030 cleanup (R13 and the `decision_bar_stale` wording): done 2026-10-24 — ADR marked accepted; decision 9 now says a model/version move is judged by the Jev version check (pages a drift + arms on Paco's tap), and `decision_bar_stale` is retired (kept only to resolve incidents older builds opened). README row updated.
 
 # Earlier block — 2026-10-22: decision ladder stage 2b-ii
 
