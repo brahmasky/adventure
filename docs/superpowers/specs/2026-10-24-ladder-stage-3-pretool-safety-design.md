@@ -53,7 +53,7 @@ For every entry in §2:
 
 1. **Pin.** A characterisation table `input → today's verdict` covering every existing test corpus, plus a fuzz/edge slice. For `tool.shell_class` and `tool.path` the inventory already demands the corpora (`omp/command-matcher.ts` known patterns + known misses; `gate-path.ts` every form), and these become the first task's exit criterion.
 2. **Wrap.** The existing function, unchanged, becomes rung 1 (code rule). The runner calls rung 1; rung 1 returns the same value the caller got today. No internal change.
-3. **Record.** Every invocation writes a `decisions` row with `entry`, `rung: "code"`, `verdict`, `stage` derivable from the entry id, inside the existing transaction so a rolled-back action rolls back its row.
+3. **Record.** Every invocation writes a `decisions` row with `entry`, `rung: "code"`, `verdict`, `stage` derivable from the entry id, inside the existing transaction so a rolled-back action rolls back its row. The recorded `reason` is always a closed code from the entry's `reasonCodes` (or `null`); raw paths, commands or URLs are never stored, even on a block.
 4. **Deny ladders (locked only).** Locked entries declare no judge and no ladder move; `insertLadderMove` refuses them regardless of stage. This is already enforced from stage 1 for the ids in `LOCKED_ENTRY_IDS`; this stage *adds* the pre-tool locked ids to that set is not needed because they are listed there already (`tool.path`, `fetch.ssrf`, `selfwrite.guard`, `tool.wall`, `posture.kill`, `turn.trust`).
 
 Deliverable test of success for a single entry: the characterisation snapshot (todays outputs) equals the post-migration outputs on the same inputs, and a new `decisions` row appears for each invocation in the test DB.
