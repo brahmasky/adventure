@@ -1738,3 +1738,12 @@ self-writable → moved under `src/decisions/`; the live `urlRule` missing from 
 and a re-run live gate PASS on `5a18732` (route 0.610 vs 0.814, drifted again). Final suite 383 files / 5313 tests,
 typecheck clean. Known gaps: see `tasks/todo.md` (flaky egress timing test, golden-path pacing and shutdown cap
 untested, the unprotected caller). Still Paco's: kickstart, merge, the routing-gap question.
+
+## 2026-10-26 — Stage 3 wiring slice shipped to main
+
+Stage 3 wiring (Tasks 1-10) merged to main: tool.shell_class, tool.path, posture.kill,
+tool.policy, tool.budget, tool.manifest, tool.wall, reader.family, selfwrite.guard,
+fetch.ssrf now record decisions rows at their seams with no behaviour change. Boundary
+fixes from the codex passes landed before ship. Tests typecheck/build green; dist rebuilt
+and daemon kickstarted. Live gate `scripts/live-gate-ladder-stage3-wired.mjs` is still pending
+(real Telegram required).
