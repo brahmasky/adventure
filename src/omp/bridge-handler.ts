@@ -9,6 +9,7 @@ import { READER_INPUT_CHAR_CAP } from "../core/quarantine.js";
 import { decideSync } from "../decisions/decide.js";
 import { recordApprovalExpired } from "../decisions/improve-signals.js";
 import { KEY_MASK, pathOperands, SECRET_MASK } from "../decisions/egress.js";
+import { TOOL_BUDGET } from "../decisions/entries/tool-budget.js";
 import { TOOL_SHELL_NETREAD } from "../decisions/entries/shell-netread.js";
 import { WITHHELD_UNJUDGED_TEXT } from "../decisions/entries/tool-injection.js";
 import { localOutcome, type InjectionJudge, type InjectionSource, type JudgeInput, type JudgeOutcome } from "../decisions/injection-judge.js";
@@ -229,7 +230,8 @@ function finish(deps: BridgeHandlerDeps, turn: ActiveTurn, f: Finish): void {
 
 /** A call that never reached the runner still counts (B7): tool_finished{failed, reason} + loop_step, and one budget unit. */
 function recordInvalid(deps: BridgeHandlerDeps, turn: ActiveTurn, f: { toolCallId: string; tool: string; capability: string; reason: string; started: number; content?: string }): void {
-  turn.budget.reserveToolCall();
+  const reserved = turn.budget.reserveToolCall();
+  decideSync(TOOL_BUDGET, { ok: reserved.ok }, { run_id: turn.run_id, tool_call_id: f.toolCallId, recorder: storeRecorder(deps.store, { env: deps.env }) });
   finish(deps, turn, { toolCallId: f.toolCallId, tool: f.tool, capability: f.capability, status: "failed", content: f.content ?? f.reason,
     started: f.started, digest: f.reason, reason: f.reason });
 }
@@ -572,7 +574,11 @@ function gateDenial(deps: BridgeHandlerDeps, turn: ActiveTurn, req: GateReq, ent
   const d = decideCapability({ capability: entry, category: "tool", side_effect_level: entry === "fs_read" ? "none" : "local_write",
     risk_level: "low", allowed_actions: c.allowed_actions, forbidden_actions: c.forbidden_actions, approval_gates: c.approval_gates });
   if (d.decision !== "allow") return d.reason;
-  if (entry === "fs_write" && !turn.budget.reserveToolCall().ok) return "budget_exhausted";
+  if (entry === "fs_write") {
+    const reserved = turn.budget.reserveToolCall();
+    decideSync(TOOL_BUDGET, { ok: reserved.ok }, { run_id: turn.run_id, tool_call_id: req.toolCallId, recorder: storeRecorder(deps.store, { env: deps.env }) });
+    if (!reserved.ok) return "budget_exhausted";
+  }
   return null;
 }
 

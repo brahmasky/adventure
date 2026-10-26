@@ -1,4 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { decideSync } from "../decisions/decide.js";
+import { TOOL_BUDGET } from "../decisions/entries/tool-budget.js";
+import { type DecisionRecorder } from "../decisions/types.js";
 import { canonicalJson, stableHash } from "../domain/canonical.js";
 import type { CompiledTaskContract, Identity } from "../domain/types.js";
 import { decideCapability } from "../policy/capability-policy.js";
@@ -54,6 +57,7 @@ export interface CapabilityExecutionInput {
   budget: BudgetLedger;
   signal?: AbortSignal;
   budget_reserved?: boolean;
+  recorder?: DecisionRecorder;
   action_summary?: string;
   tool_call_id?: string;
   /** turn.trust's added tap (spec §7.2), outside `input` so the action fingerprint is unchanged. */
@@ -77,6 +81,8 @@ export class CapabilityRunner {
     }
 
     const reservation = input.budget_reserved && input.approved_approval_id ? { ok: true as const } : input.budget.reserveToolCall();
+    const recorder = input.recorder ?? { record: () => null };
+    decideSync(TOOL_BUDGET, { ok: reservation.ok }, { run_id: input.run_id ?? null, tool_call_id: input.tool_call_id ?? null, recorder });
     if (!reservation.ok) {
       return {
         status: "denied",
