@@ -11,6 +11,7 @@ import { recordApprovalExpired } from "../decisions/improve-signals.js";
 import { KEY_MASK, pathOperands, SECRET_MASK } from "../decisions/egress.js";
 import { TOOL_SHELL_NETREAD } from "../decisions/entries/shell-netread.js";
 import { TOOL_SHELL_CLASS } from "../decisions/entries/tool-shell-class.js";
+import { TOOL_PATH } from "../decisions/entries/tool-path.js";
 import { WITHHELD_UNJUDGED_TEXT } from "../decisions/entries/tool-injection.js";
 import { localOutcome, type InjectionJudge, type InjectionSource, type JudgeInput, type JudgeOutcome } from "../decisions/injection-judge.js";
 import { storeRecorder } from "../decisions/record.js";
@@ -548,11 +549,17 @@ function gatePaths(input: Record<string, unknown>): string[] {
 }
 
 /** Every target omp may resolve `raw` to (gate-path.ts) must pass; a form the gate does not model is refused whole. */
-function pathDenial(deps: BridgeHandlerDeps, turn: ActiveTurn, raw: string, entry: FsEntry): string | null {
+function pathDenial(deps: BridgeHandlerDeps, turn: ActiveTurn, raw: string, entry: FsEntry, toolCallId: string = ""): string | null {
   const t = gateTargets(raw, deps.ctx.home, turn.cwd);
-  if (!t.ok) return t.reason;
+  const ctx = { run_id: turn.run_id, tool_call_id: toolCallId, recorder: storeRecorder(deps.store, { env: deps.env }) };
+  if (!t.ok) {
+    decideSync(TOOL_PATH, { allowed: false, reason: t.reason }, ctx);
+    return t.reason;
+  }
   const denied = entry === "fs_read" ? isDeniedRead : isDeniedWrite;
-  return t.targets.some((abs) => denied(abs, deps.ctx)) ? "protected_path" : null;
+  const denial = t.targets.some((abs) => denied(abs, deps.ctx)) ? "protected_path" : null;
+  decideSync(TOOL_PATH, { allowed: denial === null, ...(denial !== null ? { reason: denial } : {}) }, ctx);
+  return denial;
 }
 
 /** Spec §4: does any form omp may resolve a write's path to name a file whose read masked values? Only the file itself, never its directory. */
@@ -568,8 +575,12 @@ function gateDenial(deps: BridgeHandlerDeps, turn: ActiveTurn, req: GateReq, ent
   if (entry === "fs_write" && turn.trust?.level() === "hostile") return HOSTILE_REDIRECT_CODE; // ADR 0030's named exception (spec §7.2)
   if (entry === "fs_write" && turn.settleAsk) return SETTLE_REDIRECT_CODE;
   const raws = gatePaths(req.input ?? {});
-  if (raws.length === 0) return "missing_path";
-  for (const raw of raws) { const d = pathDenial(deps, turn, raw, entry); if (d) return d; }
+  if (raws.length === 0) {
+    const ctx = { run_id: turn.run_id, tool_call_id: req.toolCallId, recorder: storeRecorder(deps.store, { env: deps.env }) };
+    decideSync(TOOL_PATH, { allowed: false, reason: "missing_path" }, ctx);
+    return "missing_path";
+  }
+  for (const raw of raws) { const d = pathDenial(deps, turn, raw, entry, req.toolCallId); if (d) return d; }
   if (entry === "fs_write" && (maskedTarget(turn, raws, deps) || carriesMask(JSON.stringify(req.input ?? {})))) return MASKED_REDIRECT_CODE;
   const c = turn.contract;
   const d = decideCapability({ capability: entry, category: "tool", side_effect_level: entry === "fs_read" ? "none" : "local_write",
