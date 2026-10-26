@@ -157,13 +157,14 @@ import {
   ACK_ROUTE, applyCascade, fallbackRoute, handOffRoute, preJudge, thinkHarderIn, TREE_THRESHOLD_VERSION, type Lane, type Route, type RoutePlan,
   type RouteReason
 } from "../jev/tree-policy.js";
-import { decide as decideLadder } from "../decisions/decide.js";
+import { decide as decideLadder, decideSync } from "../decisions/decide.js";
 import { NOT_ARMED, treeArmingFor } from "../decisions/jev-version-check.js";
 import { INJECTION_TOTAL_MS } from "../decisions/entries/tool-injection.js";
 import { createInjectionJudge, type InjectionJudge } from "../decisions/injection-judge.js";
 import { isSkipReason, TURN_HANDLER, type TurnHandlerState, type TurnHandlerVerdict } from "../decisions/entries/turn-handler.js";
 import { TURN_GEAR, type TurnGearState, type TurnGearVerdict } from "../decisions/entries/turn-gear.js";
 import { SETTLE_JEV_MS } from "../decisions/entries/turn-settle.js";
+import { SELF_WRITE_GUARD } from "../decisions/entries/selfwrite-guard.js";
 import { storeRecorder } from "../decisions/record.js";
 import { decisionOf, recordTapOutcome } from "../decisions/tap-outcomes.js";
 import { recordCorrection, skipImproveSignal } from "../decisions/improve-signals.js";
@@ -1454,6 +1455,7 @@ export class CoreWorker {
         // is told the locked paths of THIS diff only (never an earlier attempt's, which were reverted).
         const needs = deps.takeNeedsLocked ? await deps.takeNeedsLocked(worktree) : undefined;
         const { result: guard, entries } = await this.guardWorktree(deps, worktree);
+        decideSync(SELF_WRITE_GUARD, { allowed: guard.allowed }, { run_id: claim.run_id, tool_call_id: null, recorder: this.decisionRecorder });
         if (needs !== undefined) return this.sentinelStop(claim.run_id, needs, guard, lockedRetryUsed, label, ledgerFocus);
         //  - ALL denied paths are existing-test edits → a fixable WRITER mistake: refine (revert + stay
         //    backward-compatible), ≤3.
@@ -1790,6 +1792,7 @@ export class CoreWorker {
     run_id: string, deps: SelfWriteDeps, worktree: string, after: string, label: string, focus: { text: string; chars: number }
   ): Promise<HelperResult | undefined> {
     const { result } = await this.guardWorktree(deps, worktree);
+    decideSync(SELF_WRITE_GUARD, { allowed: result.allowed }, { run_id, tool_call_id: null, recorder: this.decisionRecorder });
     if (result.allowed) return undefined;
     this.recordBlocked(run_id, result.denied.map((d) => ({ path: d.path, status: d.status, reason: d.reason })), focus);
     const files = result.denied.map((d) => `\`${d.path || "(unreadable diff)"}\``).join(", ");
