@@ -354,6 +354,7 @@ async function executeWithApproval(deps: BridgeHandlerDeps, turn: ActiveTurn, re
   const runner = new CapabilityRunner(turn.registry, approvalSink(deps, turn, req, command, preDetail, ask, policy));
   const base: CapabilityExecutionInput = { run_id: turn.run_id, requester: turn.requester, contract: turn.contract, capability: entry,
     input: req.input, budget: turn.budget, signal: turn.signal, tool_call_id: req.toolCallId, action_summary: summaryFor(req.tool, command),
+    recorder: storeRecorder(deps.store, { env: deps.env }),
     ...(ask.ask ? { trust_ask: true } : {}) };
   const first = await runner.execute(base);
   if (first.status !== "requires_approval") return { result: first };
