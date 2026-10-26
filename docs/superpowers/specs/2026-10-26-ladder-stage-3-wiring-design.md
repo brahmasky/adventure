@@ -11,23 +11,23 @@ Every one of the ten stage-3 entries (`tool.shell_class`, `tool.path`, `selfwrit
 ## 2. Decision edge (one pattern, every entry)
 
 1. Run the existing predicate/guard/classifier **unchanged**, producing the same raw result it does today.
-2. Fold that result into the entry's existing input shape (`{ allowed: boolean }`, etc.), call `decideSync(ENTRY, input, ctx)`.
-3. Let `r.verdict` drive the branch today's raw result drove. `shouldRecord` applies the rule in `record.ts` (routine verdicts skipped), so routine calls stay quiet; blocked/unusual ones land.
+2. Fold that result into the entry's input shape (`{ allowed: boolean }`, etc.), call `decideSync(ENTRY, input, ctx)`.
+3. **The raw result from step 1 — and only step 1 — drives the seam's branch and its return value.** `r.verdict` records what would have happened; it never replaces today's outcome. This is the correction the wrapper relies on: entries log, they do not decide. `shouldRecord` then applies the rule in `record.ts` (routine verdicts skipped), so routine calls stay quiet; blocked/unusual ones land.
 4. Use the recorder already on the turn context (or `storeRecorder`). Open a transaction only where the caller already has one. A failed record must not alter the verdict (the runner already guarantees this; keep the wrapper side-effect-only).
 5. Never let the entry's `reason` override the seam's. Where the seam needs a closed reason (gate path), pass the seam's code through as `r.reason` only when it is in the entry's `reasonCodes`; otherwise the seam's code still drives the deny branch while the row carries `null`.
 
 ## 3. Seam map
 
 - `tool.shell_class` — `src/omp/bridge-handler.ts:summaryFor`. Input stays `{ command }`; `classifyCommand` remains rung 1 and its result drives the label (`plain` → tool name, otherwise the regular label) exactly as today. `reasonCodes` remains `[]`; the wrapper **does not** pass `r.reason`. The ledger records the class only; the card keeps its current label source. (Resolves the registration-slice Important.)
-- `tool.path` — `pathDenial` (+ the branch in `gateDenial`). Input `{ raw, home, cwd }`. `reasonCodes` widens to include `protected_path` so gate denials from `isDeniedRead`/`isDeniedWrite` survive.
-- `posture.kill` — `turn.postureOk()` in `gateDenial`. Fold `{ armed: posture === null }`. Wrap only at the one call site.
-- `tool.policy` — the `decideCapability` call in `gateDenial`. Input `{ allowed: d.decision !== "deny" }`. Capability-allowed (including `requires_approval`) is `allowed`, since the entry judges capability, not the approval.
+- `tool.path` — `pathDenial` (+ the branch in `gateDenial`). Registered shape `{raw,home,cwd}` is amended to `{ allowed: denial === null, reason?: string }` in a version-2 entry; the seam owns `gateTargets` + `isDeniedRead`/`isDeniedWrite`, folds its deny code (including `protected_path`, `missing_path`) into `reason`. `reasonCodes` is the fixed union of those codes. Only the record path reads `r.reason`, never the deny.
+- `posture.kill` — both `turn.postureOk()` call sites in `bridge-handler.ts`: the bridge-call gate at `handleCall` (~line 259) **and** `gateDenial` (~line 569). Fold `{ armed: posture === null }` independently at each, because they are separate decision surfaces. Wrap both.
+- `tool.policy` — the `decideCapability` call in `gateDenial`. Input `{ allowed: d.decision !== "deny" }`. Capability-allowed (including `requires_approval`) is `allowed`, since the entry judges capability, not the approval. The **entry's registered `reasonCodes`** must be amended to include every `CapabilityDecision.reason` string exactly ("Capability forbidden ...", "Coding-agent CLI delegation...", "Capability not allowed ...", "Capability has gated side effects", "Turn trust asks for a tap", "Capability allowed by task contract") and the wrapper maps `d.reason` into the recorded reason.
 - `tool.budget` — `turn.budget.reserveToolCall()` in `gateDenial` (fs_write branch). Input `{ ok: reserved.ok }`. Still decrement as today; wrap the boolean. `reasonCodes: ["budget_exhausted"]`.
-- `tool.manifest` — `manifestFor`. Today's filter stays. For **each** declaration run the original `isToolArmed` + allowed-set test, then call `decideSync(... { include: result }, ctx)` only to **record**, returning the original filter result unchanged.
-- `fetch.ssrf` — `createHttpFetchAdapter`. Static `validateFetchTarget` first, then a DNS-time refusal if `fetchUrl` returns `refused:`. Record one blocked verdict for each refusal (two rows possible in a rebind case). adapter output text stays identical.
-- `tool.wall` — `UNTRUSTED_READ_ENTRIES.has(entry)` lookup in `render`. `decideSync(... { crosses: membership }, ctx)` per call; record only. `stage: post_tool`.
-- `reader.family` — `renderExternalRead` per read, with `{ primary: <today's leg is leg 0> }`. Verdict set `["primary", "fallback"]` and input `{ primary: boolean }` (closes the registration ambiguity). `stage: post_tool`. `reasonCodes: []`.
-- `selfwrite.guard` — at the `checkSelfWriteDiff` call site in `core-worker.ts`. Input `{ allowed: !GuardResult.blocked }`. The protected file is unchanged; the diff must show zero edits to `src/capabilities/self-write-guard.ts`.
+- `tool.manifest` — `manifestFor` runs before an active turn exists. Its rows record with `run_id: null, tool_call_id: null`; per-declaration calls still apply `decideSync(... { include: result }, ctx)` (record only, filter stays authoritative). State the null-run attribution explicitly in the characterisation tests.
+- `fetch.ssrf` — amend `HttpFetchAdapterConfig` to carry an optional `decisionRecorder?` with `{ run_id, tool_call_id }` resolvers so rows attach to a turn. Static `validateFetchTarget` records a blocked verdict up front; if it passes and `fetchUrl` later returns an error beginning `refused:`, record a second blocked verdict before returning. Row-count invariant: one row per refusal type actually encountered (static, then DNS-time), never more. Adapter output text stays identical.
+- `tool.wall` — `UNTRUSTED_READ_ENTRIES.has(entry)` lookup in `render` is the single record site; do not also record in the gate path or anywhere else. `decideSync(... { crosses: membership }, ctx)` per call. `stage: post_tool`.
+- `reader.family` — **add `leg?: number` to `ExternalReadResult`**, propagated from the selected leg in the reader bridge (today's leg index is 0), so `render` can record `{ primary: result.leg === 0 }` after `renderExternalRead`. Do not try to infer the leg from the digest. `stage: post_tool`. `reasonCodes: []`.
+- `selfwrite.guard` — at the `checkSelfWriteDiff` call site in `core-worker.ts`. Fold **`GuardResult.allowed`** (the guard reports `allowed`, not `blocked`); raw-diff failures occur before the guard and must be recorded as blocked. Protected file unchanged (zero edits). Input `{ allowed: result.allowed }`.
 
 ## 4. Arithmetic and skip behaviour
 
@@ -38,7 +38,7 @@ Every one of the ten stage-3 entries (`tool.shell_class`, `tool.path`, `selfwrit
 1. Every branch is driven by the pre-`decideSync` predicate result (or its 1:1 verdict mapping), never by `r.verdict` alone.
 2. Tests prove unchanged behaviour before and after via the existing seam tests; no new approval card text; no new incident kinds.
 3. `self-write-guard.ts` is never edited by this work.
-4. `fetch.ssrf` may produce two rows per invocation (static and DNS-time). No other entry may.
+4. `fetch.ssrf` may produce up to two rows per invocation (static, then DNS-time) if both static and DNS-time refusals occur. No other entry may produce more than one row per call.
 
 ## 6. Migration and rollback
 
