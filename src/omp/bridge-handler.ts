@@ -10,6 +10,7 @@ import { decideSync } from "../decisions/decide.js";
 import { recordApprovalExpired } from "../decisions/improve-signals.js";
 import { KEY_MASK, pathOperands, SECRET_MASK } from "../decisions/egress.js";
 import { TOOL_SHELL_NETREAD } from "../decisions/entries/shell-netread.js";
+import { TOOL_SHELL_CLASS } from "../decisions/entries/tool-shell-class.js";
 import { WITHHELD_UNJUDGED_TEXT } from "../decisions/entries/tool-injection.js";
 import { localOutcome, type InjectionJudge, type InjectionSource, type JudgeInput, type JudgeOutcome } from "../decisions/injection-judge.js";
 import { storeRecorder } from "../decisions/record.js";
@@ -351,7 +352,7 @@ async function executeWithApproval(deps: BridgeHandlerDeps, turn: ActiveTurn, re
   if (policy.pause.pause === "bounded" && policy.timeoutMs < Math.min(TRUST_WAIT_MIN_MS, policy.pause.ttlMs)) return { refusal: { reason: "trust_ask_no_time", text: TRUST_ASK_NO_TIME_TEXT } };
   const runner = new CapabilityRunner(turn.registry, approvalSink(deps, turn, req, command, preDetail, ask, policy));
   const base: CapabilityExecutionInput = { run_id: turn.run_id, requester: turn.requester, contract: turn.contract, capability: entry,
-    input: req.input, budget: turn.budget, signal: turn.signal, tool_call_id: req.toolCallId, action_summary: summaryFor(req.tool, command),
+    input: req.input, budget: turn.budget, signal: turn.signal, tool_call_id: req.toolCallId, action_summary: summaryFor(deps, turn, req.toolCallId, req.tool, command),
     ...(ask.ask ? { trust_ask: true } : {}) };
   const first = await runner.execute(base);
   if (first.status !== "requires_approval") return { result: first };
@@ -366,9 +367,11 @@ async function executeWithApproval(deps: BridgeHandlerDeps, turn: ActiveTurn, re
 }
 
 /** The card's action line and the ledger's action_summary: the matcher label, never the command text. */
-function summaryFor(tool: string, command: string | undefined): string {
+function summaryFor(deps: BridgeHandlerDeps, turn: ActiveTurn, toolCallId: string, tool: string, command: string | undefined): string {
   if (command === undefined) return tool;
   const c = classifyCommand(command);
+  const ctx = { run_id: turn.run_id, tool_call_id: toolCallId, recorder: storeRecorder(deps.store, { env: deps.env }) };
+  decideSync(TOOL_SHELL_CLASS, { command }, ctx);
   return c.kind === "plain" ? tool : c.label;
 }
 
