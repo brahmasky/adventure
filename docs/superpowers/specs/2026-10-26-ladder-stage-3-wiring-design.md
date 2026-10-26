@@ -19,7 +19,7 @@ Every one of the ten stage-3 entries (`tool.shell_class`, `tool.path`, `selfwrit
 ## 3. Seam map
 
 - `tool.shell_class` — `src/omp/bridge-handler.ts:summaryFor`. Input stays `{ command }`; `classifyCommand` remains rung 1 and its result drives the label (`plain` → tool name, otherwise the regular label) exactly as today. `reasonCodes` remains `[]`; the wrapper **does not** pass `r.reason`. The ledger records the class only; the card keeps its current label source. (Resolves the registration-slice Important.)
-- `tool.path` — `pathDenial` (+ the branch in `gateDenial`). Registered shape `{raw,home,cwd}` is amended to `{ allowed: denial === null, reason?: string }` in a version-2 entry; the seam owns `gateTargets` + `isDeniedRead`/`isDeniedWrite`, folds its deny code (including `protected_path`, `missing_path`) into `reason`. `reasonCodes` is the fixed union of those codes. Only the record path reads `r.reason`, never the deny.
+- `tool.path` — `pathDenial` (+ the branch in `gateDenial`). Registered shape `{raw,home,cwd}` is amended to `{ allowed: denial === null, reason?: string }` in a version-2 entry; the seam owns `gateTargets` + `isDeniedRead`/`isDeniedWrite`, folding its deny code (including `protected_path`, `missing_path`) into `reason`. Where `gatePaths` returns no raw path, record a `missing_path` row before the `pathDenial` loop (matching `handleGate` today). `reasonCodes` is the fixed union of those codes. Only the record path reads `r.reason`, never the deny.
 - `posture.kill` — both `turn.postureOk()` call sites in `bridge-handler.ts`: the bridge-call gate at `handleCall` (~line 259) **and** `gateDenial` (~line 569). Fold `{ armed: posture === null }` independently at each, because they are separate decision surfaces. Wrap both.
 - `reader.family` — (consolidated; see the later bullet in §3 for the final six-step path.)
 - `tool.budget` — **two seams**: `turn.budget.reserveToolCall()` in `gateDenial` (fs_write branch) **and** `src/capabilities/capability-runner.ts` `execute`'s tool-capacity reserve path. Fold each reserve answer into `{ ok: reserved.ok }`; decrement as today. `reasonCodes: ["budget_exhausted"]`. Raw reserve result always drives; the entry records only.
@@ -38,7 +38,7 @@ Every one of the ten stage-3 entries (`tool.shell_class`, `tool.path`, `selfwrit
 
 1. Every branch is driven by the pre-`decideSync` predicate result (or its 1:1 verdict mapping), never by `r.verdict` alone.
 2. Tests prove unchanged behaviour before and after via the existing seam tests; no new approval card text; no new incident kinds.
-3. `self-write-guard.ts` is never edited by this work.
+3. No-protected-file gate applies to `src/capabilities/self-write-guard.ts` only (never edited here). Other guarded files under `src/decisions/` change here with attribution, per orchestrator rights.
 4. `fetch.ssrf` produces at most one row per invocation: static-target refusal first, else DNS-time refusal. The adapter returns on the first refusal, so the two static and DNS paths never both fire. Adapter-level shape validation (empty URL etc.) does NOT record an `fetch.ssrf` row; it remains a shape error.
 5. `tool.policy` (only entry) may produce a second row for the **same `tool_call_id`** when the second pass (on approval) yields a different verdict than the first; identical verdicts dedup. Every other entry may produce at most one row per call.
 
