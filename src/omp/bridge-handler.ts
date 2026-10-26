@@ -513,10 +513,14 @@ async function renderRead(deps: BridgeHandlerDeps, turn: ActiveTurn, toolCallId:
   const judgedOutput = await judgedRead(deps, turn, toolCallId, entry, output);
   let read: ExternalReadResult;
   try { read = await turn.quarantine(entry, judgedOutput); } catch {
+    const rec = storeRecorder(deps.store, { env: deps.env });
+    decideSync(TOOL_WALL, { crosses: UNTRUSTED_READ_ENTRIES.has(entry) }, { run_id: turn.run_id, tool_call_id: toolCallId, recorder: rec });
+    decideSync(READER_FAMILY, { primary: false }, { run_id: turn.run_id, tool_call_id: toolCallId, recorder: rec });
     return { content: QUARANTINE_FAILED_TEXT, digest: "quarantine_failed", failed: "quarantine_failed" };
   }
-  decideSync(TOOL_WALL, { crosses: UNTRUSTED_READ_ENTRIES.has(entry) }, { run_id: turn.run_id, tool_call_id: toolCallId, recorder: storeRecorder(deps.store, { env: deps.env }) });
-  decideSync(READER_FAMILY, { primary: !read.reader_collapse }, { run_id: turn.run_id, tool_call_id: toolCallId, recorder: storeRecorder(deps.store, { env: deps.env }) });
+  const rec = storeRecorder(deps.store, { env: deps.env });
+  decideSync(TOOL_WALL, { crosses: UNTRUSTED_READ_ENTRIES.has(entry) }, { run_id: turn.run_id, tool_call_id: toolCallId, recorder: rec });
+  decideSync(READER_FAMILY, { primary: read.reader_collapse === false }, { run_id: turn.run_id, tool_call_id: toolCallId, recorder: rec });
   const text = capResponse(renderExternalRead(read));
   // The ledger never holds read text: the rendered result may carry a code-extracted OTP or link.
   return { content: text, digest: `sha256:${sha(text)} bytes:${bytes(text)}` };

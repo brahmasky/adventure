@@ -87,11 +87,16 @@ async function readStep(i: LaneInput, d: LookupLaneDeps, found: Found, objective
   const output = { query: objective, provider: found.provider, results: found.results.map((r) => ({ ...r, content: r.content.slice(0, WEB_RESULT_CONTENT_CAP) })) };
   const first = await d.read(output, objective, readerBounds(i, d));
   if (i.signal.aborted) return fall("aborted");
-  if (!first.ok) return fall(first.why === "reserve" ? "lane_timeout" : first.why === "aborted" ? "aborted" : "reader_failed");
+  if (!first.ok) {
+    const recorder = d.recorder ?? { record: () => null };
+    decideSync(TOOL_WALL, { crosses: true }, { run_id: i.run_id, tool_call_id: null, recorder });
+    decideSync(READER_FAMILY, { primary: false }, { run_id: i.run_id, tool_call_id: null, recorder });
+    return fall(first.why === "reserve" ? "lane_timeout" : first.why === "aborted" ? "aborted" : "reader_failed");
+  }
   const urls = [...new Set(found.results.map((r) => sourceUrl(r.url)).filter((u): u is string => u !== null))];
   const recorder = d.recorder ?? { record: () => null };
   decideSync(TOOL_WALL, { crosses: true }, { run_id: i.run_id, tool_call_id: null, recorder });
-  decideSync(READER_FAMILY, { primary: !first.reader_collapse }, { run_id: i.run_id, tool_call_id: null, recorder });
+  decideSync(READER_FAMILY, { primary: first.reader_collapse === false }, { run_id: i.run_id, tool_call_id: null, recorder });
   const read: Read = { kind: "read", urls, digests: [first.digest], facts: [...first.extraction.facts], flagged: first.extraction.contains_instructions };
   if (first.extraction.answer_to_objective === null && urls[0] !== undefined) await thinFetch(i, d, urls[0], objective, read);
   return i.signal.aborted ? fall("aborted") : read;
@@ -106,10 +111,15 @@ async function thinFetch(i: LaneInput, d: LookupLaneDeps, url: string, objective
   d.ledger.fetchPerformed({ url: typeof r.output.url === "string" ? r.output.url : url, status: typeof r.output.status === "number" ? r.output.status : 0,
     bytes: typeof r.output.bytes === "number" ? r.output.bytes : 0 });
   const second = await d.read(r.output, objective, readerBounds(i, d)).catch((): null => null);
-  if (!second?.ok) return;
+  if (!second?.ok) {
+    const rec2 = d.recorder ?? { record: () => null };
+    decideSync(TOOL_WALL, { crosses: true }, { run_id: i.run_id, tool_call_id: null, recorder: rec2 });
+    decideSync(READER_FAMILY, { primary: false }, { run_id: i.run_id, tool_call_id: null, recorder: rec2 });
+    return;
+  }
   const rec2 = d.recorder ?? { record: () => null };
   decideSync(TOOL_WALL, { crosses: true }, { run_id: i.run_id, tool_call_id: null, recorder: rec2 });
-  decideSync(READER_FAMILY, { primary: !second.reader_collapse }, { run_id: i.run_id, tool_call_id: null, recorder: rec2 });
+  decideSync(READER_FAMILY, { primary: second.reader_collapse === false }, { run_id: i.run_id, tool_call_id: null, recorder: rec2 });
   read.digests.push(second.digest);
   read.facts.push(...second.extraction.facts);
   read.flagged ||= second.extraction.contains_instructions;
