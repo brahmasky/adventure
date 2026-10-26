@@ -11,6 +11,7 @@ import { recordApprovalExpired } from "../decisions/improve-signals.js";
 import { KEY_MASK, pathOperands, SECRET_MASK } from "../decisions/egress.js";
 import { TOOL_BUDGET } from "../decisions/entries/tool-budget.js";
 import { TOOL_SHELL_NETREAD } from "../decisions/entries/shell-netread.js";
+import { TOOL_MANIFEST } from "../decisions/entries/tool-manifest.js";
 import { WITHHELD_UNJUDGED_TEXT } from "../decisions/entries/tool-injection.js";
 import { localOutcome, type InjectionJudge, type InjectionSource, type JudgeInput, type JudgeOutcome } from "../decisions/injection-judge.js";
 import { storeRecorder } from "../decisions/record.js";
@@ -208,7 +209,12 @@ function serialise<T>(turn: ActiveTurn, fn: () => Promise<T>): Promise<T> {
 
 function manifestFor(deps: BridgeHandlerDeps): ToolDeclaration[] {
   const allowed = new Set(deps.turnEnvelopeActions);
-  return deps.decls.filter((d) => isToolArmed(d.name, deps.env) && (d.name === "bash" ? allowed.has("shell") : allowed.has(d.name)));
+  const recorder = storeRecorder(deps.store, { env: deps.env });
+  return deps.decls.filter((d) => {
+    const result = isToolArmed(d.name, deps.env) && (d.name === "bash" ? allowed.has("shell") : allowed.has(d.name));
+    decideSync(TOOL_MANIFEST, { include: result }, { run_id: null, tool_call_id: `manifest:${d.name}`, recorder });
+    return result;
+  });
 }
 
 interface Finish {
