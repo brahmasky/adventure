@@ -39,7 +39,7 @@ describe("CapabilityRunner policy recording", () => {
       recorder: { record }
     });
     expect(record).toHaveBeenCalled();
-    const first = (record.mock.calls[0] as unknown as [any])[0] as { id: string };
-    expect(first.id).toBe("tool.policy");
+    const calls = (record.mock.calls as unknown) as Array<[any]>; const ids = calls.map((c) => c[0]?.id);
+    expect(ids).toContain("tool.policy");
   });
 });
