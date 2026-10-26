@@ -12,6 +12,7 @@ import { KEY_MASK, pathOperands, SECRET_MASK } from "../decisions/egress.js";
 import { TOOL_SHELL_NETREAD } from "../decisions/entries/shell-netread.js";
 import { TOOL_SHELL_CLASS } from "../decisions/entries/tool-shell-class.js";
 import { TOOL_PATH } from "../decisions/entries/tool-path.js";
+import { POSTURE_KILL } from "../decisions/entries/posture-kill.js";
 import { WITHHELD_UNJUDGED_TEXT } from "../decisions/entries/tool-injection.js";
 import { localOutcome, type InjectionJudge, type InjectionSource, type JudgeInput, type JudgeOutcome } from "../decisions/injection-judge.js";
 import { storeRecorder } from "../decisions/record.js";
@@ -260,6 +261,8 @@ async function handleCall(deps: BridgeHandlerDeps, turn: ActiveTurn, req: CallRe
   }
   if (turn.signal.aborted) return refuse(deps, turn, req, entry, "turn_aborted", TURN_ABORTED_TEXT, started);
   const posture = turn.postureOk();
+  const ctxPosture = { run_id: turn.run_id, tool_call_id: req.toolCallId, recorder: storeRecorder(deps.store, { env: deps.env }) };
+  decideSync(POSTURE_KILL, { armed: posture === null }, ctxPosture);
   if (posture) return refuse(deps, turn, req, entry, posture, posture, started);
   if (!isToolArmed(req.tool, deps.env)) return refuse(deps, turn, req, entry, "not_armed", `${req.tool} is not armed`, started);
   const errors = validateInput(decl.parameters, req.input);
@@ -571,6 +574,8 @@ function maskedTarget(turn: ActiveTurn, raws: string[], deps: BridgeHandlerDeps)
 function gateDenial(deps: BridgeHandlerDeps, turn: ActiveTurn, req: GateReq, entry: FsEntry): string | null {
   if (turn.signal.aborted) return "turn_aborted"; // as handleCall: nothing new runs once the turn is aborted
   const posture = turn.postureOk();
+  const ctxPosture = { run_id: turn.run_id, tool_call_id: req.toolCallId, recorder: storeRecorder(deps.store, { env: deps.env }) };
+  decideSync(POSTURE_KILL, { armed: posture === null }, ctxPosture);
   if (posture) return posture;
   if (entry === "fs_write" && turn.trust?.level() === "hostile") return HOSTILE_REDIRECT_CODE; // ADR 0030's named exception (spec §7.2)
   if (entry === "fs_write" && turn.settleAsk) return SETTLE_REDIRECT_CODE;
