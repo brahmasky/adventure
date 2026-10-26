@@ -484,7 +484,7 @@ export class CoreWorker {
   /** Read-only Codex consult for the `selfcode` route (injected or default). */
   private readonly codingAgentAdapter: (input: Record<string, unknown>) => ToolAdapterResult | Promise<ToolAdapterResult>;
   /** Direct URL read for the loop (injected or default). */
-  private readonly httpFetchAdapter: (input: Record<string, unknown>) => Promise<ToolAdapterResult>;
+  private readonly httpFetchAdapter: (input: Record<string, unknown>, signal?: AbortSignal, ssrfCtx?: import("../tools/tool-registry.js").SsrfContext) => Promise<ToolAdapterResult>;
   /** Deterministic timezone conversion for the loop (injected or default). */
   private readonly timeConvertAdapter: (input: Record<string, unknown>) => Promise<ToolAdapterResult>;
   /** Query embedding for episodic retrieval (injected or the local-Ollama default). */
@@ -503,7 +503,7 @@ export class CoreWorker {
     // checkers/publish; default wires the real S1–S4 + worktree/branch modules.
     private readonly selfWriteDeps: SelfWriteDeps = defaultSelfWriteDeps(),
     // Direct URL read for the loop (Phase 3.6 step ③). Injectable so tests fake the transport.
-    httpFetchAdapter?: (input: Record<string, unknown>) => Promise<ToolAdapterResult>,
+    httpFetchAdapter?: (input: Record<string, unknown>, signal?: AbortSignal, ssrfCtx?: import("../tools/tool-registry.js").SsrfContext) => Promise<ToolAdapterResult>,
     // Secrets firewall (ADR 0015): injected at boot ONLY when the firewall is armed. Feeds provider
     // API keys to the DEFAULT llm/web adapters (env is stripped when armed). Absent (firewall OFF)
     // → the chain builders read env keys and behavior is byte-identical to before the firewall.
@@ -2500,7 +2500,7 @@ export class CoreWorker {
   }
 
   /** A loop tool on the omp path; the claim's objective is read at call time (a voice turn's transcript lands after the claim). */
-  private ompLoopExecute(name: string, claim: ClaimedRun, state: OmpTurnState): (input: Record<string, unknown>) => Promise<ToolAdapterResult> {
+  private ompLoopExecute(name: string, claim: ClaimedRun, state: OmpTurnState): (input: Record<string, unknown>, signal?: AbortSignal, ssrfCtx?: import("../tools/tool-registry.js").SsrfContext) => Promise<ToolAdapterResult> {
     return async (input) => {
       const objective = state.objective;
       const effective = objective ? { ...claim, contract: { ...claim.contract, objective } } : claim;
@@ -3506,7 +3506,7 @@ export class CoreWorker {
     return {
       ...this.answerLaneDeps(run_id),
       search: (input) => this.webSearchAdapter(input),
-      fetch: (input) => this.httpFetchAdapter(input),
+      fetch: (input) => this.httpFetchAdapter(input, undefined, { run_id, tool_call_id: null, recorder: storeRecorder(this.runStore, { env: process.env }) }),
       read: (output, objective, o) => quarantineExtractStrict({ reader, system: composeSystemPrompt(memoryRootFor(this.projectRoot), "reader") }, output, objective, o),
       rewrite: (r) => this.laneSeat(run_id, "lane", { chain: tiny })({ question: r.prompt, deadlineMs: r.deadlineMs, signal: r.signal }),
       // before = the turn's own instant (the user turn is recorded after triage), so the current message is never Paco's "previous line"
@@ -3632,8 +3632,8 @@ export class CoreWorker {
       };
     }
     if (name === "http_fetch") {
-      return async (input) => {
-        const result = await this.httpFetchAdapter(input);
+      return async (input: Record<string, unknown>, _signal?: AbortSignal, ssrfCtx?: import("../tools/tool-registry.js").SsrfContext) => {
+        const result = await this.httpFetchAdapter(input, undefined, ssrfCtx ?? { run_id: claim.run_id, tool_call_id: null, recorder: this.decisionRecorder });
         if (result.ok) {
           this.recordHttpFetch(claim.run_id, turnCtx, { url: typeof result.output.url === "string" ? result.output.url : "",
             status: typeof result.output.status === "number" ? result.output.status : 0, bytes: typeof result.output.bytes === "number" ? result.output.bytes : 0 });

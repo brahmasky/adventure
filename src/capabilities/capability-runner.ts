@@ -5,7 +5,7 @@ import { type DecisionRecorder } from "../decisions/types.js";
 import { canonicalJson, stableHash } from "../domain/canonical.js";
 import type { CompiledTaskContract, Identity } from "../domain/types.js";
 import { decideCapability } from "../policy/capability-policy.js";
-import type { ToolAdapterResult, ToolMetadata, ToolRegistry } from "../tools/tool-registry.js";
+import type { SsrfContext, ToolAdapterResult, ToolMetadata, ToolRegistry } from "../tools/tool-registry.js";
 import type { BudgetLedger } from "../budget/budget-ledger.js";
 import type { ApprovalRequestInput } from "../run/run-store.js";
 
@@ -70,7 +70,18 @@ export class CapabilityRunner {
     private readonly approvals?: ApprovalRequestSink
   ) {}
 
-  async execute(input: CapabilityExecutionInput): Promise<CapabilityResult> {
+  async execute(
+    input: CapabilityExecutionInput,
+    signalOrSsrfCtx?: AbortSignal | SsrfContext,
+    ssrfCtx?: SsrfContext
+  ): Promise<CapabilityResult> {
+    let signal: AbortSignal | undefined = input.signal;
+    let ctx: SsrfContext | undefined = ssrfCtx;
+    if (signalOrSsrfCtx instanceof AbortSignal) {
+      signal = signalOrSsrfCtx;
+    } else if (signalOrSsrfCtx !== undefined && signalOrSsrfCtx !== null) {
+      ctx = signalOrSsrfCtx as SsrfContext;
+    }
     const metadata = this.registry.get(input.capability);
     if (!metadata) {
       return {
@@ -188,18 +199,20 @@ export class CapabilityRunner {
       }
     }
 
-    return this.executeAdapter(metadata, input);
+    return this.executeAdapter(metadata, input, signal ?? input.signal, ctx);
   }
 
   private async executeAdapter(
     metadata: ToolMetadata,
-    input: CapabilityExecutionInput
+    input: CapabilityExecutionInput,
+    signal?: AbortSignal,
+    ssrfCtx?: SsrfContext
   ): Promise<CapabilityResult> {
     if (!metadata.execute) {
       return { status: "failed", error_ref: `adapter_not_connected:${input.capability}` };
     }
     try {
-      const settled = await executeCancellable(metadata.execute, input.input, metadata.timeout_ms, input.signal);
+      const settled = await executeCancellable(metadata.execute, input.input, metadata.timeout_ms, signal ?? input.signal, ssrfCtx);
       if (settled.kind === "timeout") return { status: "timed_out", error_ref: "Tool execution timed out" };
       if (settled.kind === "cancelled") return { status: "cancelled", error_ref: "Tool execution cancelled" };
       const adapterResult = settled.value;
@@ -232,11 +245,11 @@ export const CLEANUP_BOUND_MS = 5_000;
 type Settled = { kind: "result"; value: ToolAdapterResult } | { kind: "timeout" } | { kind: "cancelled" };
 
 async function executeCancellable(
-  execute: ToolExecute, input: Record<string, unknown>, timeout_ms: number, external?: AbortSignal
+  execute: ToolExecute, input: Record<string, unknown>, timeout_ms: number, external?: AbortSignal, ssrfCtx?: SsrfContext
 ): Promise<Settled> {
   if (external?.aborted) return { kind: "cancelled" };
   const ac = new AbortController();
-  const adapter = Promise.resolve().then(() => execute(input, ac.signal));
+  const adapter = Promise.resolve().then(() => execute(input, ac.signal, ssrfCtx));
   let timer: ReturnType<typeof setTimeout> | undefined;
   let cleanup: ReturnType<typeof setTimeout> | undefined;
   let onExternalAbort: (() => void) | undefined;

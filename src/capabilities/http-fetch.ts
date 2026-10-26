@@ -1,6 +1,9 @@
-import type { ToolAdapterResult } from "../tools/tool-registry.js";
+import type { SsrfContext, ToolAdapterResult } from "../tools/tool-registry.js";
+import { decideSync } from "../decisions/decide.js";
+import { FETCH_SSRF } from "../decisions/entries/fetch-ssrf.js";
 import {
   fetchUrl,
+  validateFetchTarget,
   resolveHttpFetchDeny,
   resolveHttpFetchMaxBytes,
   resolveHttpFetchTimeoutMs
@@ -24,8 +27,15 @@ export interface HttpFetchAdapterConfig {
  */
 export function createHttpFetchAdapter(
   config: HttpFetchAdapterConfig = {}
-): (input: Record<string, unknown>) => Promise<ToolAdapterResult> {
-  return async (input: Record<string, unknown>): Promise<ToolAdapterResult> => {
+): (input: Record<string, unknown>, signal?: AbortSignal, ssrfCtx?: SsrfContext) => Promise<ToolAdapterResult> {
+  return async (input: Record<string, unknown>, signalOrCtx?: AbortSignal | SsrfContext, ssrfCtx?: SsrfContext): Promise<ToolAdapterResult> => {
+    if (ssrfCtx === undefined && signalOrCtx !== undefined && !(signalOrCtx instanceof AbortSignal)) {
+      ssrfCtx = signalOrCtx as SsrfContext;
+    }
+    const recordRefusal = (): void => {
+      const recorder = ssrfCtx?.recorder ?? { record: () => null };
+      decideSync(FETCH_SSRF, { allowed: false }, { run_id: ssrfCtx?.run_id ?? null, tool_call_id: ssrfCtx?.tool_call_id ?? null, recorder });
+    };
     const url = input.url;
     if (typeof url !== "string" || url.trim().length === 0) {
       return { ok: false, error: "url must be a non-empty string" };
@@ -35,18 +45,27 @@ export function createHttpFetchAdapter(
       return { ok: false, error: 'method must be "GET" or "HEAD"' };
     }
 
+    const deny = config.deny ?? resolveHttpFetchDeny(process.env);
+    const validated = validateFetchTarget(url.trim(), method, deny);
+    if (!validated.ok) {
+      recordRefusal();
+      return { ok: false, error: validated.error };
+    }
     const outcome = await fetchUrl(
       { url: url.trim(), method },
       {
         timeoutMs: config.timeoutMs ?? resolveHttpFetchTimeoutMs(process.env),
         maxBytes: config.maxBytes ?? resolveHttpFetchMaxBytes(process.env),
-        deny: config.deny ?? resolveHttpFetchDeny(process.env)
+        deny
       },
       config.deps ?? {}
     );
     if (!outcome.ok) {
+      if (outcome.error.startsWith("refused:")) recordRefusal();
       return { ok: false, error: outcome.error };
     }
     return { ok: true, output: { ...outcome.result } };
   };
 }
+
+export type { SsrfContext } from "../tools/tool-registry.js";

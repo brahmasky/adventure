@@ -364,11 +364,11 @@ async function executeWithApproval(deps: BridgeHandlerDeps, turn: ActiveTurn, re
     input: req.input, budget: turn.budget, signal: turn.signal, tool_call_id: req.toolCallId, action_summary: summaryFor(req.tool, command),
     recorder: storeRecorder(deps.store, { env: deps.env }),
     ...(ask.ask ? { trust_ask: true } : {}) };
-  const first = await runner.execute(base);
+  const first = await runner.execute(base, turn.signal, { run_id: turn.run_id, tool_call_id: req.toolCallId, ...(base.recorder ? { recorder: base.recorder } : {}) });
   if (first.status !== "requires_approval") return { result: first };
   if (policy.trustTap) countTrustAsk(deps.store, deps.env, new Date().toISOString()); // added taps only (spec §7.2)
   const outcome = await awaitApproval(turn, first.approval_id, policy);
-  if (outcome === "approved") return { result: await runner.execute({ ...base, approved_approval_id: first.approval_id, budget_reserved: true }) };
+  if (outcome === "approved") return { result: await runner.execute({ ...base, approved_approval_id: first.approval_id, budget_reserved: true }, turn.signal, { run_id: turn.run_id, tool_call_id: req.toolCallId, ...(base.recorder ? { recorder: base.recorder } : {}) }) };
   if (outcome === "denied") return { refusal: { reason: "denied_by_paco", text: APPROVAL_DENIED_TEXT } };
   deps.store.expireToolApproval(first.approval_id, new Date().toISOString());
   if (outcome === "expired") recordApprovalExpired(deps.store, { run_id: turn.run_id, approval_id: first.approval_id }); // an aborted wait is not Paco's silence

@@ -9,7 +9,7 @@ type Expect<Condition extends true> = Condition;
 
 type ToolAdapterInputMatchesPlan = Expect<Equal<
   NonNullable<ToolMetadata["execute"]>,
-  (input: Record<string, unknown>, signal?: AbortSignal) => Promise<ToolAdapterResult> | ToolAdapterResult
+  (input: Record<string, unknown>, signal?: AbortSignal, ssrfCtx?: import("../../src/tools/tool-registry.js").SsrfContext) => Promise<ToolAdapterResult> | ToolAdapterResult
 >>;
 
 describe("ToolRegistry", () => {
