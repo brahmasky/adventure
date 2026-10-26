@@ -4935,6 +4935,14 @@ export class RunStore {
     return decision_id;
   }
 
+  /** Most recent recorded verdict for a (run_id, tool_call_id, entry_id) triple; undefined if none. Used for tool.policy dedup. */
+  latestDecisionVerdict(run_id: string | null, tool_call_id: string | null, entry_id: string): string | undefined {
+    if (run_id === null || tool_call_id === null) return undefined;
+    const row = this.db.prepare(`SELECT verdict FROM decisions WHERE run_id = ? AND tool_call_id = ? AND entry_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1`)
+      .get<{ verdict: string }>(run_id, tool_call_id, entry_id);
+    return row?.verdict;
+  }
+
   getDecision(decision_id: string): DecisionRow | undefined {
     return this.db.prepare(`SELECT * FROM decisions WHERE decision_id = ?`).get<DecisionRow>(decision_id);
   }

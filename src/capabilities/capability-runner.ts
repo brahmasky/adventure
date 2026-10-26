@@ -2,6 +2,9 @@ import { randomUUID } from "node:crypto";
 import { canonicalJson, stableHash } from "../domain/canonical.js";
 import type { CompiledTaskContract, Identity } from "../domain/types.js";
 import { decideCapability } from "../policy/capability-policy.js";
+import { decideSync } from "../decisions/decide.js";
+import { TOOL_POLICY } from "../decisions/entries/tool-policy.js";
+import type { DecisionRecorder } from "../decisions/types.js";
 import type { ToolAdapterResult, ToolMetadata, ToolRegistry } from "../tools/tool-registry.js";
 import type { BudgetLedger } from "../budget/budget-ledger.js";
 import type { ApprovalRequestInput } from "../run/run-store.js";
@@ -58,6 +61,8 @@ export interface CapabilityExecutionInput {
   tool_call_id?: string;
   /** turn.trust's added tap (spec §7.2), outside `input` so the action fingerprint is unchanged. */
   trust_ask?: boolean;
+  /** Optional decision recorder; defaults to a no-op so callers/tests without a store still run. */
+  recorder?: DecisionRecorder;
 }
 
 export class CapabilityRunner {
@@ -94,6 +99,13 @@ export class CapabilityRunner {
       forbidden_actions: input.contract.forbidden_actions,
       approval_gates: input.contract.approval_gates,
       ...(input.trust_ask === true ? { trust_ask: true } : {})
+    });
+
+    const recorder = input.recorder ?? { record: () => null };
+    decideSync(TOOL_POLICY, { decision: decision.decision, reason: decision.reason }, {
+      run_id: input.run_id ?? null,
+      tool_call_id: input.tool_call_id ?? null,
+      recorder
     });
 
     if (decision.decision === "deny") {

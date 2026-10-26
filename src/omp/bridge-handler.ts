@@ -13,6 +13,7 @@ import { TOOL_SHELL_NETREAD } from "../decisions/entries/shell-netread.js";
 import { TOOL_SHELL_CLASS } from "../decisions/entries/tool-shell-class.js";
 import { TOOL_PATH } from "../decisions/entries/tool-path.js";
 import { POSTURE_KILL } from "../decisions/entries/posture-kill.js";
+import { TOOL_POLICY } from "../decisions/entries/tool-policy.js";
 import { WITHHELD_UNJUDGED_TEXT } from "../decisions/entries/tool-injection.js";
 import { localOutcome, type InjectionJudge, type InjectionSource, type JudgeInput, type JudgeOutcome } from "../decisions/injection-judge.js";
 import { storeRecorder } from "../decisions/record.js";
@@ -357,6 +358,7 @@ async function executeWithApproval(deps: BridgeHandlerDeps, turn: ActiveTurn, re
   const runner = new CapabilityRunner(turn.registry, approvalSink(deps, turn, req, command, preDetail, ask, policy));
   const base: CapabilityExecutionInput = { run_id: turn.run_id, requester: turn.requester, contract: turn.contract, capability: entry,
     input: req.input, budget: turn.budget, signal: turn.signal, tool_call_id: req.toolCallId, action_summary: summaryFor(deps, turn, req.toolCallId, req.tool, command),
+    recorder: storeRecorder(deps.store, { env: deps.env }),
     ...(ask.ask ? { trust_ask: true } : {}) };
   const first = await runner.execute(base);
   if (first.status !== "requires_approval") return { result: first };
@@ -590,6 +592,8 @@ function gateDenial(deps: BridgeHandlerDeps, turn: ActiveTurn, req: GateReq, ent
   const c = turn.contract;
   const d = decideCapability({ capability: entry, category: "tool", side_effect_level: entry === "fs_read" ? "none" : "local_write",
     risk_level: "low", allowed_actions: c.allowed_actions, forbidden_actions: c.forbidden_actions, approval_gates: c.approval_gates });
+  const ctxPolicy = { run_id: turn.run_id, tool_call_id: req.toolCallId, recorder: storeRecorder(deps.store, { env: deps.env }) };
+  decideSync(TOOL_POLICY, { decision: d.decision, reason: d.reason }, ctxPolicy);
   if (d.decision !== "allow") return d.reason;
   if (entry === "fs_write" && !turn.budget.reserveToolCall().ok) return "budget_exhausted";
   return null;
