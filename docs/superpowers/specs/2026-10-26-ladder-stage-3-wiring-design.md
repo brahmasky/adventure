@@ -36,7 +36,7 @@ Every one of the ten stage-3 entries (`tool.shell_class`, `tool.path`, `selfwrit
 
 ## 5. Invariants
 
-1. **ADR 0030 contract:** the code rule is rung 1 and `r.verdict` is what decides; because the rung wraps the exact predicate, its result is byte-for-byte today's. The seam acts on `r.verdict`. On a rule failure (`r.failed` non-null), preserve the safest existing behaviour: `tool.path`/`fetch.ssrf`→blocked, `tool.policy`→deny, `tool.budget`→exceeded, `tool.wall`→stays, `reader.family`→fallback, `posture.kill`→killed.
+1. **ADR 0030 contract:** the code rule is rung 1 and `r.verdict` is what decides; because the rung wraps the exact predicate, its result is byte-for-byte today's. The seam acts on `r.verdict`. On a rule failure (`r.rung === "fail"`), preserve the safest existing behaviour: `tool.path`/`fetch.ssrf`→blocked, `tool.policy`→deny, `tool.budget`→exceeded, `tool.wall`→crosses, `reader.family`→fallback, `posture.kill`→killed. Failure is detected via `r.rung === "fail"`, not a property on the result.
 2. Tests prove unchanged behaviour before and after via the existing seam tests; no new approval card text; no new incident kinds.
 3. No-protected-file gate applies to `src/capabilities/self-write-guard.ts` only (never edited here). Other guarded files under `src/decisions/` change here with attribution, per orchestrator rights.
 4. `fetch.ssrf` produces at most one row per invocation: static-target refusal first, else DNS-time refusal. The adapter returns on the first refusal, so the two static and DNS paths never both fire. Adapter-level shape validation (empty URL etc.) does NOT record an `fetch.ssrf` row; it remains a shape error.
