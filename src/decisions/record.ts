@@ -1,6 +1,7 @@
 import { ALERT_REOPEN_QUIET_MS, openAlertedIncident, resolveOpenIncidents } from "../run/incident-alert.js";
 import type { DecisionInsert, RunStore } from "../run/run-store.js";
 import { TOOL_INJECTION_ID } from "./entries/tool-injection.js";
+import { TOOL_POLICY } from "./entries/tool-policy.js";
 import { TURN_SETTLE_ID } from "./entries/turn-settle.js";
 import { FRONT_DOOR_ENTRIES } from "./entry-ids.js";
 import { message } from "./decide.js";
@@ -39,6 +40,11 @@ export function storeRecorder(store: RunStore, o: RecorderOptions = {}): Decisio
   return {
     record: (entry, r, ctx) => {
       const now = (o.now ?? (() => new Date().toISOString()))();
+      // tool.policy dedup: same verdict for the same (run_id, tool_call_id, entry_id) records no row.
+      if (entry.id === TOOL_POLICY.id && ctx.run_id !== null && ctx.tool_call_id !== null) {
+        const last = store.latestDecisionVerdict(ctx.run_id, ctx.tool_call_id, entry.id);
+        if (last !== undefined && last === r.verdict) return null;
+      }
       if (clears(entry.id, r)) clearFallback(store, entry.id, now); // only an answer from a rung that counts shows it is back
       if (!shouldRecord(entry, r)) return null;
       let id: string;

@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { decideSync } from "../decisions/decide.js";
 import { TOOL_BUDGET } from "../decisions/entries/tool-budget.js";
-import { type DecisionRecorder } from "../decisions/types.js";
+import { TOOL_POLICY } from "../decisions/entries/tool-policy.js";
+import type { DecisionRecorder } from "../decisions/types.js";
 import { canonicalJson, stableHash } from "../domain/canonical.js";
 import type { CompiledTaskContract, Identity } from "../domain/types.js";
 import { decideCapability } from "../policy/capability-policy.js";
@@ -111,6 +112,12 @@ export class CapabilityRunner {
       forbidden_actions: input.contract.forbidden_actions,
       approval_gates: input.contract.approval_gates,
       ...(input.trust_ask === true ? { trust_ask: true } : {})
+    });
+
+    decideSync(TOOL_POLICY, { decision: decision.decision, reason: decision.reason }, {
+      run_id: input.run_id ?? null,
+      tool_call_id: input.tool_call_id ?? null,
+      recorder: input.recorder ?? { record: () => null },
     });
 
     if (decision.decision === "deny") {

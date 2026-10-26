@@ -14,6 +14,10 @@ import { READER_FAMILY } from "../decisions/entries/reader-family.js";
 import { TOOL_WALL } from "../decisions/entries/tool-wall.js";
 import { TOOL_SHELL_NETREAD } from "../decisions/entries/shell-netread.js";
 import { TOOL_MANIFEST } from "../decisions/entries/tool-manifest.js";
+import { TOOL_SHELL_CLASS } from "../decisions/entries/tool-shell-class.js";
+import { TOOL_PATH } from "../decisions/entries/tool-path.js";
+import { POSTURE_KILL } from "../decisions/entries/posture-kill.js";
+import { TOOL_POLICY } from "../decisions/entries/tool-policy.js";
 import { WITHHELD_UNJUDGED_TEXT } from "../decisions/entries/tool-injection.js";
 import { localOutcome, type InjectionJudge, type InjectionSource, type JudgeInput, type JudgeOutcome } from "../decisions/injection-judge.js";
 import { storeRecorder } from "../decisions/record.js";
@@ -268,6 +272,8 @@ async function handleCall(deps: BridgeHandlerDeps, turn: ActiveTurn, req: CallRe
   }
   if (turn.signal.aborted) return refuse(deps, turn, req, entry, "turn_aborted", TURN_ABORTED_TEXT, started);
   const posture = turn.postureOk();
+  const ctxPosture = { run_id: turn.run_id, tool_call_id: req.toolCallId, recorder: storeRecorder(deps.store, { env: deps.env }) };
+  decideSync(POSTURE_KILL, { armed: posture === null }, ctxPosture);
   if (posture) return refuse(deps, turn, req, entry, posture, posture, started);
   if (!isToolArmed(req.tool, deps.env)) return refuse(deps, turn, req, entry, "not_armed", `${req.tool} is not armed`, started);
   const errors = validateInput(decl.parameters, req.input);
@@ -361,7 +367,7 @@ async function executeWithApproval(deps: BridgeHandlerDeps, turn: ActiveTurn, re
   if (policy.pause.pause === "bounded" && policy.timeoutMs < Math.min(TRUST_WAIT_MIN_MS, policy.pause.ttlMs)) return { refusal: { reason: "trust_ask_no_time", text: TRUST_ASK_NO_TIME_TEXT } };
   const runner = new CapabilityRunner(turn.registry, approvalSink(deps, turn, req, command, preDetail, ask, policy));
   const base: CapabilityExecutionInput = { run_id: turn.run_id, requester: turn.requester, contract: turn.contract, capability: entry,
-    input: req.input, budget: turn.budget, signal: turn.signal, tool_call_id: req.toolCallId, action_summary: summaryFor(req.tool, command),
+    input: req.input, budget: turn.budget, signal: turn.signal, tool_call_id: req.toolCallId, action_summary: summaryFor(deps, turn, req.toolCallId, req.tool, command),
     recorder: storeRecorder(deps.store, { env: deps.env }),
     ...(ask.ask ? { trust_ask: true } : {}) };
   const first = await runner.execute(base, turn.signal, { run_id: turn.run_id, tool_call_id: req.toolCallId, ...(base.recorder ? { recorder: base.recorder } : {}) });
@@ -377,9 +383,11 @@ async function executeWithApproval(deps: BridgeHandlerDeps, turn: ActiveTurn, re
 }
 
 /** The card's action line and the ledger's action_summary: the matcher label, never the command text. */
-function summaryFor(tool: string, command: string | undefined): string {
+function summaryFor(deps: BridgeHandlerDeps, turn: ActiveTurn, toolCallId: string, tool: string, command: string | undefined): string {
   if (command === undefined) return tool;
   const c = classifyCommand(command);
+  const ctx = { run_id: turn.run_id, tool_call_id: toolCallId, recorder: storeRecorder(deps.store, { env: deps.env }) };
+  decideSync(TOOL_SHELL_CLASS, { command }, ctx);
   return c.kind === "plain" ? tool : c.label;
 }
 
@@ -558,11 +566,17 @@ function gatePaths(input: Record<string, unknown>): string[] {
 }
 
 /** Every target omp may resolve `raw` to (gate-path.ts) must pass; a form the gate does not model is refused whole. */
-function pathDenial(deps: BridgeHandlerDeps, turn: ActiveTurn, raw: string, entry: FsEntry): string | null {
+function pathDenial(deps: BridgeHandlerDeps, turn: ActiveTurn, raw: string, entry: FsEntry, toolCallId: string = ""): string | null {
   const t = gateTargets(raw, deps.ctx.home, turn.cwd);
-  if (!t.ok) return t.reason;
+  const ctx = { run_id: turn.run_id, tool_call_id: toolCallId, recorder: storeRecorder(deps.store, { env: deps.env }) };
+  if (!t.ok) {
+    decideSync(TOOL_PATH, { allowed: false, reason: t.reason }, ctx);
+    return t.reason;
+  }
   const denied = entry === "fs_read" ? isDeniedRead : isDeniedWrite;
-  return t.targets.some((abs) => denied(abs, deps.ctx)) ? "protected_path" : null;
+  const denial = t.targets.some((abs) => denied(abs, deps.ctx)) ? "protected_path" : null;
+  decideSync(TOOL_PATH, { allowed: denial === null, ...(denial !== null ? { reason: denial } : {}) }, ctx);
+  return denial;
 }
 
 /** Spec §4: does any form omp may resolve a write's path to name a file whose read masked values? Only the file itself, never its directory. */
@@ -574,16 +588,24 @@ function maskedTarget(turn: ActiveTurn, raws: string[], deps: BridgeHandlerDeps)
 function gateDenial(deps: BridgeHandlerDeps, turn: ActiveTurn, req: GateReq, entry: FsEntry): string | null {
   if (turn.signal.aborted) return "turn_aborted"; // as handleCall: nothing new runs once the turn is aborted
   const posture = turn.postureOk();
+  const ctxPosture = { run_id: turn.run_id, tool_call_id: req.toolCallId, recorder: storeRecorder(deps.store, { env: deps.env }) };
+  decideSync(POSTURE_KILL, { armed: posture === null }, ctxPosture);
   if (posture) return posture;
   if (entry === "fs_write" && turn.trust?.level() === "hostile") return HOSTILE_REDIRECT_CODE; // ADR 0030's named exception (spec §7.2)
   if (entry === "fs_write" && turn.settleAsk) return SETTLE_REDIRECT_CODE;
   const raws = gatePaths(req.input ?? {});
-  if (raws.length === 0) return "missing_path";
-  for (const raw of raws) { const d = pathDenial(deps, turn, raw, entry); if (d) return d; }
+  if (raws.length === 0) {
+    const ctx = { run_id: turn.run_id, tool_call_id: req.toolCallId, recorder: storeRecorder(deps.store, { env: deps.env }) };
+    decideSync(TOOL_PATH, { allowed: false, reason: "missing_path" }, ctx);
+    return "missing_path";
+  }
+  for (const raw of raws) { const d = pathDenial(deps, turn, raw, entry, req.toolCallId); if (d) return d; }
   if (entry === "fs_write" && (maskedTarget(turn, raws, deps) || carriesMask(JSON.stringify(req.input ?? {})))) return MASKED_REDIRECT_CODE;
   const c = turn.contract;
   const d = decideCapability({ capability: entry, category: "tool", side_effect_level: entry === "fs_read" ? "none" : "local_write",
     risk_level: "low", allowed_actions: c.allowed_actions, forbidden_actions: c.forbidden_actions, approval_gates: c.approval_gates });
+  const ctxPolicy = { run_id: turn.run_id, tool_call_id: req.toolCallId, recorder: storeRecorder(deps.store, { env: deps.env }) };
+  decideSync(TOOL_POLICY, { decision: d.decision, reason: d.reason }, ctxPolicy);
   if (d.decision !== "allow") return d.reason;
   if (entry === "fs_write") {
     const reserved = turn.budget.reserveToolCall();
