@@ -156,7 +156,8 @@ export async function spawnOneShot(input: OneShotInput, deps: OneShotDeps): Prom
         ...(o.summary.credentialId !== undefined ? { credential_id: o.summary.credentialId } : {}),
         ...(o.summary.ttftMs !== undefined ? { ttft_ms: o.summary.ttftMs } : {}) });
       return { ok: true, provider: m.provider, model: o.summary.model ?? m.model, answer: o.summary.text,
-        ...(o.summary.usage ? { usage: o.summary.usage } : {}) };
+        ...(o.summary.usage ? { usage: o.summary.usage } : {}),
+        ...(input.plannerFamily !== undefined ? { family_collapse: family === input.plannerFamily } : {}) };
     }
     const kind = o.timedOut ? "timeout" : classifyOmpError(failure ?? "");
     deps.audit.record({ ...base, outcome: "error", model: m.model, error_kind: kind });

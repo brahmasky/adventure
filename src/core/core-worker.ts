@@ -1734,7 +1734,7 @@ export class CoreWorker {
     memoryRoot: string,
     rawOutput: Record<string, unknown>,
     objective: string
-  ): Promise<{ digest: string; contains_instructions: boolean; bytes: number }> {
+  ): Promise<{ digest: string; contains_instructions: boolean; bytes: number; reader_collapse?: boolean }> {
     const system = composeSystemPrompt(memoryRoot, "reader");
     const rawContent = digestOutput(rawOutput, READER_INPUT_CHAR_CAP);
     const bytes = Buffer.byteLength(rawContent, "utf8");
@@ -1743,11 +1743,12 @@ export class CoreWorker {
       const r = await readerAdapter({ question, system });
       if (r.ok) {
         const extraction = parseReaderExtraction(typeof r.output.answer === "string" ? r.output.answer : "");
-        if (extraction) return { digest: renderExtractionDigest(extraction), contains_instructions: extraction.contains_instructions, bytes };
+        if (extraction) return { digest: renderExtractionDigest(extraction), contains_instructions: extraction.contains_instructions, bytes,
+          reader_collapse: (r.output as { family_collapse?: unknown }).family_collapse !== false };
       }
     }
     // Fail-safe: never inline raw bytes — that would be the exact leak the wall prevents.
-    return { digest: unreadableDigest(bytes), contains_instructions: false, bytes };
+    return { digest: unreadableDigest(bytes), contains_instructions: false, bytes, reader_collapse: true };
   }
 
   /** Record the terminal `self_write_blocked` ledger event (paths + the capped focus summary, never the brief). */
@@ -2519,7 +2520,7 @@ export class CoreWorker {
     const trusted = typeof output.trusted_extract === "string" && output.trusted_extract.length > 0 ? output.trusted_extract : undefined;
     const digest = trusted ? `${x.digest}\n${trusted}` : x.digest;
     state.turnCtx.externalReads.push({ action: tool, digest });
-    return { digest, contains_instructions: x.contains_instructions, source_meta: { tool, bytes: x.bytes } };
+    return { digest, contains_instructions: x.contains_instructions, ...(x.reader_collapse !== undefined ? { reader_collapse: x.reader_collapse } : {}), source_meta: { tool, bytes: x.bytes } };
   }
 
   /** The supervisor's ingest hook over the existing media path; a voice transcript also becomes the tools' objective. */
@@ -3508,7 +3509,8 @@ export class CoreWorker {
       // before = the turn's own instant (the user turn is recorded after triage), so the current message is never Paco's "previous line"
       previousTelegramTurns: (c) => this.runStore.previousTelegramTurns(c, state.threadCutAt, LANE_PREVIOUS_TURNS),
       maxResults: resolveWebMaxResults(process.env),
-      ledger: { searchPerformed: (p) => this.recordWebSearch(run_id, state.turnCtx, p), fetchPerformed: (p) => this.recordHttpFetch(run_id, state.turnCtx, p) }
+      ledger: { searchPerformed: (p) => this.recordWebSearch(run_id, state.turnCtx, p), fetchPerformed: (p) => this.recordHttpFetch(run_id, state.turnCtx, p) },
+      recorder: storeRecorder(this.runStore, { env: process.env })
     };
   }
 

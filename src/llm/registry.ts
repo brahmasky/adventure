@@ -280,6 +280,7 @@ export function llmToolAdapter(
     const system = typeof input.system === "string" && input.system.length > 0 ? input.system : defaultSystem();
     const r = await seat.answer({ question, system, ...(media ? { media } : {}) });
     if (!r.ok) return { ok: false, error: r.error };
-    return { ok: true, output: { question, answer: r.answer, model: r.model, provider: r.provider } };
+    return { ok: true, output: { question, answer: r.answer, model: r.model, provider: r.provider,
+      ...(typeof r.family_collapse === "boolean" ? { family_collapse: r.family_collapse } : {}) } };
   };
 }

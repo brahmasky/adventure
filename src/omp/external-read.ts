@@ -1,7 +1,7 @@
 import type { RegistryEntry } from "./capability-map.js";
 
 export interface ExternalReadResult {
-  digest: string; contains_instructions: boolean;
+  digest: string; contains_instructions: boolean; reader_collapse?: boolean;
   trusted_extract?: { message_ids?: string[]; codes?: string[]; links?: string[] };
   source_meta: { tool: string; bytes: number };
 }

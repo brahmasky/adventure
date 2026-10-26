@@ -25,7 +25,7 @@ export async function quarantineExtractStrict(d: StrictReaderDeps, rawOutput: Re
     if (o.signal.aborted) return { ok: false, why: "aborted" };
     if (r === LATE || !r.ok) continue;
     const extraction = parseReaderExtraction(r.answer);
-    if (extraction) return { ok: true, extraction, digest: renderExtractionDigest(extraction) };
+    if (extraction) return { ok: true, extraction, digest: renderExtractionDigest(extraction), reader_collapse: r.family_collapse !== false };
   }
   return { ok: false, why: "unreadable" };
 }

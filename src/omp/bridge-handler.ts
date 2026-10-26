@@ -10,6 +10,8 @@ import { decideSync } from "../decisions/decide.js";
 import { recordApprovalExpired } from "../decisions/improve-signals.js";
 import { KEY_MASK, pathOperands, SECRET_MASK } from "../decisions/egress.js";
 import { TOOL_BUDGET } from "../decisions/entries/tool-budget.js";
+import { READER_FAMILY } from "../decisions/entries/reader-family.js";
+import { TOOL_WALL } from "../decisions/entries/tool-wall.js";
 import { TOOL_SHELL_NETREAD } from "../decisions/entries/shell-netread.js";
 import { TOOL_MANIFEST } from "../decisions/entries/tool-manifest.js";
 import { WITHHELD_UNJUDGED_TEXT } from "../decisions/entries/tool-injection.js";
@@ -505,6 +507,8 @@ async function renderRead(deps: BridgeHandlerDeps, turn: ActiveTurn, toolCallId:
   try { read = await turn.quarantine(entry, judgedOutput); } catch {
     return { content: QUARANTINE_FAILED_TEXT, digest: "quarantine_failed", failed: "quarantine_failed" };
   }
+  decideSync(TOOL_WALL, { crosses: UNTRUSTED_READ_ENTRIES.has(entry) }, { run_id: turn.run_id, tool_call_id: toolCallId, recorder: storeRecorder(deps.store, { env: deps.env }) });
+  decideSync(READER_FAMILY, { primary: !read.reader_collapse }, { run_id: turn.run_id, tool_call_id: toolCallId, recorder: storeRecorder(deps.store, { env: deps.env }) });
   const text = capResponse(renderExternalRead(read));
   // The ledger never holds read text: the rendered result may carry a code-extracted OTP or link.
   return { content: text, digest: `sha256:${sha(text)} bytes:${bytes(text)}` };

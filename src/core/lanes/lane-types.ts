@@ -6,6 +6,7 @@ import type { LlmResult } from "../../llm/types.js";
 import type { ModelString } from "../../omp/model-string.js";
 import type { TurnRetrieval } from "../../omp/turn-context.js";
 import type { ChatTurnRow } from "../../run/run-store.js";
+import type { DecisionRecorder } from "../../decisions/types.js";
 
 /** Stage B §8: the closed list of reasons a lane falls through to the planner, spelled `fallthrough:<why>` on the verdict. */
 export const LANE_WHYS = ["no_fast_leg", "compose_failed", "compose_timeout", "empty_reply", "render_failed", "lane_threw",
@@ -38,7 +39,7 @@ export type LaneFall = Extract<LaneResult, { kind: "fallthrough" }>;
 export const fall = (why: LaneWhy): LaneFall => ({ kind: "fallthrough", why });
 
 /** The strict reader's result (stage B §5 step 4): the schema-only extraction and its digest, or a named failure. */
-export type StrictRead = { ok: true; extraction: ReaderExtraction; digest: string } | { ok: false; why: "unreadable" | "reserve" | "aborted" };
+export type StrictRead = { ok: true; extraction: ReaderExtraction; digest: string; reader_collapse?: boolean } | { ok: false; why: "unreadable" | "reserve" | "aborted" };
 /** `web_search_performed` exactly as the planner's wrapper writes it. */
 export interface SearchPerformed { query: string; provider: string; source_urls: string[]; result_count: number }
 /** `http_fetch_performed` exactly as the planner's wrapper writes it. */
@@ -57,4 +58,5 @@ export interface LookupLaneDeps extends AnswerLaneDeps {
   previousTelegramTurns(chatId: string): readonly ChatTurnRow[];
   maxResults: number;
   ledger: { searchPerformed(p: SearchPerformed): void; fetchPerformed(p: FetchPerformed): void };
+  recorder?: DecisionRecorder;
 }

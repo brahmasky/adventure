@@ -5,6 +5,9 @@ import { composeReply } from "./answer-lane.js";
 import { catchUpLine, finalQuery, needsRewrite, renderLanePrompt, renderSourcesBlock, rewritePrompt, sourceUrl, validateQuery, withSourceLine } from "./lane-compose.js";
 import { LATE, within } from "./lane-time.js";
 import { fall, type LaneFall, type LaneInput, type LaneResult, type LookupLaneDeps } from "./lane-types.js";
+import { decideSync } from "../../decisions/decide.js";
+import { TOOL_WALL } from "../../decisions/entries/tool-wall.js";
+import { READER_FAMILY } from "../../decisions/entries/reader-family.js";
 
 /** Stage B §5: the lane's budget and the reserve the compose keeps; every other step is bounded inside them. */
 export const LOOKUP_BUDGET_MS = 75_000;
@@ -86,6 +89,9 @@ async function readStep(i: LaneInput, d: LookupLaneDeps, found: Found, objective
   if (i.signal.aborted) return fall("aborted");
   if (!first.ok) return fall(first.why === "reserve" ? "lane_timeout" : first.why === "aborted" ? "aborted" : "reader_failed");
   const urls = [...new Set(found.results.map((r) => sourceUrl(r.url)).filter((u): u is string => u !== null))];
+  const recorder = d.recorder ?? { record: () => null };
+  decideSync(TOOL_WALL, { crosses: true }, { run_id: i.run_id, tool_call_id: null, recorder });
+  decideSync(READER_FAMILY, { primary: !first.reader_collapse }, { run_id: i.run_id, tool_call_id: null, recorder });
   const read: Read = { kind: "read", urls, digests: [first.digest], facts: [...first.extraction.facts], flagged: first.extraction.contains_instructions };
   if (first.extraction.answer_to_objective === null && urls[0] !== undefined) await thinFetch(i, d, urls[0], objective, read);
   return i.signal.aborted ? fall("aborted") : read;
@@ -101,6 +107,9 @@ async function thinFetch(i: LaneInput, d: LookupLaneDeps, url: string, objective
     bytes: typeof r.output.bytes === "number" ? r.output.bytes : 0 });
   const second = await d.read(r.output, objective, readerBounds(i, d)).catch((): null => null);
   if (!second?.ok) return;
+  const rec2 = d.recorder ?? { record: () => null };
+  decideSync(TOOL_WALL, { crosses: true }, { run_id: i.run_id, tool_call_id: null, recorder: rec2 });
+  decideSync(READER_FAMILY, { primary: !second.reader_collapse }, { run_id: i.run_id, tool_call_id: null, recorder: rec2 });
   read.digests.push(second.digest);
   read.facts.push(...second.extraction.facts);
   read.flagged ||= second.extraction.contains_instructions;

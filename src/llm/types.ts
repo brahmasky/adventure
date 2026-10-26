@@ -24,7 +24,7 @@ export interface LlmRequest {
 }
 
 export type LlmResult =
-  | { ok: true; provider: string; model: string; answer: string; usage?: LlmUsage }
+  | { ok: true; provider: string; model: string; answer: string; usage?: LlmUsage; family_collapse?: boolean }
   | { ok: false; provider: string; error: string; unavailable?: boolean; omp_check?: OmpCheckFailure; aborted?: true };
 
 export interface LlmProvider {
