@@ -3,12 +3,14 @@ import type { RiskLevel, SideEffectLevel } from "../domain/types.js";
 
 export type ToolAdapterResult =
   | { ok: true; output: Record<string, unknown> }
-  | { ok: false; error: string };
+  | { ok: false; error: string; output?: Record<string, unknown> };
 
 export interface SsrfContext {
   run_id: string | null;
   tool_call_id?: string | null;
   recorder?: DecisionRecorder;
+  /** Set only from a validated standing match (ADR 0030 §8.3, B20) — by Stage 4A, never by model or adapter input. */
+  executor?: "cleanroom";
 }
 
 export interface ToolMetadata {

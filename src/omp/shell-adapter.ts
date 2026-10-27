@@ -1,7 +1,9 @@
 import { spawn } from "node:child_process";
-import { join } from "node:path";
-import type { ToolAdapterResult } from "../tools/tool-registry.js";
+import { basename, join } from "node:path";
+import type { SsrfContext, ToolAdapterResult } from "../tools/tool-registry.js";
 import { buildChildEnv, childTmpDir } from "./child-env.js";
+// An import cycle (this calls runCleanroomShell, which calls runShell): both are used at call time only, so it is harmless.
+import { type CleanroomDeps, type CleanroomRunResult, runCleanroomShell } from "./cleanroom-run.js";
 import type { OmpConfig } from "./omp-config.js";
 import type { PathContext } from "./protected-paths.js";
 
@@ -74,13 +76,19 @@ function settle(code: number | null, output: string, truncated: boolean, ws: She
   return { ...base, status: "succeeded" };
 }
 
-export function shellToolExecute(deps: {
+type ShellToolDeps = {
   cfg: OmpConfig; ctx: PathContext; distDir: string; cwd: string;
   onIncident: (kind: string, detail: Record<string, unknown>) => void;
-}): (input: Record<string, unknown>, signal?: AbortSignal) => Promise<ToolAdapterResult> {
-  return async (input, signal) => {
+  /** Tests only: seams handed to runCleanroomShell (tamper hooks, lsof, rm). */
+  cleanroomDeps?: Partial<CleanroomDeps>;
+};
+type Emit = ShellToolDeps["onIncident"];
+
+export function shellToolExecute(deps: ShellToolDeps): (input: Record<string, unknown>, signal?: AbortSignal, ctx?: SsrfContext) => Promise<ToolAdapterResult> {
+  return async (input, signal, ctx) => {
     const command = typeof input.command === "string" ? input.command : "";
     if (command.trim().length === 0) return { ok: false, error: "bash: command is required" };
+    if (ctx?.executor === "cleanroom") return cleanroomCall(deps, command, ctx, signal);
     const r = await runShell({
       command, cwd: deps.cwd, profilePath: join(deps.ctx.data, "omp", "shell.sb"),
       wrapperPath: join(deps.distDir, "omp", "shell-wrapper.sh"), env: { ...buildChildEnv(deps.cfg.envPassthrough), TMPDIR: childTmpDir(deps.cwd) },
@@ -92,4 +100,34 @@ export function shellToolExecute(deps: {
     if (r.status === "failed") return { ok: false, error: `bash ${r.reason}${r.output ? `\n${r.output}` : ""}` };
     return { ok: true, output: { exit_code: r.exitCode, output: r.output, truncated: r.truncated } };
   };
+}
+
+/** The flag is a selector, not a proof: an anonymous context (no run/tool-call id) may not select the room. */
+async function cleanroomCall(deps: ShellToolDeps, command: string, ctx: SsrfContext, signal?: AbortSignal): Promise<ToolAdapterResult> {
+  if (!ctx.run_id || !ctx.tool_call_id) {
+    deps.onIncident("cleanroom_invalid", { why: "anonymous executor selector" });
+    return { ok: false, error: "bash cleanroom_invalid", output: { ran: false, reason: "cleanroom_invalid", executor: "cleanroom", cleanroom: { ran: false, torn_down: true, tampered: false, escaped: false } } };
+  }
+  const r = await runCleanroomShell({ cfg: deps.cfg, distDir: deps.distDir, ...deps.cleanroomDeps }, command, signal);
+  emitCleanroomIncidents(deps.onIncident, r);
+  // Both arms carry the same code-owned seal facts: a failed sealed run can still be ran:true / tampered / escaped / torn_down:false.
+  const cleanroom = { ...(r.room ? { room: basename(r.room) } : {}), ran: r.ran, torn_down: r.torn_down, tampered: r.tampered, escaped: r.escaped === true,
+    ...(r.check_error ? { check_error: r.check_error } : {}) };
+  if (r.status === "failed") return { ok: false, error: `bash ${r.reason}${r.output ? `\n${r.output}` : ""}`, output: { ran: r.ran, reason: r.reason, executor: "cleanroom", cleanroom } };
+  return { ok: true, output: { exit_code: r.exitCode, output: r.output, truncated: r.truncated, executor: "cleanroom", cleanroom } };
+}
+
+/** One incident per fact, cause before effect (spec §One incident emitter). Details are persisted JSON: no key is ever undefined. */
+function emitCleanroomIncidents(emit: Emit, r: CleanroomRunResult): void {
+  if (r.swept?.length) emit("cleanroom_sweep", { removed: r.swept });
+  if (r.reason === "cleanup_failed" || r.reason === "wrapper_unknown") emit(`shell_${r.reason}`, { exit_code: r.exitCode });
+  if (r.escaped) emit("shell_escaped", { exit_code: r.exitCode, source: r.escape_source ?? "pipe", orphans: r.orphans ?? [] });
+  if (r.reason === "cleanroom_unavailable" || r.reason === "cleanroom_setup" || r.reason === "cleanroom_invalid") {
+    emit(r.reason, { ...(r.setup_step ? { step: r.setup_step } : {}), ...(r.setup_error ? { error: r.setup_error } : {}), ...(r.invalid_reason ? { invalid_reason: r.invalid_reason } : {}) });
+  }
+  const names = r.tamper_names ? { names: r.tamper_names } : {};
+  if (r.reason === "cleanroom_tampered") emit("cleanroom_tampered", { phase: "pre_spawn", ...names });
+  if (r.ran && r.tampered) emit("cleanroom_tampered", { phase: "post_run", ...names });
+  if (r.check_error) emit("cleanroom_check_failed", { error: r.check_error });
+  if (!r.torn_down) emit("cleanroom_teardown_failed", { ...(r.teardown_error ? { error: r.teardown_error } : {}), after: { wrapperStatus: r.wrapperStatus, escaped: r.escaped === true } });
 }

@@ -214,6 +214,42 @@ describe("bridge handler — call (spec §5.2)", () => {
     expect(events("tool_finished")).toContainEqual(expect.objectContaining({ tool_call_id: "gp1", status: "succeeded" }));
   });
 
+  it("the bridge never sets executor on the runtime context — Stage 4A's standing match is the first setter", async () => {
+    const seen: unknown[] = [];
+    const shell: Exec = (_i, _s, ctx) => { seen.push(ctx); return { ok: true, output: { exit_code: 0, output: "", truncated: false } }; };
+    const { handle, store, awaiting } = setup({ shell });
+    expect(((await handle(call("bash", { command: "ls" }, "ex1"))) as CallResult).isError).toBe(false);
+    const p = handle(call("bash", { command: "git push" }, "ex2")) as Promise<CallResult>; // approval-gated: the resume executes
+    decide(store, await pendingApproval(store, awaiting), "approved");
+    expect((await p).isError).toBe(false);
+    expect(seen).toHaveLength(2);
+    for (const ctx of seen) { expect(ctx).toMatchObject({ run_id: expect.any(String) }); expect(ctx).not.toHaveProperty("executor"); }
+  });
+
+  it("a sealed run's code-owned seal facts reach tool_finished (the ledger is the audit trail), never the body; a plain run carries neither key", async () => {
+    const sealed: Exec = async () => ({ ok: true, output: { exit_code: 0, output: `${MARKER} body`, truncated: false, executor: "cleanroom",
+      cleanroom: { room: "room-x", torn_down: true, tampered: false, escaped: false } } });
+    const { handle, events, store, run_id } = setup({ shell: sealed });
+    await handle(call("bash", { command: "ls" }, "cr1"));
+    const fin = events("tool_finished").find((e) => e.tool_call_id === "cr1");
+    expect(fin).toMatchObject({ executor: "cleanroom", cleanroom: { ran: true, torn_down: true, tampered: false, escaped: false } });
+    expect(fin?.cleanroom).toEqual({ ran: true, torn_down: true, tampered: false, escaped: false }); // no room name, no body
+    expect(JSON.stringify(store.getLedgerEvents(run_id))).not.toContain(MARKER);
+    const plain = setup();
+    await plain.handle(call("bash", { command: "ls" }, "cr2"));
+    const pf = plain.events("tool_finished").find((e) => e.tool_call_id === "cr2");
+    expect(pf).toMatchObject({ status: "succeeded" }); expect(pf).not.toHaveProperty("executor"); expect(pf).not.toHaveProperty("cleanroom");
+  });
+
+  it("a failed sealed run's facts reach tool_finished too (a failure can have ran:true, torn_down:false)", async () => {
+    const failed: Exec = async () => ({ ok: false, error: "bash timeout", output: { ran: true, reason: "timeout", executor: "cleanroom",
+      cleanroom: { ran: true, torn_down: false, tampered: true, escaped: true } } });
+    const { handle, events } = setup({ shell: failed });
+    await handle(call("bash", { command: "ls" }, "cr3"));
+    expect(events("tool_finished").find((e) => e.tool_call_id === "cr3")).toMatchObject({ status: "failed", executor: "cleanroom",
+      cleanroom: { ran: true, torn_down: false, tampered: true, escaped: true } });
+  });
+
   it("a denied approval never runs the adapter and reports tool_finished{denied} with the code-owned text", async () => {
     const { handle, calls, awaiting, store, events } = setup();
     const p = handle(call("bash", { command: "git push" }, "gp2")) as Promise<CallResult>;

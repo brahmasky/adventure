@@ -226,6 +226,20 @@ function manifestFor(deps: BridgeHandlerDeps): ToolDeclaration[] {
 interface Finish {
   toolCallId: string; tool: string; capability: string; status: "succeeded" | "failed" | "denied";
   content: string; started: number; digest: string; reason?: string; bytesIn?: number;
+  /** A sealed run's code-owned facts: the ledger holds hashes only, so this is how Stage 4A sees the seal. */
+  cleanroom?: CleanroomFacts;
+}
+type CleanroomFacts = { ran: boolean; torn_down: boolean; tampered: boolean; escaped: boolean };
+
+/** The seal facts from either result arm; anything malformed is no facts (never a throw), so a plain run carries none. */
+function cleanroomFacts(r: CapabilityResult): CleanroomFacts | undefined {
+  const out = r.status === "succeeded" || r.status === "failed" ? r.output : undefined;
+  if (out?.executor !== "cleanroom" || typeof out.cleanroom !== "object" || out.cleanroom === null) return undefined;
+  const c = out.cleanroom as Record<string, unknown>;
+  // a success always ran, so its arm may omit `ran`; a failure must state it
+  const ran = typeof c.ran === "boolean" ? c.ran : r.status === "succeeded" ? true : undefined;
+  if (ran === undefined || typeof c.torn_down !== "boolean" || typeof c.tampered !== "boolean" || typeof c.escaped !== "boolean") return undefined;
+  return { ran, torn_down: c.torn_down, tampered: c.tampered, escaped: c.escaped };
 }
 
 /** tool_finished + loop_step: counts, hashes, ids and code-owned reasons only (never bodies). */
@@ -233,7 +247,8 @@ function finish(deps: BridgeHandlerDeps, turn: ActiveTurn, f: Finish): void {
   deps.store.appendRunLedgerEvent(turn.run_id, "tool_finished", "capability_runner", {
     tool_call_id: f.toolCallId, status: f.status, output_hash: sha(f.content), duration_ms: Date.now() - f.started,
     bytes_out: bytes(f.content), tool: f.tool,
-    ...(f.bytesIn !== undefined ? { bytes_in: f.bytesIn } : {}), ...(f.reason !== undefined ? { reason: f.reason } : {})
+    ...(f.bytesIn !== undefined ? { bytes_in: f.bytesIn } : {}), ...(f.reason !== undefined ? { reason: f.reason } : {}),
+    ...(f.cleanroom ? { executor: "cleanroom", cleanroom: f.cleanroom } : {})
   });
   deps.store.appendRunLedgerEvent(turn.run_id, "loop_step", "core", {
     step: ++turn.step.n, action: f.tool, capability: f.capability, ok: f.status === "succeeded", result_digest: f.digest
@@ -292,8 +307,9 @@ async function handleCall(deps: BridgeHandlerDeps, turn: ActiveTurn, req: CallRe
   const rendered = await render(deps, turn, req, entry, r);
   const status = rendered.failed ? "failed" : statusOf(r);
   const reason = rendered.failed ?? (status === "succeeded" ? undefined : reasonCode(r));
+  const cleanroom = cleanroomFacts(r);
   finish(deps, turn, { toolCallId: req.toolCallId, tool: req.tool, capability: entry, status, content: rendered.content, started,
-    digest: rendered.digest, bytesIn: bytes(JSON.stringify(req.input)), ...(reason !== undefined ? { reason } : {}) });
+    digest: rendered.digest, bytesIn: bytes(JSON.stringify(req.input)), ...(reason !== undefined ? { reason } : {}), ...(cleanroom ? { cleanroom } : {}) });
   return { content: rendered.content, isError: status !== "succeeded" };
 }
 

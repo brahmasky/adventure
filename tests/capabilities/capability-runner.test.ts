@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { BudgetLedger } from "../../src/budget/budget-ledger.js";
-import { CapabilityRunner } from "../../src/capabilities/capability-runner.js";
+import { type ApprovalRequestSink, CapabilityRunner } from "../../src/capabilities/capability-runner.js";
 import { stableHash } from "../../src/domain/canonical.js";
 import type { CompiledTaskContract } from "../../src/domain/types.js";
 import { ToolRegistry } from "../../src/tools/tool-registry.js";
@@ -266,5 +266,43 @@ describe("CapabilityRunner", () => {
     });
 
     expect(result).toEqual({ status: "failed", error_ref: "unsupported object instance in canonical JSON" });
+  });
+});
+
+describe("CapabilityRunner — the clean-room executor on the runtime context", () => {
+  // The approval contract of capability-runner-approvals.test.ts, with the capability under test (bash) allowed and gated on local_write.
+  const gated: CompiledTaskContract = {
+    objective: "execute gated local write",
+    budget: { time_minutes: 5, max_tool_calls: 2, max_agent_delegations: 0 },
+    allowed_actions: ["bash"],
+    forbidden_actions: ["coding_agent_cli"],
+    output: { path: "runs/<run-id>/report.md", format: "sourced_markdown_report" },
+    approval_gates: ["local_write"],
+    stop_condition: "gated action handled",
+    contract_hash: "contract_hash",
+    eval_hooks: ["milestone-2-approval"]
+  };
+  const permitted: CompiledTaskContract = { ...gated, approval_gates: [] };
+  const call = (c: CompiledTaskContract) => ({ contract: c, capability: "bash", input: { command: "x" }, budget: new BudgetLedger(c.budget) });
+
+  it("executor on the runtime context never reaches the action fingerprint (a sealed 4th call must equal the first three), and does reach the adapter", async () => {
+    const fps: string[] = []; const seen: unknown[] = [];
+    const approvals = { requestApproval: (i: { action_fingerprint: string }) => { fps.push(i.action_fingerprint); return { approval_id: "a" }; }, consumeApprovedApproval: () => ({ ok: true as const }) } as unknown as ApprovalRequestSink;
+    const registry = new ToolRegistry();
+    registry.register({ name: "bash", category: "tool", side_effect_level: "local_write", risk_level: "medium", timeout_ms: 1000, output_limit_bytes: 1024, execute: (_i, _s, ctx) => { seen.push(ctx); return { ok: true, output: {} }; } });
+    const runner = new CapabilityRunner(registry, approvals);
+    expect((await runner.execute(call(gated), undefined, { run_id: "r", tool_call_id: "t" })).status).toBe("requires_approval");
+    expect((await runner.execute(call(gated), undefined, { run_id: "r", tool_call_id: "t", executor: "cleanroom" })).status).toBe("requires_approval");
+    expect(fps).toHaveLength(2); expect(fps[0]).toMatch(/\w+/); expect(fps[0]).toBe(fps[1]);
+    // and on an allowed call the context reaches the adapter intact
+    await runner.execute(call(permitted), undefined, { run_id: "r", tool_call_id: "t", executor: "cleanroom" });
+    expect(seen.at(-1)).toMatchObject({ executor: "cleanroom" });
+  });
+
+  it("a failed adapter result's structured output survives the runner (Stage 4A needs `ran`)", async () => {
+    const registry = new ToolRegistry();
+    registry.register({ name: "bash", category: "tool", side_effect_level: "local_write", risk_level: "medium", timeout_ms: 1000, output_limit_bytes: 1024, execute: () => ({ ok: false, error: "bash cleanroom_unavailable", output: { ran: false, reason: "cleanroom_unavailable" } }) });
+    const r = await new CapabilityRunner(registry).execute(call(permitted));
+    expect(r).toEqual({ status: "failed", error_ref: "bash cleanroom_unavailable", output: { ran: false, reason: "cleanroom_unavailable" } });
   });
 });

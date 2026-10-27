@@ -28,7 +28,7 @@ export type CapabilityResult =
   | { status: "denied"; reason: string; recovery_hint?: string }
   | { status: "requires_approval"; approval_id: string }
   | { status: "denied_on_revalidation"; reason: string; recovery_hint?: string }
-  | { status: "failed"; error_ref: string }
+  | { status: "failed"; error_ref: string; output?: Record<string, unknown> }
   | { status: "timed_out"; error_ref: string }
   | { status: "cancelled"; error_ref: string }
   | { status: "uncertain_outcome"; reconciliation_ref: string };
@@ -224,7 +224,8 @@ export class CapabilityRunner {
       if (settled.kind === "cancelled") return { status: "cancelled", error_ref: "Tool execution cancelled" };
       const adapterResult = settled.value;
       if (!adapterResult.ok) {
-        return { status: "failed", error_ref: adapterResult.error };
+        // a structured failure (a clean-room run's `ran` and seal facts) must survive: Stage 4A and the ledger read it
+        return { status: "failed", error_ref: adapterResult.error, ...(adapterResult.output ? { output: adapterResult.output } : {}) };
       }
 
       if (Buffer.byteLength(canonicalJson(adapterResult.output), "utf8") > metadata.output_limit_bytes) {
