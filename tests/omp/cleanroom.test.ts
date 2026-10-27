@@ -185,20 +185,67 @@ describe("renderCleanroom — SBPL for the sealed room (spec §Required SBPL fac
   });
 });
 
-/** SBPL takes the LAST matching rule. Returns "allow" | "deny" | null for one verb and one path over subpath/literal rules. */
+/** Does one SBPL filter match path? literal / subpath / regex only; APFS is case-insensitive, so matching is too. */
+function filterHits(filter: string, path: string, line: string): boolean {
+  const q = /^\((subpath|literal) "((?:[^"\\]|\\.)*)"\)$/.exec(filter);
+  if (q) {
+    const p = q[2]!.replace(/\\(.)/g, "$1").toLowerCase(); const x = path.toLowerCase();
+    return q[1] === "literal" ? x === p : x === p || x.startsWith(p.endsWith("/") ? p : p + "/");
+  }
+  const r = /^\(regex #"((?:[^"\\]|\\.)*)"\)$/.exec(filter);
+  if (r) return new RegExp(r[1]!, "i").test(path);
+  throw new Error(`lastRuleFor: unknown filter shape on a file rule: ${line}`); // a new rule shape fails loudly, never skipped
+}
+
+/** SBPL takes the LAST matching rule. Returns "allow" | "deny" | null for one verb and one path. */
 function lastRuleFor(profile: string, verb: "file-read*" | "file-write*", path: string): "allow" | "deny" | null {
   let verdict: "allow" | "deny" | null = null;
   for (const line of profile.split("\n")) {
-    const m = /^\((allow|deny) ([^(]+?) \((subpath|literal) "((?:[^"\\]|\\.)*)"\)\)$/.exec(line);
-    if (!m) { if (verb === "file-write*" && line === "(deny file-write*)") verdict = "deny"; if (verb === "file-read*" && line === "(deny file-read*)") verdict = "deny"; continue; }
-    const verbs = m[2]!.split(" ");
-    if (!verbs.includes(verb)) continue;
-    const p = m[4]!.replace(/\\(.)/g, "$1");
-    const hit = m[3] === "literal" ? path === p : path === p || path.startsWith(p.endsWith("/") ? p : p + "/");
-    if (hit) verdict = m[1] as "allow" | "deny";
+    const m = /^\((allow|deny) ([^()"]+?)(?: (\(.*\)))?\)$/.exec(line);
+    const fileRule = /\bfile-(read|write)\*/.test(line);
+    if (!m) { if (fileRule) throw new Error(`lastRuleFor: unparsed file rule: ${line}`); continue; }
+    if (!m[2]!.split(" ").includes(verb)) continue; // signal / process-exec / mach-lookup / metadata-only lines
+    if (m[3] === undefined || filterHits(m[3], path, line)) verdict = m[1] as "allow" | "deny";
   }
   return verdict;
 }
+
+describe("lastRuleFor — the evaluator the effective-policy tests rest on is itself right", () => {
+  const profile = [
+    "(version 1)",
+    "(deny file-read*)",
+    '(allow file-read* (subpath "/usr"))',
+    '(allow file-read* (literal "/"))',
+    '(deny file-read* (subpath "/users/p/x"))',
+    '(allow file-read* (literal "/q\\"uote"))',
+    '(allow file-read* (regex #"^/Users/p/x/ok$"))',
+    '(deny file-write* (subpath "/usr"))'
+  ].join("\n");
+
+  it("subpath is component-bounded, literal is exact, an escaped quote is unescaped, matching is case-insensitive", () => {
+    expect(lastRuleFor(profile, "file-read*", "/usr/bin/curl")).toBe("allow");
+    expect(lastRuleFor(profile, "file-read*", "/usr2/x")).toBe("deny");
+    expect(lastRuleFor(profile, "file-read*", "/")).toBe("allow");
+    expect(lastRuleFor(profile, "file-read*", "/etc")).toBe("deny");
+    expect(lastRuleFor(profile, "file-read*", '/q"uote')).toBe("allow");
+    expect(lastRuleFor(profile, "file-read*", "/Users/P/X/secret")).toBe("deny");
+  });
+  it("a regex allow after a subpath deny re-opens exactly the matching path; the verb filter keeps write rules off reads", () => {
+    expect(lastRuleFor(profile, "file-read*", "/Users/p/x/ok")).toBe("allow");
+    expect(lastRuleFor(profile, "file-read*", "/Users/p/x/ok2")).toBe("deny");
+    expect(lastRuleFor(profile, "file-write*", "/usr/bin/curl")).toBe("deny");
+    expect(lastRuleFor(profile, "file-write*", "/tmp/x")).toBeNull();
+  });
+  it("order matters: reversing two rules flips the verdict", () => {
+    const a = '(allow file-read* (subpath "/a"))'; const d = '(deny file-read* (subpath "/a"))';
+    expect(lastRuleFor([a, d].join("\n"), "file-read*", "/a/b")).toBe("deny");
+    expect(lastRuleFor([d, a].join("\n"), "file-read*", "/a/b")).toBe("allow");
+  });
+  it("throws on a file rule whose filter it does not understand, instead of skipping it", () => {
+    expect(() => lastRuleFor('(deny file-read* (vnode-type SYMLINK))', "file-read*", "/x")).toThrow(/unknown filter/);
+    expect(() => lastRuleFor('(deny file-write* (require-any (literal "/a") (literal "/b")))', "file-write*", "/x")).toThrow(/unknown filter/);
+  });
+});
 
 /**
  * tests/helpers/setup-no-real-omp.ts sets HOUGE_DAEMON_TMP_DIR for every test file, and secretPaths() reads process.env:
@@ -212,7 +259,7 @@ function withDefaultCacheRoot<T>(fn: () => T): T {
 describe("effective policy — the planner and shell profiles deny the cache root the room lives in, even though $HOME is writable (codex blocker 1)", () => {
   const ctx = { home: "/Users/p", repo: "/Users/p/Projects/adventure", data: "/Users/p/Projects/adventure" };
   const cache = resolveDaemonTmpDir({}, ctx.home); // /Users/p/Library/Caches/houge-daemon
-  const room = `${cache}/room-1`; const home = `${cache}/home-1`;
+  const room = `${cache}/cleanroom/room-1`; const home = `${cache}/cleanroom/home-1`;
 
   it("denies reads and writes of the room and the home to both profiles as the LAST matching rule", () => {
     const { planner, shell } = withDefaultCacheRoot(() => renderSeatbelt(ctx));
@@ -225,6 +272,8 @@ describe("effective policy — the planner and shell profiles deny the cache roo
     const { shell } = renderSeatbelt(ctx);
     expect(lastRuleFor(shell, "file-write*", "/Users/p/Documents/x.txt")).toBe("allow");
     expect(lastRuleFor(shell, "file-write*", "/Users/p/Projects/adventure/src/x.ts")).toBe("deny");
+    const { planner } = withDefaultCacheRoot(() => renderSeatbelt(ctx));
+    expect(lastRuleFor(planner, "file-write*", join(ctx.data, "omp", "sessions", "s.json"))).toBe("allow");
   });
   it("the clean room's readable set and the planner/shell EFFECTIVE write set do not intersect on the cache root", () => {
     const cr = renderCleanroom({ room, home });
@@ -239,7 +288,7 @@ describe("effective policy — the planner and shell profiles deny the cache roo
     const real = { home: process.env.HOME!, repo: process.cwd(), data: process.cwd() };
     for (const c of [ctx, real]) {
       const cache2 = resolveDaemonTmpDir({}, c.home);
-      const cr = renderCleanroom({ room: `${cache2}/room-1`, home: `${cache2}/home-1` });
+      const cr = renderCleanroom({ room: `${cache2}/cleanroom/room-1`, home: `${cache2}/cleanroom/home-1` });
       const { planner, shell } = withDefaultCacheRoot(() => renderSeatbelt(c));
       for (const kind of ["planner", "shell"] as const) for (const w of writeRoots(c, kind)) for (const v of [...new Set([w, realpathOrSelf(w)])]) {
         expect(lastRuleFor(cr, "file-read*", v), `read ${v}`).toBe("deny");
