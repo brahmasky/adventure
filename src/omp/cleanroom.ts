@@ -35,7 +35,7 @@ export function cleanroomRoot(env: NodeJS.ProcessEnv = process.env, home: string
   return join(resolveDaemonTmpDir(env, home), "cleanroom");
 }
 
-const ident = (p: string): string => { const s = statSync(p); return `${s.dev}:${s.ino}`; };
+const ident = (p: string): string => { const s = statSync(p, { bigint: true }); return `${s.dev}:${s.ino}`; };
 
 /** inode ids of p and every ancestor up to and including `/` — APFS case/normalization aliases share inodes, strings do not. */
 function lineage(p: string): string[] {
@@ -50,29 +50,39 @@ function lineage(p: string): string[] {
 function canonicalDir(p: string, rootId: string): { path: string; id: string } {
   // absolute AND normalized: `<root>/link/../room` would stat one directory (through the link) and check another
   if (!isAbsolute(p) || resolve(p) !== p) throw new CleanroomPathError("not_absolute", p);
-  let st; try { st = statSync(p); } catch { throw new CleanroomPathError("not_directory", p); }
+  let st; try { st = statSync(p, { bigint: true }); } catch { throw new CleanroomPathError("not_directory", p); }
   if (!st.isDirectory()) throw new CleanroomPathError("not_directory", p);
   const id = `${st.dev}:${st.ino}`;
   let line; try { line = lineage(p); } catch { throw new CleanroomPathError("not_directory", p); }
   if (id === rootId || !line.includes(rootId)) throw new CleanroomPathError("outside_cache_root", p);
   try {
-    for (let d = p; ident(d) !== rootId; d = dirname(d)) {
-      if (d === dirname(d)) throw new CleanroomPathError("outside_cache_root", p); // the tree moved under us since the lineage
+    for (let d = p; ; d = dirname(d)) {
+      // lstat BEFORE the root compare: a link that points at the root itself must still count as a symlink component
       if (lstatSync(d).isSymbolicLink()) throw new CleanroomPathError("symlink_component", p);
+      if (ident(d) === rootId) break;
+      if (d === dirname(d)) throw new CleanroomPathError("outside_cache_root", p); // the tree moved under us since the lineage
     }
     // case as given: Seatbelt matches paths case-insensitively on APFS, so a rule from either case covers the dir (fails safe)
     return { path: realpathSync(p), id };
   } catch (e) { throw e instanceof CleanroomPathError ? e : new CleanroomPathError("not_directory", p); }
 }
 
+/** The root is a real directory (no symlink: it would carry the rooms outside the planner/shell deny) with a known inode. */
+function rootIdent(root: string): string {
+  try {
+    if (lstatSync(root).isSymbolicLink()) throw new CleanroomPathError("symlink_component", root);
+    return ident(root);
+  } catch (e) { throw e instanceof CleanroomPathError ? e : new CleanroomPathError("outside_cache_root", root); }
+}
+
 export function validateCleanroomDirs(input: RoomPair): CleanroomDirs {
   const root = cleanroomRoot();
-  let rootId; try { rootId = ident(root); } catch { throw new CleanroomPathError("outside_cache_root", root); }
+  const rootId = rootIdent(root);
   const room = canonicalDir(input.room, rootId);
   const home = canonicalDir(input.home, rootId);
   try {
     // overlap before emptiness: a home nested in the room makes the room non-empty, and the overlap is the real fault.
-    // By inode: `ROOM-1` and `room-1` are one APFS directory but two strings (review A1).
+    // By inode: `ROOM-1` and `room-1` are one APFS directory but two strings.
     if (lineage(room.path).includes(home.id) || lineage(home.path).includes(room.id)) {
       throw new CleanroomPathError("overlap", `${room.path} ~ ${home.path}`);
     }

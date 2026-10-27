@@ -19,7 +19,7 @@ function cacheRoot(): string {
 }
 afterEach(() => { for (const r of made.splice(0)) rmSync(r, { recursive: true, force: true }); });
 
-/** The validator derives its root from HOUGE_DAEMON_TMP_DIR (no caller-supplied root — review A2): point it at `root` for fn. */
+/** The validator derives its root from HOUGE_DAEMON_TMP_DIR (no caller-supplied root): point it at `root` for fn. */
 function withCacheRoot<T>(root: string, fn: () => T): T {
   const saved = process.env.HOUGE_DAEMON_TMP_DIR; process.env.HOUGE_DAEMON_TMP_DIR = root;
   try { return fn(); } finally { if (saved === undefined) delete process.env.HOUGE_DAEMON_TMP_DIR; else process.env.HOUGE_DAEMON_TMP_DIR = saved; }
@@ -42,7 +42,7 @@ describe("validateCleanroomDirs — the room and the home are daemon-made, empty
     expect(Object.isFrozen(d)).toBe(true);
     expect(cleanroomRoot({ HOUGE_DAEMON_TMP_DIR: root }, "/nowhere")).toBe(join(root, "cleanroom"));
   });
-  it("only a validated pair reaches the writer (a literal pair is a type error — review A3)", () => {
+  it("only a validated pair reaches the writer (a literal pair is a type error)", () => {
     const fake = { room: "/x/room", home: "/x/home" };
     // @ts-expect-error a plain RoomPair is not a CleanroomDirs
     expect(() => writeCleanroomProfile(fake)).toThrow();
@@ -55,7 +55,7 @@ describe("validateCleanroomDirs — the room and the home are daemon-made, empty
     const root = cacheRoot(); const other = cacheRoot(); const { room } = pair(root); const { home } = pair(other);
     expect(validateUnder(root, { room, home })).toBe("outside_cache_root");
   });
-  it("the root is derived, never supplied: a pair under os.tmpdir() is rejected while HOUGE_DAEMON_TMP_DIR points elsewhere (review A2: cacheRoot \"/\" was accepted)", () => {
+  it("the root is derived, never supplied: a pair under os.tmpdir() is rejected while HOUGE_DAEMON_TMP_DIR points elsewhere", () => {
     const loose = realpathSync(mkdtempSync(join(tmpdir(), "hg-loose-"))); made.push(loose);
     const room = join(loose, "room-1"); const home = join(loose, "home-1"); mkdirSync(room); mkdirSync(home);
     expect(validateUnder(cacheRoot(), { room, home })).toBe("outside_cache_root");
@@ -87,7 +87,7 @@ describe("validateCleanroomDirs — the room and the home are daemon-made, empty
     expect(validateUnder(root, { room, home: inner })).toBe("overlap");
     expect(validateUnder(root, { room: inner, home: room })).toBe("overlap");
   });
-  it("rejects a case alias of the room as the home: on APFS `ROOM-1` IS `room-1`, so string comparison saw two dirs (review A1, codex blocker)", () => {
+  it("rejects a case alias of the room as the home: on APFS `ROOM-1` IS `room-1`, so string comparison saw two dirs", () => {
     const root = cacheRoot(); const { room } = pair(root);
     const alias = join(root, "cleanroom", "ROOM-1");
     if (!existsSync(alias)) expect.fail("case-sensitive volume: this test needs the default case-insensitive APFS");
@@ -108,12 +108,19 @@ describe("validateCleanroomDirs — the room and the home are daemon-made, empty
     const d = withCacheRoot(viaVar(root), () => validateCleanroomDirs({ room: viaVar(room), home: viaVar(home) }));
     expect(plain(d)).toEqual({ room, home });
   });
-  it("rejects a non-normalized path: `<root>/link/../room` stats one directory through the link and would check another (review finding)", () => {
+  it("rejects a non-normalized path: `<root>/link/../room` stats one directory through the link and would check another", () => {
     const root = cacheRoot(); const { room, home } = pair(root);
     const outside = cacheRoot(); symlinkSync(outside, join(root, "cleanroom", "link"));
     const viaLink = `${root}/cleanroom/link/../room-1`; // string, not join(): join() would normalize the `..` away
     expect(validateUnder(root, { room: viaLink, home })).toBe("not_absolute");
     expect(validateUnder(root, { room: `${room}/`, home })).toBe("not_absolute");
+  });
+  it("rejects a component that is a symlink to the cleanroom root itself, and a cleanroom root that is itself a symlink", () => {
+    const root = cacheRoot(); const { room, home } = pair(root);
+    const cr = join(root, "cleanroom"); symlinkSync(cr, join(cr, "self")); // self -> the root: lstat must win over the inode match
+    expect(validateUnder(root, { room: join(cr, "self", "room-1"), home })).toBe("symlink_component");
+    const other = cacheRoot(); rmSync(join(other, "cleanroom"), { recursive: true }); symlinkSync(cr, join(other, "cleanroom"));
+    expect(validateUnder(other, { room, home })).toBe("symlink_component"); // rooms would sit outside `other`'s deny rule
   });
   it("rejects a file or a missing path as the room", () => {
     const root = cacheRoot(); const { home } = pair(root);
@@ -135,13 +142,13 @@ describe("renderCleanroom — SBPL for the sealed room (spec §Required SBPL fac
     for (const s of ['(subpath "/usr")', '(subpath "/bin")', '(subpath "/System")', '(subpath "/private/etc/ssl")',
       '(literal "/dev/null")', `(subpath "${dirs.room}")`, `(subpath "${dirs.home}")`]) expect(p).toContain(`(allow file-read* ${s})`);
     expect(p).not.toContain('(subpath "/private/etc")');
-    // /Library holds world-writable trees (/Library/Caches …): a child could read what another planted there (review B1)
+    // /Library holds world-writable trees (/Library/Caches …): a child could read what another planted there
     expect(p).not.toContain('(allow file-read* (subpath "/Library"))');
     expect(p).toContain('(allow file-read-data (literal "/"))');
     const allows = lines().filter((l) => l.startsWith("(allow file-read* "));
     expect(allows).toHaveLength(8); // "/" literal + 4 system trees + /dev/null + room + home
   });
-  it("denies /usr/local AFTER the /usr allow: Homebrew's tree is user-writable inside a readable system root, and SBPL takes the last match (review B2)", () => {
+  it("denies /usr/local AFTER the /usr allow: Homebrew's tree is user-writable inside a readable system root, and SBPL takes the last match", () => {
     const l = lines();
     const allowUsr = l.indexOf('(allow file-read* (subpath "/usr"))');
     const denyLocal = l.indexOf('(deny file-read* (subpath "/usr/local"))');
@@ -256,7 +263,7 @@ function withDefaultCacheRoot<T>(fn: () => T): T {
   try { return fn(); } finally { if (saved !== undefined) process.env.HOUGE_DAEMON_TMP_DIR = saved; }
 }
 
-describe("effective policy — the planner and shell profiles deny the cache root the room lives in, even though $HOME is writable (codex blocker 1)", () => {
+describe("effective policy — the planner and shell profiles deny the cache root the room lives in, even though $HOME is writable", () => {
   const ctx = { home: "/Users/p", repo: "/Users/p/Projects/adventure", data: "/Users/p/Projects/adventure" };
   const cache = resolveDaemonTmpDir({}, ctx.home); // /Users/p/Library/Caches/houge-daemon
   const room = `${cache}/cleanroom/room-1`; const home = `${cache}/cleanroom/home-1`;
