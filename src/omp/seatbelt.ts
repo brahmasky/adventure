@@ -100,6 +100,28 @@ function ancestorsOf(p: string): string[] {
 }
 
 /**
+ * Exact SBPL regex body for an ALLOW: every character outside [A-Za-z0-9/_-] is backslash-escaped (regexPath widens
+ * punctuation to wildcards, right for a deny, wrong here). SBPL's #"…" has no escape for `"` or `\`: such a path cannot
+ * be rendered safely, so it is refused rather than approximated.
+ */
+export function sbplRegexLiteral(p: string): string {
+  if (/["\\]/.test(p)) throw new Error("sbplRegexLiteral: a quote or backslash in a path cannot be rendered");
+  return [...p].map((c) => (/^[A-Za-z0-9/_-]$/.test(c) ? c : `\\${c}`)).join("");
+}
+
+/**
+ * The only binaries a sealed command may exec (spec §Exec allowlist). Everything that can call setsid() — perl, python,
+ * ruby, script, screen — is out, so an orphan stays in the wrapper's session and keeps its sandbox; a command that needs
+ * another binary is a per-command ruling, never a looser profile. /usr/bin/test does not exist on macOS; /bin/test does.
+ */
+export const CLEANROOM_EXEC_ALLOW: readonly string[] = [
+  "/bin/bash", "/bin/sh", "/usr/bin/env", "/usr/bin/nice", "/usr/bin/curl", "/bin/date", "/bin/pwd", "/usr/bin/grep", "/usr/bin/sed",
+  "/usr/bin/awk", "/usr/bin/head", "/usr/bin/tail", "/usr/bin/tr", "/usr/bin/cut", "/usr/bin/sort", "/usr/bin/uniq", "/usr/bin/wc",
+  "/bin/cat", "/bin/echo", "/bin/ls", "/bin/mkdir", "/bin/rm", "/usr/bin/basename", "/usr/bin/dirname", "/usr/bin/printf",
+  "/usr/bin/tee", "/usr/bin/xargs", "/usr/bin/base64", "/bin/sleep", "/usr/bin/true", "/usr/bin/false", "/bin/test"
+];
+
+/**
  * P8 (spec §P8 evidence, measured 2026-10-28): nothing on this host is reachable — loopback in every spelling, the
  * host's own addresses, IPv4-mapped IPv6, UDP of any kind (so no broadcast/multicast path to a local service), Unix
  * sockets but the resolver's, listening, Mach lookups. Families are named on every filter and sit in ONE rule: a bare
@@ -149,12 +171,14 @@ export function renderCleanroom(dirs: RoomPair): string {
     '(allow file-read-data (literal "/"))',
     ...[...new Set(["/", "/etc", "/var", "/tmp", ...CLEANROOM_TZ_META, ...ancestorsOf(dirs.room), ...ancestorsOf(dirs.home)])].map(meta),
     "(deny file-write*)",
-    ...variants(dirs.room).map((v) => `(allow file-write* (subpath "${esc(v)}"))`),
+    ...variants(dirs.room).map((v) => `(allow file-write* (regex #"^${sbplRegexLiteral(v)}/"))`),
     '(allow file-write* (literal "/dev/null"))',
     "(deny signal (target others))",
     '(deny process-exec (literal "/bin/launchctl"))',
     '(deny process-exec (literal "/usr/bin/security"))',
     '(deny process-exec (literal "/usr/bin/python3"))',
+    "(deny process-exec*)",
+    `(allow process-exec* ${CLEANROOM_EXEC_ALLOW.map((b) => `(literal "${b}")`).join(" ")})`,
     '(deny mach-lookup (global-name "com.apple.launchd"))',
     ...CLEANROOM_NETWORK_RULES
   ].join("\n") + "\n";

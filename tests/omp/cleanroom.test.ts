@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CLEANROOM_PROFILE_NAME, type CleanroomDirs, CleanroomPathError, cleanroomEnv, cleanroomRoot, validateCleanroomDirs, writeCleanroomProfile } from "../../src/omp/cleanroom.js";
 import { realpathOrSelf, writeRoots } from "../../src/omp/protected-paths.js";
-import { renderCleanroom, renderSeatbelt } from "../../src/omp/seatbelt.js";
+import { CLEANROOM_EXEC_ALLOW, renderCleanroom, renderSeatbelt, sbplRegexLiteral } from "../../src/omp/seatbelt.js";
 import { resolveDaemonTmpDir } from "../../src/run/daemon-tmp.js";
 
 vi.setConfig({ testTimeout: 30_000 });
@@ -166,7 +166,7 @@ describe("renderCleanroom — SBPL for the sealed room (spec §Required SBPL fac
     for (const v of ["/tmp/hg-x", "/private/tmp/hg-x"]) {
       expect(p).toContain(`(allow file-read* (subpath "${v}/room"))`);
       expect(p).toContain(`(allow file-read* (subpath "${v}/home"))`);
-      expect(p).toContain(`(allow file-write* (subpath "${v}/room"))`);
+      expect(p).toContain(`(allow file-write* (regex #"^${sbplRegexLiteral(`${v}/room`)}/"))`);
       expect(p).not.toContain(`(allow file-write* (subpath "${v}/home"))`);
     }
   });
@@ -175,7 +175,7 @@ describe("renderCleanroom — SBPL for the sealed room (spec §Required SBPL fac
     const deny = l.indexOf("(deny file-write*)");
     expect(deny).toBeGreaterThan(2);
     const writes = l.filter((x) => x.startsWith("(allow file-write*"));
-    expect(writes).toEqual([`(allow file-write* (subpath "${dirs.room}"))`, '(allow file-write* (literal "/dev/null"))']);
+    expect(writes).toEqual([`(allow file-write* (regex #"^${dirs.room}/"))`, '(allow file-write* (literal "/dev/null"))']);
     expect(l.indexOf(writes[0]!)).toBeGreaterThan(deny);
   });
   it("denies the exec and IPC escape hatches: launchctl, security, the python3 install shim, launchd lookup, signals to others", () => {
@@ -203,10 +203,31 @@ describe("renderCleanroom — SBPL for the sealed room (spec §Required SBPL fac
     for (const s of ['(literal "/private/etc/localtime")', '(subpath "/private/var/db/timezone")', '(subpath "/usr/share/zoneinfo")']) expect(p).toContain(`(allow file-read* ${s})`);
     for (const d of ["/private", "/private/var", "/private/var/db"]) expect(p).toContain(`(allow file-read-metadata (literal "${d}"))`);
   });
-  it("is deterministic for the same pair and escapes quotes in a path", () => {
+  it("exec allowlist: process-exec* is denied by default and re-allowed only for the named binaries, each of which exists on this Mac", () => {
+    const l = lines();
+    expect(l.indexOf("(deny process-exec*)")).toBeGreaterThan(l.indexOf('(deny process-exec (literal "/usr/bin/python3"))'));
+    const allow = l.find((x) => x.startsWith("(allow process-exec* "))!;
+    expect(l.indexOf(allow)).toBeGreaterThan(l.indexOf("(deny process-exec*)"));
+    for (const b of CLEANROOM_EXEC_ALLOW) expect(allow, b).toContain(`(literal "${b}")`);
+    for (const b of ["/bin/bash", "/usr/bin/env", "/usr/bin/nice", "/usr/bin/curl", "/bin/date", "/bin/test", "/bin/pwd"]) expect(CLEANROOM_EXEC_ALLOW).toContain(b);
+    for (const b of ["/usr/bin/perl", "/usr/bin/python3", "/usr/bin/ruby", "/usr/bin/script", "/usr/bin/screen", "/usr/bin/osascript", "/usr/bin/nc", "/usr/bin/openssl"]) expect(allow, b).not.toContain(`"${b}"`); // never in the allow line (python3 appears only in its deny)
+    if (process.platform === "darwin") for (const b of CLEANROOM_EXEC_ALLOW) expect(existsSync(b), b).toBe(true); // /usr/bin/test does not exist here; /bin/test does
+  });
+  it("the room is writable inside but the room path itself is not: an orphan cannot re-create the room after teardown", () => {
+    const p = renderCleanroom(dirs);
+    expect(p).toContain(`(allow file-write* (regex #"^${dirs.room}/"))`);
+    expect(p).not.toContain(`(allow file-write* (subpath "${dirs.room}"))`);
+    expect(lastRuleFor(p, "file-write*", `${dirs.room}/cj.txt`)).toBe("allow");
+    expect(lastRuleFor(p, "file-write*", dirs.room)).toBe("deny");
+    expect(lastRuleFor(p, "file-write*", `${dirs.room}-evil/x`)).toBe("deny");
+  });
+  it("is deterministic for the same pair, and a room path with a quote or backslash is refused (SBPL's regex literal has no escape for them)", () => {
     expect(renderCleanroom(dirs)).toBe(renderCleanroom(dirs));
-    const odd = { room: '/Users/p/Library/Caches/houge-daemon/r"1', home: '/Users/p/Library/Caches/houge-daemon/h"\\1' };
-    expect(renderCleanroom(odd)).toContain('(allow file-write* (subpath "/Users/p/Library/Caches/houge-daemon/r\\"1"))');
+    const odd = { room: '/Users/p/Library/Caches/houge-daemon/r"1', home: '/Users/p/Library/Caches/houge-daemon/home-1' };
+    expect(() => renderCleanroom(odd)).toThrow(/quote|backslash/);
+  });
+  it("escapes quotes and backslashes in the read rules of the home path", () => {
+    const odd = { room: "/Users/p/Library/Caches/houge-daemon/room-1", home: '/Users/p/Library/Caches/houge-daemon/h"\\1' };
     expect(renderCleanroom(odd)).toContain('(allow file-read* (subpath "/Users/p/Library/Caches/houge-daemon/h\\"\\\\1"))');
   });
 });
@@ -375,6 +396,17 @@ describe("writeCleanroomProfile / cleanroomEnv", () => {
   });
 });
 
+describe("sbplRegexLiteral", () => {
+  it("is exact: a room path with regex punctuation matches itself and not a sibling that differs only there (regexPath widens on purpose for denies; an allow may not)", () => {
+    const room = "/Users/p/Library/Caches/h.d+(1)[a]/cleanroom/room-1";
+    const rule = `(allow file-write* (regex #"^${sbplRegexLiteral(room)}/"))`;
+    expect(lastRuleFor(rule, "file-write*", `${room}/f`)).toBe("allow");
+    expect(lastRuleFor(rule, "file-write*", "/Users/p/Library/Caches/hXd+(1)[a]/cleanroom/room-1/f")).toBeNull();
+    expect(lastRuleFor(rule, "file-write*", "/Users/p/Library/Caches/h.dd(1)a/cleanroom/room-1/f")).toBeNull();
+    expect(() => sbplRegexLiteral('/x/q"uote')).toThrow(/quote|backslash/);
+  });
+});
+
 describe.runIf(process.platform === "darwin")("live clean room — the properties the probe established, re-proven on this Mac", () => {
   it("positive controls: a binary starts (dyld reads /), getcwd works (ancestor metadata), the room is writable, the home readable", () => {
     const { run, dirs } = sealedRoom();
@@ -484,5 +516,31 @@ describe.runIf(process.platform === "darwin")("live clean room — the propertie
     const { run } = sealedRoom();
     const host = spawnSync("/bin/date", ["+%Z"], { encoding: "utf8" }).stdout.trim();
     expect(run("/bin/date +%Z").stdout.trim()).toBe(host);
+  });
+  it("exec allowlist live: perl and script are refused (the setsid() carriers), the allowed pipeline runs", () => {
+    const { run } = sealedRoom();
+    for (const cmd of ["/usr/bin/perl -e 1", "/usr/bin/script -q /dev/null /usr/bin/true", "/usr/bin/ruby -e 1"]) {
+      const r = run(cmd); expect(r.status, cmd).toBe(126); expect(r.stderr, cmd).toMatch(/Operation not permitted/);
+    }
+    const ok = run("/bin/echo a b | /usr/bin/tr ' ' '\\n' | /usr/bin/wc -l | /usr/bin/tr -d ' '");
+    expect(ok.status).toBe(0); expect(ok.stdout.trim()).toBe("2");
+  });
+  it("write rule live: files and subdirectories inside the room are writable, the room path itself is not re-creatable once removed", () => {
+    const { run, dirs } = sealedRoom();
+    expect(run("/bin/echo hi > f.txt && /bin/mkdir sub && /bin/echo ok").stdout.trim()).toBe("ok");
+    rmSync(dirs.room, { recursive: true, force: true });
+    // cwd is gone: run from the home (readable) instead
+    const r = spawnSync("/usr/bin/env", ["-i", ...Object.entries(cleanroomEnv(dirs)).map(([k, v]) => `${k}=${v}`), "/usr/bin/sandbox-exec", "-f", join(dirs.home, CLEANROOM_PROFILE_NAME), "/bin/bash", "-c", `/bin/mkdir "${dirs.room}"`], { cwd: dirs.home, encoding: "utf8" });
+    expect(r.status).not.toBe(0); expect(r.stderr).toMatch(/Operation not permitted/); expect(existsSync(dirs.room)).toBe(false);
+  });
+  it("bind live: with the real profile plus exactly one appended exec allow for nc, nc -l cannot bind (the network lines are byte-identical)", () => {
+    const { dirs, profile, env } = sealedRoom();
+    const real = readFileSync(profile, "utf8");
+    const variant = `${real}(allow process-exec* (literal "/usr/bin/nc"))\n`;
+    expect(variant.split("\n").filter((l) => l.includes("network"))).toEqual(real.split("\n").filter((l) => l.includes("network")));
+    const vp = join(dirs.home, "variant.sb"); writeFileSync(vp, variant);
+    const r = spawnSync("/usr/bin/env", ["-i", ...Object.entries(env).map(([k, v]) => `${k}=${v}`), "/usr/bin/sandbox-exec", "-f", vp, "/usr/bin/nc", "-l", "127.0.0.1", "48999"], { cwd: dirs.room, encoding: "utf8", timeout: 3000 });
+    // nc is the first exec here, so the refusal is sandbox-exec's own (rc 1, "nc: Operation not permitted"), not bash's 126
+    expect(r.stderr).toMatch(/Operation not permitted/); expect(r.status).not.toBe(0);
   });
 });
