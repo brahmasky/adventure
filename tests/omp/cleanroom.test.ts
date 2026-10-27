@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpath
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { CLEANROOM_PROFILE_NAME, CleanroomPathError, cleanroomEnv, cleanroomRoot, validateCleanroomDirs, writeCleanroomProfile } from "../../src/omp/cleanroom.js";
+import { CLEANROOM_PROFILE_NAME, type CleanroomDirs, CleanroomPathError, cleanroomEnv, cleanroomRoot, validateCleanroomDirs, writeCleanroomProfile } from "../../src/omp/cleanroom.js";
 import { realpathOrSelf, writeRoots } from "../../src/omp/protected-paths.js";
 import { renderCleanroom, renderSeatbelt } from "../../src/omp/seatbelt.js";
 import { resolveDaemonTmpDir } from "../../src/run/daemon-tmp.js";
@@ -318,6 +318,11 @@ function sealedRoom() {
 }
 
 describe("writeCleanroomProfile / cleanroomEnv", () => {
+  it("refuses a pair that did not come from validateCleanroomDirs (the type brand is erased at runtime; a plain-JS caller must fail here, not write a profile)", () => {
+    const root = cacheRoot(); const { room, home } = pair(root);
+    expect(() => writeCleanroomProfile({ room, home } as unknown as CleanroomDirs)).toThrow(/validateCleanroomDirs/);
+    expect(readdirSync(home)).toEqual([]);
+  });
   it("writes the sidecar into the home at 0600 and returns its path; the home then holds exactly that file (no temp left behind)", () => {
     const root = cacheRoot(); const { room, home } = pair(root);
     const dirs = withCacheRoot(root, () => validateCleanroomDirs({ room, home }));

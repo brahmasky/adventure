@@ -95,6 +95,8 @@ export function cleanroomEnv(dirs: RoomPair): { PATH: string; LANG: string; HOME
  * sandbox-exec has parsed it before the child starts). Written after validation, so "home is empty" held at that point.
  */
 export function writeCleanroomProfile(dirs: CleanroomDirs): string {
+  // the brand is erased at runtime: a plain-JS caller handing over a literal pair must fail here, not write a profile
+  if (!(VALIDATED in dirs)) throw new TypeError("cleanroom: writeCleanroomProfile needs a pair from validateCleanroomDirs");
   const path = join(dirs.home, CLEANROOM_PROFILE_NAME);
   const tmp = `${path}.tmp-${process.pid}`;
   writeFileSync(tmp, renderCleanroom(dirs), { mode: 0o600 });
