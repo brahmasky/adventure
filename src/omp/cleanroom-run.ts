@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { accessSync, constants, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { accessSync, constants, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { CLEANROOM_PROFILE_NAME, type CleanroomDirs, CleanroomPathError, type CleanroomReason, cleanroomRoot, type RoomPair, validateCleanroomDirs, writeCleanroomProfile } from "./cleanroom.js";
 import type { OmpConfig } from "./omp-config.js";
@@ -113,37 +113,64 @@ export async function runCleanroomShell(deps: CleanroomDeps, command: string, si
       step = "precheck"; const pre = intact(dirs, ino, false);
       if (pre.length > 0) return (out = base({ ...out, reason: "cleanroom_tampered", room: dirs.room, tamper_names: pre }));
       if (signal?.aborted) return (out = base({ ...out, reason: "aborted", room: dirs.room })); // the signal flipped during setup: nothing ran
+      // runAndCheck never throws: once the shell is invoked, no error may read as a pre-spawn (ran: false) result
       return (out = await runAndCheck(deps, out, dirs, ino, profile, command, signal));
     } catch (e) { return (out = base({ ...out, reason: "cleanroom_setup", setup_step: step, setup_error: String(e) })); }
   } finally {
     for (const p of made) {
-      try { rm(p); } catch (e) { out.torn_down = false; out.teardown_error = [out.teardown_error, `${p}: ${String(e)}`].filter(Boolean).join("; "); }
+      const fail = (why: string) => { out.torn_down = false; out.teardown_error = [out.teardown_error, `${p}: ${why}`].filter(Boolean).join("; "); };
+      // a remover that returns without removing is not a teardown: the directory's absence is the proof
+      try { rm(p); if (existsSync(p)) fail("still present"); } catch (e) { fail(String(e)); }
       active.delete(p);
     }
   }
 }
 
-/** Spawn, always await, then the post-run checks; a thrown test hook after the spawn is a check error, never a setup error, because the command is already running. */
+/**
+ * Spawn and check, total: from the moment the shell is invoked the command may have had an effect, so an unexpected
+ * throw is `wrapper_unknown` with `ran: true` (state unknown) — never a setup failure a caller could safely retry.
+ */
 async function runAndCheck(deps: CleanroomDeps, prev: CleanroomRunResult, dirs: CleanroomDirs, ino: Inodes, profile: string, command: string, signal?: AbortSignal): Promise<CleanroomRunResult> {
+  try { return await spawnAndCheck(deps, prev, dirs, ino, profile, command, signal); }
+  catch (e) { return base({ ...prev, reason: "wrapper_unknown", ran: true, room: dirs.room, check_error: String(e) }); }
+}
+
+/** A thrown test hook after the spawn is a check error, never a setup error, because the command is already running. */
+async function spawnAndCheck(deps: CleanroomDeps, prev: CleanroomRunResult, dirs: CleanroomDirs, ino: Inodes, profile: string, command: string, signal?: AbortSignal): Promise<CleanroomRunResult> {
   const pending = (deps.shell ?? runShell)({ command, cwd: dirs.room, profilePath: profile, wrapperPath: join(deps.distDir, "omp", "shell-wrapper.sh"),
     env: { HOUGE_SHELL_CLEANROOM: "1", CR_HOME: dirs.home, CR_ROOM: dirs.room }, timeoutMs: deps.cfg.shellTimeoutMs, outputCapBytes: 32 * 1024, sandbox: true, ...(signal ? { signal } : {}) });
   let hookError: string | undefined; try { deps.afterSpawn?.(dirs); } catch (e) { hookError = String(e); }
   const r = await pending;
-  const out: CleanroomRunResult = { ...prev, ...r, executor: "cleanroom", ran: r.reason !== "spawn", room: dirs.room, torn_down: true, tampered: false };
+  // copy optional fields only when defined: a present-but-undefined optional is a different shape under exactOptionalPropertyTypes
+  const out: CleanroomRunResult = { ...prev, status: r.status, exitCode: r.exitCode, output: r.output, truncated: r.truncated, wrapperStatus: r.wrapperStatus,
+    ...(r.reason !== undefined ? { reason: r.reason } : {}), ...(r.escaped !== undefined ? { escaped: r.escaped } : {}),
+    executor: "cleanroom", ran: r.reason !== "spawn", room: dirs.room, torn_down: true, tampered: false };
   if (hookError) out.check_error = hookError;
   const addCheckError = (e: unknown) => { out.check_error = [out.check_error, String(e)].filter(Boolean).join("; "); };
   try { const post = intact(dirs, ino, true); if (post.length > 0) { out.tampered = true; out.tamper_names = post; } } catch (e) { addCheckError(e); }
   if (r.escaped) out.escape_source = "pipe"; // a source whenever escaped is set, even if the scan below cannot run
-  const uid = process.getuid?.();
-  if (uid === undefined) addCheckError("getuid unavailable");
-  else {
-    try {
-      const found = orphansIn(dirs.room, (deps.lsof ?? defaultLsof)(uid));
-      if (found.length > 0) { out.orphans = found; for (const pid of found) try { process.kill(pid, "SIGKILL"); } catch (e) { if ((e as NodeJS.ErrnoException).code !== "ESRCH") addCheckError(`kill ${pid}: ${String(e)}`); } }
-      if (found.length > 0) { out.escaped = true; out.escape_source = r.escaped ? "both" : "orphan_scan"; }
-    } catch (e) { addCheckError(e); }
-  }
+  scanOrphans(deps, dirs, out, r.escaped === true, addCheckError);
   return out;
+}
+
+/** Never this process or its parent: if either sat in the room, killing it would take the daemon down with the orphan. */
+export function killable(pids: number[]): number[] {
+  return pids.filter((pid) => pid > 1 && pid !== process.pid && pid !== process.ppid);
+}
+
+/** Processes still in the room after the wrapper exited left its group: kill them and mark the run escaped. */
+function scanOrphans(deps: CleanroomDeps, dirs: CleanroomDirs, out: CleanroomRunResult, pipeEscaped: boolean, addCheckError: (e: unknown) => void): void {
+  const uid = process.getuid?.();
+  if (uid === undefined) { addCheckError("getuid unavailable"); return; }
+  try {
+    const found = orphansIn(dirs.room, (deps.lsof ?? defaultLsof)(uid));
+    if (found.length === 0) return;
+    out.orphans = found;
+    for (const pid of killable(found)) {
+      try { process.kill(pid, "SIGKILL"); } catch (e) { if ((e as NodeJS.ErrnoException).code !== "ESRCH") addCheckError(`kill ${pid}: ${String(e)}`); }
+    }
+    out.escaped = true; out.escape_source = pipeEscaped ? "both" : "orphan_scan";
+  } catch (e) { addCheckError(e); }
 }
 
 /** Every process of this user with its cwd, as lsof field records; a deleted room still shows its path. */

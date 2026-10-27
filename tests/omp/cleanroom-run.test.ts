@@ -3,8 +3,8 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanroomRoot } from "../../src/omp/cleanroom.js";
-import { CLEANROOM_SWEEP_MIN_MS, orphansIn, runCleanroomShell } from "../../src/omp/cleanroom-run.js";
+import { cleanroomEnv, cleanroomRoot } from "../../src/omp/cleanroom.js";
+import { CLEANROOM_SWEEP_MIN_MS, killable, orphansIn, runCleanroomShell } from "../../src/omp/cleanroom-run.js";
 import { resolveOmpConfig } from "../../src/omp/omp-config.js";
 import { tmpOmpDist } from "../helpers/omp-env.js";
 
@@ -40,6 +40,11 @@ describe.runIf(process.platform === "darwin")("runCleanroomShell — one sealed 
     expect(r.room!.startsWith(join(cleanroomRoot(), "room-"))).toBe(true);
     expect(r.output.split("\n")[0]).toBe(r.room);
     expect(r.output).toMatch(/^HOME=.*\/home-/m); expect(r.output).not.toMatch(/^SB=/m);
+    // the whole environment is the fixed set plus what bash itself adds: nothing of the daemon's leaks through
+    const env = Object.fromEntries(r.output.split("\n").slice(1).filter((l) => l.includes("=")).map((l) => [l.slice(0, l.indexOf("=")), l.slice(l.indexOf("=") + 1)]));
+    const fixed = cleanroomEnv({ room: r.room!, home: env.HOME! });
+    expect(Object.keys(env).sort()).toEqual([...Object.keys(fixed), "PWD", "SHLVL", "_"].sort());
+    for (const [k, v] of Object.entries(fixed)) expect(env[k]).toBe(v);
     expect(readdirSync(cleanroomRoot())).toEqual([]);
   });
   it("a non-zero exit is still status succeeded with the code (the adapter's contract); teardown still runs", async () => {
@@ -85,7 +90,7 @@ describe.runIf(process.platform === "darwin")("runCleanroomShell — one sealed 
     const late = await runCleanroomShell({ ...deps(), afterSidecar: () => ac.abort() }, "/bin/echo x", ac.signal);
     expect(late).toMatchObject({ status: "failed", reason: "aborted", ran: false, torn_down: true });
   });
-  it("a sweep clock failure reports step sweep, and a failure after the first mkdtemp (validation of a pair whose home vanished) tears the first directory down and clears the active set — the next call succeeds", async () => {
+  it("a sweep clock failure reports step sweep; a symlinked cleanroom root is refused after both directories were made, and torn down — the next call succeeds", async () => {
     let n = 0; const r = await runCleanroomShell({ ...deps(), now: () => { if (++n === 1) throw new Error("clock"); return Date.now(); } }, "/bin/echo x");
     expect(r).toMatchObject({ status: "failed", reason: "cleanroom_setup", setup_step: "sweep", ran: false, torn_down: true }); expect(r.setup_error).toMatch(/clock/);
     expect(readdirSync(cleanroomRoot())).toEqual([]);
@@ -114,6 +119,26 @@ describe.runIf(process.platform === "darwin")("runCleanroomShell — one sealed 
   it("orphansIn reads lsof records: an n line counts only after fcwd for the current p record", () => {
     const room = "/private/x/cleanroom/room-1";
     expect(orphansIn(room, "p10\nfcwd\nn/private/x/cleanroom/room-1\np11\nftxt\nn/private/x/cleanroom/room-1/f\np12\nfcwd\nn/private/x/cleanroom/room-1/sub\np13\nfcwd\nn/private/x/cleanroom/room-10\n")).toEqual([10, 12]);
+  });
+  it("a shell that throws after being invoked is ran:true wrapper_unknown, never a retryable setup failure", async () => {
+    const r = await runCleanroomShell({ ...deps(), shell: async () => { throw new Error("shell boom"); } }, "/bin/echo x");
+    expect(r).toMatchObject({ status: "failed", reason: "wrapper_unknown", ran: true, torn_down: true }); expect(r.check_error).toMatch(/shell boom/);
+    expect(r.setup_step).toBeUndefined();
+  });
+  it("the orphan kill list never holds this process or its parent", () => {
+    expect(killable([process.pid, process.ppid, 1, 4242])).toEqual([4242]);
+  });
+  it("a remover that returns without removing is torn_down:false naming the path still present", async () => {
+    const r = await runCleanroomShell({ ...deps(), rm: () => {} }, "/bin/echo x");
+    expect(r).toMatchObject({ status: "succeeded", torn_down: false }); expect(r.teardown_error).toContain(`${r.room}: still present`);
+    rmSync(cleanroomRoot(), { recursive: true, force: true });
+  });
+  it("an overlapping run's directories are in the active set: a later sweep past the age bound leaves them alone", async () => {
+    const a = runCleanroomShell(deps(), "/bin/sleep 2; /bin/echo a");
+    await new Promise((res) => setTimeout(res, 300));
+    const b = await runCleanroomShell({ ...deps(), now: () => Date.now() + 10 * 60 * 60_000 }, "/bin/echo b");
+    expect(b).toMatchObject({ status: "succeeded", swept: [] });
+    const ra = await a; expect(ra).toMatchObject({ status: "succeeded", torn_down: true }); expect(ra.output).toBe("a\n");
   });
   it("an lsof failure is check_error, not escaped; a teardown failure is torn_down:false with the error, status unchanged", async () => {
     const r = await runCleanroomShell({ ...deps(), lsof: () => { throw new Error("lsof: boom"); } }, "/bin/echo x");
