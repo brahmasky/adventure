@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { CATALOG_TIMEOUT_MS, parseOmpCatalog, readOmpCatalog, readOmpCatalogResult, type ExecFileAsync } from "../../src/omp/model-catalog.js";
+import { childTmpRoot } from "../../src/run/daemon-tmp.js";
 import { CATALOG_FIXTURE } from "../helpers/model-roles.js";
 import { NO_OMP_BIN } from "../helpers/omp-env.js";
 
@@ -47,6 +48,7 @@ describe("readOmpCatalog — one bounded, session-less read that never throws", 
       expect(calls[0]?.file).toBe("/fake/omp");
       expect(calls[0]?.args).toEqual(["--profile", "houge", "models", "--json"]);
       expect(calls[0]?.opts?.timeout).toBe(CATALOG_TIMEOUT_MS);
+      expect(calls[0]?.opts?.env?.TMPDIR).toBe(childTmpRoot());
       expect(Object.values(calls[0]?.opts?.env ?? {})).not.toContain("canary-cat-1");
     } finally {
       delete process.env.HOUGE_TEST_CATALOG_SECRET;

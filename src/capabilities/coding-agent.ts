@@ -1,5 +1,5 @@
 import { readFileSync, rmSync } from "node:fs";
-import { daemonMkdtempSync, daemonTmpRoot } from "../run/daemon-tmp.js";
+import { childTmpRoot, daemonMkdtempSync } from "../run/daemon-tmp.js";
 import { join } from "node:path";
 import type { ToolAdapterResult } from "../tools/tool-registry.js";
 import { execFileAsync } from "../run/exec-file-async.js";
@@ -33,7 +33,7 @@ const DEFAULT_CODEX_TIMEOUT_MS = 240_000;
  * flag. `HOUGE_CODEX_ENV_PASSTHROUGH` is an opt-in escape hatch (mirrors the pi/agy passthrough).
  */
 function codexChildEnv(): Record<string, string> {
-  return { ...buildChildEnv(process.env.HOUGE_CODEX_ENV_PASSTHROUGH), TMPDIR: daemonTmpRoot() };
+  return { ...buildChildEnv(process.env.HOUGE_CODEX_ENV_PASSTHROUGH), TMPDIR: childTmpRoot() };
 }
 /** Cap for codex `--json` JSONL stdout (agentic file-reading can emit a large event stream). */
 const CODEX_WRITE_MAX_BUFFER = 32 * 1024 * 1024;
@@ -101,7 +101,9 @@ export function buildCodexArgs(worktree: string, outfile: string, model?: string
  * The artifact is still the edited files in the worktree; the JSONL is observability only.
  */
 export function buildCodexWriteArgs(worktree: string, model?: string): string[] {
-  const args = ["exec", "--json", "--sandbox", "workspace-write", "-C", worktree];
+  // codex's workspace-write grants writes to $TMPDIR by default (measured 2026-10-28: a sandboxed command wrote into
+  // it; with this key it got Operation not permitted), so the grant is withdrawn.
+  const args = ["exec", "--json", "--sandbox", "workspace-write", "-C", worktree, "-c", "sandbox_workspace_write.exclude_tmpdir_env_var=true"];
   if (model) {
     args.push("-m", model);
   }

@@ -16,7 +16,7 @@
 // Tool use is deliberately permitted where the operator has allowed it; denied attempts are
 // surfaced in the failure text so an injection attempt is visible rather than silent.
 import { rm } from "node:fs/promises";
-import { daemonMkdtemp, daemonTmpRoot, gitAncestor } from "../../run/daemon-tmp.js";
+import { childTmpRoot, daemonMkdtemp, gitAncestor } from "../../run/daemon-tmp.js";
 import path from "node:path";
 import type { LlmProvider, LlmRequest, LlmResult } from "../types.js";
 import { normalizeAgyUsage } from "../../run/llm-usage.js";
@@ -194,7 +194,7 @@ export function createAgyCliProvider(config: AgyCliProviderConfig = {}): LlmProv
 
     // Minimal env (no secrets); agy reads its own auth from $HOME. Opt extra vars in via
     // HOUGE_AGY_ENV_PASSTHROUGH if a deployment stores agy auth in an env var.
-    const env = { ...buildChildEnv(process.env.HOUGE_AGY_ENV_PASSTHROUGH), TMPDIR: daemonTmpRoot() };
+    const env = { ...buildChildEnv(process.env.HOUGE_AGY_ENV_PASSTHROUGH), TMPDIR: childTmpRoot() };
 
     // A FRESH, EMPTY directory per text call — never the daemon temp root itself. agy is agentic and
     // roots its workspace at the cwd (`--add-dir` extends it), and the shared temp root is where

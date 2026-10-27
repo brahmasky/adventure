@@ -1,5 +1,5 @@
 import { execFileAsync } from "../run/exec-file-async.js";
-import { daemonTmpRoot } from "../run/daemon-tmp.js";
+import { childTmpRoot } from "../run/daemon-tmp.js";
 import { buildChildEnv } from "./child-env.js";
 import { parseModelString, type OmpEffort } from "./model-string.js";
 import type { CatalogModel } from "./model-roles.js";
@@ -44,7 +44,7 @@ export async function readOmpCatalogResult(cfg: Pick<OmpConfig, "bin" | "profile
   signal?: AbortSignal): Promise<CatalogRead> {
   let stdout: string;
   try {
-    const env = { ...buildChildEnv(cfg.envPassthrough), TMPDIR: daemonTmpRoot() };
+    const env = { ...buildChildEnv(cfg.envPassthrough), TMPDIR: childTmpRoot() };
     ({ stdout } = await exec(cfg.bin, ["--profile", cfg.profile, "models", "--json"], { timeout: CATALOG_TIMEOUT_MS, maxBuffer: CATALOG_MAX_BYTES, env,
       ...(signal ? { signal } : {}) }));
   } catch (error) {

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { invalidateAgyVoiceModel, parseAgyModels, pickVoiceModel, resetAgyModelCacheForTest, resolveAgyVoiceModel } from "../../../src/llm/providers/agy-models.js";
+import { childTmpRoot } from "../../../src/run/daemon-tmp.js";
 import type { SpawnImpl, SpawnResult } from "../../../src/omp/child-env.js";
 
 // Live `agy models` output shape (probed 2026-10-07): a progress line, then `<id>\t<display name>`, newest first.
@@ -41,6 +42,7 @@ describe("agy voice model — resolved from agy's own catalog, never a pinned ve
     expect(await resolveAgyVoiceModel("agy", spawnImpl)).toBe("Gemini 3.9 Flash (Low)");
     expect(spawnImpl).toHaveBeenCalledTimes(1);
     expect(spawnImpl.mock.calls[0]![1]).toEqual(["models"]);
+    expect(spawnImpl.mock.calls[0]![2].env.TMPDIR).toBe(childTmpRoot());
   });
 
   // A failed listing must not fail the voice note: no model is passed and agy uses its own default. The failure is

@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { OMP_ENV_VARS, resolveOmpConfig } from "../../../src/omp/omp-config.js";
 import { parseModelChain } from "../../../src/omp/model-string.js";
 import { LEG_EXIT_GRACE_MS, spawnOneShot } from "../../../src/llm/providers/omp.js";
-import { daemonTmpRoot } from "../../../src/run/daemon-tmp.js";
+import { childTmpRoot } from "../../../src/run/daemon-tmp.js";
 import { recordingSink } from "../../helpers/llm-audit.js";
 import { maxLoopGap, slowVersionBin } from "../../helpers/event-loop.js";
 
@@ -97,10 +97,10 @@ describe("omp one-shot seat — every non-planner LLM call in Houge", () => {
     expect(audit.attempts.map((a) => [a.model, a.outcome, a.error_kind])).toEqual([["gemini-3.8-flash", "error", "model_missing"], ["k3", "ok", undefined]]);
   });
 
-  it("runs the one-shot with TMPDIR=<data>/tmp — never planner-writable /tmp or os.tmpdir() (B13)", async () => {
+  it("runs the one-shot with TMPDIR=<cache>/children — a sibling of the clean rooms, never their parent", async () => {
     const cfg = setup({ "*": { text: "ok" } });
     await spawnOneShot({ seat: "ticks", chain: cfg.ticks, prompt: "x", correlationId: "c" }, { cfg, audit: recordingSink(), versionCheck: () => ({ ok: true, version: "18.4.4" }) });
-    expect(argvLog()[0].tmpdir).toBe(daemonTmpRoot());
+    expect(argvLog()[0].tmpdir).toBe(childTmpRoot());
   });
 
   it("never hands a one-shot seat a daemon secret: its env is the allowlist, not process.env (ADR 0015, testing I-1)", async () => {

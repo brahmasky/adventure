@@ -34,6 +34,18 @@ export function daemonTmpRoot(): string {
   return root;
 }
 
+/**
+ * TMPDIR for every child that is not a sealed command (agy, codex, omp one-shots, the catalog): a SIBLING of
+ * `cleanroom/`, never its parent. codex's workspace-write sandbox grants writes to $TMPDIR (measured: default WROTE,
+ * excluded DENIED), so with the root as TMPDIR a prompt-injected codex turn could plant a .curlrc in a fresh home.
+ */
+export function childTmpRoot(): string {
+  const dir = join(daemonTmpRoot(), "children");
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  chmodSync(dir, 0o700); // an existing directory with a looser mode is tightened, as the root is
+  return dir;
+}
+
 /** The nearest directory at or above `dir` holding a `.git` (dir or file), or null outside any git repo. */
 export function gitAncestor(dir: string): string | null {
   for (let d = resolve(dir); ; d = dirname(d)) {

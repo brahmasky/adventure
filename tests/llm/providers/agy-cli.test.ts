@@ -8,6 +8,7 @@ import {
   ERROR_EXCERPT_MAX
 } from "../../../src/llm/providers/agy-cli.js";
 import { resetAgyModelCacheForTest } from "../../../src/llm/providers/agy-models.js";
+import { childTmpRoot } from "../../../src/run/daemon-tmp.js";
 import type { SpawnImpl, SpawnResult } from "../../../src/omp/child-env.js";
 
 /** Build a SpawnResult with sane defaults so tests only set what they assert. */
@@ -106,6 +107,10 @@ describe("createAgyCliProvider", () => {
       "--print",
       "hello"
     ]);
+    // agy is agentic: its only write lock headless is the permission prompt, which print mode auto-denies.
+    // Neither flag that removes it may ever appear (a prompt-injected transcript could then plant a file).
+    expect(args).not.toContain("--dangerously-skip-permissions"); expect(args).not.toContain("--mode");
+    expect(opts.env.TMPDIR).toBe(childTmpRoot()); // opts is SpawnOpts (child-env.ts): env is Record<string, string>
     // The prompt rides argv (not stdin); stdin stays empty.
     expect(opts.input).toBe("");
   });

@@ -3,7 +3,8 @@ import { join, relative } from "node:path";
 import { describe, expect, it } from "vitest";
 import { chmodSync, mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { daemonMkdtempSync, daemonTmpRoot, gitAncestor, isDaemonTmpDir, resolveDaemonTmpDir, selfWriteRoot } from "../../src/run/daemon-tmp.js";
+import { childTmpRoot, daemonMkdtempSync, daemonTmpRoot, gitAncestor, isDaemonTmpDir, resolveDaemonTmpDir, selfWriteRoot } from "../../src/run/daemon-tmp.js";
+import { cleanroomRoot } from "../../src/omp/cleanroom.js";
 
 const SRC = new URL("../../src", import.meta.url).pathname;
 
@@ -22,6 +23,14 @@ function sources(dir: string): string[] {
 }
 
 describe("daemon temp space (final review B13)", () => {
+  it("every other child's TMPDIR is a sibling of the clean rooms, never an ancestor: <cache>/children vs <cache>/cleanroom, by path and by inode", () => {
+    const c = childTmpRoot(); const r = cleanroomRoot();
+    expect(c).toBe(join(daemonTmpRoot(), "children")); expect(statSync(c).mode & 0o777).toBe(0o700);
+    expect(r.startsWith(c + "/")).toBe(false); expect(c.startsWith(r + "/")).toBe(false);
+    mkdirSync(r, { recursive: true });
+    expect(statSync(c, { bigint: true }).ino).not.toBe(statSync(r, { bigint: true }).ino);
+  });
+
   it("no src file calls os.tmpdir() / tmpdir() outside the justified allowlist", () => {
     const hits = sources(SRC).filter((f) => /\btmpdir\s*\(/.test(readFileSync(f, "utf8").replace(/\/\/.*$|\/\*[\s\S]*?\*\//gm, "")))
       .map((f) => relative(SRC, f));

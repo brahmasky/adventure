@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createCodingAgentAdapter } from "../../src/capabilities/coding-agent.js";
+import { childTmpRoot } from "../../src/run/daemon-tmp.js";
 
 let temps: string[] = [];
 
@@ -61,6 +62,7 @@ describe("Codex child env lockdown (ADR 0015 §5)", () => {
       expect(childEnv).not.toContain("token-should-not-leak");
       // The child DOES get the minimal allowlist so it can still run (PATH at least).
       expect(childEnv).toMatch(/^PATH=/m);
+      expect(childEnv.split("\n")).toContain(`TMPDIR=${childTmpRoot()}`);
     } finally {
       if (prevKimi === undefined) delete process.env.KIMI_API_KEY;
       else process.env.KIMI_API_KEY = prevKimi;

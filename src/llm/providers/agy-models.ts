@@ -1,6 +1,6 @@
 // The voice leg's model, resolved from agy's own catalog (`agy models`) instead of a pinned version (Paco, 2026-10-07:
 // no hard-coded model versions): the highest-versioned Gemini Flash at low effort.
-import { daemonTmpRoot } from "../../run/daemon-tmp.js";
+import { childTmpRoot, daemonTmpRoot } from "../../run/daemon-tmp.js";
 import { buildChildEnv, type SpawnImpl } from "../../omp/child-env.js";
 
 export interface AgyModel { id: string; name: string }
@@ -51,7 +51,7 @@ export function pickVoiceModel(models: readonly AgyModel[], exclude: ReadonlySet
 /** One `agy models` read; null on any failure. Never throws. */
 async function listVoiceModel(binary: string, spawnImpl: SpawnImpl, exclude: ReadonlySet<string>): Promise<string | null> {
   try {
-    const env = { ...buildChildEnv(process.env.HOUGE_AGY_ENV_PASSTHROUGH), TMPDIR: daemonTmpRoot() };
+    const env = { ...buildChildEnv(process.env.HOUGE_AGY_ENV_PASSTHROUGH), TMPDIR: childTmpRoot() };
     const r = await spawnImpl(binary, ["models"], { timeoutMs: LIST_TIMEOUT_MS, cwd: daemonTmpRoot(), env, maxBytes: LIST_MAX_BYTES, input: "" });
     return r.code === 0 && !r.timedOut && !r.spawnError ? pickVoiceModel(parseAgyModels(r.stdout), exclude) : null;
   } catch (error) {
