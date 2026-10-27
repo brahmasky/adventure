@@ -1,11 +1,14 @@
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
-import { CleanroomPathError, validateCleanroomDirs } from "../../src/omp/cleanroom.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { CLEANROOM_PROFILE_NAME, CleanroomPathError, cleanroomEnv, validateCleanroomDirs, writeCleanroomProfile } from "../../src/omp/cleanroom.js";
 import { realpathOrSelf, writeRoots } from "../../src/omp/protected-paths.js";
 import { renderCleanroom, renderSeatbelt } from "../../src/omp/seatbelt.js";
 import { resolveDaemonTmpDir } from "../../src/run/daemon-tmp.js";
+
+vi.setConfig({ testTimeout: 30_000 });
 
 const made: string[] = [];
 function cacheRoot(): string { const r = mkdtempSync(join(tmpdir(), "hg-cr-")); made.push(r); return realpathSync(r); }
@@ -177,6 +180,93 @@ describe("effective policy — the planner and shell profiles deny the cache roo
         expect(lastRuleFor(prof, "file-write*", t), `write ${t}`).toBe("deny");
         expect(lastRuleFor(prof, "file-write*", `${t}/x`), `write ${t}/x`).toBe("deny");
       }
+    }
+  });
+});
+
+/** bash exports these three itself under `env -i`; they carry nothing from the daemon (verified: `env -i … bash -c env`). */
+const BASH_OWN = ["PWD", "SHLVL", "_"];
+
+/** A validated pair under a temp cache root, its profile written, and a runner that launches like Slice 1 will: env -i, cwd = room. */
+function sealedRoom() {
+  const root = cacheRoot(); const { room, home } = pair(root);
+  const dirs = validateCleanroomDirs({ room, home, cacheRoot: root });
+  const profile = writeCleanroomProfile(dirs);
+  const env = cleanroomEnv(dirs);
+  const run = (script: string) => spawnSync("/usr/bin/env", ["-i", ...Object.entries(env).map(([k, v]) => `${k}=${v}`),
+    "/usr/bin/sandbox-exec", "-f", profile, "/bin/bash", "-c", script], { cwd: dirs.room, encoding: "utf8" });
+  return { root, dirs, profile, env, run };
+}
+
+describe("writeCleanroomProfile / cleanroomEnv", () => {
+  it("writes the sidecar into the home at 0600 and returns its path", () => {
+    const root = cacheRoot(); const { room, home } = pair(root);
+    const dirs = validateCleanroomDirs({ room, home, cacheRoot: root });
+    const p = writeCleanroomProfile(dirs);
+    expect(p).toBe(join(dirs.home, CLEANROOM_PROFILE_NAME));
+    expect(statSync(p).mode & 0o777).toBe(0o600);
+    expect(readFileSync(p, "utf8")).toBe(renderCleanroom(dirs));
+  });
+  it("the fixed environment is exactly the six names from the spec, nothing inherited", () => {
+    const dirs = { room: "/Users/p/Library/Caches/houge-daemon/r", home: "/Users/p/Library/Caches/houge-daemon/h" };
+    expect(cleanroomEnv(dirs)).toEqual({ PATH: "/usr/bin:/bin:/usr/sbin:/sbin", LANG: "C.UTF-8", HOME: dirs.home, CURL_HOME: dirs.home,
+      XDG_CONFIG_HOME: dirs.home, TMPDIR: dirs.room });
+  });
+});
+
+describe.runIf(process.platform === "darwin")("live clean room — the properties the probe established, re-proven on this Mac", () => {
+  it("positive controls: a binary starts (dyld reads /), getcwd works (ancestor metadata), the room is writable, the home readable", () => {
+    const { run, dirs } = sealedRoom();
+    const r = run(`/bin/echo ok && /bin/pwd && /bin/echo x > f && /bin/cat f && /bin/ls -a "${dirs.home}"`);
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.stderr).not.toMatch(/getcwd/);
+    expect(r.stdout).toContain(dirs.room);
+  });
+  it("the child sees the six fixed variables and bash's own three with known values (PWD = room, SHLVL = 1, _ = env) — nothing from the daemon", () => {
+    const { run, dirs, env } = sealedRoom();
+    const seen = Object.fromEntries(run("/usr/bin/env").stdout.split("\n").filter(Boolean).map((l) => [l.slice(0, l.indexOf("=")), l.slice(l.indexOf("=") + 1)]));
+    expect(Object.keys(seen).sort()).toEqual([...Object.keys(env), ...BASH_OWN].sort());
+    expect(seen).toMatchObject({ ...env, PWD: dirs.room, SHLVL: "1", _: "/usr/bin/env" });
+  });
+  it("cannot read /private/etc/hosts, a planted file in os.tmpdir(), or a planted file under /private/tmp (B30 probes), each proven to exist", () => {
+    const { run } = sealedRoom();
+    const planted = [join(tmpdir(), `hg-planted-${process.pid}`), `/private/tmp/hg-planted-${process.pid}`];
+    for (const f of planted) writeFileSync(f, "X-Planted: yes");
+    try {
+      for (const f of ["/private/etc/hosts", ...planted]) {
+        expect(existsSync(f), `${f} exists`).toBe(true); // a missing file would also fail to read: prove the plant
+        const r = run(`/bin/cat "${f}"`); expect(r.status, f).not.toBe(0); expect(r.stderr, f).toMatch(/Operation not permitted/);
+      }
+      // curl 8.7.1 (this Mac): an unreadable @file is exit 26 at option parsing, BEFORE any connect; a readable one
+      // reaches the connect and fails with 7 (nothing listens on :1). The control proves the oracle distinguishes.
+      expect(run("/bin/echo 'X-Ok: 1' > ok.txt && /usr/bin/curl -sS --max-time 2 -H @ok.txt http://127.0.0.1:1/").status).toBe(7);
+      for (const f of ["/private/etc/hosts", ...planted]) {
+        expect(run(`/usr/bin/curl -sS --max-time 2 -H @"${f}" http://127.0.0.1:1/`).status, `-H @${f}`).toBe(26);
+        expect(run(`/usr/bin/curl -sS --max-time 2 --data-binary @"${f}" http://127.0.0.1:1/`).status, `-d @${f}`).toBe(26);
+      }
+    } finally { for (const f of planted) rmSync(f, { force: true }); }
+  });
+  it("curl config discovery: a .curlrc planted in the room (cwd, writable) is ignored; one in the readable home IS honoured — which is why the home must be empty and unwritable (probe (e))", () => {
+    const { run, dirs } = sealedRoom();
+    // no URL on the command line: exit 2 "no URL specified" unless a .curlrc supplied one (then connect → 7)
+    expect(run("/bin/echo 'url = \"http://127.0.0.1:1/\"' > .curlrc && /usr/bin/curl -sS --max-time 2").status).toBe(2);
+    writeFileSync(join(dirs.home, ".curlrc"), 'url = "http://127.0.0.1:1/"\n'); // daemon-side plant: what validation forbids
+    expect(run("/usr/bin/curl -sS --max-time 2").status).toBe(7);
+  });
+  it("a symlink out of the room is blocked for reads, and the home cannot be written (no planted .curlrc)", () => {
+    const { run, dirs, root } = sealedRoom();
+    const outside = join(root, "outside.txt"); writeFileSync(outside, "secret");
+    symlinkSync(outside, join(dirs.room, "link"));
+    const r = run("/bin/cat link"); expect(r.status).not.toBe(0); expect(r.stderr).toMatch(/Operation not permitted/);
+    const w = run(`/bin/echo planted > "${dirs.home}/.curlrc"`); expect(w.status).not.toBe(0); expect(w.stderr).toMatch(/Operation not permitted/);
+    expect(existsSync(join(dirs.home, ".curlrc"))).toBe(false);
+  });
+  it("the escape hatches are closed: launchctl, security and the python3 shim cannot exec", () => {
+    const { run } = sealedRoom();
+    for (const cmd of ["/bin/launchctl list", "/usr/bin/security help", "/usr/bin/python3 -c 1"]) {
+      const r = run(cmd);
+      expect(r.status, cmd).not.toBe(0);
+      expect(r.stderr, cmd).toMatch(/Operation not permitted/);
     }
   });
 });

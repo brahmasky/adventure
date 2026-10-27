@@ -1,5 +1,6 @@
-import { lstatSync, readdirSync, realpathSync, statSync } from "node:fs";
-import { dirname, isAbsolute, relative, resolve } from "node:path";
+import { lstatSync, readdirSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { renderCleanroom } from "./seatbelt.js";
 
 /**
  * The clean room (decision-ladder design §8.3): a standing-approved command runs with a fresh, empty room as cwd and a
@@ -50,4 +51,23 @@ export function validateCleanroomDirs(input: { room: string; home: string; cache
     if (readdirSync(d).length > 0) throw new CleanroomPathError("not_empty", given);
   }
   return { room, home };
+}
+
+export const CLEANROOM_PROFILE_NAME = "cleanroom.sb";
+
+/** Nothing is inherited from the daemon (codex round 4 B19): these six, and TMPDIR inside the room. */
+export function cleanroomEnv(dirs: CleanroomDirs): { PATH: string; LANG: string; HOME: string; CURL_HOME: string; XDG_CONFIG_HOME: string; TMPDIR: string } {
+  return { PATH: "/usr/bin:/bin:/usr/sbin:/sbin", LANG: "C.UTF-8", HOME: dirs.home, CURL_HOME: dirs.home, XDG_CONFIG_HOME: dirs.home, TMPDIR: dirs.room };
+}
+
+/**
+ * The profile is a sidecar in the HOME, which the child can read but never write: it cannot be swapped mid-run (and
+ * sandbox-exec has parsed it before the child starts). Written after validation, so "home is empty" held at that point.
+ */
+export function writeCleanroomProfile(dirs: CleanroomDirs): string {
+  const path = join(dirs.home, CLEANROOM_PROFILE_NAME);
+  const tmp = `${path}.tmp-${process.pid}`;
+  writeFileSync(tmp, renderCleanroom(dirs), { mode: 0o600 });
+  renameSync(tmp, path);
+  return path;
 }
