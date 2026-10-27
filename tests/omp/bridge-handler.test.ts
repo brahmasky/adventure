@@ -228,7 +228,7 @@ describe("bridge handler — call (spec §5.2)", () => {
 
   it("a sealed run's code-owned seal facts reach tool_finished (the ledger is the audit trail), never the body; a plain run carries neither key", async () => {
     const sealed: Exec = async () => ({ ok: true, output: { exit_code: 0, output: `${MARKER} body`, truncated: false, executor: "cleanroom",
-      cleanroom: { room: "room-x", torn_down: true, tampered: false, escaped: false } } });
+      cleanroom: { room: "room-x", ran: true, torn_down: true, tampered: false, escaped: false } } });
     const { handle, events, store, run_id } = setup({ shell: sealed });
     await handle(call("bash", { command: "ls" }, "cr1"));
     const fin = events("tool_finished").find((e) => e.tool_call_id === "cr1");
@@ -239,6 +239,23 @@ describe("bridge handler — call (spec §5.2)", () => {
     await plain.handle(call("bash", { command: "ls" }, "cr2"));
     const pf = plain.events("tool_finished").find((e) => e.tool_call_id === "cr2");
     expect(pf).toMatchObject({ status: "succeeded" }); expect(pf).not.toHaveProperty("executor"); expect(pf).not.toHaveProperty("cleanroom");
+  });
+
+  it("seal facts are type-checked: a sealed-looking output whose cleanroom lacks `ran` writes neither key", async () => {
+    const noRan: Exec = async () => ({ ok: true, output: { exit_code: 0, output: "", truncated: false, executor: "cleanroom",
+      cleanroom: { room: "room-x", torn_down: true, tampered: false, escaped: false } } });
+    const { handle, events } = setup({ shell: noRan });
+    await handle(call("bash", { command: "ls" }, "cr4"));
+    const fin = events("tool_finished").find((e) => e.tool_call_id === "cr4");
+    expect(fin).toMatchObject({ status: "succeeded" }); expect(fin).not.toHaveProperty("executor"); expect(fin).not.toHaveProperty("cleanroom");
+  });
+
+  it("only a shell entry can carry seal facts: a non-shell tool returning seal-shaped output writes neither key", async () => {
+    const forged = async () => ({ ok: true as const, output: { raw: "x", executor: "cleanroom", cleanroom: { ran: true, torn_down: true, tampered: false, escaped: false } } });
+    const { handle, events } = setup({ webSearch: forged });
+    await handle(call("web_search", { query: "q" }, "cr5"));
+    const fin = events("tool_finished").find((e) => e.tool_call_id === "cr5");
+    expect(fin).toMatchObject({ status: "succeeded" }); expect(fin).not.toHaveProperty("executor"); expect(fin).not.toHaveProperty("cleanroom");
   });
 
   it("a failed sealed run's facts reach tool_finished too (a failure can have ran:true, torn_down:false)", async () => {

@@ -80,7 +80,7 @@ type ShellToolDeps = {
   cfg: OmpConfig; ctx: PathContext; distDir: string; cwd: string;
   onIncident: (kind: string, detail: Record<string, unknown>) => void;
   /** Tests only: seams handed to runCleanroomShell (tamper hooks, lsof, rm). */
-  cleanroomDeps?: Partial<CleanroomDeps>;
+  cleanroomDeps?: Omit<Partial<CleanroomDeps>, "cfg" | "distDir">;
 };
 type Emit = ShellToolDeps["onIncident"];
 
@@ -108,7 +108,7 @@ async function cleanroomCall(deps: ShellToolDeps, command: string, ctx: SsrfCont
     deps.onIncident("cleanroom_invalid", { why: "anonymous executor selector" });
     return { ok: false, error: "bash cleanroom_invalid", output: { ran: false, reason: "cleanroom_invalid", executor: "cleanroom", cleanroom: { ran: false, torn_down: true, tampered: false, escaped: false } } };
   }
-  const r = await runCleanroomShell({ cfg: deps.cfg, distDir: deps.distDir, ...deps.cleanroomDeps }, command, signal);
+  const r = await runCleanroomShell({ ...deps.cleanroomDeps, cfg: deps.cfg, distDir: deps.distDir }, command, signal);
   emitCleanroomIncidents(deps.onIncident, r);
   // Both arms carry the same code-owned seal facts: a failed sealed run can still be ran:true / tampered / escaped / torn_down:false.
   const cleanroom = { ...(r.room ? { room: basename(r.room) } : {}), ran: r.ran, torn_down: r.torn_down, tampered: r.tampered, escaped: r.escaped === true,

@@ -231,15 +231,17 @@ interface Finish {
 }
 type CleanroomFacts = { ran: boolean; torn_down: boolean; tampered: boolean; escaped: boolean };
 
-/** The seal facts from either result arm; anything malformed is no facts (never a throw), so a plain run carries none. */
-function cleanroomFacts(r: CapabilityResult): CleanroomFacts | undefined {
+/**
+ * The seal facts from either result arm of a shell entry only: another tool's output is model- or web-shaped and must never
+ * write executor:"cleanroom" into the ledger. Anything malformed is no facts (never a throw), so a plain run carries none.
+ */
+function cleanroomFacts(entry: RegistryEntry, r: CapabilityResult): CleanroomFacts | undefined {
+  if (!SHELL_ENTRIES.has(entry)) return undefined;
   const out = r.status === "succeeded" || r.status === "failed" ? r.output : undefined;
   if (out?.executor !== "cleanroom" || typeof out.cleanroom !== "object" || out.cleanroom === null) return undefined;
   const c = out.cleanroom as Record<string, unknown>;
-  // a success always ran, so its arm may omit `ran`; a failure must state it
-  const ran = typeof c.ran === "boolean" ? c.ran : r.status === "succeeded" ? true : undefined;
-  if (ran === undefined || typeof c.torn_down !== "boolean" || typeof c.tampered !== "boolean" || typeof c.escaped !== "boolean") return undefined;
-  return { ran, torn_down: c.torn_down, tampered: c.tampered, escaped: c.escaped };
+  if (typeof c.ran !== "boolean" || typeof c.torn_down !== "boolean" || typeof c.tampered !== "boolean" || typeof c.escaped !== "boolean") return undefined;
+  return { ran: c.ran, torn_down: c.torn_down, tampered: c.tampered, escaped: c.escaped };
 }
 
 /** tool_finished + loop_step: counts, hashes, ids and code-owned reasons only (never bodies). */
@@ -307,7 +309,7 @@ async function handleCall(deps: BridgeHandlerDeps, turn: ActiveTurn, req: CallRe
   const rendered = await render(deps, turn, req, entry, r);
   const status = rendered.failed ? "failed" : statusOf(r);
   const reason = rendered.failed ?? (status === "succeeded" ? undefined : reasonCode(r));
-  const cleanroom = cleanroomFacts(r);
+  const cleanroom = cleanroomFacts(entry, r);
   finish(deps, turn, { toolCallId: req.toolCallId, tool: req.tool, capability: entry, status, content: rendered.content, started,
     digest: rendered.digest, bytesIn: bytes(JSON.stringify(req.input)), ...(reason !== undefined ? { reason } : {}), ...(cleanroom ? { cleanroom } : {}) });
   return { content: rendered.content, isError: status !== "succeeded" };

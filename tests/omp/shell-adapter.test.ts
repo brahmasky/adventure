@@ -170,7 +170,7 @@ describe("bash tool — shellToolExecute, the adapter the bridge calls (testing 
   type Incident = { kind: string; detail: Record<string, unknown> };
   /** The adapter over a tmp dist holding `wrapper` (default: the shipped wrapper), recording every incident it raises. */
   /** `sandbox` turns the Seatbelt on and writes shell.sb (the normal path fails with sandbox-exec rc 65 without it); `cleanroom` hands test seams to runCleanroomShell. */
-  function tool(opts: { wrapper?: string; env?: Record<string, string>; sandbox?: boolean; cleanroom?: Partial<CleanroomDeps> } = {}) {
+  function tool(opts: { wrapper?: string; env?: Record<string, string>; sandbox?: boolean; cleanroom?: Omit<Partial<CleanroomDeps>, "cfg" | "distDir"> } = {}) {
     const ws = tmp("houge-shell-ws-"); const data = tmp("houge-shell-data-");
     const dist = tmpOmpDist(data);
     if (opts.wrapper !== undefined) { writeFileSync(join(dist, "omp", "shell-wrapper.sh"), opts.wrapper); chmodSync(join(dist, "omp", "shell-wrapper.sh"), 0o755); }
@@ -245,18 +245,20 @@ describe("bash tool — shellToolExecute, the adapter the bridge calls (testing 
       const sealed = await run({ command: "/bin/pwd" }, undefined, ctx);
       expect(sealed.ok).toBe(true);
       const o = (sealed as { output: Record<string, unknown> }).output;
-      expect(Object.keys(o).sort()).toEqual(["cleanroom", "executor", "exit_code", "output", "truncated"]);
-      expect(o).toMatchObject({ executor: "cleanroom", cleanroom: { ran: true, torn_down: true, tampered: false, escaped: false } });
-      expect((o.output as string).trim()).toContain("/cleanroom/room-"); expect((o.cleanroom as { room: string }).room).toMatch(/^room-/);
+      const room = (o.cleanroom as { room: string }).room;
+      expect(room).toMatch(/^room-/);
+      expect(o).toEqual({ exit_code: 0, output: expect.stringMatching(new RegExp(`/cleanroom/${room}\\n$`)), truncated: false, executor: "cleanroom",
+        cleanroom: { room, ran: true, torn_down: true, tampered: false, escaped: false } });
       const plain = await run({ command: "/bin/pwd" }, undefined, { run_id: "run-1", tool_call_id: "tc-1" });
       expect((plain as unknown as { output: { output: string } }).output.output.trim()).toBe(realpathSync(ws));
       expect(incidents).toEqual([]);
     });
     it("refuses an anonymous flag (no run_id / tool_call_id): a direct caller cannot select the room", async () => {
       const { run, incidents } = tool({ sandbox: true });
-      const r = await run({ command: "/bin/pwd" }, undefined, { run_id: null, executor: "cleanroom" });
-      expect(r).toMatchObject({ ok: false, error: "bash cleanroom_invalid", output: { ran: false, reason: "cleanroom_invalid", executor: "cleanroom", cleanroom: { ran: false, torn_down: true, tampered: false, escaped: false } } });
-      expect(incidents.map((i) => i.kind)).toEqual(["cleanroom_invalid"]);
+      const refusal = { ok: false, error: "bash cleanroom_invalid", output: { ran: false, reason: "cleanroom_invalid", executor: "cleanroom", cleanroom: { ran: false, torn_down: true, tampered: false, escaped: false } } };
+      expect(await run({ command: "/bin/pwd" }, undefined, { run_id: null, executor: "cleanroom" })).toEqual(refusal);
+      expect(await run({ command: "/bin/pwd" }, undefined, { run_id: "run-1", executor: "cleanroom" })).toEqual(refusal); // tool_call_id missing
+      expect(incidents.map((i) => i.kind)).toEqual(["cleanroom_invalid", "cleanroom_invalid"]);
     });
     it("sandbox off: cleanroom_unavailable, no run, one incident", async () => {
       const { run, incidents } = tool({ sandbox: false });
