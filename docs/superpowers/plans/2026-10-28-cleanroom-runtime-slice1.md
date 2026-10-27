@@ -486,6 +486,8 @@ export interface CleanroomDeps {
   /** Tests only: clock for the sweep, lsof text, the remover, and two tamper hooks (after the sidecar is written; right after runShell is invoked). */
   now?: () => number; lsof?: (uid: number) => string; rm?: (path: string) => void;
   afterSidecar?: (dirs: RoomPair) => void; afterSpawn?: (dirs: RoomPair) => void;
+  /** Tests only: stands in for runShell (a resolved `reason: "spawn"` cannot be produced with the real wrapper — bash itself always spawns). */
+  shell?: typeof runShell;
 }
 export function runCleanroomShell(deps: CleanroomDeps, command: string, signal?: AbortSignal): Promise<CleanroomRunResult>;
 export const CLEANROOM_SWEEP_MIN_MS = 60 * 60_000;
@@ -538,16 +540,27 @@ describe.runIf(process.platform === "darwin")("runCleanroomShell — one sealed 
       for (const f of [plant, homePlant]) { const r = await runCleanroomShell(deps(), `/bin/cat "${f}"`); expect(r.status).toBe("succeeded"); expect(r.exitCode).not.toBe(0); expect(r.output).toMatch(/Operation not permitted/); }
     } finally { rmSync(homePlant, { force: true }); }
   });
-  it("a wrapper that cannot be spawned is ran:false with reason spawn; an abort that lands after the availability check is ran:false aborted", async () => {
-    const r = await runCleanroomShell({ ...deps(), distDir: join(root(), "nowhere") }, "/bin/echo x");
+  it("a spawn failure is ran:false with reason spawn (seamed: bash itself always spawns, so the real wrapper cannot produce it); a missing wrapper is a post-spawn failure, ran:true; an abort after the availability check is ran:false aborted", async () => {
+    const spawnFailed = { status: "failed", exitCode: null, output: "", truncated: false, wrapperStatus: "unknown", reason: "spawn" } as const;
+    const r = await runCleanroomShell({ ...deps(), shell: async () => spawnFailed }, "/bin/echo x");
     expect(r).toMatchObject({ status: "failed", reason: "spawn", ran: false, torn_down: true });
+    const missing = await runCleanroomShell({ ...deps(), distDir: join(root(), "nowhere") }, "/bin/echo x");
+    expect(missing).toMatchObject({ status: "failed", ran: true, torn_down: true }); expect(missing.reason).not.toBe("spawn");
     const ac = new AbortController();
     const late = await runCleanroomShell({ ...deps(), afterSidecar: () => ac.abort() }, "/bin/echo x", ac.signal);
     expect(late).toMatchObject({ status: "failed", reason: "aborted", ran: false, torn_down: true });
   });
-  it("a second mkdtemp that fails tears down the first directory and clears it from the active set (the next call sweeps nothing and succeeds)", async () => {
-    let n = 0; const r = await runCleanroomShell({ ...deps(), rm: (p) => rmSync(p, { recursive: true, force: true }), afterSidecar: undefined, now: () => { if (++n === 1) throw new Error("clock"); return Date.now(); } }, "/bin/echo x");
+  it("a sweep clock failure reports step sweep, and a failure after the first mkdtemp (validation of a pair whose home vanished) tears the first directory down and clears the active set — the next call succeeds", async () => {
+    let n = 0; const r = await runCleanroomShell({ ...deps(), now: () => { if (++n === 1) throw new Error("clock"); return Date.now(); } }, "/bin/echo x");
     expect(r).toMatchObject({ status: "failed", reason: "cleanroom_setup", setup_step: "sweep", ran: false, torn_down: true }); expect(r.setup_error).toMatch(/clock/);
+    expect(readdirSync(cleanroomRoot())).toEqual([]);
+    // partial creation (both directories made, then refused): a cache root reached through a symlink is refused by the
+    // validator (`rootIdent` → symlink_component), after both mkdtemps — exactly the "made, then failed" path
+    const real = root(); const link = join(tmpdir(), `hg-crr-link-${process.pid}`); symlinkSync(real, link); process.env.HOUGE_DAEMON_TMP_DIR = link;
+    try {
+      const v = await runCleanroomShell(deps(), "/bin/echo x");
+      expect(v).toMatchObject({ status: "failed", reason: "cleanroom_invalid", ran: false, torn_down: true }); expect(v.invalid_reason).toBe("symlink_component");
+    } finally { process.env.HOUGE_DAEMON_TMP_DIR = real; rmSync(link, { force: true }); }
     expect(readdirSync(cleanroomRoot())).toEqual([]);
     expect((await runCleanroomShell(deps(), "/bin/echo y")).status).toBe("succeeded");
   });
@@ -679,7 +692,7 @@ export async function runCleanroomShell(deps: CleanroomDeps, command: string, si
 
 /** Spawn, always await, then the post-run checks; a thrown test hook after the spawn is a check error, never a setup error, because the command is already running. */
 async function runAndCheck(deps: CleanroomDeps, prev: CleanroomRunResult, dirs: CleanroomDirs, ino: { room: bigint; home: bigint }, profile: string, command: string, signal?: AbortSignal): Promise<CleanroomRunResult> {
-  const pending = runShell({ command, cwd: dirs.room, profilePath: profile, wrapperPath: join(deps.distDir, "omp", "shell-wrapper.sh"),
+  const pending = (deps.shell ?? runShell)({ command, cwd: dirs.room, profilePath: profile, wrapperPath: join(deps.distDir, "omp", "shell-wrapper.sh"),
     env: { HOUGE_SHELL_CLEANROOM: "1", CR_HOME: dirs.home, CR_ROOM: dirs.room }, timeoutMs: deps.cfg.shellTimeoutMs, outputCapBytes: 32 * 1024, sandbox: true, ...(signal ? { signal } : {}) });
   let hookError: string | undefined; try { deps.afterSpawn?.(dirs); } catch (e) { hookError = String(e); }
   const r = await pending;
@@ -687,13 +700,14 @@ async function runAndCheck(deps: CleanroomDeps, prev: CleanroomRunResult, dirs: 
   if (hookError) out.check_error = hookError;
   const addCheckError = (e: unknown) => { out.check_error = [out.check_error, String(e)].filter(Boolean).join("; "); };
   try { const post = intact(dirs, ino, true); if (post.length > 0) { out.tampered = true; out.tamper_names = post; } } catch (e) { addCheckError(e); }
+  if (r.escaped) out.escape_source = "pipe"; // the interface promises a source whenever escaped is set, even if the scan below cannot run
   const uid = process.getuid?.();
   if (uid === undefined) addCheckError("getuid unavailable");
   else {
     try {
       const found = orphansIn(dirs.room, (deps.lsof ?? defaultLsof)(uid));
       if (found.length > 0) { out.orphans = found; for (const pid of found) try { process.kill(pid, "SIGKILL"); } catch (e) { if ((e as NodeJS.ErrnoException).code !== "ESRCH") addCheckError(`kill ${pid}: ${String(e)}`); } }
-      if (r.escaped || found.length > 0) { out.escaped = true; out.escape_source = r.escaped && found.length > 0 ? "both" : r.escaped ? "pipe" : "orphan_scan"; }
+      if (found.length > 0) { out.escaped = true; out.escape_source = r.escaped ? "both" : "orphan_scan"; }
     } catch (e) { addCheckError(e); }
   }
   return out;
@@ -720,7 +734,7 @@ git commit -m "feat(omp): runCleanroomShell — sealed run lifecycle with tamper
 
 **Interfaces:**
 - Consumes: `runCleanroomShell`, `CleanroomRunResult` (Task 5).
-- Produces: `SsrfContext.executor?: "cleanroom"`; `shellToolExecute(deps)` returns `(input, signal?, ctx?: SsrfContext) => Promise<ToolAdapterResult>`; success output in clean-room mode is exactly `{ exit_code, output, truncated, executor: "cleanroom", cleanroom: { room: basename, torn_down, tampered, escaped: boolean, check_error? } }`; failure `{ ok: false, error: "bash <reason>…", output: { ran, reason } }`. `ToolAdapterResult`'s failure arm gains `output?: Record<string, unknown>` (the key is **omitted**, never `undefined`, on every other path — `exactOptionalPropertyTypes`). `CapabilityResult`'s `failed` arm gains `output?: Record<string, unknown>` and the runner copies `adapterResult.output` when present (`capability-runner.ts:226`), so `ran` survives the runner. **The audit trail is the ledger, not the tool body** (the `tool_finished` event stores hashes and code-owned reasons only, `bridge-handler.ts:230`): `finish()` adds, when the result's output carries them, `executor: "cleanroom"` and `cleanroom: { ran, torn_down, tampered, escaped }` (booleans and a code-owned reason — never the body). Stage 4A reads them from the ledger event and its own execution record.
+- Produces: `SsrfContext.executor?: "cleanroom"`; `shellToolExecute(deps)` returns `(input, signal?, ctx?: SsrfContext) => Promise<ToolAdapterResult>`; success output in clean-room mode is exactly `{ exit_code, output, truncated, executor: "cleanroom", cleanroom: { room?: basename, ran: true, torn_down, tampered, escaped: boolean, check_error? } }`; failure `{ ok: false, error: "bash <reason>…", output: { ran, reason, executor: "cleanroom", cleanroom: { room?, ran, torn_down, tampered, escaped, check_error? } } }` — **both arms carry the same seal facts** (a failed sealed run can be `ran: true` with `tampered`/`escaped`/`torn_down: false`). `ToolAdapterResult`'s failure arm gains `output?: Record<string, unknown>` (the key is **omitted**, never `undefined`, on every other path — `exactOptionalPropertyTypes`). `CapabilityResult`'s `failed` arm gains `output?: Record<string, unknown>` and the runner copies `adapterResult.output` when present (`capability-runner.ts:226`), so `ran` survives the runner. **The audit trail is the ledger, not the tool body** (the `tool_finished` event stores hashes and code-owned reasons only, `bridge-handler.ts:230`): `finish()` adds, when the result's output carries them, `executor: "cleanroom"` and `cleanroom: { ran, torn_down, tampered, escaped }` (booleans and a code-owned reason — never the body). Stage 4A reads them from the ledger event and its own execution record.
 
 - [ ] **Step 1: Failing tests**
 
@@ -734,7 +748,7 @@ describe.runIf(process.platform === "darwin")("shellToolExecute — executor: cl
     expect(sealed.ok).toBe(true);
     const o = (sealed as { output: Record<string, unknown> }).output;
     expect(Object.keys(o).sort()).toEqual(["cleanroom", "executor", "exit_code", "output", "truncated"]);
-    expect(o).toMatchObject({ executor: "cleanroom", cleanroom: { torn_down: true, tampered: false, escaped: false } });
+    expect(o).toMatchObject({ executor: "cleanroom", cleanroom: { ran: true, torn_down: true, tampered: false, escaped: false } });
     expect((o.output as string).trim()).toContain("/cleanroom/room-"); expect((o.cleanroom as { room: string }).room).toMatch(/^room-/);
     const plain = await run({ command: "/bin/pwd" }, undefined, { run_id: "run-1", tool_call_id: "tc-1" });
     expect((plain as { output: { output: string } }).output.output.trim()).toBe(realpathSync(ws));
@@ -743,13 +757,13 @@ describe.runIf(process.platform === "darwin")("shellToolExecute — executor: cl
   it("refuses an anonymous flag (no run_id / tool_call_id): a direct caller cannot select the room", async () => {
     const { run, incidents } = tool({ sandbox: true });
     const r = await run({ command: "/bin/pwd" }, undefined, { run_id: null, executor: "cleanroom" });
-    expect(r).toMatchObject({ ok: false, error: "bash cleanroom_invalid", output: { ran: false, reason: "cleanroom_invalid" } });
+    expect(r).toMatchObject({ ok: false, error: "bash cleanroom_invalid", output: { ran: false, reason: "cleanroom_invalid", executor: "cleanroom", cleanroom: { ran: false, torn_down: true, tampered: false, escaped: false } } });
     expect(incidents.map((i) => i.kind)).toEqual(["cleanroom_invalid"]);
   });
   it("sandbox off: cleanroom_unavailable, no run, one incident", async () => {
     const { run, incidents } = tool({ sandbox: false });
     const r = await run({ command: "/bin/pwd" }, undefined, ctx);
-    expect(r).toMatchObject({ ok: false, error: "bash cleanroom_unavailable", output: { ran: false } });
+    expect(r).toMatchObject({ ok: false, error: "bash cleanroom_unavailable", output: { ran: false, executor: "cleanroom", cleanroom: { ran: false } } });
     expect(incidents.map((i) => i.kind)).toEqual(["cleanroom_unavailable"]);
   });
   it("emits one incident per fact in cause-before-effect order: shell_escaped then cleanroom_tampered then cleanroom_teardown_failed", async () => {
@@ -791,7 +805,7 @@ describe.runIf(process.platform === "darwin")("shellToolExecute — executor: cl
     expect(r).toEqual({ status: "failed", error_ref: "bash cleanroom_unavailable", output: { ran: false, reason: "cleanroom_unavailable" } });
   });
 ```
-(Fill the two `/* … */` inputs from the file's own fixtures — read its first two tests; one has an approval-requiring contract, `capability-runner-approvals.test.ts` shows the shape if this file lacks it.)
+Fixtures, exactly: `capability-runner.test.ts`'s own first tests use a **read-only** contract with no approval gate, so copy the `local_project_write` approval contract and the `registry()` helper from `tests/capabilities/capability-runner-approvals.test.ts:7–31` into this test (or import them if they are exported). The approval-requiring input is that contract as-is; the permitted input is the same contract with `approval_gates: []`; the failed-output test uses the permitted input and `new BudgetLedger(contract.budget)`. Replace the two `/* … */` placeholders and the `as never` with those; nothing is left to look up.
 
 `tests/omp/bridge-handler.test.ts` — `executeWithApproval` builds its own `CapabilityRunner` (line ~368), so the runner cannot be stubbed; register a spy **tool** in the turn's registry instead: `execute: (_i, _s, ctx) => { seen.push(ctx); return { ok: true, output: { exit_code: 0, output: "", truncated: false } }; }`, drive one allowed `bash` call and one approval-resume call through the file's existing fixtures, and assert every `seen[i]` lacks `executor`. Name: "the bridge never sets executor on the runtime context — Stage 4A's standing match is the first setter". Add a second test: a spy tool returning the clean-room success output (`executor: "cleanroom"`, `cleanroom: { room: "room-x", torn_down: true, tampered: false, escaped: false }`) → the `tool_finished` ledger event (`store.appendRunLedgerEvent` recorded by the fixture) carries `executor: "cleanroom"` and `cleanroom: { ran: true, torn_down: true, tampered: false, escaped: false }` and still no body; a plain success carries neither key.
 
@@ -830,12 +844,13 @@ export function shellToolExecute(deps: {
 
 /** The flag is a selector, not a proof: an anonymous context (no run/tool-call id) may not select the room. */
 async function cleanroomCall(deps: Parameters<typeof shellToolExecute>[0], command: string, ctx: SsrfContext, signal?: AbortSignal): Promise<ToolAdapterResult> {
-  if (!ctx.run_id || !ctx.tool_call_id) { deps.onIncident("cleanroom_invalid", { why: "anonymous executor selector" }); return { ok: false, error: "bash cleanroom_invalid", output: { ran: false, reason: "cleanroom_invalid" } }; }
+  if (!ctx.run_id || !ctx.tool_call_id) { deps.onIncident("cleanroom_invalid", { why: "anonymous executor selector" }); return { ok: false, error: "bash cleanroom_invalid", output: { ran: false, reason: "cleanroom_invalid", executor: "cleanroom", cleanroom: { ran: false, torn_down: true, tampered: false, escaped: false } } }; }
   const r = await runCleanroomShell({ cfg: deps.cfg, distDir: deps.distDir, ...deps.cleanroomDeps }, command, signal);
   emitCleanroomIncidents(deps.onIncident, r);
-  if (r.status === "failed") return { ok: false, error: `bash ${r.reason}${r.output ? `\n${r.output}` : ""}`, output: { ran: r.ran, reason: r.reason } };
-  return { ok: true, output: { exit_code: r.exitCode, output: r.output, truncated: r.truncated, executor: "cleanroom",
-    cleanroom: { room: basename(r.room!), torn_down: r.torn_down, tampered: r.tampered, escaped: r.escaped === true, ...(r.check_error ? { check_error: r.check_error } : {}) } } };
+  // both arms carry the same code-owned seal facts: a FAILED sealed run can still have ran:true / tampered / escaped / torn_down:false, and Stage 4A and the ledger must see them
+  const cleanroom = { ...(r.room ? { room: basename(r.room) } : {}), ran: r.ran, torn_down: r.torn_down, tampered: r.tampered, escaped: r.escaped === true, ...(r.check_error ? { check_error: r.check_error } : {}) };
+  if (r.status === "failed") return { ok: false, error: `bash ${r.reason}${r.output ? `\n${r.output}` : ""}`, output: { ran: r.ran, reason: r.reason, executor: "cleanroom", cleanroom } };
+  return { ok: true, output: { exit_code: r.exitCode, output: r.output, truncated: r.truncated, executor: "cleanroom", cleanroom } };
 }
 
 /** One incident per fact, cause before effect (spec §One incident emitter table). */
@@ -854,7 +869,7 @@ function emitCleanroomIncidents(emit: (kind: string, detail: Record<string, unkn
 
 `capability-runner.ts:226`: `if (!adapterResult.ok) return { status: "failed", error_ref: adapterResult.error, ...(adapterResult.output ? { output: adapterResult.output } : {}) };` and the `failed` arm of `CapabilityResult` gains `output?: Record<string, unknown>`.
 
-`bridge-handler.ts`: `Finish` gains `cleanroom?: { executor: "cleanroom"; ran: boolean; torn_down: boolean; tampered: boolean; escaped: boolean }`; a small `cleanroomFacts(result: CapabilityResult): Finish["cleanroom"] | undefined` reads a succeeded result's `output.executor === "cleanroom"` + `output.cleanroom` (ran is true) or a failed result's `output.ran`/`reason` (facts false); `finish()` spreads `...(f.cleanroom ? { executor: "cleanroom", cleanroom: f.cleanroom } : {})` into the `tool_finished` event. Code-owned booleans only, no body.
+`bridge-handler.ts`: `Finish` gains `cleanroom?: { ran: boolean; torn_down: boolean; tampered: boolean; escaped: boolean }`; a small `cleanroomFacts(result: CapabilityResult): Finish["cleanroom"] | undefined` reads `output.executor === "cleanroom"` and `output.cleanroom` from **either** arm (succeeded `output`, or the failed arm's new `output?`), type-checks the four booleans (anything else → `undefined`, never a throw), and the two `finish()` call sites in `handleCall` pass it; `finish()` spreads `...(f.cleanroom ? { executor: "cleanroom", cleanroom: f.cleanroom } : {})` into the `tool_finished` event. Code-owned booleans only, no body.
 
 - [ ] **Step 4: Run** the three test files + `npm run typecheck` → PASS. Also run `tests/omp/bridge-handler*.test.ts` and `tests/capabilities/*.test.ts` entirely (the widenings add a key only on the clean-room paths; the existing `toEqual` tests at `shell-adapter.test.ts` ~205/212/229 must stay exact).
 
@@ -924,4 +939,4 @@ git commit -m "test(gate): clean-room runtime live gate — P8 matrix, orphan sc
 
 - **Spec coverage:** P8 block + tz (T1); exec allowlist + regex write rule + `sbplRegexLiteral` (T2); children TMPDIR + codex key + agy lock + grep lockstep (T3); wrapper mode + `limits_failed` reuse (T4); lifecycle, totality, sweep, pre/post checks, orphan scan, teardown, `ran`, result type (T5); `SsrfContext.executor`, anonymous refusal, fingerprint continuity, bridge never sets it, incident table, output shape (T6); gate lines incl. `ifconfig` addresses, 127.0.0.2 record, no real-home plants, INCONCLUSIVE exit 2 (T7); docs (T8). Hand-off to Stage 4A is text, not code — in the spec. "`cleanroom_sweep` incident" → emitted by T6's emitter from `swept`.
 - **Placeholders:** none; every test and implementation step has code. T5's main function is given as a full outline with every branch; the implementer fills the two one-line helpers named (`killOrphan`, `defaultLsof`) exactly as specified in Interfaces.
-- **Type consistency:** `CleanroomRunResult` fields used in T6 (`ran`, `room`, `torn_down`, `tampered`, `escaped`, `check_error`, `teardown_error`, `orphans`, `swept`, `setup_step`, `setup_error`, `invalid_reason`, `tamper_names`, `escape_source`) are all declared in T5's Interfaces/Step 3 (T6 may add `escape_source` if T5 did not). `CleanroomDeps` test seams (`afterSidecar`, `afterSpawn`, `rm`, `lsof`, `now`) are declared in T5 and consumed by T6's `cleanroomDeps`. `childTmpRoot` (T3) used by T7. `CLEANROOM_EXEC_ALLOW`, `sbplRegexLiteral`, `CLEANROOM_NETWORK_RULES` exported in T1/T2, used in tests and T7.
+- **Type consistency:** `CleanroomRunResult` fields used in T6 (`ran`, `room`, `torn_down`, `tampered`, `escaped`, `check_error`, `teardown_error`, `orphans`, `swept`, `setup_step`, `setup_error`, `invalid_reason`, `tamper_names`, `escape_source`) are all declared in T5's Interfaces; `escape_source` is declared and set by T5, T6 only reads it. `CleanroomDeps` test seams (`afterSidecar`, `afterSpawn`, `rm`, `lsof`, `now`) are declared in T5 and consumed by T6's `cleanroomDeps`. `childTmpRoot` (T3) used by T7. `CLEANROOM_EXEC_ALLOW`, `sbplRegexLiteral`, `CLEANROOM_NETWORK_RULES` exported in T1/T2, used in tests and T7.
