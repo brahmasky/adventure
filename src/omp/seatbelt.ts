@@ -99,7 +99,13 @@ function ancestorsOf(p: string): string[] {
   return [...out];
 }
 
-const CLEANROOM_READ_TREES = ["/usr", "/bin", "/System", "/Library", "/private/etc/ssl"];
+// No /Library: its world-writable trees (/Library/Caches …) would be readable plants; TLS roots come from /System.
+const CLEANROOM_READ_TREES = ["/usr", "/bin", "/System", "/private/etc/ssl"];
+/**
+ * User-writable trees inside a readable system root, re-denied right after it (last match wins): /usr/local is
+ * Homebrew's, owned by the user. The probe showed curl (HTTPS, cookie jar) and bash (loops, pwd) need neither.
+ */
+const CLEANROOM_READ_HOLES: Record<string, string[]> = { "/usr": ["/usr/local"] };
 
 /**
  * The clean room (decision-ladder design §8.3, probe 13-cleanroom-probe.md): reads deny-default, re-opened only for the
@@ -116,7 +122,7 @@ export function renderCleanroom(dirs: RoomPair): string {
     "(allow default)",
     "(deny file-read*)",
     '(allow file-read* (literal "/"))',
-    ...CLEANROOM_READ_TREES.flatMap(sub),
+    ...CLEANROOM_READ_TREES.flatMap((t) => [...sub(t), ...(CLEANROOM_READ_HOLES[t] ?? []).map((h) => `(deny file-read* (subpath "${esc(h)}"))`)]),
     '(allow file-read* (literal "/dev/null"))',
     ...sub(dirs.room),
     ...sub(dirs.home),

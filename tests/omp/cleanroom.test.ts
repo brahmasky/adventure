@@ -132,17 +132,36 @@ describe("renderCleanroom — SBPL for the sealed room (spec §Required SBPL fac
   });
   it("re-allows reads only in the system trees, /private/etc/ssl (not all of /private/etc — B30), /dev/null, the room and the home", () => {
     const p = renderCleanroom(dirs);
-    for (const s of ['(subpath "/usr")', '(subpath "/bin")', '(subpath "/System")', '(subpath "/Library")', '(subpath "/private/etc/ssl")',
+    for (const s of ['(subpath "/usr")', '(subpath "/bin")', '(subpath "/System")', '(subpath "/private/etc/ssl")',
       '(literal "/dev/null")', `(subpath "${dirs.room}")`, `(subpath "${dirs.home}")`]) expect(p).toContain(`(allow file-read* ${s})`);
     expect(p).not.toContain('(subpath "/private/etc")');
+    // /Library holds world-writable trees (/Library/Caches …): a child could read what another planted there (review B1)
+    expect(p).not.toContain('(allow file-read* (subpath "/Library"))');
     expect(p).toContain('(allow file-read-data (literal "/"))');
     const allows = lines().filter((l) => l.startsWith("(allow file-read* "));
-    expect(allows).toHaveLength(9); // "/" literal + 5 system trees + /dev/null + room + home
+    expect(allows).toHaveLength(8); // "/" literal + 4 system trees + /dev/null + room + home
   });
-  it("grants metadata on /etc /var /tmp and on every ancestor of the room and the home (DNS and getcwd need them — probe items 2 and 3)", () => {
+  it("denies /usr/local AFTER the /usr allow: Homebrew's tree is user-writable inside a readable system root, and SBPL takes the last match (review B2)", () => {
+    const l = lines();
+    const allowUsr = l.indexOf('(allow file-read* (subpath "/usr"))');
+    const denyLocal = l.indexOf('(deny file-read* (subpath "/usr/local"))');
+    expect(allowUsr).toBeGreaterThan(2);
+    expect(denyLocal).toBeGreaterThan(allowUsr);
+  });
+  it("grants metadata on / /etc /var /tmp and on every ancestor of the room and the home (DNS and getcwd need them — probe items 2 and 3)", () => {
     const p = renderCleanroom(dirs);
-    for (const d of ["/etc", "/var", "/tmp", "/Users", "/Users/p", "/Users/p/Library", "/Users/p/Library/Caches", "/Users/p/Library/Caches/houge-daemon"])
+    for (const d of ["/", "/etc", "/var", "/tmp", "/Users", "/Users/p", "/Users/p/Library", "/Users/p/Library/Caches", "/Users/p/Library/Caches/houge-daemon"])
       expect(p).toContain(`(allow file-read-metadata (literal "${d}"))`);
+  });
+  it("renders both spellings of a symlinked path (/tmp and /private/tmp): Seatbelt matches the canonical one, callers may hold either", () => {
+    const two = { room: "/tmp/hg-x/room", home: "/tmp/hg-x/home" }; // does not exist: realpathOrSelf resolves /tmp only
+    const p = renderCleanroom(two);
+    for (const v of ["/tmp/hg-x", "/private/tmp/hg-x"]) {
+      expect(p).toContain(`(allow file-read* (subpath "${v}/room"))`);
+      expect(p).toContain(`(allow file-read* (subpath "${v}/home"))`);
+      expect(p).toContain(`(allow file-write* (subpath "${v}/room"))`);
+      expect(p).not.toContain(`(allow file-write* (subpath "${v}/home"))`);
+    }
   });
   it("denies every write, then re-allows only the room and /dev/null — never the home", () => {
     const l = lines();
@@ -160,8 +179,9 @@ describe("renderCleanroom — SBPL for the sealed room (spec §Required SBPL fac
   });
   it("is deterministic for the same pair and escapes quotes in a path", () => {
     expect(renderCleanroom(dirs)).toBe(renderCleanroom(dirs));
-    const odd = { room: '/Users/p/Library/Caches/houge-daemon/r"1', home: "/Users/p/Library/Caches/houge-daemon/h-1" };
+    const odd = { room: '/Users/p/Library/Caches/houge-daemon/r"1', home: '/Users/p/Library/Caches/houge-daemon/h"\\1' };
     expect(renderCleanroom(odd)).toContain('(allow file-write* (subpath "/Users/p/Library/Caches/houge-daemon/r\\"1"))');
+    expect(renderCleanroom(odd)).toContain('(allow file-read* (subpath "/Users/p/Library/Caches/houge-daemon/h\\"\\\\1"))');
   });
 });
 
@@ -226,7 +246,7 @@ describe("effective policy — the planner and shell profiles deny the cache roo
         expect(lastRuleFor(cr, "file-read*", `${v}/child.txt`), `read ${v}/child.txt`).toBe("deny");
       }
       // /dev/null is left out: planner/shell write-allow it as a device sink (DEV_WRITES); nothing can be planted in it
-      for (const t of ["/usr", "/bin", "/System", "/Library", "/private/etc/ssl"]) for (const prof of [planner, shell]) {
+      for (const t of ["/usr", "/bin", "/System", "/private/etc/ssl"]) for (const prof of [planner, shell]) {
         expect(lastRuleFor(prof, "file-write*", t), `write ${t}`).toBe("deny");
         expect(lastRuleFor(prof, "file-write*", `${t}/x`), `write ${t}/x`).toBe("deny");
       }
@@ -321,6 +341,13 @@ describe.runIf(process.platform === "darwin")("live clean room — the propertie
     const r = run("/bin/cat link"); expect(r.status).not.toBe(0); expect(r.stderr).toMatch(/Operation not permitted/);
     const w = run(`/bin/echo planted > "${dirs.home}/.curlrc"`); expect(w.status).not.toBe(0); expect(w.stderr).toMatch(/Operation not permitted/);
     expect(existsSync(join(dirs.home, ".curlrc"))).toBe(false);
+  });
+  it("/Library and /usr/local cannot be listed (user- or world-writable trees inside the system roots — review B), each proven to exist", () => {
+    const { run } = sealedRoom();
+    for (const d of ["/Library", "/usr/local"]) {
+      expect(existsSync(d), `${d} exists`).toBe(true);
+      const r = run(`/bin/ls ${d}`); expect(r.status, d).not.toBe(0); expect(r.stderr, d).toMatch(/Operation not permitted/);
+    }
   });
   it("the escape hatches are closed: launchctl, security and the python3 shim cannot exec", () => {
     const { run } = sealedRoom();
