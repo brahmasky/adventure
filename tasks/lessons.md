@@ -544,3 +544,15 @@ Rules Claude writes for itself after corrections. Review at session start.
   recorded a workaround as if it were a decision. Rule: when an ADR changes, grep the repo for the old behaviour's words
   (`jev_model_uncalibrated`, `decision_bar_stale`, a version literal) and replace each as current-state text; an ADR holds
   Paco's decisions and invariants only, and what the build could not do goes in `tasks/todo.md`.
+
+## 2026-10-27 — clean-room Slice 0: what the review stack caught that the author could not
+- **Reviewers that run the plan's code find what reading cannot.** The Opus senior review extracted every code block from the
+  plan into a scratch checkout and ran tsc + vitest: 4 blockers (overlap-before-empty ordering, a test-setup env var leaking
+  into the effective-policy test, a `noUncheckedIndexedAccess` type error, a tautological test). Ask reviewers to run, not read.
+- **String paths are not identities on APFS.** `room-1` and `ROOM-1` are one inode; a validator comparing strings called them
+  disjoint — the only real seal hole in the slice, found by codex, confirmed first-hand in one command. Compare `dev:ino`.
+- **A caller-supplied security root is a trusted input.** `cacheRoot: "/"` was accepted. Derive the root inside the module.
+- **Stricter-reading pre-ruling paid off:** dropping `/Library` and denying `/usr/local` was adopted without a pause because the
+  pre-ruling says so; the orchestrator verified HTTPS + cookie jars still work before adopting it.
+- **Author ≠ reviewer held throughout** (Fable orchestrated; Sonnet/Opus implemented; Opus/Sonnet/codex reviewed, never the author's
+  model). Paco's taps this slice: zero.
