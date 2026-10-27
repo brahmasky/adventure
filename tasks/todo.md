@@ -1,5 +1,24 @@
 # 🧭 CURRENT SYSTEM STATE — 2026-10-26 (read this first)
 
+## Standing pre-rulings (Paco, 2026-10-27; contract: `AGENTS.md` §Autonomy)
+Decided once so no slice stops on them. Change only by Paco's word; a wrong one is undone by editing this list.
+- **P8 residual** — if the cleanroom probe cannot seal loopback / the bridge socket: keep asking. No sealed credit, Stage 4A standing approval stays off for that command, residual recorded in ADR 0030 as *open*. Do not draft a narrowing amendment.
+- **Review split on a locked rule** — senior and codex disagree: build to the stricter reading, present both in the report, continue. No pause.
+- **Final whole-branch review on the orchestrator's model only** (rate limits): codex whole-diff is the second model; label the Claude review "same-model", ship proceeds.
+- **Chaining** — ROADMAP order is standing scope approval. After a build ships, start the next item's spec without a tap; the reviewed-spec approval is the only tap per build. A reorder or a new item is Tier C.
+- **ADR amendment required by an approved spec** — draft, mark "awaiting Paco's signature", keep building; signatures batched at the slice report.
+- **`dist/` rebuilt** — never kickstart; one line in the report: "kickstart owed; run in flight: yes/no". Consecutive rebuilds collapse into one note.
+- **Live gate FAIL** — never ship. INCONCLUSIVE: rerun once; ship only if the case is diagnosed as not caused by the diff and that diagnosis is written in the report; otherwise Tier B.
+- **Pre-existing flaky test under load** — rerun alone; passes alone and already listed here → proceed, note it. New flakiness from this diff → fix first.
+- **Hidden complexity mid-slice** — under one task's worth: fold in with a ruling. Larger: finish the slice as specced, record a follow-up here, don't expand.
+- **Schema change** — allowed under an approved spec with a reversible migration and a rollback check in the gate.
+- **Protected-surface files** — edit under the approved spec; list them by path in the report.
+- **Gates while the daemon is live** — run any time; never stop the daemon; never fire a scheduled job outside its schedule.
+- **Gate needs a real Paco tap on a card** — prefer the stubbed path; if only the real tap proves it, Tier B item in the report, not a mid-slice stop.
+- **Same codex blocker returns twice after a fix** — design churn: stop polishing, write both readings, Tier B.
+- **Same-model task review** (rate limits) — counts, labelled.
+
+
 **Stage 3 wiring: MERGED to main 2026-10-26 (through fb03d00). Boundary fixes landed; stage3 smoke gate exists at scripts/live-gate-ladder-stage3-wired.mjs (PASS) but full Telegram E2E gate pending.** Docs sync in progress. Entry-shape amendments (T1), shell_class/path/posture/policy/budget/manifest/tool.wall/reader.family/selfwrite.guard/fetch/ssrf are all wired and reviewing-clean through T10; final live-gate script still pending (`scripts/live-gate-ladder-stage3-wired.mjs`). Tests 5335+. dist rebuilt and daemon kickstarted. Pending operational task: create/run the live gate and update sessions.md on ship.
 
 **Jev version check: MERGED and pushed 2026-10-23 (`43511e5`), `dist/` rebuilt; live after Paco's kickstart.** Spec
