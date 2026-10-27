@@ -554,14 +554,14 @@ describe.runIf(process.platform === "darwin")("runCleanroomShell — one sealed 
     let n = 0; const r = await runCleanroomShell({ ...deps(), now: () => { if (++n === 1) throw new Error("clock"); return Date.now(); } }, "/bin/echo x");
     expect(r).toMatchObject({ status: "failed", reason: "cleanroom_setup", setup_step: "sweep", ran: false, torn_down: true }); expect(r.setup_error).toMatch(/clock/);
     expect(readdirSync(cleanroomRoot())).toEqual([]);
-    // partial creation (both directories made, then refused): a cache root reached through a symlink is refused by the
-    // validator (`rootIdent` → symlink_component), after both mkdtemps — exactly the "made, then failed" path
-    const real = root(); const link = join(tmpdir(), `hg-crr-link-${process.pid}`); symlinkSync(real, link); process.env.HOUGE_DAEMON_TMP_DIR = link;
+    // partial creation (both directories made, then refused): `<cache>/cleanroom` itself a symlink is refused by the
+    // validator's rootIdent (symlink_component) — after both mkdtemps, exactly the "made, then failed" path
+    const elsewhere = join(root(), "elsewhere"); mkdirSync(elsewhere); symlinkSync(elsewhere, cleanroomRoot());
     try {
       const v = await runCleanroomShell(deps(), "/bin/echo x");
       expect(v).toMatchObject({ status: "failed", reason: "cleanroom_invalid", ran: false, torn_down: true }); expect(v.invalid_reason).toBe("symlink_component");
-    } finally { process.env.HOUGE_DAEMON_TMP_DIR = real; rmSync(link, { force: true }); }
-    expect(readdirSync(cleanroomRoot())).toEqual([]);
+      expect(readdirSync(elsewhere)).toEqual([]); // both mkdtemp'd directories were torn down
+    } finally { rmSync(cleanroomRoot(), { force: true }); rmSync(elsewhere, { recursive: true, force: true }); }
     expect((await runCleanroomShell(deps(), "/bin/echo y")).status).toBe("succeeded");
   });
   it("a file dropped into the home DURING the run leaves the command's result standing and sets tampered", async () => {
