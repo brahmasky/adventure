@@ -38,6 +38,13 @@ The global flow applies in full. Houge specifics:
 - Commits land on `main` (direct, or a PR for a multi-task slice). One concern per commit, stage by name.
 - Rebuild `dist/` after merge.
 
+## Autonomy (overrides to `~/.claude/standards/automation-contract.md`)
+Default is run-to-completion. Paco's touchpoints per slice: approve scope, approve the reviewed spec, sign ADR / kickstart. Houge-specific tier moves:
+- **Tier A (run):** push to `main` once every gate is green; protected-surface edits that implement an approved spec (the spec approval is Paco's hand); live gates that message Paco's own Telegram chat (inside the test surface); drafting ADR amendments, `tasks/todo.md`, `sessions.md`, `tasks/lessons.md`.
+- **Tier B (checkpoint):** a live gate that writes to a third-party service Houge does not own; a spec whose reviews disagree on a locked rule (present both readings with a recommendation, then wait).
+- **Tier C (Paco decides):** changing what an invariant or ADR *means*; accepting a residual a probe could not close (e.g. a sealed-room boundary left open); `launchctl kickstart`, revive, `/rearm`; anything on a metered API; `dependencies` leaving `{}`.
+- **Model diversity here:** orchestrator fixed per session; `spec-review-senior` runs as a subagent on a model other than the orchestrator **and** codex; task reviewers ≠ implementer; final whole-branch review on the most capable non-orchestrator model + codex whole-diff. Every dispatch names its `model`. A same-model review is written as such in the report.
+
 ## Code
 - Functions under 50 lines (reviewers enforce it).
 - Match surrounding style. Every changed line traces to the request. Remove only orphans your own change created; mention unrelated dead code and leave it.
