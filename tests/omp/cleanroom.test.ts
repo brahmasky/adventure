@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -146,7 +146,7 @@ describe("renderCleanroom — SBPL for the sealed room (spec §Required SBPL fac
     expect(p).not.toContain('(allow file-read* (subpath "/Library"))');
     expect(p).toContain('(allow file-read-data (literal "/"))');
     const allows = lines().filter((l) => l.startsWith("(allow file-read* "));
-    expect(allows).toHaveLength(8); // "/" literal + 4 system trees + /dev/null + room + home
+    expect(allows).toHaveLength(11); // "/" literal + 4 system trees + /dev/null + 3 time-zone paths + room + home
   });
   it("denies /usr/local AFTER the /usr allow: Homebrew's tree is user-writable inside a readable system root, and SBPL takes the last match", () => {
     const l = lines();
@@ -183,6 +183,25 @@ describe("renderCleanroom — SBPL for the sealed room (spec §Required SBPL fac
     for (const s of ['(deny process-exec (literal "/bin/launchctl"))', '(deny process-exec (literal "/usr/bin/security"))',
       '(deny process-exec (literal "/usr/bin/python3"))', '(deny mach-lookup (global-name "com.apple.launchd"))', "(deny signal (target others))"])
       expect(p).toContain(s);
+  });
+  it("P8: denies every local network form, UDP, Unix sockets, listening and all Mach lookups — DNS keeps its one socket", () => {
+    const p = renderCleanroom(dirs);
+    expect(p).toContain("(deny mach-lookup)");
+    // the three families sit in one rule and each names its family: a bare `(remote ip …)` stops matching IPv4
+    // loopback as soon as any ip6 rule exists (measured 2026-10-28), so the grammar test forbids it outright
+    expect(p).toContain('(deny network-outbound (remote ip4 "localhost:*") (remote ip6 "*:*") (remote udp4 "*:*"))');
+    expect(p).not.toMatch(/\(remote ip "/);
+    expect(p).toContain("(deny network-outbound (remote unix-socket))");
+    expect(lines().filter((l) => l.startsWith("(allow network-outbound"))).toEqual(['(allow network-outbound (literal "/private/var/run/mDNSResponder"))']);
+    expect(p).toContain("(deny network-inbound)");
+    expect(p).toContain("(deny network-bind)");
+    const mach = lines().indexOf("(deny mach-lookup)"); const net = lines().findIndex((l) => l.startsWith("(deny network-outbound (remote ip4"));
+    expect(mach).toBeGreaterThan(0); expect(net).toBeGreaterThan(mach);
+  });
+  it("the room's clock is the host's: localtime and the zoneinfo trees are readable (root-owned, outside every write set)", () => {
+    const p = renderCleanroom(dirs);
+    for (const s of ['(literal "/private/etc/localtime")', '(subpath "/private/var/db/timezone")', '(subpath "/usr/share/zoneinfo")']) expect(p).toContain(`(allow file-read* ${s})`);
+    for (const d of ["/private", "/private/var", "/private/var/db"]) expect(p).toContain(`(allow file-read-metadata (literal "${d}"))`);
   });
   it("is deterministic for the same pair and escapes quotes in a path", () => {
     expect(renderCleanroom(dirs)).toBe(renderCleanroom(dirs));
@@ -417,5 +436,53 @@ describe.runIf(process.platform === "darwin")("live clean room — the propertie
       expect(r.status, cmd).not.toBe(0);
       expect(r.stderr, cmd).toMatch(/Operation not permitted/);
     }
+  });
+  /**
+   * A dual-stack HTTP listener on an ephemeral port, in a CHILD process: the control curl and `run` use spawnSync, which
+   * blocks this event loop, so an in-process server could never answer the control (the test would then deadlock to 000).
+   */
+  async function localListener(): Promise<{ port: number; close: () => Promise<void> }> {
+    const c = spawn(process.execPath, ["-e", 'const s=require("http").createServer((q,r)=>r.end("local"));s.listen(0,"::",()=>console.log(s.address().port))'], { stdio: ["ignore", "pipe", "inherit"] });
+    const port = await new Promise<number>((r) => c.stdout!.once("data", (d) => r(Number(String(d).trim()))));
+    return { port, close: async () => { c.kill(); } };
+  }
+  it("P8 live: a local HTTP listener is unreachable as 127.0.0.1, localhost, [::1], [::ffff:127.0.0.1] and 0.0.0.0, while the control (unsandboxed) reaches it", async () => {
+    const { port, close } = await localListener();
+    try {
+      const ctl = spawnSync("/usr/bin/curl", ["-s", "-m", "3", "-o", "/dev/null", "-w", "%{http_code}", `http://127.0.0.1:${port}/`], { encoding: "utf8" });
+      expect(ctl.stdout).toBe("200"); // the listener works: a denied connect below is the sandbox, not a dead port
+      const { run } = sealedRoom();
+      for (const host of ["127.0.0.1", "localhost", "[::1]", "[::ffff:127.0.0.1]", "0.0.0.0"]) {
+        const r = run(`/usr/bin/curl -s -m 3 -o /dev/null -w '%{http_code}' http://${host}:${port}/`);
+        expect(r.status, host).toBe(7); expect(r.stdout, host).toBe("000");
+      }
+    } finally { await close(); }
+  });
+  it("P8 live: a UDP datagram to loopback is refused through bash's own /dev/udp (no nc: the allowlist denies it, so a probe through it would pass for the wrong reason)", () => {
+    const { run } = sealedRoom();
+    const r = run("exec 3<>/dev/udp/127.0.0.1/9 && echo sent >&3 && echo UDP-SENT");
+    expect(r.stdout).not.toContain("UDP-SENT"); expect(r.stderr).toMatch(/Operation not permitted/);
+  });
+  it("P8 live: a Unix socket in the room is unreachable (the bridge sockets are Unix sockets); the unsandboxed control reaches it", async () => {
+    const { run, dirs } = sealedRoom();
+    const sock = join(dirs.room, "t.sock");
+    const c = spawn(process.execPath, ["-e", `require("http").createServer((q,r)=>r.end("u")).listen(${JSON.stringify(sock)},()=>console.log("up"))`], { stdio: ["ignore", "pipe", "inherit"] });
+    await new Promise<void>((r) => c.stdout!.once("data", () => r()));
+    try {
+      expect(spawnSync("/usr/bin/curl", ["-s", "-m", "3", "--unix-socket", sock, "http://x/"], { encoding: "utf8" }).stdout).toBe("u");
+      expect(run(`/usr/bin/curl -s -m 3 --unix-socket "${sock}" http://x/`).status).toBe(7);
+    } finally { c.kill(); }
+  });
+  it("P8 live: HTTPS to a remote host still works and a bad certificate is still rejected — TLS needs no Mach lookup (skipped offline)", () => {
+    const { run } = sealedRoom();
+    const ctl = spawnSync("/usr/bin/curl", ["-s", "-m", "8", "-o", "/dev/null", "-w", "%{http_code}", "https://example.com/"], { encoding: "utf8" });
+    if (ctl.stdout !== "200") return; // offline: the gate owns the network verdict (INCONCLUSIVE there), this test must not fail a laptop
+    expect(run("/usr/bin/curl -s -m 8 -o /dev/null -w '%{http_code}' https://example.com/").stdout).toBe("200");
+    expect(run("/usr/bin/curl -s -m 8 -o /dev/null https://expired.badssl.com/").status).toBe(60);
+  });
+  it("the room's clock is the host's (zoneinfo readable): `date +%Z` matches outside the sandbox", () => {
+    const { run } = sealedRoom();
+    const host = spawnSync("/bin/date", ["+%Z"], { encoding: "utf8" }).stdout.trim();
+    expect(run("/bin/date +%Z").stdout.trim()).toBe(host);
   });
 });

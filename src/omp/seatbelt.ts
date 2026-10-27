@@ -99,6 +99,25 @@ function ancestorsOf(p: string): string[] {
   return [...out];
 }
 
+/**
+ * P8 (spec §P8 evidence, measured 2026-10-28): nothing on this host is reachable — loopback in every spelling, the
+ * host's own addresses, IPv4-mapped IPv6, UDP of any kind (so no broadcast/multicast path to a local service), Unix
+ * sockets but the resolver's, listening, Mach lookups. Families are named on every filter and sit in ONE rule: a bare
+ * `ip` filter stops matching IPv4 loopback once any ip6 rule exists, and network rules interact non-locally, so the
+ * exact text is pinned and the live matrix re-runs on every edit. Cost: TCP egress only, no IPv6 egress.
+ */
+export const CLEANROOM_NETWORK_RULES: readonly string[] = [
+  "(deny mach-lookup)",
+  '(deny network-outbound (remote ip4 "localhost:*") (remote ip6 "*:*") (remote udp4 "*:*"))',
+  "(deny network-outbound (remote unix-socket))",
+  '(allow network-outbound (literal "/private/var/run/mDNSResponder"))',
+  "(deny network-inbound)",
+  "(deny network-bind)"
+];
+/** Root-owned, outside every write set; without them `date` in the room is UTC and a "book tomorrow" command is wrong for hours a day. */
+const CLEANROOM_TZ_READS = ['(allow file-read* (literal "/private/etc/localtime"))', '(allow file-read* (subpath "/private/var/db/timezone"))', '(allow file-read* (subpath "/usr/share/zoneinfo"))'];
+const CLEANROOM_TZ_META = ["/private", "/private/var", "/private/var/db"];
+
 // No /Library: its world-writable trees (/Library/Caches …) would be readable plants; TLS roots come from /System.
 const CLEANROOM_READ_TREES = ["/usr", "/bin", "/System", "/private/etc/ssl"];
 /**
@@ -111,8 +130,8 @@ const CLEANROOM_READ_HOLES: Record<string, string[]> = { "/usr": ["/usr/local"] 
  * The clean room (decision-ladder design §8.3, probe 13-cleanroom-probe.md): reads deny-default, re-opened only for the
  * system trees, /private/etc/ssl (curl's openssl.cnf; hosts and the resolver are NOT needed — DNS goes over IPC), the
  * room and the fresh home; metadata on the symlinks /etc /var /tmp (DNS) and the room's ancestors (getcwd); writes only
- * in the room; the launchd / security / python3-shim escape hatches closed. Network and the rest of IPC stay default
- * in Slice 0 — the P8 probe (Slice 1) narrows them before any sealed credit is granted.
+ * in the room; the launchd / security / python3-shim escape hatches closed; the P8 block closes local network and the
+ * rest of IPC (CLEANROOM_NETWORK_RULES).
  */
 export function renderCleanroom(dirs: RoomPair): string {
   const sub = (p: string) => variants(p).map((v) => `(allow file-read* (subpath "${esc(v)}"))`);
@@ -124,10 +143,11 @@ export function renderCleanroom(dirs: RoomPair): string {
     '(allow file-read* (literal "/"))',
     ...CLEANROOM_READ_TREES.flatMap((t) => [...sub(t), ...(CLEANROOM_READ_HOLES[t] ?? []).map((h) => `(deny file-read* (subpath "${esc(h)}"))`)]),
     '(allow file-read* (literal "/dev/null"))',
+    ...CLEANROOM_TZ_READS,
     ...sub(dirs.room),
     ...sub(dirs.home),
     '(allow file-read-data (literal "/"))',
-    ...[...new Set(["/", "/etc", "/var", "/tmp", ...ancestorsOf(dirs.room), ...ancestorsOf(dirs.home)])].map(meta),
+    ...[...new Set(["/", "/etc", "/var", "/tmp", ...CLEANROOM_TZ_META, ...ancestorsOf(dirs.room), ...ancestorsOf(dirs.home)])].map(meta),
     "(deny file-write*)",
     ...variants(dirs.room).map((v) => `(allow file-write* (subpath "${esc(v)}"))`),
     '(allow file-write* (literal "/dev/null"))',
@@ -135,7 +155,8 @@ export function renderCleanroom(dirs: RoomPair): string {
     '(deny process-exec (literal "/bin/launchctl"))',
     '(deny process-exec (literal "/usr/bin/security"))',
     '(deny process-exec (literal "/usr/bin/python3"))',
-    '(deny mach-lookup (global-name "com.apple.launchd"))'
+    '(deny mach-lookup (global-name "com.apple.launchd"))',
+    ...CLEANROOM_NETWORK_RULES
   ].join("\n") + "\n";
 }
 
