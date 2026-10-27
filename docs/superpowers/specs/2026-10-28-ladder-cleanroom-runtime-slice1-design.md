@@ -1,6 +1,6 @@
 # Decision ladder — clean-room runtime (Slice 1 of the clean-room profile)
 
-**Status:** Rev 5 (codex round 4: three wording ambiguities on changed lines, closed with an explicit `ran` fact) — senior review (Opus, live probes: no blockers, 6 warnings, all taken); codex round 1 (6 blockers: 5 taken, B1 rejected with evidence, accepted by codex in round 2); codex round 2 (4 blockers, 4 warnings: all taken, with the bash job-control orphan escalated to a Paco decision, §Decision needed); then Paco's approval of the reviewed spec, including §Decision needed.
+**Status:** **Approved by Paco 2026-10-28 ("go ahead")** on Rev 5, reading **A** of §Decision needed taken as the recommended default (B can be chosen later; only Stage 4A depends on it). Review history: senior (Opus, live probes: 0 blockers, 6 warnings taken); codex ×4 rounds, all findings closed.
 **Date:** 2026-10-28
 **Amends:** `docs/superpowers/specs/2026-10-27-ladder-cleanroom-profile-design.md` (Slice 0; its §Slice 0 rulings stand). Implements ADR 0030 §8.3's clean-room execution; **grants no standing approval and no sealed credit** — that is Stage 4A (`2026-10-26-ladder-stage4-standing-approval-scheduled-design.md`), which this slice unblocks.
 **Depends on:** Slice 0 on `main` (`10df6b6`): `src/omp/cleanroom.ts` (validator, branded pair, sidecar writer, fixed env), `renderCleanroom` in `src/omp/seatbelt.ts`, `tests/omp/cleanroom.test.ts`, `scripts/live-gate-cleanroom-profile.mjs`.
