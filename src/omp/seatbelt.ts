@@ -1,6 +1,6 @@
 import { mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import type { CleanroomDirs } from "./cleanroom.js";
+import type { RoomPair } from "./cleanroom.js";
 import { CREDENTIAL_PATTERNS, ENV_TEMPLATE_PATTERNS, operationalWriteDeny, protectedRepoPaths, realpathOrSelf, secretPaths, writableExceptions, writeRoots, type PathContext } from "./protected-paths.js";
 
 const esc = (s: string) => s.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
@@ -108,7 +108,7 @@ const CLEANROOM_READ_TREES = ["/usr", "/bin", "/System", "/Library", "/private/e
  * in the room; the launchd / security / python3-shim escape hatches closed. Network and the rest of IPC stay default
  * in Slice 0 — the P8 probe (Slice 1) narrows them before any sealed credit is granted.
  */
-export function renderCleanroom(dirs: CleanroomDirs): string {
+export function renderCleanroom(dirs: RoomPair): string {
   const sub = (p: string) => variants(p).map((v) => `(allow file-read* (subpath "${esc(v)}"))`);
   const meta = (p: string) => `(allow file-read-metadata (literal "${esc(p)}"))`;
   return [

@@ -1,12 +1,15 @@
 import { lstatSync, readdirSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { homedir } from "node:os";
+import { dirname, isAbsolute, join, resolve } from "node:path";
+import { resolveDaemonTmpDir } from "../run/daemon-tmp.js";
 import { renderCleanroom } from "./seatbelt.js";
 
 /**
  * The clean room (decision-ladder design §8.3): a standing-approved command runs with a fresh, empty room as cwd and a
- * fresh, empty, read-only home. Both are daemon-made under the daemon cache root, which the planner and shell profiles
- * already read- and write-deny, so nothing a sandboxed child planted can be inside them. The validator proves that
- * shape before a profile is rendered from the paths; a bad pair is a denied run, never a looser profile.
+ * fresh, empty, read-only home. Both are daemon-made under `<daemon tmp>/cleanroom`, inside the cache root the planner
+ * and shell profiles already read- and write-deny, so nothing a sandboxed child planted can be inside them. The
+ * validator proves that shape before a profile is rendered from the paths; a bad pair is a denied run, never a looser
+ * profile.
  */
 export type CleanroomReason = "not_absolute" | "not_directory" | "symlink_component" | "outside_cache_root" | "overlap" | "not_empty";
 
@@ -17,46 +20,73 @@ export class CleanroomPathError extends Error {
   }
 }
 
-/** Canonical absolute paths of a validated pair. */
-export interface CleanroomDirs { room: string; home: string }
+/** A room and a home as plain paths: what the pure renderer and env builder take. */
+export interface RoomPair { room: string; home: string }
 
-const inside = (child: string, parent: string): boolean => {
-  const rel = relative(parent, child);
-  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
-};
+const VALIDATED: unique symbol = Symbol("cleanroom.validated");
+/** Canonical absolute paths of a validated pair. Only validateCleanroomDirs makes one, so only it reaches the writer. */
+export type CleanroomDirs = Readonly<RoomPair> & { readonly [VALIDATED]: true };
 
 /**
- * Containment first, over EITHER spelling of the cache root (as given, canonical: /tmp vs /private/tmp), then every
- * component from the path up to the root must be a real directory — a symlink anywhere would move the subpath rule.
+ * The only directory a pair may live under. Derived, never supplied (a caller-given root of "/" was accepted). The
+ * `cleanroom/` subdirectory keeps rooms apart from every child's TMPDIR, which Slice 1 moves to a sibling subdirectory.
  */
-function canonicalDir(p: string, roots: readonly string[]): string {
+export function cleanroomRoot(env: NodeJS.ProcessEnv = process.env, home: string = homedir()): string {
+  return join(resolveDaemonTmpDir(env, home), "cleanroom");
+}
+
+const ident = (p: string): string => { const s = statSync(p); return `${s.dev}:${s.ino}`; };
+
+/** inode ids of p and every ancestor up to and including `/` — APFS case/normalization aliases share inodes, strings do not. */
+function lineage(p: string): string[] {
+  const out: string[] = [];
+  for (let d = p; ; d = dirname(d)) { out.push(ident(d)); if (d === dirname(d)) return out; }
+}
+
+/**
+ * Containment by inode (strictly below the root, under any spelling of either), then every component from the path up
+ * to the root must be a real directory — a symlink anywhere would move the subpath rule.
+ */
+function canonicalDir(p: string, rootId: string): { path: string; id: string } {
   // absolute AND normalized: `<root>/link/../room` would stat one directory (through the link) and check another
   if (!isAbsolute(p) || resolve(p) !== p) throw new CleanroomPathError("not_absolute", p);
   let st; try { st = statSync(p); } catch { throw new CleanroomPathError("not_directory", p); }
   if (!st.isDirectory()) throw new CleanroomPathError("not_directory", p);
-  if (roots.includes(p) || !roots.some((r) => inside(p, r))) throw new CleanroomPathError("outside_cache_root", p);
-  for (let d = p; !roots.includes(d) && d !== dirname(d); d = dirname(d)) {
-    if (lstatSync(d).isSymbolicLink()) throw new CleanroomPathError("symlink_component", p);
-  }
-  try { return realpathSync(p); } catch { throw new CleanroomPathError("not_directory", p); }
+  const id = `${st.dev}:${st.ino}`;
+  let line; try { line = lineage(p); } catch { throw new CleanroomPathError("not_directory", p); }
+  if (id === rootId || !line.includes(rootId)) throw new CleanroomPathError("outside_cache_root", p);
+  try {
+    for (let d = p; ident(d) !== rootId; d = dirname(d)) {
+      if (d === dirname(d)) throw new CleanroomPathError("outside_cache_root", p); // the tree moved under us since the lineage
+      if (lstatSync(d).isSymbolicLink()) throw new CleanroomPathError("symlink_component", p);
+    }
+    // case as given: Seatbelt matches paths case-insensitively on APFS, so a rule from either case covers the dir (fails safe)
+    return { path: realpathSync(p), id };
+  } catch (e) { throw e instanceof CleanroomPathError ? e : new CleanroomPathError("not_directory", p); }
 }
 
-export function validateCleanroomDirs(input: { room: string; home: string; cacheRoot: string }): CleanroomDirs {
-  const roots = [...new Set([resolve(input.cacheRoot), realpathSync(input.cacheRoot)])];
-  const room = canonicalDir(input.room, roots);
-  const home = canonicalDir(input.home, roots);
-  // overlap before emptiness: a home nested in the room makes the room non-empty, and the overlap is the real fault
-  if (room === home || inside(room, home) || inside(home, room)) throw new CleanroomPathError("overlap", `${room} ~ ${home}`);
-  for (const [d, given] of [[room, input.room], [home, input.home]] as const) {
-    if (readdirSync(d).length > 0) throw new CleanroomPathError("not_empty", given);
-  }
-  return { room, home };
+export function validateCleanroomDirs(input: RoomPair): CleanroomDirs {
+  const root = cleanroomRoot();
+  let rootId; try { rootId = ident(root); } catch { throw new CleanroomPathError("outside_cache_root", root); }
+  const room = canonicalDir(input.room, rootId);
+  const home = canonicalDir(input.home, rootId);
+  try {
+    // overlap before emptiness: a home nested in the room makes the room non-empty, and the overlap is the real fault.
+    // By inode: `ROOM-1` and `room-1` are one APFS directory but two strings (review A1).
+    if (lineage(room.path).includes(home.id) || lineage(home.path).includes(room.id)) {
+      throw new CleanroomPathError("overlap", `${room.path} ~ ${home.path}`);
+    }
+    for (const [d, given] of [[room.path, input.room], [home.path, input.home]] as const) {
+      if (readdirSync(d).length > 0) throw new CleanroomPathError("not_empty", given);
+    }
+  } catch (e) { throw e instanceof CleanroomPathError ? e : new CleanroomPathError("not_directory", `${input.room} ~ ${input.home}`); }
+  return Object.freeze({ room: room.path, home: home.path, [VALIDATED]: true as const });
 }
 
 export const CLEANROOM_PROFILE_NAME = "cleanroom.sb";
 
 /** Nothing is inherited from the daemon (codex round 4 B19): these six, and TMPDIR inside the room. */
-export function cleanroomEnv(dirs: CleanroomDirs): { PATH: string; LANG: string; HOME: string; CURL_HOME: string; XDG_CONFIG_HOME: string; TMPDIR: string } {
+export function cleanroomEnv(dirs: RoomPair): { PATH: string; LANG: string; HOME: string; CURL_HOME: string; XDG_CONFIG_HOME: string; TMPDIR: string } {
   return { PATH: "/usr/bin:/bin:/usr/sbin:/sbin", LANG: "C.UTF-8", HOME: dirs.home, CURL_HOME: dirs.home, XDG_CONFIG_HOME: dirs.home, TMPDIR: dirs.room };
 }
 

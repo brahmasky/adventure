@@ -1,9 +1,9 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { CLEANROOM_PROFILE_NAME, CleanroomPathError, cleanroomEnv, validateCleanroomDirs, writeCleanroomProfile } from "../../src/omp/cleanroom.js";
+import { CLEANROOM_PROFILE_NAME, CleanroomPathError, cleanroomEnv, cleanroomRoot, validateCleanroomDirs, writeCleanroomProfile } from "../../src/omp/cleanroom.js";
 import { realpathOrSelf, writeRoots } from "../../src/omp/protected-paths.js";
 import { renderCleanroom, renderSeatbelt } from "../../src/omp/seatbelt.js";
 import { resolveDaemonTmpDir } from "../../src/run/daemon-tmp.js";
@@ -11,65 +11,115 @@ import { resolveDaemonTmpDir } from "../../src/run/daemon-tmp.js";
 vi.setConfig({ testTimeout: 30_000 });
 
 const made: string[] = [];
-function cacheRoot(): string { const r = mkdtempSync(join(tmpdir(), "hg-cr-")); made.push(r); return realpathSync(r); }
+/** A temp daemon tmp root holding `cleanroom/` (the only place a pair may live), canonical. */
+function cacheRoot(): string {
+  const r = realpathSync(mkdtempSync(join(tmpdir(), "hg-cr-"))); made.push(r);
+  mkdirSync(join(r, "cleanroom"));
+  return r;
+}
 afterEach(() => { for (const r of made.splice(0)) rmSync(r, { recursive: true, force: true }); });
 
+/** The validator derives its root from HOUGE_DAEMON_TMP_DIR (no caller-supplied root — review A2): point it at `root` for fn. */
+function withCacheRoot<T>(root: string, fn: () => T): T {
+  const saved = process.env.HOUGE_DAEMON_TMP_DIR; process.env.HOUGE_DAEMON_TMP_DIR = root;
+  try { return fn(); } finally { if (saved === undefined) delete process.env.HOUGE_DAEMON_TMP_DIR; else process.env.HOUGE_DAEMON_TMP_DIR = saved; }
+}
+
 function pair(root: string): { room: string; home: string } {
-  const room = join(root, "room-1"); const home = join(root, "home-1");
+  const room = join(root, "cleanroom", "room-1"); const home = join(root, "cleanroom", "home-1");
   mkdirSync(room); mkdirSync(home);
   return { room, home };
 }
 const reasonOf = (fn: () => unknown) => { try { fn(); return "ok"; } catch (e) { return e instanceof CleanroomPathError ? e.reason : `other:${String(e)}`; } };
+const validateUnder = (root: string, input: { room: string; home: string }) => reasonOf(() => withCacheRoot(root, () => validateCleanroomDirs(input)));
+const plain = (d: { room: string; home: string }) => ({ room: d.room, home: d.home });
 
 describe("validateCleanroomDirs — the room and the home are daemon-made, empty, disjoint and under the cache root (spec §Rendering API)", () => {
-  it("returns canonical paths for a fresh, empty, disjoint pair under the cache root", () => {
+  it("returns canonical paths for a fresh, empty, disjoint pair under <daemon tmp>/cleanroom, frozen", () => {
     const root = cacheRoot(); const { room, home } = pair(root);
-    expect(validateCleanroomDirs({ room, home, cacheRoot: root })).toEqual({ room: realpathSync(room), home: realpathSync(home) });
+    const d = withCacheRoot(root, () => validateCleanroomDirs({ room, home }));
+    expect(plain(d)).toEqual({ room: realpathSync(room), home: realpathSync(home) });
+    expect(Object.isFrozen(d)).toBe(true);
+    expect(cleanroomRoot({ HOUGE_DAEMON_TMP_DIR: root }, "/nowhere")).toBe(join(root, "cleanroom"));
+  });
+  it("only a validated pair reaches the writer (a literal pair is a type error — review A3)", () => {
+    const fake = { room: "/x/room", home: "/x/home" };
+    // @ts-expect-error a plain RoomPair is not a CleanroomDirs
+    expect(() => writeCleanroomProfile(fake)).toThrow();
   });
   it("rejects a relative path (a profile rendered from a relative path would allow whatever the cwd made of it)", () => {
     const root = cacheRoot(); const { home } = pair(root);
-    expect(reasonOf(() => validateCleanroomDirs({ room: "room-1", home, cacheRoot: root }))).toBe("not_absolute");
+    expect(validateUnder(root, { room: "room-1", home })).toBe("not_absolute");
   });
   it("rejects a path outside the cache root (the planner/shell profiles only deny the cache root, so anywhere else is reachable by them)", () => {
     const root = cacheRoot(); const other = cacheRoot(); const { room } = pair(root); const { home } = pair(other);
-    expect(reasonOf(() => validateCleanroomDirs({ room, home, cacheRoot: root }))).toBe("outside_cache_root");
+    expect(validateUnder(root, { room, home })).toBe("outside_cache_root");
   });
-  it("rejects a symlink component (the SBPL subpath would match the link, the child would read the target)", () => {
+  it("the root is derived, never supplied: a pair under os.tmpdir() is rejected while HOUGE_DAEMON_TMP_DIR points elsewhere (review A2: cacheRoot \"/\" was accepted)", () => {
+    const loose = realpathSync(mkdtempSync(join(tmpdir(), "hg-loose-"))); made.push(loose);
+    const room = join(loose, "room-1"); const home = join(loose, "home-1"); mkdirSync(room); mkdirSync(home);
+    expect(validateUnder(cacheRoot(), { room, home })).toBe("outside_cache_root");
+  });
+  it("rejects the cleanroom root itself, a look-alike sibling (`cleanroom-evil`), and any pair when the root does not exist", () => {
     const root = cacheRoot(); const { room, home } = pair(root);
-    const link = join(root, "room-link"); symlinkSync(room, link);
-    expect(reasonOf(() => validateCleanroomDirs({ room: link, home, cacheRoot: root }))).toBe("symlink_component");
+    expect(validateUnder(root, { room: join(root, "cleanroom"), home })).toBe("outside_cache_root");
+    const evil = join(root, "cleanroom-evil", "x"); mkdirSync(evil, { recursive: true });
+    expect(validateUnder(root, { room: evil, home })).toBe("outside_cache_root");
+    const bare = realpathSync(mkdtempSync(join(tmpdir(), "hg-bare-"))); made.push(bare); // no cleanroom/ inside
+    let err: unknown; try { withCacheRoot(bare, () => validateCleanroomDirs({ room, home })); } catch (e) { err = e; }
+    expect(err).toBeInstanceOf(CleanroomPathError);
+    expect(err).toMatchObject({ reason: "outside_cache_root", path: join(bare, "cleanroom") }); // a missing root, not a raw ENOENT
+  });
+  it("rejects a symlink component: the room itself, the home itself, or an intermediate directory (the SBPL subpath would match the link, the child would read the target)", () => {
+    const root = cacheRoot(); const { room, home } = pair(root);
+    const link = join(root, "cleanroom", "room-link"); symlinkSync(room, link);
+    expect(validateUnder(root, { room: link, home })).toBe("symlink_component");
+    const homeLink = join(root, "cleanroom", "home-link"); symlinkSync(home, homeLink);
+    expect(validateUnder(root, { room, home: homeLink })).toBe("symlink_component");
+    const real = join(root, "cleanroom", "real"); mkdirSync(join(real, "room"), { recursive: true });
+    symlinkSync(real, join(root, "cleanroom", "sub"));
+    expect(validateUnder(root, { room: join(root, "cleanroom", "sub", "room"), home })).toBe("symlink_component");
   });
   it("rejects room == home and either containing the other (the home must stay unwritable: writes are allowed under the room)", () => {
-    const root = cacheRoot(); const { room, home } = pair(root);
-    expect(reasonOf(() => validateCleanroomDirs({ room, home: room, cacheRoot: root }))).toBe("overlap");
+    const root = cacheRoot(); const { room } = pair(root);
+    expect(validateUnder(root, { room, home: room })).toBe("overlap");
     const inner = join(room, "home"); mkdirSync(inner);
-    expect(reasonOf(() => validateCleanroomDirs({ room, home: inner, cacheRoot: root }))).toBe("overlap");
-    expect(reasonOf(() => validateCleanroomDirs({ room: inner, home: room, cacheRoot: root }))).toBe("overlap");
-    void home;
+    expect(validateUnder(root, { room, home: inner })).toBe("overlap");
+    expect(validateUnder(root, { room: inner, home: room })).toBe("overlap");
+  });
+  it("rejects a case alias of the room as the home: on APFS `ROOM-1` IS `room-1`, so string comparison saw two dirs (review A1, codex blocker)", () => {
+    const root = cacheRoot(); const { room } = pair(root);
+    const alias = join(root, "cleanroom", "ROOM-1");
+    if (!existsSync(alias)) expect.fail("case-sensitive volume: this test needs the default case-insensitive APFS");
+    expect(validateUnder(root, { room, home: alias })).toBe("overlap");
+    expect(validateUnder(root, { room: alias, home: room })).toBe("overlap");
   });
   it("rejects a non-empty room or home (a planted ~/.curlrc in a readable home IS honoured — probe (e))", () => {
     const root = cacheRoot(); const { room, home } = pair(root);
     writeFileSync(join(home, ".curlrc"), "-H 'X-Planted: yes'");
-    expect(reasonOf(() => validateCleanroomDirs({ room, home, cacheRoot: root }))).toBe("not_empty");
+    expect(validateUnder(root, { room, home })).toBe("not_empty");
+    rmSync(join(home, ".curlrc")); writeFileSync(join(room, "planted"), "x");
+    expect(validateUnder(root, { room, home })).toBe("not_empty");
   });
-  it("accepts the pair when given through a symlinked spelling of the cache root itself (/tmp → /private/tmp), returning canonical paths", () => {
+  it("accepts the pair given through a symlinked spelling of the root (/var → /private/var), returning canonical paths", () => {
     const root = cacheRoot(); const { room, home } = pair(root);
-    const viaTmp = (p: string) => p.replace(/^\/private\/tmp\//, "/tmp/");
-    if (viaTmp(root) === root) return; // not a /private/tmp-based tmpdir on this machine
-    expect(validateCleanroomDirs({ room: viaTmp(room), home: viaTmp(home), cacheRoot: viaTmp(root) })).toEqual({ room, home });
+    const viaVar = (p: string) => p.replace(/^\/private\/var\//, "/var/");
+    expect(viaVar(root), "tmpdir is under /private/var on macOS: the alias must differ or the test is vacuous").not.toBe(root);
+    const d = withCacheRoot(viaVar(root), () => validateCleanroomDirs({ room: viaVar(room), home: viaVar(home) }));
+    expect(plain(d)).toEqual({ room, home });
   });
   it("rejects a non-normalized path: `<root>/link/../room` stats one directory through the link and would check another (review finding)", () => {
     const root = cacheRoot(); const { room, home } = pair(root);
-    const outside = cacheRoot(); symlinkSync(outside, join(root, "link"));
-    const viaLink = `${root}/link/../room-1`; // string, not join(): join() would normalize the `..` away
-    expect(reasonOf(() => validateCleanroomDirs({ room: viaLink, home, cacheRoot: root }))).toBe("not_absolute");
-    expect(reasonOf(() => validateCleanroomDirs({ room: `${room}/`, home, cacheRoot: root }))).toBe("not_absolute");
+    const outside = cacheRoot(); symlinkSync(outside, join(root, "cleanroom", "link"));
+    const viaLink = `${root}/cleanroom/link/../room-1`; // string, not join(): join() would normalize the `..` away
+    expect(validateUnder(root, { room: viaLink, home })).toBe("not_absolute");
+    expect(validateUnder(root, { room: `${room}/`, home })).toBe("not_absolute");
   });
   it("rejects a file or a missing path as the room", () => {
     const root = cacheRoot(); const { home } = pair(root);
-    const f = join(root, "file"); writeFileSync(f, "x");
-    expect(reasonOf(() => validateCleanroomDirs({ room: f, home, cacheRoot: root }))).toBe("not_directory");
-    expect(reasonOf(() => validateCleanroomDirs({ room: join(root, "missing"), home, cacheRoot: root }))).toBe("not_directory");
+    const f = join(root, "cleanroom", "file"); writeFileSync(f, "x");
+    expect(validateUnder(root, { room: f, home })).toBe("not_directory");
+    expect(validateUnder(root, { room: join(root, "cleanroom", "missing"), home })).toBe("not_directory");
   });
 });
 
@@ -190,7 +240,7 @@ const BASH_OWN = ["PWD", "SHLVL", "_"];
 /** A validated pair under a temp cache root, its profile written, and a runner that launches like Slice 1 will: env -i, cwd = room. */
 function sealedRoom() {
   const root = cacheRoot(); const { room, home } = pair(root);
-  const dirs = validateCleanroomDirs({ room, home, cacheRoot: root });
+  const dirs = withCacheRoot(root, () => validateCleanroomDirs({ room, home }));
   const profile = writeCleanroomProfile(dirs);
   const env = cleanroomEnv(dirs);
   const run = (script: string) => spawnSync("/usr/bin/env", ["-i", ...Object.entries(env).map(([k, v]) => `${k}=${v}`),
@@ -199,13 +249,24 @@ function sealedRoom() {
 }
 
 describe("writeCleanroomProfile / cleanroomEnv", () => {
-  it("writes the sidecar into the home at 0600 and returns its path", () => {
+  it("writes the sidecar into the home at 0600 and returns its path; the home then holds exactly that file (no temp left behind)", () => {
     const root = cacheRoot(); const { room, home } = pair(root);
-    const dirs = validateCleanroomDirs({ room, home, cacheRoot: root });
+    const dirs = withCacheRoot(root, () => validateCleanroomDirs({ room, home }));
     const p = writeCleanroomProfile(dirs);
     expect(p).toBe(join(dirs.home, CLEANROOM_PROFILE_NAME));
     expect(statSync(p).mode & 0o777).toBe(0o600);
     expect(readFileSync(p, "utf8")).toBe(renderCleanroom(dirs));
+    expect(readdirSync(dirs.home)).toEqual([CLEANROOM_PROFILE_NAME]);
+  });
+  it("replaces a stale 0644 sidecar planted after validation with a fresh 0600 render (rename, not an in-place write that keeps the old mode)", () => {
+    const root = cacheRoot(); const { room, home } = pair(root);
+    const dirs = withCacheRoot(root, () => validateCleanroomDirs({ room, home }));
+    const stale = join(dirs.home, CLEANROOM_PROFILE_NAME); writeFileSync(stale, "(version 1)\n(allow default)\n", { mode: 0o644 });
+    expect(statSync(stale).mode & 0o777).toBe(0o644);
+    writeCleanroomProfile(dirs);
+    expect(statSync(stale).mode & 0o777).toBe(0o600);
+    expect(readFileSync(stale, "utf8")).toBe(renderCleanroom(dirs));
+    expect(readdirSync(dirs.home)).toEqual([CLEANROOM_PROFILE_NAME]);
   });
   it("the fixed environment is exactly the six names from the spec, nothing inherited", () => {
     const dirs = { room: "/Users/p/Library/Caches/houge-daemon/r", home: "/Users/p/Library/Caches/houge-daemon/h" };
