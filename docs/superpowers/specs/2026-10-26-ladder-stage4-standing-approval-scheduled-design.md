@@ -3,74 +3,84 @@
 - **Date:** 2026-10-26
 - **Status:** draft for Paco's review
 - **Amends:** ADR 0030 §4.3 (standing approval already named as the only automatic ladder move), `docs/ROADMAP.md`.
-- **Build cut:** 2026-10-07 short build (the one explicitly queued there), pulled forward.
+- **Build cut:** 2026-10-07 standing-approval build (explicitly queued), pulled forward, corrected after codex review.
 - **Spec series:** decision ladder 0030 stage 4.
 
 ## 1. Goal
 
-Stop re-asking Paco for approval of the **same** gated shell command from the **same** scheduled task (e.g. the daily Ali Shan `curl` POST), after Paco has approved it on three consecutive runs — **without** loosening approval for any other command, any other schedule, or any turn outside a scheduled run. Standing approval is keyed so narrowly that a change of even one character in the command asks again.
+Stop re-asking Paco for approval of the **same** gated shell command from the **same** scheduled task (e.g. the daily Ali Shan `curl` POST), after Paco has approved it on three consecutive runs — **without** loosening approval for any other command, schedule, or turn outside a scheduled run. Standing approval is keyed so exactly that a change of even one character asks again.
 
 ## 2. Scope
 
 In scope:
-- An **"Always allow this exact command for this schedule"** option on the approval card, only when the call originates from a scheduled run (the gate already carries `requested_by.kind === "schedule"` + schedule id).
-- A **standing-approval record** keyed by `(schedule_id, command_fingerprint)`.
-- Automatic `allow` (no card) when an incoming **scheduled** request's command fingerprint matches an active standing approval for that schedule.
-- A streak tracker that requires **three consecutive approved runs** before a user-granted standing candidate appears as an option on the card (so one accidental approval does not grant forever).
+- An **"Always allow this exact command for this schedule"** option on the approval card, only when `requested_by.kind === "schedule"` (the gate already supplies `schedule_id`).
+- A **standing-approval record** keyed byte-exactly by `(schedule_id, sha256(command bytes))` with **no normalization**.
+- Automatic `allow` (no card) only when byte key + a **cleanroom-sealed trial** + hard eligibility checks all pass.
+- A **three-tap streak** requirement (Paco grants candidate → cleanroom trial → one further tap → standing).
 - `/schedule` surfaces active standing approvals with a revoke action.
-- Revoke and expiry (streak break when the command changes, or Paco denies).
+- Revoke (Paco tap), expiry (30 days default), and streak reset on any denial/change.
 
 Out of scope:
-- endpoint-based allowlists (explicitly excluded in the 2026-10-07 note),
+- endpoint-based allowlists (explicitly excluded by the 2026-10-07 note),
 - cross-schedule or cross-command standing approval,
-- any action on an unscheduled (Telegram-originated) turn,
-- trust-ledger autonomy promotion / overall autonomy flip (Milestone A),
+- any action on an unscheduled (Telegram) turn,
+- trust-ledger autonomy promotion / the overall autonomy flip (Milestone A),
 - all other Stage 4 mechanics (verifier + outcome memory, proposal artefact, scratch worktree …).
 
-## 3. Why three taps
+## 3. Byte-exact keying (codex-reported constraint)
 
-A single accidental approve is cheap to recover from; three consecutive is strong evidence the command is a stable scheduled routine. This matches the decision ladder's trust-the-streak promotion rule. Streak resets on any denial, command infingerprint change, change of `cmdhash`, or outcome abandon.
+- The standing key is `(schedule_id, sha256` over the adapter's canonical input (exact command bytes, quoting and separator preserved). Any character change in the command resets the key. No normalization.
+- `schedule_id` comes only from the scheduler's run metadata (never guessed).
 
-## 4. Keying
+## 4. Eligibility for automatic allow (codex-reported)
 
-- Fingerprint: `sha256(normalized command)`. The command is split and token-normalized the same way `command-matcher.ts` already normalizes whitespace, then hashed. **schedule_id** comes from the scheduler's run metadata (never a guessed value).
-- `(schedule_id, fingerprint)` composite is the only grant key.
-- Standing approvals are inert on any turn without a `requested_by.schedule` source. The gate checks this hard, not the user-facing note.
+Every invocation performs all hard checks **before** returning allow:
+- originating chat id equals the granting chat,
+- run origin is a scheduled run (`requested_by.kind === "schedule"`),
+- turn trust is non-hostile,
+- posture is not killed,
+- turn approval cap not breached,
+- fingerprint byte-identical to the granted one,
+- the standing record has `state === standing` **and** a successful cleanroom-sealed trial earlier (ADR 0030 §8.3).
 
-## 5. Storage and surface
+Any failed check falls back to a request and records the denial for the run.
 
-- A new `standing_approvals` table: `schedule_id`, `fingerprint`, `label` (never the command text or any secret), `grants` counter (only bumped on a real approval), `consecutive_approvals` (reset on denial), `threshold` (3 in code, configurable but defaults locked), `state` (`candidate | standing | revoked | expired`), `granted_at`, `last_used`, `expires_at` (reuse-viability window; 30 days default).
-- `granted_via` in the corresponding ladder move is `approval.standing`, per ADR 0030 §4.3, only for `tool.policy`.
-- `/schedule` adds a "Standing approvals" line per schedule with a `Revoke` tap. No card text echoes command text beyond `$label` (the command-matcher label already shown).
+## 5. Storage
 
-## 6. Decision-edge (code-owned, monotone)
+- `standing_approvals`: `schedule_id`, `fingerprint`, but no command text/Pavo [redacted] — only the sealed `label` (command-matcher reason label).
+- Ladder move records `entry_id: "tool.policy"`, `granted_via: "approval.standing"`, `granted_by: "paco"`, callback id = the granting approval id.
+- `granted_via` only; `paco_callback_id` is the promoted approval's id.
+- Retention 30 days default (configurable, Paco hand to change).
+- Revoked/expired states retained for audit.
 
-The streak is a rule rung before the paco rung. On each scheduled run:
-1. compute fingerprint and lookup standing row.
-2. if `state === standing` and fingerprint matches → `allow` (decision ladder row, `decided_by: rule`, reason `approval.standing`); else
-3. if `consecutive_approvals >= threshold` → raise candidate card *in addition* to the normal Approve, "Always allow this exact command for this schedule"; Paco may Approve once or grant standing.
-4. otherwise → normal Approve card.
+## 6. Sequenced grant path
 
-If Paco denies, set `state=revoked`, reset the streak, and a ladder move rows the denial.
-Houge never promotes on its own without Paco's tap; a candidate is a proposal only.
+1. sched run executes the command; it hits `requires_approval`. Paco taps Approve (or the standing candidate choice) **three times**.
+2. Only after the proposal is accepted does a `cleanroom`-sealed trial run the exact command in the sealed profile (`cleanroom.sb`) to confirm identical outcome and no cross-effect; if the trial fails, candidate is withdrawn with the sealed reason.
+3. On trial success, one final Paco tap publishes the standing move.
+4. Further scheduled runs whose exact fingerprint matches → automatic `allow` with a ladder row (`decided_by: rule`, reason `approval.standing`).
+5. Deny/tamper/expired resets the streak and revokes standing, writes a revert.
+6. `/schedule` lists active standing approvals with revoke/unseal actions.
+
+`approval.standing` may only insert an auto move for `tool.policy`; all other moves carry a Paco callback (existing ADR §4.3).
 
 ## 7. Safety and adverse-impact
 
-- The streak lives only for this `(schedule, command)` key. Changing a single byte resets it.
-- Posture/kill-switch floors on every pass still ask if a safety condition changes.
-- Stand-up is revocable from `/schedule` at any time.
-- A denied scheduled run writes an audit/incident? Possibly an alert after 3 revocations. For now just a log.
+- Key exact; one byte change reset.
+- Floors (posture/kill/SSRF/budget) still evaluated on automatic runs; if changed, asks.
+- Revoke is immediate.
+- Stand-up is never automatic without Paco's final tap after sealed proof.
 
 ## 8. Success criteria
 
-- The Ali Shan scheduled `curl`-POST command stops asking after 3 manual approvals; any changed byte asks again; a `/schedule` revoke immediately restores asking; unscheduled turns still ask.
-- `shouldRecord` rows show `approval.standing` as the decider.
-- `entryProblems` remains clean.
+- The Ali Shan scheduled POST command stops asking after three consecutive approvals plus one sealed run plus final tap.
+- Any character change asks again.
+- `/schedule` revoke restores asking next run.
+- Unscheduled turns still ask.
+- `entryProblems` clean; standing rows appear as `approval.standing` ladder moves.
 
 ## 9. Open items
 
-- Whether the threshold should be per-schedule or global — per spec, per-schedule is simpler. Paco chooses.
-- Cross-approval standing at the `tool.policy` level rather than command-level — deferred to later stage 4 trust-ledger slice.
-- The earlier "standing approval for a scheduled command" mini-build and the ladder stage 4 promotion rules merge here or stay adjacent? Either an amendment.
-
-Spec self-review: scope tight; reason codes must be closed (use `approval.standing`, no extra free text); test-only via charisation/real scheduled run replay. Live gate requires a scheduled run series + Telegram approval taps.
+- Cleanroom trial runtime and report staffing: does reuse the stage-4 proposal artefact (docs-only) count? Later.
+- Per-schedule vs global threshold: stay per-schedule (simpler); Paco may opt global.
+- Whether the old 2026-10-07 "standing approval" build remains adjacent instead of merged here; keep parallel and not duplicate.
