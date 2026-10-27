@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { CleanroomPathError, validateCleanroomDirs } from "../../src/omp/cleanroom.js";
+import { renderCleanroom } from "../../src/omp/seatbelt.js";
 
 const made: string[] = [];
 function cacheRoot(): string { const r = mkdtempSync(join(tmpdir(), "hg-cr-")); made.push(r); return realpathSync(r); }
@@ -58,5 +59,47 @@ describe("validateCleanroomDirs — the room and the home are daemon-made, empty
     const f = join(root, "file"); writeFileSync(f, "x");
     expect(reasonOf(() => validateCleanroomDirs({ room: f, home, cacheRoot: root }))).toBe("not_directory");
     expect(reasonOf(() => validateCleanroomDirs({ room: join(root, "missing"), home, cacheRoot: root }))).toBe("not_directory");
+  });
+});
+
+describe("renderCleanroom — SBPL for the sealed room (spec §Required SBPL facts)", () => {
+  const dirs = { room: "/Users/p/Library/Caches/houge-daemon/room-1", home: "/Users/p/Library/Caches/houge-daemon/home-1" };
+  const lines = () => renderCleanroom(dirs).split("\n").filter(Boolean);
+
+  it("opens with the three-line floor: version, allow default, deny every read", () => {
+    expect(lines().slice(0, 3)).toEqual(["(version 1)", "(allow default)", "(deny file-read*)"]);
+  });
+  it("re-allows reads only in the system trees, /private/etc/ssl (not all of /private/etc — B30), /dev/null, the room and the home", () => {
+    const p = renderCleanroom(dirs);
+    for (const s of ['(subpath "/usr")', '(subpath "/bin")', '(subpath "/System")', '(subpath "/Library")', '(subpath "/private/etc/ssl")',
+      '(literal "/dev/null")', `(subpath "${dirs.room}")`, `(subpath "${dirs.home}")`]) expect(p).toContain(`(allow file-read* ${s})`);
+    expect(p).not.toContain('(subpath "/private/etc")');
+    expect(p).toContain('(allow file-read-data (literal "/"))');
+    const allows = lines().filter((l) => l.startsWith("(allow file-read* "));
+    expect(allows).toHaveLength(9); // "/" literal + 5 system trees + /dev/null + room + home
+  });
+  it("grants metadata on /etc /var /tmp and on every ancestor of the room and the home (DNS and getcwd need them — probe items 2 and 3)", () => {
+    const p = renderCleanroom(dirs);
+    for (const d of ["/etc", "/var", "/tmp", "/Users", "/Users/p", "/Users/p/Library", "/Users/p/Library/Caches", "/Users/p/Library/Caches/houge-daemon"])
+      expect(p).toContain(`(allow file-read-metadata (literal "${d}"))`);
+  });
+  it("denies every write, then re-allows only the room and /dev/null — never the home", () => {
+    const l = lines();
+    const deny = l.indexOf("(deny file-write*)");
+    expect(deny).toBeGreaterThan(2);
+    const writes = l.filter((x) => x.startsWith("(allow file-write*"));
+    expect(writes).toEqual([`(allow file-write* (subpath "${dirs.room}"))`, '(allow file-write* (literal "/dev/null"))']);
+    expect(l.indexOf(writes[0]!)).toBeGreaterThan(deny);
+  });
+  it("denies the exec and IPC escape hatches: launchctl, security, the python3 install shim, launchd lookup, signals to others", () => {
+    const p = renderCleanroom(dirs);
+    for (const s of ['(deny process-exec (literal "/bin/launchctl"))', '(deny process-exec (literal "/usr/bin/security"))',
+      '(deny process-exec (literal "/usr/bin/python3"))', '(deny mach-lookup (global-name "com.apple.launchd"))', "(deny signal (target others))"])
+      expect(p).toContain(s);
+  });
+  it("is deterministic for the same pair and escapes quotes in a path", () => {
+    expect(renderCleanroom(dirs)).toBe(renderCleanroom(dirs));
+    const odd = { room: '/Users/p/Library/Caches/houge-daemon/r"1', home: "/Users/p/Library/Caches/houge-daemon/h-1" };
+    expect(renderCleanroom(odd)).toContain('(allow file-write* (subpath "/Users/p/Library/Caches/houge-daemon/r\\"1"))');
   });
 });

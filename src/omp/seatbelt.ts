@@ -1,5 +1,6 @@
 import { mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import type { CleanroomDirs } from "./cleanroom.js";
 import { CREDENTIAL_PATTERNS, ENV_TEMPLATE_PATTERNS, operationalWriteDeny, protectedRepoPaths, realpathOrSelf, secretPaths, writableExceptions, writeRoots, type PathContext } from "./protected-paths.js";
 
 const esc = (s: string) => s.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
@@ -89,6 +90,47 @@ function body(ctx: PathContext, kind: "planner" | "shell"): string[] {
 
 export function renderSeatbelt(ctx: PathContext): { planner: string; shell: string } {
   return { planner: `${body(ctx, "planner").join("\n")}\n`, shell: `${body(ctx, "shell").join("\n")}\n` };
+}
+
+/** Every ancestor directory of p, canonical and as given, root excluded: bash getcwd needs metadata on each (probe item 3). */
+function ancestorsOf(p: string): string[] {
+  const out = new Set<string>();
+  for (const v of variants(p)) for (let d = dirname(v); d !== "/" && d !== "."; d = dirname(d)) out.add(d);
+  return [...out];
+}
+
+const CLEANROOM_READ_TREES = ["/usr", "/bin", "/System", "/Library", "/private/etc/ssl"];
+
+/**
+ * The clean room (decision-ladder design §8.3, probe 13-cleanroom-probe.md): reads deny-default, re-opened only for the
+ * system trees, /private/etc/ssl (curl's openssl.cnf; hosts and the resolver are NOT needed — DNS goes over IPC), the
+ * room and the fresh home; metadata on the symlinks /etc /var /tmp (DNS) and the room's ancestors (getcwd); writes only
+ * in the room; the launchd / security / python3-shim escape hatches closed. Network and the rest of IPC stay default
+ * in Slice 0 — the P8 probe (Slice 1) narrows them before any sealed credit is granted.
+ */
+export function renderCleanroom(dirs: CleanroomDirs): string {
+  const sub = (p: string) => variants(p).map((v) => `(allow file-read* (subpath "${esc(v)}"))`);
+  const meta = (p: string) => `(allow file-read-metadata (literal "${esc(p)}"))`;
+  return [
+    "(version 1)",
+    "(allow default)",
+    "(deny file-read*)",
+    '(allow file-read* (literal "/"))',
+    ...CLEANROOM_READ_TREES.flatMap(sub),
+    '(allow file-read* (literal "/dev/null"))',
+    ...sub(dirs.room),
+    ...sub(dirs.home),
+    '(allow file-read-data (literal "/"))',
+    ...[...new Set(["/", "/etc", "/var", "/tmp", ...ancestorsOf(dirs.room), ...ancestorsOf(dirs.home)])].map(meta),
+    "(deny file-write*)",
+    ...variants(dirs.room).map((v) => `(allow file-write* (subpath "${esc(v)}"))`),
+    '(allow file-write* (literal "/dev/null"))',
+    "(deny signal (target others))",
+    '(deny process-exec (literal "/bin/launchctl"))',
+    '(deny process-exec (literal "/usr/bin/security"))',
+    '(deny process-exec (literal "/usr/bin/python3"))',
+    '(deny mach-lookup (global-name "com.apple.launchd"))'
+  ].join("\n") + "\n";
 }
 
 function atomicWrite(path: string, text: string): void {
