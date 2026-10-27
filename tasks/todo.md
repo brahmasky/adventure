@@ -1,6 +1,6 @@
 # 🧭 CURRENT SYSTEM STATE — 2026-10-26 (read this first)
 
-**Stage 3 wiring: MERGED to main 2026-10-26 (through 83f3dbb).** Docs sync in progress. Entry-shape amendments (T1), shell_class/path/posture/policy/budget/manifest/tool.wall/reader.family/selfwrite.guard/fetch/ssrf are all wired and reviewing-clean through T10; final live-gate script still pending (`scripts/live-gate-ladder-stage3-wired.mjs`). Tests 5335+. dist rebuilt and daemon kickstarted. Pending operational task: create/run the live gate and update sessions.md on ship.
+**Stage 3 wiring: MERGED to main 2026-10-26 (through fb03d00). Boundary fixes landed; stage3 smoke gate exists at scripts/live-gate-ladder-stage3-wired.mjs (PASS) but full Telegram E2E gate pending.** Docs sync in progress. Entry-shape amendments (T1), shell_class/path/posture/policy/budget/manifest/tool.wall/reader.family/selfwrite.guard/fetch/ssrf are all wired and reviewing-clean through T10; final live-gate script still pending (`scripts/live-gate-ladder-stage3-wired.mjs`). Tests 5335+. dist rebuilt and daemon kickstarted. Pending operational task: create/run the live gate and update sessions.md on ship.
 
 **Jev version check: MERGED and pushed 2026-10-23 (`43511e5`), `dist/` rebuilt; live after Paco's kickstart.** Spec
 `docs/superpowers/specs/2026-10-22-jev-version-check-design.md` Rev 3.4, plan `docs/superpowers/plans/2026-10-22-jev-version-check.md`.
