@@ -1,4 +1,3 @@
-// tests/omp/cleanroom.test.ts
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -53,6 +52,13 @@ describe("validateCleanroomDirs — the room and the home are daemon-made, empty
     const viaTmp = (p: string) => p.replace(/^\/private\/tmp\//, "/tmp/");
     if (viaTmp(root) === root) return; // not a /private/tmp-based tmpdir on this machine
     expect(validateCleanroomDirs({ room: viaTmp(room), home: viaTmp(home), cacheRoot: viaTmp(root) })).toEqual({ room, home });
+  });
+  it("rejects a non-normalized path: `<root>/link/../room` stats one directory through the link and would check another (review finding)", () => {
+    const root = cacheRoot(); const { room, home } = pair(root);
+    const outside = cacheRoot(); symlinkSync(outside, join(root, "link"));
+    const viaLink = `${root}/link/../room-1`; // string, not join(): join() would normalize the `..` away
+    expect(reasonOf(() => validateCleanroomDirs({ room: viaLink, home, cacheRoot: root }))).toBe("not_absolute");
+    expect(reasonOf(() => validateCleanroomDirs({ room: `${room}/`, home, cacheRoot: root }))).toBe("not_absolute");
   });
   it("rejects a file or a missing path as the room", () => {
     const root = cacheRoot(); const { home } = pair(root);

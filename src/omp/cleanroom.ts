@@ -1,4 +1,3 @@
-// src/omp/cleanroom.ts
 import { lstatSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 
@@ -30,15 +29,15 @@ const inside = (child: string, parent: string): boolean => {
  * component from the path up to the root must be a real directory — a symlink anywhere would move the subpath rule.
  */
 function canonicalDir(p: string, roots: readonly string[]): string {
-  if (!isAbsolute(p)) throw new CleanroomPathError("not_absolute", p);
+  // absolute AND normalized: `<root>/link/../room` would stat one directory (through the link) and check another
+  if (!isAbsolute(p) || resolve(p) !== p) throw new CleanroomPathError("not_absolute", p);
   let st; try { st = statSync(p); } catch { throw new CleanroomPathError("not_directory", p); }
   if (!st.isDirectory()) throw new CleanroomPathError("not_directory", p);
-  const abs = resolve(p);
-  if (roots.includes(abs) || !roots.some((r) => inside(abs, r))) throw new CleanroomPathError("outside_cache_root", p);
-  for (let d = abs; !roots.includes(d) && d !== dirname(d); d = dirname(d)) {
+  if (roots.includes(p) || !roots.some((r) => inside(p, r))) throw new CleanroomPathError("outside_cache_root", p);
+  for (let d = p; !roots.includes(d) && d !== dirname(d); d = dirname(d)) {
     if (lstatSync(d).isSymbolicLink()) throw new CleanroomPathError("symlink_component", p);
   }
-  return realpathSync(p);
+  try { return realpathSync(p); } catch { throw new CleanroomPathError("not_directory", p); }
 }
 
 export function validateCleanroomDirs(input: { room: string; home: string; cacheRoot: string }): CleanroomDirs {
