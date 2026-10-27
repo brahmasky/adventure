@@ -2482,8 +2482,10 @@ export class CoreWorker {
       distDir: this.ompOptions.distDir ?? join(this.projectRoot, "dist"), cwd: chatWorkspace(this.ompDataDir(), chatId),
       onIncident: (kind, detail) => { this.runStore.openIncident({ kind, subject: `chat:${chatId}`, detail: { run_id: claim.run_id, ...detail } }); }
     });
+    // headroom past the shell's own timeout: a clean-room run still has post-run work (wrapper cleanup loop ≤5 s, lsof orphan
+    // scan ≤5 s, teardown); a tighter runner bound would cancel it mid-teardown and drop the seal facts
     for (const [name, meta] of Object.entries(OMP_SHELL_META)) {
-      registry.register({ name, category: "tool", ...meta, timeout_ms: cfg.shellTimeoutMs + 10_000, execute: shell });
+      registry.register({ name, category: "tool", ...meta, timeout_ms: cfg.shellTimeoutMs + 30_000, execute: shell });
     }
     for (const [name, meta] of Object.entries(OMP_BUILTIN_META)) registry.register({ name, category: "tool", ...meta, timeout_ms: 0 });
     const seat = (role: LlmCallRole) => this.llmTimeoutMs(role);

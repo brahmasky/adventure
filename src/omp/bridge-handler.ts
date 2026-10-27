@@ -237,7 +237,8 @@ type CleanroomFacts = { ran: boolean; torn_down: boolean; tampered: boolean; esc
  */
 function cleanroomFacts(entry: RegistryEntry, r: CapabilityResult): CleanroomFacts | undefined {
   if (!SHELL_ENTRIES.has(entry)) return undefined;
-  const out = r.status === "succeeded" || r.status === "failed" ? r.output : undefined;
+  // cancelled / timed_out carry the facts too: an aborted clean-room run still settles with ran and torn_down
+  const out = r.status === "succeeded" || r.status === "failed" || r.status === "cancelled" || r.status === "timed_out" ? r.output : undefined;
   if (out?.executor !== "cleanroom" || typeof out.cleanroom !== "object" || out.cleanroom === null) return undefined;
   const c = out.cleanroom as Record<string, unknown>;
   if (typeof c.ran !== "boolean" || typeof c.torn_down !== "boolean" || typeof c.tampered !== "boolean" || typeof c.escaped !== "boolean") return undefined;

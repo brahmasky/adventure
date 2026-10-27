@@ -29,8 +29,8 @@ export type CapabilityResult =
   | { status: "requires_approval"; approval_id: string }
   | { status: "denied_on_revalidation"; reason: string; recovery_hint?: string }
   | { status: "failed"; error_ref: string; output?: Record<string, unknown> }
-  | { status: "timed_out"; error_ref: string }
-  | { status: "cancelled"; error_ref: string }
+  | { status: "timed_out"; error_ref: string; output?: Record<string, unknown> }
+  | { status: "cancelled"; error_ref: string; output?: Record<string, unknown> }
   | { status: "uncertain_outcome"; reconciliation_ref: string };
 
 export interface ApprovalRequestSink {
@@ -220,8 +220,8 @@ export class CapabilityRunner {
     }
     try {
       const settled = await executeCancellable(metadata.execute, input.input, metadata.timeout_ms, signal ?? input.signal, ssrfCtx);
-      if (settled.kind === "timeout") return { status: "timed_out", error_ref: "Tool execution timed out" };
-      if (settled.kind === "cancelled") return { status: "cancelled", error_ref: "Tool execution cancelled" };
+      if (settled.kind === "timeout") return { status: "timed_out", error_ref: "Tool execution timed out", ...lateFacts(settled.late) };
+      if (settled.kind === "cancelled") return { status: "cancelled", error_ref: "Tool execution cancelled", ...lateFacts(settled.late) };
       const adapterResult = settled.value;
       if (!adapterResult.ok) {
         // a structured failure (a clean-room run's `ran` and seal facts) must survive: Stage 4A and the ledger read it
@@ -250,7 +250,15 @@ function affectedResources(input: Record<string, unknown>): string[] {
 
 export const CLEANUP_BOUND_MS = 5_000;
 
-type Settled = { kind: "result"; value: ToolAdapterResult } | { kind: "timeout" } | { kind: "cancelled" };
+type Settled =
+  | { kind: "result"; value: ToolAdapterResult }
+  | { kind: "timeout"; late?: ToolAdapterResult }
+  | { kind: "cancelled"; late?: ToolAdapterResult };
+
+/** An aborted clean-room run still settles with its seal facts (ran, torn_down, tampered); the ledger needs them even on cancel/timeout. */
+function lateFacts(late: ToolAdapterResult | undefined): { output?: Record<string, unknown> } {
+  return late && !late.ok && late.output ? { output: late.output } : {};
+}
 
 async function executeCancellable(
   execute: ToolExecute, input: Record<string, unknown>, timeout_ms: number, external?: AbortSignal, ssrfCtx?: SsrfContext
@@ -270,8 +278,11 @@ async function executeCancellable(
     const first = await Promise.race([adapter.then((value): Settled => ({ kind: "result", value })), stop]);
     if (first.kind === "result") return first;
     ac.abort();
-    await Promise.race([adapter.catch(() => undefined), new Promise((r) => { cleanup = setTimeout(r, CLEANUP_BOUND_MS); })]);
-    return first;
+    const late = await Promise.race([
+      adapter.catch(() => undefined),
+      new Promise<undefined>((r) => { cleanup = setTimeout(() => r(undefined), CLEANUP_BOUND_MS); })
+    ]);
+    return late ? { kind: first.kind, late } : first;
   } finally {
     clearTimeout(timer);
     clearTimeout(cleanup);

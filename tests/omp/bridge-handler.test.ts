@@ -267,6 +267,18 @@ describe("bridge handler — call (spec §5.2)", () => {
       cleanroom: { ran: true, torn_down: false, tampered: true, escaped: true } });
   });
 
+  it("a cancelled sealed run's facts reach tool_finished too: the abort did not erase whether the room ran and was torn down", async () => {
+    const facts = { ran: true, torn_down: true, tampered: false, escaped: false };
+    const aborting: Exec = (_i, signal) => new Promise((resolve) => {
+      signal?.addEventListener("abort", () => resolve({ ok: false, error: "bash aborted", output: { ran: true, reason: "aborted", executor: "cleanroom", cleanroom: facts } }));
+    });
+    const { handle, events, ac } = setup({ shell: aborting });
+    const p = handle(call("bash", { command: "sleep 9" }, "cr6")) as Promise<CallResult>;
+    setTimeout(() => ac.abort(), 20);
+    await p;
+    expect(events("tool_finished").find((e) => e.tool_call_id === "cr6")).toMatchObject({ status: "failed", reason: "cancelled", executor: "cleanroom", cleanroom: facts });
+  });
+
   it("a denied approval never runs the adapter and reports tool_finished{denied} with the code-owned text", async () => {
     const { handle, calls, awaiting, store, events } = setup();
     const p = handle(call("bash", { command: "git push" }, "gp2")) as Promise<CallResult>;

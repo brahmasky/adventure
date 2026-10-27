@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { CapabilityRunner } from "../../src/capabilities/capability-runner.js";
+import { CapabilityRunner, CLEANUP_BOUND_MS } from "../../src/capabilities/capability-runner.js";
 import { ToolRegistry } from "../../src/tools/tool-registry.js";
 import type { CompiledTaskContract } from "../../src/domain/types.js";
 import { BudgetLedger } from "../../src/budget/budget-ledger.js";
@@ -32,6 +32,32 @@ describe("runner cancellation — no adapter may outlive the runner (spec §5.6 
     const p = new CapabilityRunner(r).execute({ contract, capability: "slow", input: {}, budget: new BudgetLedger(contract.budget), signal: ac.signal });
     setTimeout(() => ac.abort(), 20);
     expect((await p).status).toBe("cancelled");
+  });
+
+  it("a cancelled clean-room run keeps the seal facts its abort handler settled with (the ledger needs ran/torn_down)", async () => {
+    const output = { ran: true, reason: "aborted", executor: "cleanroom", cleanroom: { ran: true, torn_down: true, tampered: false, escaped: false } };
+    const r = new ToolRegistry();
+    r.register({ name: "slow", category: "tool", side_effect_level: "none", risk_level: "low", timeout_ms: 10_000, output_limit_bytes: 1000,
+      execute: (_i, signal) => new Promise((resolve) => {
+        signal?.addEventListener("abort", () => { setTimeout(() => resolve({ ok: false, error: "bash aborted", output }), 20); });
+      }) });
+    const ac = new AbortController();
+    const p = new CapabilityRunner(r).execute({ contract, capability: "slow", input: {}, budget: new BudgetLedger(contract.budget), signal: ac.signal });
+    setTimeout(() => ac.abort(), 20);
+    expect(await p).toEqual({ status: "cancelled", error_ref: "Tool execution cancelled", output });
+  });
+
+  it("an adapter that never settles is cancelled with no output key (nothing settled, nothing to carry)", async () => {
+    vi.useFakeTimers();
+    const r = new ToolRegistry();
+    r.register({ name: "slow", category: "tool", side_effect_level: "none", risk_level: "low", timeout_ms: 10_000, output_limit_bytes: 1000,
+      execute: () => new Promise(() => {}) });
+    const ac = new AbortController();
+    const p = new CapabilityRunner(r).execute({ contract, capability: "slow", input: {}, budget: new BudgetLedger(contract.budget), signal: ac.signal });
+    await vi.advanceTimersByTimeAsync(10);
+    ac.abort();
+    await vi.advanceTimersByTimeAsync(CLEANUP_BOUND_MS);
+    expect(await p).toEqual({ status: "cancelled", error_ref: "Tool execution cancelled" });
   });
 
   it("budget_reserved skips a second reservation — the approval re-entry must not double-charge", async () => {
