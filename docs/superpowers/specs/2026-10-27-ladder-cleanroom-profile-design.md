@@ -1,6 +1,6 @@
 # Decision ladder — clean-room Seatbelt profile (prerequisite for stage 4 standing approval)
 
-**Status:** draft — prerequisite for `docs/superpowers/specs/2026-10-26-ladder-stage4-standing-approval-scheduled-design.md`
+**Status:** Slice 0 built 2026-10-27 (branch `feat/cleanroom-slice0`, see §Slice 0 rulings); Slice 1 pending; **P8 not yet probed — no sealed credit, Stage 4A stays draft.** Prerequisite for `docs/superpowers/specs/2026-10-26-ladder-stage4-standing-approval-scheduled-design.md`.
 **Date:** 2026-10-27
 **Amends:** none; implements ADR 0030 §8.3’s clean-room requirement.
 **Depends on:** ADR 0030 §8.3; research `docs/superpowers/research/2026-10-12-in-loop-decisions/13-cleanroom-probe.md`.
@@ -36,7 +36,19 @@ Add a separate, explicit renderer:
 export function renderCleanroom(ctx: PathContext, room: string, freshHome: string): string;
 ```
 
-There is **no global write helper**. Each exec writes its rendered profile to a unique path derived from the unique room, then removes it in teardown. `writeSeatbeltProfiles` remains responsible only for planner and shell profiles.
+There is **no global write helper**. Each exec writes its rendered profile as a sidecar in the fresh **home** (`<home>/cleanroom.sb`, see rulings), and Slice 1's teardown removes both directories whole. `writeSeatbeltProfiles` remains responsible only for planner and shell profiles.
+
+### Slice 0 rulings (2026-10-27, recorded so Slice 1 inherits the code, not this text)
+
+1. **Signature.** `renderCleanroom(dirs: RoomPair)` — no `PathContext`: the profile names no repo or data path. `validateCleanroomDirs({ room, home })` returns a **branded** `CleanroomDirs`; `writeCleanroomProfile` accepts only that brand, so an unvalidated pair cannot reach the writer (codex whole-diff W1).
+2. **Root is derived, never passed.** The validator computes `cleanroomRoot()` = `<HOUGE_DAEMON_TMP_DIR>/cleanroom` itself; a caller-supplied root was accepted as `/` in review (adversarial I1). Rooms live in that **dedicated subdirectory** so Slice 1 can give every other child (agy, codex, omp, model-catalog — today `TMPDIR = daemonTmpRoot()`, the room's parent) a *sibling* TMPDIR: **no child TMPDIR may be an ancestor of a room** (adversarial I2). That move is a Slice 1 prerequisite before any sealed command runs.
+3. **Identity by inode.** Overlap and containment compare `dev:ino` lineages, not strings: on APFS `room-1` and `ROOM-1` are one directory and string comparison called them disjoint (codex B1, confirmed). Returned paths keep the given case; Seatbelt matches case-insensitively, so this fails safe.
+4. **Sidecar in the home**, written after validation: the child can read but never write the home, and `sandbox-exec` has parsed the profile before the child starts.
+5. **Stricter read set than §Required SBPL facts:** `/Library` is **not** readable and `/usr/local` is **denied** inside `/usr` — both hold user- or world-writable paths (`/Library/Caches` 1777, Homebrew) and neither is needed: HTTPS 200/204, a cookie-jar round trip, bash loops and `pwd` were verified without them. The facts list below is read with this amendment.
+6. **Environment.** The six fixed names, plus bash's own `PWD` (= room), `SHLVL` (= 1) and `_` — asserted by value; nothing inherited from the daemon.
+7. **Teardown and runtime selection are Slice 1** (there is no run to tear down yet). Nothing in Slice 0 selects the profile at runtime, grants sealed credit, or changes standing approval.
+8. **Eligibility consequence for Stage 4A:** only self-contained scheduled commands qualify — inputs from the command text or the internet, output to Telegram. A command that reads a local file, a saved cookie jar or a script, or writes output for later, falls back to asking every time, with a note in the digest. State this on the approval card.
+9. **Slice 1 carry-overs from review:** remove `cleanroom.sb.tmp-<pid>` if the sidecar write throws; one validated pair per sealed command (emptiness is checked once — a reused room is not fresh); the gate's `INCONCLUSIVE` exits 2.
 - `room` and `freshHome` come from daemon-created, fresh, empty, non-overlapping directories under `HOUGE_DAEMON_TMP_DIR`; caller-supplied values are validated with `realpath`, containment and symlink rejection. A violation is a denied clean-room run, not profile forgiveness.
 - The profile is rendered **per room path** because SBPL `subpath` rules and metadata rules are path-specific (`getcwd` needs ancestor metadata; planted symlinks).
 - The profile body uses the round-5 probe findings and keeps SBPL order in explicit order: default allow baseline inherited by roots; then file deny/read/write layering; then process/network protections.

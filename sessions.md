@@ -1747,3 +1747,19 @@ fetch.ssrf now record decisions rows at their seams with no behaviour change. Bo
 fixes from the codex passes landed before ship. Tests typecheck/build green; dist rebuilt
 and daemon kickstarted. Live gate `scripts/live-gate-ladder-stage3-wired.mjs` is still pending
 (real Telegram required).
+
+## 2026-10-27 — Clean-room profile, Slice 0 (prerequisite for ladder stage 4 standing approval)
+
+Paco's rulings this session: build the real cleanroom before Stage 4A (no "existing gates as seal"); the automation
+contract (`~/.claude/standards/automation-contract.md`, `AGENTS.md` §Autonomy) and the standing pre-rulings in
+`tasks/todo.md` — run slices to completion, reviewers on a model other than the author. Spec
+`2026-10-27-ladder-cleanroom-profile-design.md` (senior + 4 codex rounds before approval), plan
+`2026-10-27-cleanroom-profile-slice0.md` (senior on Opus ran its code: 4 blockers, codex 3, all closed before build).
+Built by Sonnet implementers under TDD with Opus task reviews: inode-based directory validation under a derived
+`<cache>/cleanroom/` root with a branded result, `renderCleanroom` (stricter than the spec text: no `/Library`, `/usr/local`
+denied — verified HTTPS and cookie jars still work), sidecar profile in the read-only home, fixed six-name env, live
+sandbox-exec properties, gate `scripts/live-gate-cleanroom-profile.mjs`. Whole-branch reviews (adversarial Opus, testing
+Sonnet, codex) found one real seal hole — `room-1`/`ROOM-1` validated as disjoint (same APFS inode) — plus a trusted
+caller root; one fix round closed both, scoped re-review approved. Evidence on `31e335d`: 395 files / 5376 tests, 0
+skipped; gate PASS exit 0. Nothing selects the profile at runtime; no sealed credit; Stage 4A stays draft. Slice 1 owes
+the child-TMPDIR move, P8, the runtime seam and teardown (see `tasks/todo.md`).

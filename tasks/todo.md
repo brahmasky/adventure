@@ -1,4 +1,24 @@
-# 🧭 CURRENT SYSTEM STATE — 2026-10-26 (read this first)
+# 🧭 CURRENT SYSTEM STATE — 2026-10-27 (read this first)
+
+**Clean-room profile, Slice 0: BUILT 2026-10-27 on `feat/cleanroom-slice0` (merge pending the codex re-check), no runtime caller, no standing-approval behaviour, no sealed credit.** Spec
+`docs/superpowers/specs/2026-10-27-ladder-cleanroom-profile-design.md` (§Slice 0 rulings), plan `docs/superpowers/plans/2026-10-27-cleanroom-profile-slice0.md`.
+What exists: `src/omp/cleanroom.ts` — `cleanroomRoot()` (= `<HOUGE_DAEMON_TMP_DIR>/cleanroom`, derived, never passed), `validateCleanroomDirs({room, home})`
+(absolute+normalized, real directories, containment/overlap by **inode** lineage — APFS case aliases share inodes —, no symlink component, root not a symlink,
+both empty; six typed reasons, never a raw fs error) returning a **branded** pair; `renderCleanroom(pair)` in `src/omp/seatbelt.ts` (reads deny-default;
+`/usr` `/bin` `/System` `/private/etc/ssl` `/dev/null` + room + home readable, `/usr/local` denied, **`/Library` not readable**; metadata on `/ /etc /var /tmp` + ancestors;
+writes only in the room; launchctl/security/python3 exec denied); `writeCleanroomProfile(branded)` sidecar `<home>/cleanroom.sb` 0600 atomic, refuses an unbranded pair
+at runtime; `cleanroomEnv` = the six fixed names. Tests `tests/omp/cleanroom.test.ts` (live `sandbox-exec` cases incl. planted files, symlink, `.curlrc` in cwd vs home,
+escape hatches, effective-policy evaluator with regex + case-insensitive rules). Gate `scripts/live-gate-cleanroom-profile.mjs` PASS (every line, HTTPS 200 from the room,
+exit 0; INCONCLUSIVE exits 2). Evidence on `31e335d`: typecheck/build clean; suite 395 files / 5376 tests, 0 skipped; gate PASS.
+Reviews: plan (senior on Opus ran the code: 4 blockers; codex: 3) → closed before build; per-dispatch Opus reviews ×3; whole-branch adversarial (Opus), testing (Sonnet), codex
+whole-diff → one fix round (case-alias overlap hole **confirmed and closed**; caller-supplied root removed; stricter read set; evaluator hardened) → scoped re-review APPROVE.
+- [ ] **Slice 1 prerequisites (before any sealed command runs):** move every child's TMPDIR (agy-cli, coding-agent/codex, omp, model-catalog — today `daemonTmpRoot()`, the
+  rooms' parent) to a sibling subdirectory so no child TMPDIR is an ancestor of a room; P8 live probe (loopback, `::1`, bridge socket, mach-lookup allowlist) — **pre-ruled:
+  if it cannot be sealed, keep asking, no ADR narrowing**; runtime seam `executor: "cleanroom"` on the validated execution record (not adapter input); teardown in `finally`
+  (also removes `cleanroom.sb.tmp-<pid>` on a failed write); one validated pair per sealed command; report-delivery persistence before any sealed credit.
+- [ ] Stage 4A spec: re-review against the real cleanroom once Slice 1 lands; state the eligibility consequence on the approval card (self-contained commands only).
+- Kickstart: **not owed** by this slice (no runtime path changed; `dist/` rebuilt for the gate only).
+
 
 ## Standing pre-rulings (Paco, 2026-10-27; contract: `AGENTS.md` §Autonomy)
 Decided once so no slice stops on them. Change only by Paco's word; a wrong one is undone by editing this list.
