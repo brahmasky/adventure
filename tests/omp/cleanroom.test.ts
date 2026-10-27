@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CLEANROOM_PROFILE_NAME, type CleanroomDirs, CleanroomPathError, cleanroomEnv, cleanroomRoot, validateCleanroomDirs, writeCleanroomProfile } from "../../src/omp/cleanroom.js";
 import { realpathOrSelf, writeRoots } from "../../src/omp/protected-paths.js";
-import { CLEANROOM_EXEC_ALLOW, renderCleanroom, renderSeatbelt, sbplRegexLiteral } from "../../src/omp/seatbelt.js";
+import { CLEANROOM_EXEC_ALLOW, CLEANROOM_NETWORK_RULES, renderCleanroom, renderSeatbelt, sbplRegexLiteral } from "../../src/omp/seatbelt.js";
 import { resolveDaemonTmpDir } from "../../src/run/daemon-tmp.js";
 
 vi.setConfig({ testTimeout: 30_000 });
@@ -195,8 +195,10 @@ describe("renderCleanroom — SBPL for the sealed room (spec §Required SBPL fac
     expect(lines().filter((l) => l.startsWith("(allow network-outbound"))).toEqual(['(allow network-outbound (literal "/private/var/run/mDNSResponder"))']);
     expect(p).toContain("(deny network-inbound)");
     expect(p).toContain("(deny network-bind)");
-    const mach = lines().indexOf("(deny mach-lookup)"); const net = lines().findIndex((l) => l.startsWith("(deny network-outbound (remote ip4"));
-    expect(mach).toBeGreaterThan(0); expect(net).toBeGreaterThan(mach);
+    // order is semantics under last-match-wins (the unix-socket deny must precede the resolver allow): pin the block as one slice
+    const i = lines().indexOf('(deny mach-lookup (global-name "com.apple.launchd"))');
+    expect(i).toBeGreaterThan(0);
+    expect(lines().slice(i + 1, i + 7)).toEqual([...CLEANROOM_NETWORK_RULES]);
   });
   it("the room's clock is the host's: localtime and the zoneinfo trees are readable (root-owned, outside every write set)", () => {
     const p = renderCleanroom(dirs);
@@ -206,7 +208,9 @@ describe("renderCleanroom — SBPL for the sealed room (spec §Required SBPL fac
   it("exec allowlist: process-exec* is denied by default and re-allowed only for the named binaries, each of which exists on this Mac", () => {
     const l = lines();
     expect(l.indexOf("(deny process-exec*)")).toBeGreaterThan(l.indexOf('(deny process-exec (literal "/usr/bin/python3"))'));
-    const allow = l.find((x) => x.startsWith("(allow process-exec* "))!;
+    const allows = l.filter((x) => x.startsWith("(allow process-exec*"));
+    expect(allows).toEqual([`(allow process-exec* ${CLEANROOM_EXEC_ALLOW.map((b) => `(literal "${b}")`).join(" ")})`]);
+    const allow = allows[0]!;
     expect(l.indexOf(allow)).toBeGreaterThan(l.indexOf("(deny process-exec*)"));
     for (const b of CLEANROOM_EXEC_ALLOW) expect(allow, b).toContain(`(literal "${b}")`);
     for (const b of ["/bin/bash", "/usr/bin/env", "/usr/bin/nice", "/usr/bin/curl", "/bin/date", "/bin/test", "/bin/pwd"]) expect(CLEANROOM_EXEC_ALLOW).toContain(b);
@@ -512,10 +516,11 @@ describe.runIf(process.platform === "darwin")("live clean room — the propertie
     expect(run("/usr/bin/curl -s -m 8 -o /dev/null -w '%{http_code}' https://example.com/").stdout).toBe("200");
     expect(run("/usr/bin/curl -s -m 8 -o /dev/null https://expired.badssl.com/").status).toBe(60);
   });
-  it("the room's clock is the host's (zoneinfo readable): `date +%Z` matches outside the sandbox", () => {
+  it("the room's clock reads zoneinfo: TZ=Australia/Sydney gives AEDT/AEST inside the room, as outside (a UTC host would pass vacuously without a forced zone)", () => {
     const { run } = sealedRoom();
-    const host = spawnSync("/bin/date", ["+%Z"], { encoding: "utf8" }).stdout.trim();
-    expect(run("/bin/date +%Z").stdout.trim()).toBe(host);
+    const host = spawnSync("/bin/date", ["+%Z"], { encoding: "utf8", env: { ...process.env, TZ: "Australia/Sydney" } }).stdout.trim();
+    expect(host).toMatch(/^AE(DT|ST)$/);
+    expect(run("TZ=Australia/Sydney /bin/date +%Z").stdout.trim()).toBe(host);
   });
   it("exec allowlist live: perl and script are refused (the setsid() carriers), the allowed pipeline runs", () => {
     const { run } = sealedRoom();

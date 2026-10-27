@@ -152,7 +152,8 @@ const CLEANROOM_READ_HOLES: Record<string, string[]> = { "/usr": ["/usr/local"] 
  * The clean room (decision-ladder design §8.3, probe 13-cleanroom-probe.md): reads deny-default, re-opened only for the
  * system trees, /private/etc/ssl (curl's openssl.cnf; hosts and the resolver are NOT needed — DNS goes over IPC), the
  * room and the fresh home; metadata on the symlinks /etc /var /tmp (DNS) and the room's ancestors (getcwd); writes only
- * in the room; the launchd / security / python3-shim escape hatches closed; the P8 block closes local network and the
+ * in the room (the room path itself is not writable, so an orphan cannot re-create it after teardown); execs only
+ * from CLEANROOM_EXEC_ALLOW; the launchd / security / python3-shim escape hatches closed; the P8 block closes local network and the
  * rest of IPC (CLEANROOM_NETWORK_RULES).
  */
 export function renderCleanroom(dirs: RoomPair): string {
