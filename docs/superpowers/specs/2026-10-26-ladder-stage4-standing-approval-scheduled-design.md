@@ -56,7 +56,7 @@ Any failed check falls back to a request and records the denial for the run.
 ## 6. Sequenced grant path
 
 1. sched run executes the command; it hits `requires_approval`. Paco taps Approve (or the standing candidate choice) **three times**.
-2. Only after the proposal is accepted does a `cleanroom`-sealed trial run the exact command in the sealed profile (`cleanroom.sb`) to confirm identical outcome and no cross-effect; if the trial fails, candidate is withdrawn with the sealed reason.
+2. Only after the proposal is accepted, a sealed trial runs under simulation (isolated temp dir/same Gates, no extra egress) with a final Paco tap on a signed report; a true cleanroom profile (cleanroom.sb) arrives only in Stage 4 #6 and is then required for promotes.
 3. On trial success, one final Paco tap publishes the standing move.
 4. Further scheduled runs whose exact fingerprint matches → automatic `allow` with a ladder row (`decided_by: rule`, reason `approval.standing`).
 5. Deny/tamper/expired resets the streak and revokes standing, writes a revert.
