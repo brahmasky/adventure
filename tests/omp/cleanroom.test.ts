@@ -3,7 +3,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { CleanroomPathError, validateCleanroomDirs } from "../../src/omp/cleanroom.js";
-import { renderCleanroom } from "../../src/omp/seatbelt.js";
+import { realpathOrSelf, writeRoots } from "../../src/omp/protected-paths.js";
+import { renderCleanroom, renderSeatbelt } from "../../src/omp/seatbelt.js";
+import { resolveDaemonTmpDir } from "../../src/run/daemon-tmp.js";
 
 const made: string[] = [];
 function cacheRoot(): string { const r = mkdtempSync(join(tmpdir(), "hg-cr-")); made.push(r); return realpathSync(r); }
@@ -107,5 +109,74 @@ describe("renderCleanroom — SBPL for the sealed room (spec §Required SBPL fac
     expect(renderCleanroom(dirs)).toBe(renderCleanroom(dirs));
     const odd = { room: '/Users/p/Library/Caches/houge-daemon/r"1', home: "/Users/p/Library/Caches/houge-daemon/h-1" };
     expect(renderCleanroom(odd)).toContain('(allow file-write* (subpath "/Users/p/Library/Caches/houge-daemon/r\\"1"))');
+  });
+});
+
+/** SBPL takes the LAST matching rule. Returns "allow" | "deny" | null for one verb and one path over subpath/literal rules. */
+function lastRuleFor(profile: string, verb: "file-read*" | "file-write*", path: string): "allow" | "deny" | null {
+  let verdict: "allow" | "deny" | null = null;
+  for (const line of profile.split("\n")) {
+    const m = /^\((allow|deny) ([^(]+?) \((subpath|literal) "((?:[^"\\]|\\.)*)"\)\)$/.exec(line);
+    if (!m) { if (verb === "file-write*" && line === "(deny file-write*)") verdict = "deny"; if (verb === "file-read*" && line === "(deny file-read*)") verdict = "deny"; continue; }
+    const verbs = m[2]!.split(" ");
+    if (!verbs.includes(verb)) continue;
+    const p = m[4]!.replace(/\\(.)/g, "$1");
+    const hit = m[3] === "literal" ? path === p : path === p || path.startsWith(p.endsWith("/") ? p : p + "/");
+    if (hit) verdict = m[1] as "allow" | "deny";
+  }
+  return verdict;
+}
+
+/**
+ * tests/helpers/setup-no-real-omp.ts sets HOUGE_DAEMON_TMP_DIR for every test file, and secretPaths() reads process.env:
+ * render with the DEFAULT cache root (under $HOME), which is the case the test is about. Same idiom as seatbelt.test.ts:187.
+ */
+function withDefaultCacheRoot<T>(fn: () => T): T {
+  const saved = process.env.HOUGE_DAEMON_TMP_DIR; delete process.env.HOUGE_DAEMON_TMP_DIR;
+  try { return fn(); } finally { if (saved !== undefined) process.env.HOUGE_DAEMON_TMP_DIR = saved; }
+}
+
+describe("effective policy — the planner and shell profiles deny the cache root the room lives in, even though $HOME is writable (codex blocker 1)", () => {
+  const ctx = { home: "/Users/p", repo: "/Users/p/Projects/adventure", data: "/Users/p/Projects/adventure" };
+  const cache = resolveDaemonTmpDir({}, ctx.home); // /Users/p/Library/Caches/houge-daemon
+  const room = `${cache}/room-1`; const home = `${cache}/home-1`;
+
+  it("denies reads and writes of the room and the home to both profiles as the LAST matching rule", () => {
+    const { planner, shell } = withDefaultCacheRoot(() => renderSeatbelt(ctx));
+    for (const p of [planner, shell]) for (const d of [room, home, `${room}/cj.txt`, `${home}/.curlrc`]) {
+      expect(lastRuleFor(p, "file-write*", d), `write ${d}`).toBe("deny");
+      expect(lastRuleFor(p, "file-read*", d), `read ${d}`).toBe("deny");
+    }
+  });
+  it("sanity: the same evaluator says $HOME/Documents is writable and the repo is not (the evaluator is not vacuous)", () => {
+    const { shell } = renderSeatbelt(ctx);
+    expect(lastRuleFor(shell, "file-write*", "/Users/p/Documents/x.txt")).toBe("allow");
+    expect(lastRuleFor(shell, "file-write*", "/Users/p/Projects/adventure/src/x.ts")).toBe("deny");
+  });
+  it("the clean room's readable set and the planner/shell EFFECTIVE write set do not intersect on the cache root", () => {
+    const cr = renderCleanroom({ room, home });
+    const { planner, shell } = withDefaultCacheRoot(() => renderSeatbelt(ctx));
+    for (const d of [room, home]) {
+      expect(lastRuleFor(cr, "file-read*", d)).toBe("allow");
+      expect(lastRuleFor(planner, "file-write*", d)).toBe("deny");
+      expect(lastRuleFor(shell, "file-write*", d)).toBe("deny");
+    }
+  });
+  it("spec rule 5, over real rendered policies: every planner/shell write root (and a child of each) is unreadable in the clean room, and every clean-room system tree is unwritable by planner and shell — fixture ctx and the real $HOME", () => {
+    const real = { home: process.env.HOME!, repo: process.cwd(), data: process.cwd() };
+    for (const c of [ctx, real]) {
+      const cache2 = resolveDaemonTmpDir({}, c.home);
+      const cr = renderCleanroom({ room: `${cache2}/room-1`, home: `${cache2}/home-1` });
+      const { planner, shell } = withDefaultCacheRoot(() => renderSeatbelt(c));
+      for (const kind of ["planner", "shell"] as const) for (const w of writeRoots(c, kind)) for (const v of [...new Set([w, realpathOrSelf(w)])]) {
+        expect(lastRuleFor(cr, "file-read*", v), `read ${v}`).toBe("deny");
+        expect(lastRuleFor(cr, "file-read*", `${v}/child.txt`), `read ${v}/child.txt`).toBe("deny");
+      }
+      // /dev/null is left out: planner/shell write-allow it as a device sink (DEV_WRITES); nothing can be planted in it
+      for (const t of ["/usr", "/bin", "/System", "/Library", "/private/etc/ssl"]) for (const prof of [planner, shell]) {
+        expect(lastRuleFor(prof, "file-write*", t), `write ${t}`).toBe("deny");
+        expect(lastRuleFor(prof, "file-write*", `${t}/x`), `write ${t}/x`).toBe("deny");
+      }
+    }
   });
 });
