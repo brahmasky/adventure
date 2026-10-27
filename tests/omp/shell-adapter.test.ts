@@ -3,6 +3,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it, vi } from "vitest";
+import { cleanroomEnv } from "../../src/omp/cleanroom.js";
 import { writeSeatbeltProfiles } from "../../src/omp/seatbelt.js";
 import { runShell, shellToolExecute, type ShellRunInput } from "../../src/omp/shell-adapter.js";
 import { resolveOmpConfig } from "../../src/omp/omp-config.js";
@@ -228,5 +229,38 @@ describe("bash tool — shellToolExecute, the adapter the bridge calls (testing 
     const r = await run({ command: "echo partial; sleep 5" });
     expect(r).toEqual({ ok: false, error: "bash timeout\npartial\n" });
     expect(incidents).toEqual([]);
+  });
+});
+
+describe("shell wrapper — clean-room mode", () => {
+  /** A permissive profile: this describe tests the wrapper's env/cwd plumbing, not the sandbox (cleanroom.test.ts does). */
+  function openProfile(): string { const d = tmp("houge-cr-sb-"); const p = join(d, "open.sb"); writeFileSync(p, "(version 1)\n(allow default)\n"); return p; }
+  it("runs the command under env -i with exactly the six fixed names plus bash's own, cwd = room, and ignores HOUGE_SHELL_SANDBOX=0", async () => {
+    const room = tmp("houge-cr-room-"); const home = tmp("houge-cr-home-");
+    const r = await runShell(input("/usr/bin/env; /bin/pwd", { cwd: room, profilePath: openProfile(), sandbox: true,
+      env: { HOUGE_SHELL_CLEANROOM: "1", CR_HOME: home, CR_ROOM: room, HOUGE_SHELL_SANDBOX: "0", HOUGE_LEAK: "no" } }));
+    expect(r).toMatchObject({ status: "succeeded", exitCode: 0 });
+    const seen = Object.fromEntries(r.output.split("\n").filter((l) => l.includes("=")).map((l) => [l.slice(0, l.indexOf("=")), l.slice(l.indexOf("=") + 1)]));
+    // the wrapper's literals and cleanroomEnv() must say the same thing: this is the drift test the spec asks for
+    expect(Object.keys(seen).sort()).toEqual([...Object.keys(cleanroomEnv({ room, home })), "PWD", "SHLVL", "_"].sort());
+    expect(seen).toMatchObject(cleanroomEnv({ room, home }));
+    expect(r.output.trim().endsWith(room)).toBe(true);
+    expect(r.output).not.toContain("HOUGE_LEAK"); expect(r.output).not.toContain("SB=");
+  });
+  it("takes the clean-room branch even when sandbox is off for the normal path: HOUGE_SHELL_SANDBOX=0 never means unsandboxed here", async () => {
+    const room = tmp("houge-cr-room-"); const home = tmp("houge-cr-home-"); const d = tmp("houge-cr-sb-"); const p = join(d, "deny.sb");
+    writeFileSync(p, '(version 1)\n(allow default)\n(deny file-read* (literal "/private/etc/hosts"))\n');
+    const r = await runShell(input("/bin/cat /etc/hosts", { cwd: room, profilePath: p, sandbox: false, env: { HOUGE_SHELL_CLEANROOM: "1", CR_HOME: home, CR_ROOM: room, HOUGE_SHELL_SANDBOX: "0" } }));
+    expect(r.status).toBe("succeeded"); expect(r.exitCode).not.toBe(0); expect(r.output).toMatch(/Operation not permitted/);
+  });
+  it("fails closed with limits_failed when the control env is incomplete (a daemon bug, not a runtime state — the three status values are kept)", async () => {
+    const room = tmp("houge-cr-room-");
+    const r = await runShell(input("echo ran", { cwd: room, profilePath: openProfile(), sandbox: true, env: { HOUGE_SHELL_CLEANROOM: "1", CR_ROOM: room } }));
+    expect(r).toMatchObject({ status: "failed", reason: "limits_failed", exitCode: 97 }); expect(r.output).not.toContain("ran");
+  });
+  it("still kills a backgrounded child in the group and reports ok (the cleanup loop runs after the clean-room branch too)", async () => {
+    const room = tmp("houge-cr-room-"); const home = tmp("houge-cr-home-"); const tag = `houge-cr-bg-${Date.now()}`;
+    const r = await runShell(input(`(exec -a ${tag} /bin/sleep 8) & echo m`, { cwd: room, profilePath: openProfile(), sandbox: true, env: { HOUGE_SHELL_CLEANROOM: "1", CR_HOME: home, CR_ROOM: room } }));
+    expect(r).toMatchObject({ status: "succeeded", wrapperStatus: "ok" }); expect(alive(tag)).toBe(false);
   });
 });

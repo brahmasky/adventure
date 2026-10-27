@@ -2,6 +2,8 @@
 # Houge shell wrapper (spec §5.6 R2–R5). Invoked by the daemon as the DETACHED process-group
 # leader, OUTSIDE the sandbox:   /bin/bash shell-wrapper.sh <command>      (fd 3 = status pipe)
 # Env: SB = Seatbelt profile path; HOUGE_SHELL_SANDBOX = 0 disables sandbox-exec (tests only).
+# HOUGE_SHELL_CLEANROOM=1 + CR_HOME + CR_ROOM = clean-room mode: always sandboxed (checked before HOUGE_SHELL_SANDBOX),
+# the command gets only the six names below under env -i; missing CR_HOME/CR_ROOM is fail-closed (limits_failed).
 # Every helper runs by absolute path under a fixed PATH: this part is unsandboxed, so a binary planted on
 # the caller's PATH must never run here. The command itself gets the caller's PATH back.
 # -u is per-user on macOS: cap = current user process count + 256 (bounded by the hard limit), computed unsandboxed. Any failure is fail-closed.
@@ -13,7 +15,14 @@ n=$(printf '%s\n' "$pl" | /usr/bin/grep -c .); [ "${n:-0}" -gt 0 ] 2>/dev/null |
 lim=$((n + 256)); hard=$(ulimit -H -u) || lf
 if [ "$hard" != "unlimited" ] && [ "$lim" -gt "$hard" ]; then lim=$hard; fi
 ulimit -u "$lim" -t 600 -f 1048576 -n 1024 || lf
-if [ "${HOUGE_SHELL_SANDBOX:-1}" = "0" ]; then
+if [ "${HOUGE_SHELL_CLEANROOM:-0}" = "1" ]; then
+  # clean room (decision ladder §8.3): always sandboxed, nothing inherited — the six names below are the whole env.
+  # SB, CR_* and HOUGE_SHELL_* are consumed here, outside the sandbox, and never reach the command's execve.
+  [ -n "$CR_HOME" ] && [ -n "$CR_ROOM" ] || lf
+  /usr/bin/sandbox-exec -f "$SB" /usr/bin/env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin LANG=C.UTF-8 \
+    HOME="$CR_HOME" CURL_HOME="$CR_HOME" XDG_CONFIG_HOME="$CR_HOME" TMPDIR="$CR_ROOM" \
+    /usr/bin/nice -n 10 /bin/bash -c "$1" 3>&-; rc=$?
+elif [ "${HOUGE_SHELL_SANDBOX:-1}" = "0" ]; then
   PATH=$cmd_path /usr/bin/nice -n 10 /bin/bash -c "$1" 3>&-; rc=$?
 else
   PATH=$cmd_path /usr/bin/sandbox-exec -f "$SB" /usr/bin/nice -n 10 /bin/bash -c "$1" 3>&-; rc=$?

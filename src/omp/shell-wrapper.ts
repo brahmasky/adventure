@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 /** sha256 of src/omp/shell-wrapper.sh. Both files are protected; a test keeps them in lockstep (R9). */
-export const SHELL_WRAPPER_SHA256 = "c6e41426365743d49df384a1d05c9c2b47550b7eb996c8c49cef1eac2097adcd";
+export const SHELL_WRAPPER_SHA256 = "dde4a0c3e34eda6ef82e799a89573cc870185c5c992469850bfd6d134e96d0b4";
 
 export function sha256File(path: string): string {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
