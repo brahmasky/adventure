@@ -272,7 +272,7 @@ async function noSeal(e, tag, title, o) {
   const after = e.store.getStandingApproval(c.standing_id);
   // the run's notice (success or failure) was delivered, so the row ended on the seal facts, never for want of a delivery
   check(`${tag} ${title} → no seal`, mid === "sealing" && f?.executor === "cleanroom" && o.why(f) && e.store.finalReportState(run) === "delivered" && after?.state === "ended"
-    && after.ended_reason === "sealed_trial_failed" && after.move_id === null && !e.cards.some((n) => n.idempotency_key.startsWith("urgent:standing_grant:")),
+    && after.ended_reason === "sealed_trial_failed" && after.move_id === null && e.store.countNotificationsByIdempotencyKey(`urgent:standing_grant:${c.standing_id}`) === 0, // the outbox, not e.cards: a queued but unsent card counts
     `row ${mid} → ${after?.state}/${after?.ended_reason} · ${facts(f)} · notice ${e.store.finalReportState(run)}`);
 }
 

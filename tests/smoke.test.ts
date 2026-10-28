@@ -37,5 +37,5 @@ describe("project scaffold", () => {
     expect(unknown.status).toBe(1);
     expect(unknown.stdout).toBe("");
     expect(unknown.stderr.trim()).toBe("Unknown command: bogus");
-  });
+  }, 30_000); // it runs a full `npm run build` too: ~5.5 s alone, 11–12 s under the full suite's load, past the 10 s default
 });

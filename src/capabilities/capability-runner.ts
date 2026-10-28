@@ -127,9 +127,9 @@ export class CapabilityRunner {
       };
     }
 
-    // The verbatim Task 6 test asserts adapter_input_json === JSON.stringify(input.input)
-    // (insertion order preserved). stableHash re-canonicalizes regardless of key order,
-    // so adapter_input_hash === stableHash(JSON.parse(adapter_input_json)) still holds.
+    // adapter_input_json is JSON.stringify(input.input) with its insertion order kept (the approval
+    // replays exactly these bytes); stableHash re-canonicalizes regardless of key order, so
+    // adapter_input_hash === stableHash(JSON.parse(adapter_input_json)) still holds.
     // Computed before policy: a standing use's CAS is keyed on the same fingerprint the card would carry.
     const adapter_input_json = JSON.stringify(input.input);
     const adapter_input_hash = stableHash(input.input);

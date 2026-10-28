@@ -28,7 +28,7 @@ import type { RunStore } from "../run/run-store.js";
 import type { SsrfContext, ToolRegistry } from "../tools/tool-registry.js";
 import type { BridgeRequest, SettleReply } from "./bridge-protocol.js";
 import { BUILTIN_CAPABILITY, capabilityFor, type RegistryEntry } from "./capability-map.js";
-import { cleanroomAvailable } from "./cleanroom-run.js";
+import { cleanroomAvailable, type CleanroomFailure } from "./cleanroom-run.js";
 import { classifyCommand, UNSEEN_SCRIPT_LABEL } from "./command-matcher.js";
 import { gateTargets } from "./gate-path.js";
 import { handleJudgeRead, maskedKey, noteReportApplied, raisePendingAtFlush, raiseStalePending, type JudgedOutcome, type JudgePending, type PathDeps } from "./bridge-read-judge.js";
@@ -232,9 +232,13 @@ interface Finish {
 }
 /** Nested under tool_finished.cleanroom (never top level): a top-level tool_finished.reason already carries policy/cancel reasons. */
 export type CleanroomFacts = { ran: boolean; torn_down: boolean; tampered: boolean; escaped: boolean; exit_code: number | null; truncated: boolean | null; check_failed: boolean; room?: string; reason?: string };
-/** The adapter's bounded failure words; a reason outside the set is dropped, never copied into the ledger. */
-export const CLEANROOM_REASONS: ReadonlySet<string> = new Set(["timeout", "output_cap", "aborted", "limits_failed", "cleanup_failed", "wrapper_unknown", "spawn",
-  "cleanroom_unavailable", "cleanroom_setup", "cleanroom_invalid", "cleanroom_tampered"]);
+/**
+ * The adapter's bounded failure words; a reason outside the set is dropped, never copied into the ledger. Keyed by the
+ * CleanroomFailure union (ShellFailure included), so a word added to or removed from either type without this set is a compile error.
+ */
+const CLEANROOM_REASON_KEYS = { timeout: true, output_cap: true, aborted: true, limits_failed: true, cleanup_failed: true, wrapper_unknown: true, spawn: true,
+  cleanroom_unavailable: true, cleanroom_setup: true, cleanroom_invalid: true, cleanroom_tampered: true } as const satisfies Record<CleanroomFailure, true>;
+export const CLEANROOM_REASONS: ReadonlySet<string> = new Set(Object.keys(CLEANROOM_REASON_KEYS));
 const ROOM_NAME = /^room-[A-Za-z0-9]+$/; // mkdtempSync's shape; a path or anything else is not a room name
 
 /**
