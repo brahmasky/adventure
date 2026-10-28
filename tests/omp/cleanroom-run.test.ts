@@ -9,6 +9,11 @@ import { resolveOmpConfig } from "../../src/omp/omp-config.js";
 import { tmpOmpDist } from "../helpers/omp-env.js";
 
 const alive = (pattern: string) => spawnSync("pgrep", ["-f", pattern], { encoding: "utf8" }).stdout.trim().length > 0;
+/** SIGKILL delivery and reaping are asynchronous: poll up to ~1 s before calling a killed process still alive. */
+async function gone(pattern: string): Promise<boolean> {
+  for (let i = 0; i < 10 && alive(pattern); i++) await new Promise((r) => setTimeout(r, 100));
+  return !alive(pattern);
+}
 const root = () => process.env.HOUGE_DAEMON_TMP_DIR!;
 let distDir = "";
 let savedTmp: string | undefined;
@@ -113,7 +118,7 @@ describe.runIf(process.platform === "darwin")("runCleanroomShell — one sealed 
     const r = await runCleanroomShell(deps(), `set -m; (exec -a ${tag} /bin/sleep 20 >/dev/null 2>&1 </dev/null) & /bin/echo spawned`);
     try {
       expect(r).toMatchObject({ status: "succeeded", escaped: true, escape_source: "orphan_scan", torn_down: true }); expect(r.orphans!.length).toBeGreaterThan(0);
-      expect(alive(tag)).toBe(false);
+      expect(await gone(tag)).toBe(true);
     } finally { spawnSync("pkill", ["-f", tag]); }
   });
   it("orphansIn reads lsof records: an n line counts only after fcwd for the current p record", () => {

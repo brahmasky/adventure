@@ -458,7 +458,7 @@ describe.runIf(process.platform === "darwin")("live clean room — the propertie
     const w = run(`/bin/echo planted > "${dirs.home}/.curlrc"`); expect(w.status).not.toBe(0); expect(w.stderr).toMatch(/Operation not permitted/);
     expect(existsSync(join(dirs.home, ".curlrc"))).toBe(false);
   });
-  it("/Library and /usr/local cannot be listed (user- or world-writable trees inside the system roots — review B), each proven to exist", () => {
+  it("/Library and /usr/local cannot be listed (user- or world-writable trees inside the system roots), each proven to exist", () => {
     const { run } = sealedRoom();
     for (const d of ["/Library", "/usr/local"]) {
       expect(existsSync(d), `${d} exists`).toBe(true);

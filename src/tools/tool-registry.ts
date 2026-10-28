@@ -9,7 +9,7 @@ export interface SsrfContext {
   run_id: string | null;
   tool_call_id?: string | null;
   recorder?: DecisionRecorder;
-  /** Set only from a validated standing match (ADR 0030 §8.3, B20) — by Stage 4A, never by model or adapter input. */
+  /** Set only from a validated standing match (ADR 0030 §8.3) — by Stage 4A, never by model or adapter input. */
   executor?: "cleanroom";
 }
 

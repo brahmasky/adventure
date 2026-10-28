@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -33,6 +33,11 @@ function wrapperWith(helper: string, stub: string): string {
   return copy;
 }
 const alive = (pattern: string) => spawnSync("pgrep", ["-f", pattern], { encoding: "utf8" }).stdout.trim().length > 0;
+/** SIGKILL delivery and reaping are asynchronous: poll up to ~1 s before calling a killed process still alive. */
+async function gone(pattern: string): Promise<boolean> {
+  for (let i = 0; i < 10 && alive(pattern); i++) await new Promise((r) => setTimeout(r, 100));
+  return !alive(pattern);
+}
 
 describe("bash tool adapter — R2–R7", () => {
   it("runs a plain command and preserves its exit code", async () => {
@@ -238,7 +243,12 @@ describe("bash tool — shellToolExecute, the adapter the bridge calls (testing 
     let savedTmp: string | undefined;
     // Each test gets its own realpath'd cache root: rooms are canonical /private/var paths (as in cleanroom-run.test.ts).
     beforeEach(() => { savedTmp = process.env.HOUGE_DAEMON_TMP_DIR; process.env.HOUGE_DAEMON_TMP_DIR = realpathSync(tmp("hg-seam-")); });
-    afterEach(() => { if (savedTmp === undefined) delete process.env.HOUGE_DAEMON_TMP_DIR; else process.env.HOUGE_DAEMON_TMP_DIR = savedTmp; });
+    // Nothing a sealed run made may outlive it: the clean-room root is empty or absent after every test (as in cleanroom-run.test.ts).
+    afterEach(() => {
+      try {
+        if (existsSync(cleanroomRoot())) expect(readdirSync(cleanroomRoot())).toEqual([]);
+      } finally { if (savedTmp === undefined) delete process.env.HOUGE_DAEMON_TMP_DIR; else process.env.HOUGE_DAEMON_TMP_DIR = savedTmp; }
+    });
     const ctx = { run_id: "run-1", tool_call_id: "tc-1", executor: "cleanroom" as const };
     it("with the flag the command runs in a room and the output carries every seal fact; without it, today's path in the workspace", async () => {
       const { run, ws, incidents } = tool({ sandbox: true });
@@ -309,6 +319,6 @@ describe("shell wrapper — clean-room mode", () => {
   it("still kills a backgrounded child in the group and reports ok (the cleanup loop runs after the clean-room branch too)", async () => {
     const room = tmp("houge-cr-room-"); const home = tmp("houge-cr-home-"); const tag = `houge-cr-bg-${Date.now()}`;
     const r = await runShell(input(`(exec -a ${tag} /bin/sleep 8) & echo m`, { cwd: room, profilePath: openProfile(), sandbox: true, env: { HOUGE_SHELL_CLEANROOM: "1", CR_HOME: home, CR_ROOM: room } }));
-    expect(r).toMatchObject({ status: "succeeded", wrapperStatus: "ok" }); expect(alive(tag)).toBe(false);
+    expect(r).toMatchObject({ status: "succeeded", wrapperStatus: "ok" }); expect(await gone(tag)).toBe(true);
   });
 });

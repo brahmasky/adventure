@@ -61,7 +61,7 @@ function runLeg(cfg: OmpConfig, m: ModelString, input: OneShotInput): Promise<Le
   const started = Date.now();
   return new Promise((resolve) => {
     const child = spawn(cfg.bin, ompOneShotArgs(cfg, m, input.files ?? []), {
-      // TMPDIR: the daemon-only temp root, never planner-writable /tmp or os.tmpdir() (B13)
+      // TMPDIR: <cache>/children, a sibling of the clean rooms (never inside one), not planner-writable /tmp or os.tmpdir()
       env: { ...buildChildEnv(cfg.envPassthrough), TMPDIR: childTmpRoot() }, stdio: ["pipe", "pipe", "pipe"], detached: true
     });
     const st: LegState = { out: "", err: "", bytes: 0, timedOut: false, settled: false, code: undefined };
