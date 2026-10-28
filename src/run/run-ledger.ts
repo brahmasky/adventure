@@ -101,7 +101,8 @@ export type LedgerEventType =
   | "memory_migration"
   | "improve_signal_skipped"
   | "improve_tick"
-  | "improvement_job";
+  | "improvement_job"
+  | "standing_streak" | "standing_sealing" | "standing_sealed" | "standing_granted" | "standing_used" | "standing_ended";
 
 export interface LedgerEvent {
   event_id: string;
@@ -350,7 +351,14 @@ const requiredPayloadFields = {
   omp_contract_probe: ["version", "result", "checks"],
   improve_signal_skipped: ["signal", "code"],
   improve_tick: ["phase", "local_date"],
-  improvement_job: ["job_id", "from", "to", "attempt"]
+  improvement_job: ["job_id", "from", "to", "attempt"],
+  // Stage 4A standing approvals (ADR 0030 §8.3): ids, reasons and counts only; the command bytes never enter the ledger.
+  standing_streak: ["standing_id", "run_id", "approval_id", "streak"],
+  standing_sealing: ["standing_id", "run_id", "tool_call_id", "approval_id"],
+  standing_sealed: ["standing_id", "run_id", "tool_call_id"],
+  standing_granted: ["standing_id", "move_id"],
+  standing_used: ["standing_id", "move_id", "run_id", "tool_call_id", "action_fingerprint"],
+  standing_ended: ["standing_id", "reason"]
 } as const satisfies Record<LedgerEventType, readonly string[]>;
 
 export function createLedgerEvent(

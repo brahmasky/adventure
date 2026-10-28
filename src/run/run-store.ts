@@ -1033,6 +1033,16 @@ export interface ImprovementJobRow { job_id: string; kind: "skill_author"; decis
 export interface ImprovementTapRow { tap_id: string; subject_kind: "proposal" | "job" | "move"; subject_id: string; action: string; telegram_callback_id: string; result: string; created_at: string }
 export type JobPatch = Partial<Pick<ImprovementJobRow, "result_code" | "gate_a" | "pending_scope" | "pending_name" | "promote_mode">>;
 export interface LadderMoveRow { move_id: string; entry_id: string; scope: string; from_rung: RungKind; to_rung: RungKind; evidence_json: string; granted_by: "paco" | "auto"; granted_via: string | null; paco_callback_id: string | null; revocable: number; state: "active" | "ended"; created_at: string; ended_at: string | null }
+/** Stage 4A (ADR 0030 §8.3): one row per (schedule, chat, fingerprint) streak. `ended` rows stay: audit, and the 30-day deny block is read over them. */
+export type StandingState = "streak" | "candidate" | "sealing" | "sealed" | "standing" | "ended";
+export type StandingEndReason = "sealed_trial_failed" | "denied" | "revoked" | "expired" | "schedule_ended" | "stale" | "mismatch" | "tampered_use";
+export interface StandingKey { schedule_id: string; chat_id: string; action_fingerprint: string }
+export interface StandingApprovalRow extends StandingKey {
+  standing_id: string; capability: string; label: string; state: StandingState; credited_runs_json: string; approval_ids_json: string;
+  sealing_approval_id: string | null; sealed_run_id: string | null; sealed_tool_call_id: string | null; sealing_started_at: string | null;
+  move_id: string | null; grant_notification_id: string | null; denied_until: string | null; expires_at: string | null; last_used_run_id: string | null;
+  created_at: string; updated_at: string; ended_at: string | null; ended_reason: string | null;
+}
 /** The mirror's read of one outcome row with what the filter and the inbox need (never the decision's text: there is none). */
 interface MirrorOutcomeRow { outcome_id: string; rid: number; signal: DecisionSignal; value: string; created_at: string; entry_id: string; run_id: string | null; run_source: string | null; chat_id: string | null }
 export class LadderMoveRefused extends Error {
@@ -1133,6 +1143,23 @@ const DECISION_LADDER_DDL = `
     offered_json TEXT NOT NULL,
     created_at TEXT NOT NULL
   );`;
+
+const STANDING_APPROVAL_DDL = `
+  CREATE TABLE IF NOT EXISTS standing_approvals (
+    standing_id TEXT PRIMARY KEY,
+    schedule_id TEXT NOT NULL, chat_id TEXT NOT NULL, action_fingerprint TEXT NOT NULL,
+    capability TEXT NOT NULL, label TEXT NOT NULL,
+    state TEXT NOT NULL CHECK (state IN ('streak','candidate','sealing','sealed','standing','ended')),
+    credited_runs_json TEXT NOT NULL DEFAULT '[]',
+    approval_ids_json TEXT NOT NULL DEFAULT '[]',
+    sealing_approval_id TEXT, sealed_run_id TEXT, sealed_tool_call_id TEXT, sealing_started_at TEXT,
+    move_id TEXT, grant_notification_id TEXT,
+    denied_until TEXT, expires_at TEXT, last_used_run_id TEXT,
+    created_at TEXT NOT NULL, updated_at TEXT NOT NULL, ended_at TEXT, ended_reason TEXT
+  );
+  CREATE UNIQUE INDEX IF NOT EXISTS standing_key_live ON standing_approvals(schedule_id, chat_id, action_fingerprint) WHERE state <> 'ended';
+  CREATE INDEX IF NOT EXISTS standing_deny_idx ON standing_approvals(chat_id, action_fingerprint, denied_until);
+  CREATE TABLE IF NOT EXISTS standing_uses (standing_id TEXT NOT NULL, run_id TEXT NOT NULL, tool_call_id TEXT NOT NULL, used_at TEXT NOT NULL, PRIMARY KEY (standing_id, run_id));`;
 
 /** Spec 2026-10-15 §11: memory_changes with `add` (an explicit fact save's Undo row): the 2026-10-02 columns plus `pruned_ids`. */
 const MEMORY_CHANGES_ADD_DDL = `
@@ -5567,6 +5594,60 @@ export class RunStore {
   listLadderMovesCreatedSince(sinceIso: string): LadderMoveRow[] {
     return this.db.prepare(`SELECT * FROM ladder_moves WHERE created_at > ? ORDER BY created_at ASC, rowid ASC`).all<LadderMoveRow>(sinceIso);
   }
+  // --- Standing approvals (Stage 4A, ADR 0030 §8.3) ------------------------------------------
+  getStandingApproval(standing_id: string): StandingApprovalRow | undefined {
+    return this.db.prepare(`SELECT * FROM standing_approvals WHERE standing_id = ?`).get<StandingApprovalRow>(standing_id);
+  }
+  /** The key's one live row (the partial unique index allows at most one). */
+  standingFor(key: StandingKey): StandingApprovalRow | undefined {
+    return this.db.prepare(`SELECT * FROM standing_approvals WHERE schedule_id = ? AND chat_id = ? AND action_fingerprint = ? AND state <> 'ended'`)
+      .get<StandingApprovalRow>(key.schedule_id, key.chat_id, key.action_fingerprint);
+  }
+  listStandingApprovals(f: { state?: StandingState; chat_id?: string; schedule_id?: string } = {}): StandingApprovalRow[] {
+    const where: string[] = []; const args: string[] = [];
+    for (const [col, v] of [["state", f.state], ["chat_id", f.chat_id], ["schedule_id", f.schedule_id]] as const) if (v !== undefined) { where.push(`${col} = ?`); args.push(v); }
+    return this.db.prepare(`SELECT * FROM standing_approvals${where.length > 0 ? ` WHERE ${where.join(" AND ")}` : ""} ORDER BY created_at ASC, standing_id ASC`).all<StandingApprovalRow>(...args);
+  }
+  /** §6: a denial anywhere on (chat, fingerprint) blocks a new streak until denied_until; ended rows carry it, so they are read too. */
+  standingDenied(chat_id: string, action_fingerprint: string, now: string): boolean {
+    return this.db.prepare(`SELECT 1 AS hit FROM standing_approvals WHERE chat_id = ? AND action_fingerprint = ? AND denied_until > ? LIMIT 1`)
+      .get<{ hit: number }>(chat_id, action_fingerprint, now) !== undefined;
+  }
+  /** The run's terminal notice — success and failure share this key (§2), so the state alone never proves success. */
+  finalReportState(run_id: string): string | undefined {
+    return this.db.prepare(`SELECT state FROM notification_outbox WHERE idempotency_key = ? ORDER BY created_at ASC LIMIT 1`).get<{ state: string }>(`${run_id}:final_report`)?.state;
+  }
+  /** End one live row once (CAS on state <> 'ended'); its move ends with it; the ledger names the reason. Joins the caller's transaction. */
+  endStandingApproval(i: { standing_id: string; reason: StandingEndReason; now: string; denied_until?: string }): boolean {
+    return this.joinTransaction(() => this.endStandingTx(i));
+  }
+  /** Plain statements: the deny hook runs inside processApprovalTrigger's raw BEGIN, where joinTransaction would nest a BEGIN and throw. */
+  private endStandingTx(i: { standing_id: string; reason: StandingEndReason; now: string; denied_until?: string }): boolean {
+    const row = this.getStandingApproval(i.standing_id);
+    if (!row || row.state === "ended") return false;
+    const r = this.db.prepare(`UPDATE standing_approvals SET state = 'ended', ended_reason = ?, ended_at = ?, updated_at = ?, denied_until = COALESCE(?, denied_until) WHERE standing_id = ? AND state <> 'ended'`)
+      .run(i.reason, i.now, i.now, i.denied_until ?? null, i.standing_id);
+    if (r.changes !== 1) return false;
+    if (row.move_id) this.endLadderMove(row.move_id, i.now);
+    this.appendStandingLedgerEvent("standing_ended", { standing_id: i.standing_id, reason: i.reason });
+    return true;
+  }
+  /** Run-bound when a run owns the transition (the run's ledger shows it); run-less for a sweep or a tap. */
+  appendStandingLedgerEvent(event_type: LedgerEventType, payload: Record<string, unknown>, run_id?: string): void {
+    if (run_id !== undefined) return this.appendRunLedgerEvent(run_id, event_type, "core", payload);
+    this.appendLedgerEvent(createLedgerEvent({ correlation_id: `standing:${String(payload.standing_id)}`, event_type, actor: "core", sequence: this.nextLedgerSequence(), payload }));
+  }
+  /** @internal Tests seed rows in any state; production rows are born only in the consume and deny hooks. */
+  insertStandingApprovalForTest(r: Partial<StandingApprovalRow> & StandingKey & { state: StandingState }): StandingApprovalRow {
+    const now = r.created_at ?? new Date().toISOString(); const standing_id = r.standing_id ?? `sa_${randomUUID()}`;
+    this.db.prepare(`INSERT INTO standing_approvals (standing_id, schedule_id, chat_id, action_fingerprint, capability, label, state, credited_runs_json, approval_ids_json,
+        sealing_approval_id, sealed_run_id, sealed_tool_call_id, sealing_started_at, move_id, grant_notification_id, denied_until, expires_at, last_used_run_id, created_at, updated_at, ended_at, ended_reason)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(standing_id, r.schedule_id, r.chat_id, r.action_fingerprint, r.capability ?? "shell_external", r.label ?? "HTTP write", r.state, r.credited_runs_json ?? "[]", r.approval_ids_json ?? "[]",
+        r.sealing_approval_id ?? null, r.sealed_run_id ?? null, r.sealed_tool_call_id ?? null, r.sealing_started_at ?? null, r.move_id ?? null, r.grant_notification_id ?? null,
+        r.denied_until ?? null, r.expires_at ?? null, r.last_used_run_id ?? null, now, r.updated_at ?? now, r.ended_at ?? null, r.ended_reason ?? null);
+    return this.getStandingApproval(standing_id)!;
+  }
 
   listLedgerEventsByTypeSince(event_type: LedgerEventType, sinceIso: string): LedgerEvent[] {
     return readLedgerEventsByTypeSince(this.db, event_type, sinceIso);
@@ -8122,6 +8203,17 @@ export class RunStore {
     this.applyMemoryWriteMigration();
     this.applyImproveRouteMigration();
     this.applyJevVersionCheckMigration();
+    this.applyStandingApprovalMigration();
+  }
+
+  /** Stage 4A: additive tables only (IF NOT EXISTS); the previous build never reads them and keeps asking (spec §5 rollback). */
+  private applyStandingApprovalMigration(): void {
+    const version = "2026-10-28-standing-approval";
+    this.inTransaction(() => {
+      const applied = this.db.prepare(`SELECT version FROM schema_migrations WHERE version = ?`).get<{ version: string }>(version);
+      this.db.exec(STANDING_APPROVAL_DDL);
+      if (!applied) this.db.prepare(`INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)`).run(version, new Date().toISOString());
+    });
   }
 
   /** Jev version check: additive tables, guarded by IF NOT EXISTS like the 2b-ii migration. */
