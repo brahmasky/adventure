@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { validateLedgerEvent } from "../../src/run/run-ledger.js";
 import { buildTypedTaskEvent, type Identity } from "../../src/domain/types.js";
 import { Gateway } from "../../src/gateway/gateway.js";
-import { RunStore, STANDING_STALE_MS, STANDING_STREAK } from "../../src/run/run-store.js";
+import { RunStore, STANDING_STALE_MS, STANDING_STREAK, type StandingApprovalRow } from "../../src/run/run-store.js";
 import { drainOutbox } from "../helpers/omp-worker.js";
 
 // Stage 4A spec §5: one live row per (schedule, chat, fingerprint) — the partial unique index is what makes two concurrent
@@ -307,5 +307,58 @@ describe("tap chat binding (§7): a scheduled run's approval answers only from i
     dropStanding(s);
     expect(s.resolveApproval({ approval_id: id, decision: "denied", requester: PACO, resolved_at: NOW })).toMatchObject({ ok: false, error: { code: "STANDING_HOOK_FAILED" } });
     expect(s.getRunState(r)).toBe("waiting_for_approval");
+  });
+});
+
+describe("standingUse CAS (§7): every eligibility fact re-read under one transaction, one use per run", () => {
+  function standing(s: RunStore, o: Partial<StandingApprovalRow> = {}) {
+    // the returned row, not listScheduledTasks()[0]: two schedules made at the same instant sort by random id
+    const schedule_id = s.addScheduledTask({ chat_id: "555", goal: "post it", spec_json: '{"kind":"daily","at":"11:00"}', tz: "Australia/Sydney", next_run_at: FUTURE, now: NOW }).schedule_id;
+    const move_id = s.insertLadderMove({ entry_id: "tool.policy", scope: "x", from_rung: "paco", to_rung: "rule", evidence: [], granted_by: "auto", granted_via: "approval.standing", paco_callback_id: null, revocable: true });
+    const row = s.insertStandingApprovalForTest({ ...KEY, state: "standing", move_id, expires_at: FUTURE, ...o, schedule_id });
+    return { row, schedule_id, move_id };
+  }
+  const use = (s: RunStore, standing_id: string, run_id: string, fp = FP, now = NOW) => s.standingUse({ standing_id, action_fingerprint: fp, run_id, tool_call_id: `tc_${++n}`, now });
+  it("a use wins once per run: the second call in the same run is already_used; two runs of one schedule each get exactly one; the ledger names the move", () => {
+    const s = RunStore.openInMemory(); const { row, schedule_id, move_id } = standing(s);
+    const r1 = scheduledRun(s, schedule_id); const r2 = scheduledRun(s, schedule_id);
+    expect(use(s, row.standing_id, r1)).toEqual({ ok: true, move_id });
+    expect(use(s, row.standing_id, r1)).toEqual({ ok: false, code: "already_used" });
+    expect(use(s, row.standing_id, r2)).toEqual({ ok: true, move_id });
+    expect(s.getStandingApproval(row.standing_id)?.last_used_run_id).toBe(r2);
+    expect(s.getLedgerEvents(r1).filter((e) => e.event_type === "standing_used").map((e) => e.payload)).toEqual([{ standing_id: row.standing_id, move_id, run_id: r1, tool_call_id: expect.any(String), action_fingerprint: FP }]);
+  });
+  it("refusal matrix: revoked row, expired, ended move, disabled schedule, wrong schedule, wrong chat, a user turn", () => {
+    const s = RunStore.openInMemory(); const { row, schedule_id, move_id } = standing(s);
+    const r = scheduledRun(s, schedule_id);
+    expect(use(s, row.standing_id, r, FP, new Date(Date.now() + 400 * 86_400_000).toISOString())).toEqual({ ok: false, code: "expired" });
+    expect(use(s, row.standing_id, scheduledRun(s, "sch_other"))).toEqual({ ok: false, code: "schedule_mismatch" });
+    expect(use(s, row.standing_id, scheduledRun(s, schedule_id, "556"))).toEqual({ ok: false, code: "chat_mismatch" });
+    expect(use(s, row.standing_id, userRun(s))).toEqual({ ok: false, code: "schedule_mismatch" });
+    s.endLadderMove(move_id, NOW);
+    expect(use(s, row.standing_id, r)).toEqual({ ok: false, code: "move_inactive" });
+    const two = standing(s); // a second standing on a second schedule
+    const r3 = scheduledRun(s, two.schedule_id);
+    // raw SQL, not cancelScheduledTask (Task 8 makes cancel end the row too): the row stays standing, so only the schedule check refuses
+    (s as unknown as { db: { prepare(sql: string): { run(...a: unknown[]): unknown } } }).db.prepare(`UPDATE scheduled_tasks SET state = 'disabled' WHERE schedule_id = ?`).run(two.schedule_id);
+    expect(use(s, two.row.standing_id, r3)).toEqual({ ok: false, code: "schedule_not_enabled" });
+    expect(s.getStandingApproval(two.row.standing_id)?.state).toBe("standing");
+    s.endStandingApproval({ standing_id: row.standing_id, reason: "revoked", now: NOW });
+    expect(use(s, row.standing_id, r)).toEqual({ ok: false, code: "not_standing" });
+    expect(use(s, "sa_missing", r)).toEqual({ ok: false, code: "not_standing" });
+  });
+  it("a fingerprint mismatch ends the row and its move (the bytes changed under a standing id — never silently allowed)", () => {
+    const s = RunStore.openInMemory(); const { row, schedule_id, move_id } = standing(s);
+    expect(use(s, row.standing_id, scheduledRun(s, schedule_id), "fp_changed")).toEqual({ ok: false, code: "fingerprint_mismatch" });
+    expect(s.getStandingApproval(row.standing_id)).toMatchObject({ state: "ended", ended_reason: "mismatch" });
+    expect(s.getLadderMove(move_id)?.state).toBe("ended");
+  });
+  it("a foreign caller with changed bytes is refused on its binding and cannot end this key's grant", () => {
+    // the caller's schedule and chat are checked before a mismatch may end the row: another schedule's run must not revoke it
+    const s = RunStore.openInMemory(); const { row, schedule_id, move_id } = standing(s);
+    expect(use(s, row.standing_id, scheduledRun(s, "sch_other"), "fp_changed")).toEqual({ ok: false, code: "schedule_mismatch" });
+    expect(use(s, row.standing_id, scheduledRun(s, schedule_id, "556"), "fp_changed")).toEqual({ ok: false, code: "chat_mismatch" });
+    expect(s.getStandingApproval(row.standing_id)?.state).toBe("standing");
+    expect(s.getLadderMove(move_id)?.state).toBe("active");
   });
 });

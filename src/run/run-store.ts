@@ -1039,6 +1039,8 @@ export interface LadderMoveRow { move_id: string; entry_id: string; scope: strin
 /** Stage 4A (ADR 0030 §8.3): one row per (schedule, chat, fingerprint) streak. `ended` rows stay: audit, and the 30-day deny block is read over them. */
 export type StandingState = "streak" | "candidate" | "sealing" | "sealed" | "standing" | "ended";
 export type StandingEndReason = "sealed_trial_failed" | "denied" | "revoked" | "expired" | "schedule_ended" | "stale" | "mismatch" | "tampered_use";
+/** Why a standing use was refused; the runner then asks Paco instead (fails closed). */
+export type StandingUseRefusal = "not_standing" | "fingerprint_mismatch" | "expired" | "move_inactive" | "schedule_not_enabled" | "schedule_mismatch" | "chat_mismatch" | "already_used" | "lost";
 export interface StandingKey { schedule_id: string; chat_id: string; action_fingerprint: string }
 export interface StandingApprovalRow extends StandingKey {
   standing_id: string; capability: string; label: string; state: StandingState; credited_runs_json: string; approval_ids_json: string;
@@ -7002,6 +7004,37 @@ export class RunStore {
     if (r.changes !== 1) return false;
     this.appendStandingLedgerEvent("standing_sealing", { standing_id: live.standing_id, run_id: a.run_id, tool_call_id: a.tool_call_id, approval_id: a.approval_id }, a.run_id);
     return true;
+  }
+  /** §7: the atomic authorisation of one standing use. Every fact is re-read under one IMMEDIATE transaction; standing_uses' primary key is the per-run cap, so two concurrent runs of one schedule each get one. */
+  standingUse(i: { standing_id: string; action_fingerprint: string; run_id: string; tool_call_id: string; now: string }): { ok: true; move_id: string } | { ok: false; code: StandingUseRefusal } {
+    return this.inTransaction(() => {
+      const row = this.getStandingApproval(i.standing_id);
+      if (!row || row.state !== "standing" || !row.move_id) return { ok: false, code: "not_standing" };
+      const foreign = this.standingCallerRefusal(row, i.run_id); // the caller's binding first, so a foreign run cannot end this row
+      if (foreign) return { ok: false, code: foreign };
+      if (row.action_fingerprint !== i.action_fingerprint) { this.endStandingTx({ standing_id: row.standing_id, reason: "mismatch", now: i.now }); return { ok: false, code: "fingerprint_mismatch" }; }
+      const refused = this.standingRowRefusal(row, i.now);
+      if (refused) return { ok: false, code: refused };
+      try { this.db.prepare(`INSERT INTO standing_uses (standing_id, run_id, tool_call_id, used_at) VALUES (?, ?, ?, ?)`).run(row.standing_id, i.run_id, i.tool_call_id, i.now); }
+      catch (e) { if (e instanceof Error && /UNIQUE constraint failed/.test(e.message)) return { ok: false, code: "already_used" }; throw e; }
+      const r = this.db.prepare(`UPDATE standing_approvals SET last_used_run_id = ?, updated_at = ? WHERE standing_id = ? AND state = 'standing'`).run(i.run_id, i.now, row.standing_id);
+      if (r.changes !== 1) return { ok: false, code: "lost" };
+      this.appendStandingLedgerEvent("standing_used", { standing_id: row.standing_id, move_id: row.move_id, run_id: i.run_id, tool_call_id: i.tool_call_id, action_fingerprint: i.action_fingerprint }, i.run_id);
+      return { ok: true, move_id: row.move_id };
+    });
+  }
+  /** The run asking must be a run of the key's schedule, notifying the key's chat (the same columns the consume hook keyed on). */
+  private standingCallerRefusal(row: StandingApprovalRow, run_id: string): StandingUseRefusal | null {
+    const run = this.getRunForWorker(run_id);
+    if (!run || run.requested_by.kind !== "schedule" || run.requested_by.id !== row.schedule_id) return "schedule_mismatch";
+    if (run.notify.kind !== "telegram" || run.notify.chat_id !== row.chat_id) return "chat_mismatch";
+    return null;
+  }
+  private standingRowRefusal(row: StandingApprovalRow, now: string): StandingUseRefusal | null {
+    if (row.expires_at === null || row.expires_at <= now) return "expired";
+    if (this.getLadderMove(row.move_id ?? "")?.state !== "active") return "move_inactive";
+    if (this.getScheduledTask(row.schedule_id)?.state !== "enabled") return "schedule_not_enabled";
+    return null;
   }
   /** §7 deny hook, plain statements in the caller's transaction: every live row of (chat, fingerprint) ends with the 30-day block; a scheduled run with no row gets an ended row carrying it. */
   private standingDeny(a: Pick<ToolApprovalRow, "run_id" | "capability" | "action_fingerprint" | "summary">, now: string): void {
