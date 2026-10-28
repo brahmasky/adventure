@@ -556,3 +556,17 @@ Rules Claude writes for itself after corrections. Review at session start.
   pre-ruling says so; the orchestrator verified HTTPS + cookie jars still work before adopting it.
 - **Author ≠ reviewer held throughout** (Fable orchestrated; Sonnet/Opus implemented; Opus/Sonnet/codex reviewed, never the author's
   model). Paco's taps this slice: zero.
+
+## 2026-10-28 — Clean-room runtime Slice 1
+- **Probe before you spec, not after.** Four of the design's load-bearing facts (IPv4-mapped loopback, broadcast UDP, the
+  bare-`ip` filter hazard, `(deny mach-lookup)` costing nothing) came from a 20-minute live probe run before the first
+  spec line. The Slice 0 text had "provisional" rules for the same surface that were wrong in two places.
+- **A second reviewer seat on the riskiest module pays.** Sonnet approved the lifecycle module; codex, on the same diff,
+  found a post-spawn exception misreported as "never ran" and an orphan scan that could kill the daemon. Keep codex as the
+  second seat on anything that owns a boundary, even when the first review is clean.
+- **"Pinned by a test" needs the test to fail when the thing moves.** The first P8 grammar test checked each network line
+  with `toContain`; a reordering that breaks DNS would have passed. Slice equality against the exported constant fixed it.
+- **State what the probe proved, not what the design wanted.** "All local services blocked" became "every service but
+  the resolver's socket; TCP egress only; other LAN hosts reachable" after codex asked what each rule actually covered.
+- **A reviewer's "ran the plan's code" catches what reading cannot.** The in-process listener deadlock (spawnSync blocks
+  the loop the listener needs) would have cost an implementer round; the senior hit it in minutes on a scratch copy.
