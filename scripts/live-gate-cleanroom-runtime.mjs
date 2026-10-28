@@ -213,12 +213,14 @@ function recreateProbe() {
 async function teardownProbe() {
   const abortAfter = (ms) => { const ac = new AbortController(); setTimeout(() => ac.abort(), ms); return ac.signal; };
   const cases = [
-    ["exit 0", await sealed("exit 0"), (r) => r.exitCode === 0 && r.status === "succeeded"],
-    ["exit 3", await sealed("exit 3"), (r) => r.exitCode === 3],
-    ["timeout (300 ms)", await sealed("/bin/sleep 5", { shellTimeoutMs: 300 }), (r) => r.reason === "timeout"],
-    ["abort", await sealed("/bin/sleep 5", {}, abortAfter(300)), (r) => r.reason === "aborted"]
+    ["exit 0", () => sealed("exit 0"), (r) => r.exitCode === 0 && r.status === "succeeded"],
+    ["exit 3", () => sealed("exit 3"), (r) => r.exitCode === 3],
+    ["timeout (300 ms)", () => sealed("/bin/sleep 5", { shellTimeoutMs: 300 }), (r) => r.reason === "timeout"],
+    ["abort", () => sealed("/bin/sleep 5", {}, abortAfter(300)), (r) => r.reason === "aborted"]
   ];
-  for (const [name, r, shape] of cases) {
+  // scanned right after each case, so a leftover room-*/home-* is attributed to the case that leaked it
+  for (const [name, run, shape] of cases) {
+    const r = await run();
     const left = crEntries();
     check(`15 teardown after ${name}`, shape(r) && r.torn_down === true && left.length === 0, `exit ${r.exitCode} reason ${r.reason ?? "-"} torn_down ${r.torn_down} left [${left.join(",")}]${r.teardown_error ? " " + r.teardown_error : ""}`);
   }
@@ -234,11 +236,18 @@ async function sandboxOffProbe() {
 const mode = (p) => (statSync(p).mode & 0o777).toString(8);
 function childTmpInvariant() {
   process.env.HOUGE_DAEMON_TMP_DIR = realRoot;
+  // a fresh machine has no cleanroom/ until the first sealed run: make it the way the runtime does, and remove it after
+  const createdCr = !existsSync(realCr);
+  if (createdCr) mkdirSync(realCr, { mode: 0o700 });
   try {
     const root = daemonTmpRoot(); const child = childTmpRoot(); const cr = cleanroomRoot();
     const nested = child === cr || child.startsWith(cr + "/") || cr.startsWith(child + "/");
-    check("17 child TMPDIR invariant on the REAL cache root", root === realRoot && !nested && existsSync(cr) && mode(child) === "700" && mode(cr) === "700", `children ${child} (${mode(child)}) cleanroom ${cr} (${existsSync(cr) ? mode(cr) : "absent"})`);
-  } finally { process.env.HOUGE_DAEMON_TMP_DIR = gateRoot; }
+    const crMode = existsSync(cr) ? mode(cr) : "absent";
+    check("17 child TMPDIR invariant on the REAL cache root", root === realRoot && !nested && mode(child) === "700" && crMode === "700", `children ${child} (${mode(child)}) cleanroom ${cr} (${crMode}${createdCr ? ", created by the gate" : ""})`);
+  } finally {
+    process.env.HOUGE_DAEMON_TMP_DIR = gateRoot;
+    if (createdCr) try { rmdirSync(realCr); } catch { /* not empty: left for 19 to report */ }
+  }
 }
 
 function effectivePolicyProbe() {
