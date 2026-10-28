@@ -50,6 +50,11 @@ export const HANDLED_INTAKE_DENIAL_CODES: ReadonlySet<string> = new Set([
   "APPROVAL_NOT_PENDING",
   "APPROVAL_REQUESTER_MISMATCH",
   "APPROVAL_EXPIRED",
+  // A tap or /approve from a chat other than the scheduled run's own. No reply on purpose: an answer would tell a foreign
+  // chat the approval id is live (the idempotency-conflict precedent). Handled all the same, or the replayed update wedges intake.
+  "APPROVAL_CHAT_MISMATCH",
+  // A deny whose standing hook failed rolled back whole; the gateway tells Paco to tap again or Revoke from /schedule.
+  "STANDING_HOOK_FAILED",
   // A stale or foreign memory Undo tap (2026-10-02): replied to, never a poll failure.
   "MEMORY_CHANGE_NOT_FOUND",
   "MEMORY_NOT_FOUND",
