@@ -238,8 +238,10 @@ trivial/routine → Kimi → Gemini, hard → Opus; Paco's quota ruling) → **J
 tick, `wrong urgency` label — the gate SP2 plugs into) → **SP2** (Paco's own Gmail with `account: paco` and sends
 gated, Calendar, reminders, files) → **Jev lane 3** (injection flag on wall output, plain-command risk; shadow
 first, egress needs Paco's approval) → **SP3** (`omp auth-broker` under launchd so no tokens sit on disk, a
-dedicated macOS user for the planner — closes D11 and the dotfile denylist gap — a flat-rate quota invariant that
-lane 2 v2 reads, optional egress allowlist) → **SP4 self-evolution v2, scope widened 2026-10-04** (see below) →
+dedicated macOS user for the planner — closes D11 and the dotfile denylist gap — **and for the self-write test gate**
+(Paco 2026-10-28, option B: `npm run typecheck/test/build` on codex-written code runs as Paco today; a Seatbelt profile
+cannot hold it because `/bin/ps` and nested `sandbox-exec` are refused inside any sandbox and the suite's own wrapper and
+sealed-room tests need both — measured 2026-10-28), a flat-rate quota invariant that lane 2 v2 reads, optional egress allowlist) → **SP4 self-evolution v2, scope widened 2026-10-04** (see below) →
 Jev lane 5 (context relevance → credit, shadow) rides with memory stage C.
 
 **Decision ladder (spec approved 2026-10-12, before SP2).** Every Houge decision moves onto one registry with a ladder
