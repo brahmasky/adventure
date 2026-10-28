@@ -66,23 +66,6 @@
 | `scripts/live-gate-ladder-stage4b.mjs` | live gate | 11 |
 | `scripts/check-ladder-stage4b-rollback.mjs` | rollback check | 12 |
 
----|---|---|
-| `tests/capabilities/approval-bind-matrix.test.ts` | new: binding characterisation matrix | 1, 3 |
-| `tests/run/report-redaction-corpus.test.ts` | new: redaction characterisation classes | 1, 4 |
-| `src/decisions/entries/approval-bind.ts`, `src/decisions/entries/secret-redact.ts` | new entries | 2 |
-| `src/decisions/entry-ids.ts`, `src/decisions/registry.ts` | 18 → 20 | 2 |
-| `tests/decisions/approval-bind.test.ts`, `tests/decisions/secret-redact.test.ts`, `tests/decisions/registry.test.ts` | entry + registry tests | 2 |
-| `scripts/live-gate-ladder-stage3-wired.mjs` | id list now includes the two new ids | 2 |
-| `src/capabilities/capability-runner.ts` | `bindApproval` helper | 3 |
-| `src/run/store-options.ts` | new `storeOptionsFor` | 4 |
-| `src/run/run-store.ts` | options type, injected recorder, `redactReport` | 4 |
-| `src/cli.ts` | uses `storeOptionsFor` | 4 |
-| `src/decisions/digest.ts` | scope note on the `secret.redact` line | 4 |
-| `src/capabilities/self-write-guard.ts` | `PROTECTED_FILES` += `src/run/store-options.ts` | 4 |
-| the 7 TS test files passing `{ redact }` | add `decisionRecorder` or use `storeOptionsFor` | 4 |
-| `scripts/check-ladder-stage4-differential.mjs` (+ `scripts/stage4-corpora.mjs`) | new differential | 5, 6 |
-| `scripts/live-gate-ladder-stage4b.mjs` | new live gate | 7 |
-| `scripts/check-ladder-stage4b-rollback.mjs` | new rollback check | 8 |
 
 ---
 
@@ -621,8 +604,10 @@ export function mkTemp(name)         // → a dir under the run's temp root (del
 export function mkStore(d, kind, path) // kind: "bare" | "firewall"(fake broker) — new dist: storeOptionsFor(...); old dist: { redact } / {}
 export function fakeBroker(d)        // the nine fake values of spec §6.5 via d.createSecretBroker; never real env
 export function redactForPrint(s)    // fake-broker redaction + 200-char cap; transcript items print as `transcript#<n>` only
-export function strip(projection)    // removes ids, timestamps, latency_ms, decisions rows of approval.bind / secret.redact; maps tool_/op_ ids pairwise to tool#1, op#1 …
-export function compare(corpus, item, a, b) // → null | { key, diff } on JSON.stringify(strip(a)) !== JSON.stringify(strip(b))
+export function strip(projection, pair) // pair = ["s3"|"s4a","new"]: removes ids, timestamps, latency_ms, decisions rows of approval.bind / secret.redact;
+                                     // maps tool_/op_ ids pairwise to tool#1, op#1 …; when pair[0] === "s3", also deletes every key listed in projection.__s3Omit
+                                     // (from BOTH sides — the caller strips each side with the same pair)
+export function compare(corpus, item, a, b, pair) // → null | { key, pair, diff } on JSON.stringify(strip(a, pair)) !== JSON.stringify(strip(b, pair))
 export function requireNew(corpus, item, name, ok, detail) // a required new-side fact (spec "required, not excluded"); false → FAIL line
 // A corpus module default-exports:
 // { name, pairs: Array<["s3"|"s4a","new"]> | ((item) => pairs), min: { items: number, branches: string[] },
@@ -698,9 +683,9 @@ git commit -m "test(stage4): differential harness — shared API, comparator sel
   - `[["s3","new"],["s4a","new"]]` for the pure part and for `asked`/label;
   - the row part on `["s4a","new"]` only, since `548cb87` has no `tool.shell_class`.
 
-  Implement this as two projection keys, with `pairs` returning both and `strip` dropping the `row` key when the left side is `s3`. Add that rule to `strip` in the lib, keyed by a `projection.__s3Omit` list.
+  Implement this as one projection with a `row` key and `__s3Omit: ["row"]`. `compare(…, pair)` strips both sides with the same pair, so on `["s3","new"]` the `row` key is removed from both sides, and on `["s4a","new"]` it is compared.
 
-  Time budget: if the bridge drive takes more than 5 minutes for the full corpus, drive it for transcripts + residuals only and keep the pure part for the table literals. Record that in the report.
+  **Every item gets the bridge-seam projection.** There is no subset fallback: the spec requires card, asked and row for the whole corpus. `required` asserts that each item's projection carries `asked`, `label` and `row`, so a missing bridge projection is a FAIL. If the full run is slow, reuse one store per dist and one run per item, or a pool of runs. Report the wall time.
 
 - [ ] **Step 2: Path corpus.**
 
