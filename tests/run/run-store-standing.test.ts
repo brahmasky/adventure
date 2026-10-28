@@ -361,4 +361,24 @@ describe("standingUse CAS (§7): every eligibility fact re-read under one transa
     expect(s.getStandingApproval(row.standing_id)?.state).toBe("standing");
     expect(s.getLadderMove(move_id)?.state).toBe("active");
   });
+  it("a run whose source is not the scheduler is refused even when requested_by names the schedule, and leaves the grant untouched", () => {
+    // the consume hook credits only source = 'schedule'; the use must not accept a run the credit path would not have counted
+    const s = RunStore.openInMemory(); const { row, schedule_id, move_id } = standing(s);
+    const r = scheduledRun(s, schedule_id);
+    (s as unknown as { db: { prepare(sql: string): { run(...a: unknown[]): unknown } } }).db.prepare(`UPDATE runs SET source = 'telegram' WHERE run_id = ?`).run(r);
+    expect(use(s, row.standing_id, r, "fp_changed")).toEqual({ ok: false, code: "schedule_mismatch" });
+    expect(use(s, row.standing_id, r)).toEqual({ ok: false, code: "schedule_mismatch" });
+    expect(s.getStandingApproval(row.standing_id)).toMatchObject({ state: "standing", last_used_run_id: null });
+    expect(s.getLadderMove(move_id)?.state).toBe("active");
+  });
+  it("the per-run cap is per key: revoking and regranting the same key under a new id does not give a still-running run a second use", () => {
+    const s = RunStore.openInMemory(); const first = standing(s);
+    const r1 = scheduledRun(s, first.schedule_id);
+    expect(use(s, first.row.standing_id, r1)).toEqual({ ok: true, move_id: first.move_id });
+    s.endStandingApproval({ standing_id: first.row.standing_id, reason: "revoked", now: NOW });
+    const move_id = s.insertLadderMove({ entry_id: "tool.policy", scope: "y", from_rung: "paco", to_rung: "rule", evidence: [], granted_by: "auto", granted_via: "approval.standing", paco_callback_id: null, revocable: true });
+    const regrant = s.insertStandingApprovalForTest({ ...KEY, schedule_id: first.schedule_id, state: "standing", move_id, expires_at: FUTURE });
+    expect(use(s, regrant.standing_id, r1)).toEqual({ ok: false, code: "already_used" });
+    expect(use(s, regrant.standing_id, scheduledRun(s, first.schedule_id))).toEqual({ ok: true, move_id });
+  });
 });

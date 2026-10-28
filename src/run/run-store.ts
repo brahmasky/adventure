@@ -7015,6 +7015,7 @@ export class RunStore {
       if (row.action_fingerprint !== i.action_fingerprint) { this.endStandingTx({ standing_id: row.standing_id, reason: "mismatch", now: i.now }); return { ok: false, code: "fingerprint_mismatch" }; }
       const refused = this.standingRowRefusal(row, i.now);
       if (refused) return { ok: false, code: refused };
+      if (this.standingKeyUsedInRun(row, i.run_id)) return { ok: false, code: "already_used" };
       try { this.db.prepare(`INSERT INTO standing_uses (standing_id, run_id, tool_call_id, used_at) VALUES (?, ?, ?, ?)`).run(row.standing_id, i.run_id, i.tool_call_id, i.now); }
       catch (e) { if (e instanceof Error && /UNIQUE constraint failed/.test(e.message)) return { ok: false, code: "already_used" }; throw e; }
       const r = this.db.prepare(`UPDATE standing_approvals SET last_used_run_id = ?, updated_at = ? WHERE standing_id = ? AND state = 'standing'`).run(i.run_id, i.now, row.standing_id);
@@ -7026,9 +7027,15 @@ export class RunStore {
   /** The run asking must be a run of the key's schedule, notifying the key's chat (the same columns the consume hook keyed on). */
   private standingCallerRefusal(row: StandingApprovalRow, run_id: string): StandingUseRefusal | null {
     const run = this.getRunForWorker(run_id);
-    if (!run || run.requested_by.kind !== "schedule" || run.requested_by.id !== row.schedule_id) return "schedule_mismatch";
+    // source too, as the consume hook's key does: requested_by alone is not proof the scheduler started the run
+    if (!run || run.source !== "schedule" || run.requested_by.kind !== "schedule" || run.requested_by.id !== row.schedule_id) return "schedule_mismatch";
     if (run.notify.kind !== "telegram" || run.notify.chat_id !== row.chat_id) return "chat_mismatch";
     return null;
+  }
+  /** The cap is per key per run, not per row: an end and a regrant under a new standing_id must not hand a still-running run a second use. Ended rows count. */
+  private standingKeyUsedInRun(key: StandingKey, run_id: string): boolean {
+    return this.db.prepare(`SELECT 1 AS hit FROM standing_uses u JOIN standing_approvals a ON a.standing_id = u.standing_id
+      WHERE u.run_id = ? AND a.schedule_id = ? AND a.chat_id = ? AND a.action_fingerprint = ? LIMIT 1`).get<{ hit: number }>(run_id, key.schedule_id, key.chat_id, key.action_fingerprint) !== undefined;
   }
   private standingRowRefusal(row: StandingApprovalRow, now: string): StandingUseRefusal | null {
     if (row.expires_at === null || row.expires_at <= now) return "expired";

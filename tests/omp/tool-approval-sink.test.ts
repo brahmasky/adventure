@@ -58,8 +58,10 @@ describe("tool-approval sink — standingUse authorises through the store CAS, n
   }
   it("maps the store's ok to the runner's ok with the move id, and records the use", () => {
     const { store, sink, run_id, standing_id, move_id } = setup();
-    expect(sink.standingUse?.({ standing_id, action_fingerprint: "fp", run_id, tool_call_id: "tc1" })).toEqual({ ok: true, move_id });
+    // the runner's id differs from the sink's construction id ("tc1"): the ledger must name the call the runner authorised
+    expect(sink.standingUse?.({ standing_id, action_fingerprint: "fp", run_id, tool_call_id: "tc_runner" })).toEqual({ ok: true, move_id });
     expect(store.getStandingApproval(standing_id)?.last_used_run_id).toBe(run_id);
+    expect(store.getLedgerEvents(run_id).filter((e) => e.event_type === "standing_used").map((e) => e.payload.tool_call_id)).toEqual(["tc_runner"]);
   });
   it("passes the store's refusal code through unchanged (a second use in one run is already_used)", () => {
     const { sink, run_id, standing_id } = setup();
