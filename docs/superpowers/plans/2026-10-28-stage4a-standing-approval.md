@@ -31,11 +31,11 @@ Rulings 1–5 are the orchestrator's; 6–10 encode plan-review findings (codex)
 
 
 - **Ruling 1 — the deny hook never throws out of intake.** A `StandingHookError` rolls the resolution back whole, opens `standing_hook_failed`, and `processApprovalTrigger` / `resolveToolApprovalForTest` **return** the refusal `STANDING_HOOK_FAILED`; `gateway.ts`'s `APPROVAL_REFUSAL_TEXT` gives Paco a rich-renderer line that the standing approval may still be live and to use `/schedule` → Revoke (or tap again). Nothing is recorded in `processed_triggers` on that path, so a retap re-runs the hook — intended. — Why: a throw out of `gateway.intake` leaves the Telegram offset unadvanced, so the same update is redelivered forever and every later update, the kill switch included, is blocked (a hard line). — Cost if wrong: a deny that could not end standing authority is refused rather than half-applied; Paco reads one extra line and taps again.
-- **Ruling 2 — a standing-credit fault never blocks the approved command.** The `approved → consumed` CAS commits on its own (one guarded UPDATE, as today); the credit / `candidate → sealing` transition runs in its **own** `inTransaction` immediately after; a fault there opens `standing_credit_failed`, returns `sealing: false`, credits nothing, and the command runs (sealed when the bridge selected the room, uncredited). `startSealing` re-reads the approval as `consumed`, so "a `sealing` row exists ⇒ ran sealed" stays true. There is no SAVEPOINT precedent in `run-store.ts`, hence two transactions. — Why: Paco approved the command; a bookkeeping table must not take that away. — Cost if wrong (residual, stated): a crash between the two transactions loses one credit; harmless, the next scheduled run credits.
+- **Ruling 2 — a standing-credit fault never blocks the approved command.** The `approved → consumed` CAS commits on its own (one guarded UPDATE, as today); the credit / `candidate → sealing` transition runs in its **own** `inTransaction` immediately after; a fault there opens `standing_credit_failed`, returns `sealing: false`, credits nothing, and the command runs (sealed when the bridge selected the room, uncredited). `startSealing` re-reads the approval as `consumed`, so sealing records intent for sealed execution after a committed consume; a sealing row with no call facts (a crash after the credit, before the adapter ran) ends at its TTL. There is no SAVEPOINT precedent in `run-store.ts`, hence two transactions. — Why: Paco approved the command; a bookkeeping table must not take that away. — Cost if wrong (residual, stated): a crash between the two transactions loses one credit; harmless, the next scheduled run credits.
 - **Ruling 3 — a post-grant tamper ends the grant.** A standing use whose `tool_finished.cleanroom` facts show `tampered`, `escaped`, `check_failed`, or `ran` with `torn_down: false` ends the row `tampered_use` (its move ends with it) and sends Paco an urgent card. It lives in the settle path, `settleStandingUses(store, run_id)` in `standing-approval.ts`, called from `settleDeliveredReport` and from `runStandingSweep` over every `standing_uses` run of each `standing` row. — Why the settle path and not the bridge's `finish()`: the bridge is a selector only (§7) and `finish()` is skipped when a run dies between the adapter and the ledger write; the settle path reads the same code-owned facts once they are durable, runs every cycle whatever the run's fate (total), and is a store-only function testable by seeding events. — Cost if wrong: the end lands at delivery or the next cycle, not at the call; harmless, because the per-run cap already refuses a second use in that run and the sweep runs before the next fire.
 - **Ruling 4 — the runner requires the clean room before a standing use.** `authoriseStanding` calls `standingUse` only when the execution context carries `executor: "cleanroom"`; otherwise `requires_approval` / `standing_mismatch` and the CAS is never consulted. — Why: the shell adapter selects the room from `ctx.executor` alone, so a direct runner caller with a valid sink could otherwise spend a grant on an ordinary shell. — Cost if wrong: a caller that forgets the ctx asks Paco instead of running; fail closed.
 - **Ruling 5 — `{ ok, sealing }` from the consume is audit/test-only.** No production code reads `sealing` (the core-worker sink wraps the run-level approvals table and never calls `consumeToolApproval`); it exists so tests and the live gate can see the transition. — Why: the store owns the transition; a caller branching on `sealing` would make the runner a second owner. — Cost if wrong: none at runtime; a future reader must add its own test.
-- **Ruling 6 (review-derived: codex B1) — the grant re-verifies its whole evidence inside its own transaction.** `grantStanding` re-reads, before `markStandingGranted` and in the same `inTransaction`: three distinct consumed approvals on three distinct scheduled runs of this key (in `credited_runs_json` order), the consumed fourth approval on `sealed_run_id` with `tool_call_id = sealed_tool_call_id`, the sealed call's facts, the completed run and the delivered final report (`sealVerdict` again `seal`). A gap ends the row `sealed_trial_failed` and opens `standing_evidence_failed`. It runs **only on a `seal` verdict**, so a trial that fails its facts ends for that reason, never for missing evidence. — Why: a row that merely says `sealing` must never stand up a command. — Cost if wrong: a trial with corrupted bookkeeping ends instead of granting; the next three runs earn it again.
+- **Ruling 6 (review-derived: codex B1, round 2) — the grant re-verifies its whole evidence inside its own transaction.** `grantStanding` re-reads the standing row itself inside its `inTransaction` and takes every evidence, card and transition field from that read; if the trial ids (`sealing_approval_id`, `sealed_run_id`, `sealed_tool_call_id`) differ from the row `settleSealing` observed, the outcome is `lost` (reported as `wait`) and the newer trial is neither granted nor ended on the older one's evidence. It then re-reads, before `markStandingGranted` and in the same transaction: three distinct consumed approvals on three distinct scheduled runs of this key (in `credited_runs_json` order), the consumed fourth approval on `sealed_run_id` with `tool_call_id = sealed_tool_call_id`, the sealed call's facts, the completed run and the delivered final report (`sealVerdict` again `seal`). A gap ends the row `sealed_trial_failed` inside that transaction and opens `standing_evidence_failed` naming the gap. It runs **only on a `seal` verdict**, so a trial that fails its facts ends for that reason, never for missing evidence. — Why: a row that merely says `sealing` must never stand up a command. — Cost if wrong: a trial with corrupted bookkeeping ends instead of granting; the next three runs earn it again.
 - **Ruling 7 (review-derived: codex B2) — the 24 h TTL is checked before delivery**, right after the pre-spawn reset check: a trial whose report is delivered at or after `sealing_started_at + 24 h` ends. — Why: spec §6 bounds a sealing trial at 24 h; a late delivery must not stand a command up. — Cost if wrong: a slow delivery ends one trial; the next run asks again.
 - **Ruling 8 (review-derived: codex B3) — a stale streak ends inside the consume, before it is credited**, and the approval starts a fresh streak. — Why: after downtime no sweep has run, and a consume must not refresh a 30-day-dead streak. — Cost if wrong: none; the sweep would end the same row later.
 - **Ruling 9 (review-derived: codex B4) — a grant whose Revoke card cannot be queued does not commit.** `enqueueUrgentCard` returning `null` (an outbox conflict on `urgent:standing_grant:<id>`) throws inside the grant transaction, rolling back the row, the move and the events; the dispatcher hook / sweep turn it into an incident and the sweep retries until the TTL ends the trial. — Why: a grant Paco cannot see or revoke from its card breaks §7's "the card carries Revoke". — Cost if wrong: a trial whose card key is poisoned never grants; the incident names it.
@@ -331,8 +331,8 @@ export type StandingUseResult = { ok: true; move_id: string } | { ok: false; cod
 export interface ApprovalRequestSink {
   requestApproval(input: ApprovalRequestInput): { approval_id: string };
   consumeApprovedApproval(input: { run_id; approval_id; requester; capability; adapter_input_hash; action_fingerprint; tool_call_id; operation_id; consumed_at; standing_trial?: { standing_id: string } }):
-    { ok: true; approval_id: string; state: "consumed"; sealing?: boolean } | { ok: false; error: { code: string; message: string } };   // `sealing`: audit/test-only (Ruling 5), no production reader
-  standingUse?(input: StandingUseInput): StandingUseResult;      // absent → the runner asks (fail closed); called only with a clean-room ctx (Ruling 4)
+    { ok: true; approval_id: string; state: "consumed"; sealing?: boolean } | { ok: false; error: { code: string; message: string } };   // `sealing`: audit/test-only — the store owns the transition, no production reader
+  standingUse?(input: StandingUseInput): StandingUseResult;      // absent → the runner asks (fail closed); called only with a clean-room ctx (the adapter selects the room from ctx.executor alone)
 }
 export interface CapabilityExecutionInput { /* existing */ standing?: { standing_id: string }; standing_trial?: { standing_id: string } }
 ```
@@ -522,7 +522,7 @@ The consume call gains `...(input.standing_trial ? { standing_trial: input.stand
 ```ts
   /**
    * The atomic authorisation at the execution boundary (§7): only a won store CAS turns the gate into an allow; a missing sink, a
-   * missing CAS or a lost one asks. Ruling 4: the CAS is consulted only when this call will run in the clean room — the adapter
+   * missing CAS or a lost one asks. The CAS is consulted only when this call will run in the clean room — the adapter
    * selects the room from ctx.executor alone, so a grant is never spent on an ordinary shell.
    */
   private authoriseStanding(standing_id: string, input: CapabilityExecutionInput, action_fingerprint: string, ctx: SsrfContext | undefined): CapabilityDecision {
@@ -561,13 +561,13 @@ git commit -m "feat(runner): actionFingerprint before policy; standing selector 
 ```ts
 export const STANDING_STREAK = 3;
 export const STANDING_DENY_BLOCK_MS = 30 * 24 * 60 * 60 * 1000;
-export const STANDING_STALE_MS = 30 * 24 * 60 * 60 * 1000;   // here, not in decisions/: the consume hook needs it (Ruling 8) and run-store never imports decisions/
-/** A standing hook's SQL error inside an approval resolution: the resolution rolls back whole, an incident opens after the rollback, a refusal is returned (Ruling 1). */
+export const STANDING_STALE_MS = 30 * 24 * 60 * 60 * 1000;   // here, not in decisions/: the consume hook's stale check needs it and run-store never imports decisions/
+/** A standing hook's SQL error inside an approval resolution: the resolution rolls back whole, an incident opens after the rollback, a refusal is returned (never a throw out of intake). */
 export class StandingHookError extends Error { constructor(readonly detail: string) { super(`standing hook failed: ${detail}`); } }
-consumeToolApproval(input: { approval_id; run_id; worker_id; capability; action_fingerprint; requester; now; standing_trial?: { standing_id: string } }): { ok: true; sealing: boolean } | { ok: false; code: string }   // `sealing`: audit/test-only (Ruling 5)
+consumeToolApproval(input: { approval_id; run_id; worker_id; capability; action_fingerprint; requester; now; standing_trial?: { standing_id: string } }): { ok: true; sealing: boolean } | { ok: false; code: string }   // `sealing`: audit/test-only, no production reader
 type ApprovalErrorCode gains "APPROVAL_CHAT_MISMATCH"   // message "Approval must be answered from the run's own chat"
                       and "STANDING_HOOK_FAILED"     // message "A standing-approval check failed; the approval is still pending"
-private creditAfterConsume(a: ToolApprovalRow, now: string, trial?: { standing_id: string }): boolean   // own transaction after the CAS (Ruling 2)
+private creditAfterConsume(a: ToolApprovalRow, now: string, trial?: { standing_id: string }): boolean   // own transaction after the CAS: a credit fault never blocks the approved command
 private openStandingIncident(kind: string, subject: string, detail: Record<string, unknown>): void     // one open incident per subject; never throws
 private standingHookRefusal(approval_id: string, error: StandingHookError): ApprovalFailure
 // gateway.ts APPROVAL_REFUSAL_TEXT gains STANDING_HOOK_FAILED
@@ -783,13 +783,13 @@ In `tests/run/omp-store.test.ts` line 85 becomes `expect(consume()).toEqual({ ok
 /** Spec §6: distinct consumed scheduled runs that make a key a candidate; and the block a denial anywhere on the bytes sets. */
 export const STANDING_STREAK = 3;
 export const STANDING_DENY_BLOCK_MS = 30 * 24 * 60 * 60 * 1000;
-/** A streak or candidate with no new credit this long is stale (spec §Decision 4): the consume hook (Ruling 8) and the sweep read it. */
+/** A streak or candidate with no new credit this long is stale (spec §Decision 4): the consume hook (before it credits, since after downtime no sweep has run) and the sweep read it. */
 export const STANDING_STALE_MS = 30 * 24 * 60 * 60 * 1000;
 export class StandingHookError extends Error { constructor(readonly detail: string) { super(`standing hook failed: ${detail}`); } }
 ```
 `ApprovalErrorCode` gains `| "APPROVAL_CHAT_MISMATCH" | "STANDING_HOOK_FAILED"`; `approvalFailure`'s `messages` gains `APPROVAL_CHAT_MISMATCH: "Approval must be answered from the run's own chat"` and `STANDING_HOOK_FAILED: "A standing-approval check failed; the approval is still pending"`. `gateway.ts`'s `APPROVAL_REFUSAL_TEXT` gets **no** `APPROVAL_CHAT_MISMATCH` entry (a cross-chat tap stays silent like an idempotency conflict — no probe signal) and gains, per Ruling 1:
 ```ts
-  // Stage 4A Ruling 1: the deny rolled back whole, so the command's standing approval (if any) was not ended — say so and point at Revoke
+  // Stage 4A: a deny whose standing hook failed rolled back whole, so the command's standing approval (if any) was not ended — say so and point at Revoke
   STANDING_HOOK_FAILED: "not recorded — a standing-approval check failed, so it is still pending and a standing approval on this command may still be live. Tap again, or open /schedule and tap Revoke."
 ```
 (`replyToApprovalRefusal` appends "Use /approvals to list live ones." and enqueues through the outbox — the rich renderer, keyed on the update so a redelivery replies once.)
@@ -798,7 +798,7 @@ export class StandingHookError extends Error { constructor(readonly detail: stri
 ```ts
   /**
    * The approved → consumed CAS (one guarded UPDATE, valid only while the same owner holds the lease) commits on its own; the
-   * standing credit it earns runs after it in its own transaction (§7, Ruling 2). `sealing` is audit/test-only (Ruling 5).
+   * standing credit it earns runs after it in its own transaction (§7), so a credit fault never blocks the approved command. `sealing` is audit/test-only: no production reader.
    */
   consumeToolApproval(input: { approval_id: string; run_id: string; worker_id: string; capability: string; action_fingerprint: string; requester: Identity; now: string;
     standing_trial?: { standing_id: string } }): { ok: true; sealing: boolean } | { ok: false; code: string } {
@@ -821,7 +821,7 @@ export class StandingHookError extends Error { constructor(readonly detail: stri
 Private helpers (after it):
 ```ts
   /**
-   * Ruling 2: the credit's own transaction, after the consume committed — so a sealing row only ever follows a consumed fourth
+   * The credit's own transaction, after the consume committed — so a sealing row only ever follows a consumed fourth
    * approval. A fault rolls back the credit alone, opens standing_credit_failed and never blocks the approved command. A crash
    * between the two loses one credit (the next scheduled run credits). Callers (the two sinks) never hold a transaction here.
    */
@@ -829,7 +829,7 @@ Private helpers (after it):
     try { return this.inTransaction(() => this.standingCredit(a, now, trial)); }
     catch (e) { this.openStandingIncident("standing_credit_failed", `approval:${a.approval_id}`, { error: e instanceof Error ? e.message : String(e) }); return false; }
   }
-  /** One open incident per subject (a repeat touches it); never throws — it runs on paths that must not fail (Rulings 1, 2). */
+  /** One open incident per subject (a repeat touches it); never throws — it runs on paths that must not fail (the deny refusal, the credit fault). */
   private openStandingIncident(kind: string, subject: string, detail: Record<string, unknown>): void {
     try {
       const open = this.findOpenIncident(this.incidentFingerprint(kind, subject));
@@ -841,7 +841,7 @@ Private helpers (after it):
     const key = this.standingKeyOf(a.run_id, a);
     if (!key || this.standingDenied(key.chat_id, key.action_fingerprint, now)) return false;
     let live = this.standingFor(key);
-    // Ruling 8: a streak dead for 30 days is ended here, before it is credited (after downtime no sweep has run); this approval starts afresh
+    // a streak dead for 30 days is ended here, before it is credited (after downtime no sweep has run); this approval starts afresh
     if (live && (live.state === "streak" || live.state === "candidate") && live.updated_at <= new Date(Date.parse(now) - STANDING_STALE_MS).toISOString()) {
       this.endStandingTx({ standing_id: live.standing_id, reason: "stale", now }); live = undefined;
     }
@@ -871,7 +871,7 @@ Private helpers (after it):
   }
   /** candidate → sealing behind the fourth consume's CAS; the sealed call is the approval row's tool_call_id (unique per run, set by the omp sink). */
   private startSealing(live: StandingApprovalRow, a: ToolApprovalRow, now: string): boolean {
-    if (this.getToolApproval(a.approval_id)?.state !== "consumed") return false; // Ruling 2: only behind a committed consume
+    if (this.getToolApproval(a.approval_id)?.state !== "consumed") return false; // only behind a committed consume: sealing never precedes the fourth approval's CAS
     const ids = [...(JSON.parse(live.approval_ids_json) as string[]), a.approval_id];
     const r = this.db.prepare(`UPDATE standing_approvals SET state = 'sealing', sealing_approval_id = ?, sealed_run_id = ?, sealed_tool_call_id = ?, sealing_started_at = ?, approval_ids_json = ?, updated_at = ?
       WHERE standing_id = ? AND state = 'candidate'`).run(a.approval_id, a.run_id, a.tool_call_id, now, JSON.stringify(ids), now, live.standing_id);
@@ -923,7 +923,7 @@ and its `catch` becomes (Ruling 1 — never rethrow a hook failure out of intake
 `resolveToolApprovalForTest`'s catch gets the same shape (`this.db.exec("ROLLBACK"); if (error instanceof StandingHookError) return this.standingHookRefusal(approval_id, error); throw error;`). The helper:
 ```ts
   /**
-   * Ruling 1: the deny hook never throws out of intake — a throw would leave the Telegram offset unadvanced and block every later
+   * The deny hook never throws out of intake — a throw would leave the Telegram offset unadvanced and block every later
    * update, the kill switch included. The resolution already rolled back whole (the approval is still pending, any standing row
    * still live); the incident opens after the rollback, outside any transaction, and the refusal tells Paco through the gateway.
    */
@@ -963,7 +963,7 @@ git commit -m "feat(store): consume hook credits distinct scheduled runs and sea
 ```ts
 export type StandingUseRefusal = "not_standing" | "fingerprint_mismatch" | "expired" | "move_inactive" | "schedule_not_enabled" | "schedule_mismatch" | "chat_mismatch" | "already_used" | "lost";
 standingUse(i: { standing_id: string; action_fingerprint: string; run_id: string; tool_call_id: string; now: string }): { ok: true; move_id: string } | { ok: false; code: StandingUseRefusal }
-private standingCallerRefusal(row: StandingApprovalRow, run_id: string): StandingUseRefusal | null   // Ruling 10: decided before a fingerprint mismatch may end the row
+private standingCallerRefusal(row: StandingApprovalRow, run_id: string): StandingUseRefusal | null   // decided before a fingerprint mismatch may end the row: a foreign run cannot revoke this key
 private standingRowRefusal(row: StandingApprovalRow, now: string): StandingUseRefusal | null
 // tool-approval-sink.ts: standingUse: (input) => store.standingUse({ ...input, now }) mapped to StandingUseResult
 ```
@@ -1040,7 +1040,7 @@ export type StandingUseRefusal = "not_standing" | "fingerprint_mismatch" | "expi
     return this.inTransaction(() => {
       const row = this.getStandingApproval(i.standing_id);
       if (!row || row.state !== "standing" || !row.move_id) return { ok: false, code: "not_standing" };
-      const foreign = this.standingCallerRefusal(row, i.run_id); // Ruling 10: the caller's binding first, so a foreign run cannot end this row
+      const foreign = this.standingCallerRefusal(row, i.run_id); // the caller's binding first, so a foreign run cannot end this row
       if (foreign) return { ok: false, code: foreign };
       if (row.action_fingerprint !== i.action_fingerprint) { this.endStandingTx({ standing_id: row.standing_id, reason: "mismatch", now: i.now }); return { ok: false, code: "fingerprint_mismatch" }; }
       const refused = this.standingRowRefusal(row, i.now);
@@ -1103,8 +1103,9 @@ Consumes: Slice 1's adapter output (`shell-adapter.ts:114–117`: `cleanroom.{ro
 
 **`truncated` is three-valued:** the success arm always supplies a boolean today; an absent or non-boolean value (the failure arm, a malformed output, a regression) is `null` = unknown, and settlement refuses to seal on it (only `truncated === false` proves the output was whole).
 
-- [ ] **Step 1: Failing tests** — in `tests/omp/bridge-handler.test.ts` replace lines 235–236 with:
+- [ ] **Step 1: Failing tests** — in `tests/omp/bridge-handler.test.ts` replace lines 235–236 with (the top-level `executor` assertion stays: settlement keys on it):
 ```ts
+    expect(fin).toMatchObject({ executor: "cleanroom", cleanroom: { ran: true, torn_down: true, tampered: false, escaped: false } });
     expect(fin?.cleanroom).toEqual({ ran: true, torn_down: true, tampered: false, escaped: false, exit_code: 0, truncated: false, check_failed: false, room: "room-x" }); // code-owned facts; no body
 ```
 After the failed-arm test (ends line ~268) add:
@@ -1433,8 +1434,8 @@ git commit -m "feat(omp): bridge selects standing / standing_trial for a schedul
 - Spec §7 says the dispatcher "invokes settleSealing after markDelivered returns". `NotificationDispatcher` holds only a `NotificationOutbox` (`notification-dispatcher.ts:31`), no store and no incident sink. The plan adds an `onDelivered` option the dispatcher calls **after** `markDelivered` committed (inside its own try/catch, so a throw never reaches the `markFailed` arm at `:50–58` and never reclassifies the delivered row); the daemon builds its one sender through the new export `createOutboxDispatcher(store, adapters)`, whose hook is `settleDeliveredReport` (it settles the run's sealed trial and its standing uses in their own transactions and opens `standing_settle_failed` on a throw). The daemon must build its sender **only** through it: a structural test pins that `telegram-daemon.ts` holds no other `new NotificationDispatcher(` (a bare dispatcher would deliver without settling, and every other test would stay green). `src/cli.ts:135` and `src/telegram/telegram-poll-runner.ts:232` construct dispatchers without the hook: a report they deliver is settled by the sweep on the next daemon cycle (well inside the 24 h TTL).
 - Spec §7 asks for a "per-minute sweep … before the scheduler-flag early return in `schedule-tick.ts`, or its own hook". The daemon has no per-minute timer: `runSignalPathTick` runs once per poll cycle (`telegram-daemon.ts:339`, ~30 s long-poll plus the cycle's ticks), and `maybeFireScheduledTasks` is its last model tick (`:673`). **Chosen: `schedule-tick.ts`, as the first statement of `maybeFireScheduledTasks`, before `resolveSchedulerEnabled` (`:69`).** Why: (1) the rows are keyed on schedules and this is the schedules' tick; (2) before the flag, so a scheduler switched off (the live case: the Alishan schedule is disabled and the flag is off) still settles, expires and ends rows; (3) before this cycle's fires, so a fire in the same cycle already sees a sealing row settled or a dead row ended; (4) its own try/catch, so a sweep error never blocks a fire. Cost, stated: a cycle with slow model ticks delays the sweep by those minutes; every bound it enforces is ≥ 24 h, and the prompt path is the dispatcher hook.
 - Spec §6 has a `sealed` state between `sealing` and `standing`. Under Decision 1-A nothing waits in it: `markStandingGranted` moves `sealing → standing` in one CAS and the `standing_sealed` ledger event marks the sealed point (the DDL keeps `'sealed'` in the CHECK for audit compatibility; no code writes it).
-- Ruling 6 (the grant re-reads its evidence) runs **only on a `seal` verdict**: a trial that failed its facts ends `sealed_trial_failed` from `sealVerdict` and never reaches the evidence read, so the live gate's `noSeal` cases (seeded candidates with fabricated credited ids) end for the reason they test, not for missing evidence. The re-read lives in `standing-approval.ts` (`grantEvidence`), inside `grantStanding`'s `inTransaction` and before `markStandingGranted`, using plain store getters — the seal conjunction stays in one module.
-- Ruling 3 (post-grant tamper) is `settleStandingUses` here, beside `settleSealing`: `settleDeliveredReport` calls it for the delivered run, and `runStandingSweep` calls it for every `standing_uses` run of each `standing` row. Ending wins over notifying: the row ends in its own transaction, then the urgent card is queued; a card conflict opens `standing_card_failed` and never revives the grant.
+- Ruling 6 (the grant re-reads its evidence) runs **only on a `seal` verdict**: a trial that failed its facts ends `sealed_trial_failed` from `sealVerdict` and never reaches the evidence read, so the live gate's `noSeal` cases (seeded candidates with fabricated credited ids) end for the reason they test, not for missing evidence. The re-read lives in `standing-approval.ts` (`grantEvidence`), inside `grantStanding`'s `inTransaction` and before `markStandingGranted`, using plain store getters — the seal conjunction stays in one module. The row is re-read inside that transaction (not the row `settleSealing` listed): a reset and a newer fourth approval in between make it another trial, which is `lost` — never granted or ended on the older trial's evidence (an interleaved test pins it).
+- Ruling 3 (post-grant tamper) is `settleStandingUses` here, beside `settleSealing`: `settleDeliveredReport` calls it for the delivered run, and `runStandingSweep` calls it for every `standing_uses` run of each `standing` row. Ending wins over notifying: the row ends in its own transaction, then the urgent card is queued; a card conflict opens `standing_card_failed` and never revives the grant. `settleDeliveredReport` runs the two settlements under separate catches (`standing_settle_failed` on `run:<id>` and `uses:<id>`), so a failed trial settle never skips the standing-use check.
 - The ladder move needs "the sealed call's decision id" (§7 Grant). The recorder dedups one `tool.policy` row per `(run, tool_call_id, verdict)` (`run-store.ts:4938`); the sealed call has its `requires_approval` row from the first execute. The plan takes the **latest** `tool.policy` row for `(sealed_run_id, sealed_tool_call_id)`; none recorded (recorder failure) = facts missing = `ended(sealed_trial_failed)`, never a grant with a hole in its evidence.
 
 **Interfaces (Produces):**
@@ -1455,9 +1456,9 @@ export const PRE_SPAWN_REASONS: ReadonlySet<string>;   // cleanroom_unavailable,
 export type SealVerdict = "seal" | "reset" | "end" | "wait";
 export interface SealInput { fin: Record<string, unknown> | undefined; run_state: string | undefined; outbox: string | undefined; decision_id: string | undefined; started_at: string; now: string }
 export function sealVerdict(i: SealInput): SealVerdict
-export interface SettleOutcome { standing_id: string; verdict: SealVerdict }                 // a seal whose evidence re-read fails reports "end"
-export function settleSealing(store: RunStore, run_id: string, now?: string): SettleOutcome[]   // throws when a grant card conflicts (Ruling 9); callers catch
-export function settleStandingUses(store: RunStore, run_id: string, now?: string): number      // Ruling 3: grants ended tampered_use
+export interface SettleOutcome { standing_id: string; verdict: SealVerdict }                 // a seal whose evidence re-read fails reports "end"; a trial that changed before the grant's transaction reports "wait"
+export function settleSealing(store: RunStore, run_id: string, now?: string): SettleOutcome[]   // throws when a grant card conflicts (no grant without its Revoke card); callers catch
+export function settleStandingUses(store: RunStore, run_id: string, now?: string): number      // grants ended tampered_use (a broken seal on a standing use)
 export function tamperedUseText(label: string): string
 export function settleDeliveredReport(store: RunStore, record: Pick<NotificationRecord, "intent_type" | "idempotency_key" | "run_id">, env?: NodeJS.ProcessEnv, now?: string): void   // settles the trial and the run's standing uses
 export interface StandingSweepResult { settled: number; ended: number }
@@ -1580,12 +1581,14 @@ function sealed(s: RunStore, o: { facts?: Record<string, unknown> | null; run?: 
   if (o.run === "failed") s.finishRun({ run_id, expected_worker_id: WORKER, next: "failed", error_type: "planner_exit", error_ref: "x" });
   if (o.outbox !== null) {
     if (o.run === "failed") s.enqueueFailureNotification(run_id, "I hit an error on that one: x"); else s.enqueueFinalReportNotification(run_id, { text: "200", report_path: "r.md" });
-    const n = s.claimNextNotification("t", 30)!;
+    // the oldest queued row is an approval card, not this run's notice: claim until the run's own final_report comes up
+    let n = s.claimNextNotification("t", 30)!;
+    while (n.idempotency_key !== `${run_id}:final_report`) n = s.claimNextNotification("t", 30)!;
     if ((o.outbox ?? "delivered") === "delivered") s.markNotificationDelivered(n.notification_id, "tg:1");
     if (o.outbox === "failed_terminal") s.markNotificationFailed(n.notification_id, "boom", false, NOW, 1);
     if (o.outbox === "queued") s.markNotificationFailed(n.notification_id, "boom", true, NOW, 5); // retry_wait: not delivered yet
   }
-  return { row, run_id, schedule_id, decision_id, credited, a4 };
+  return { row, run_id, schedule_id, decision_id, credited, a4, runs: JSON.parse(row.credited_runs_json) as string[] };
 }
 const events = (s: RunStore, type: string) => s.getLedgerEvents().filter((e) => e.event_type === type).map((e) => e.payload);
 const raw = (s: RunStore) => (s as unknown as { db: { prepare(sql: string): { run(...a: unknown[]): unknown } } }).db;
@@ -1614,19 +1617,47 @@ describe("settleSealing (Decision 1-A: the grant is immediate)", () => {
     expect(moves(s)).toHaveLength(1);
     expect(events(s, "standing_granted")).toHaveLength(1);
   });
-  it("the grant re-reads its evidence: a credited approval no longer consumed, two credits naming one run, or fabricated ids never grant — the row ends and standing_evidence_failed opens", () => {
-    const s1 = RunStore.openInMemory(); const f1 = sealed(s1);
-    raw(s1).prepare(`UPDATE tool_approvals SET state = 'expired' WHERE approval_id = ?`).run(f1.credited[0]);
-    expect(settleSealing(s1, f1.run_id, NOW)).toEqual([{ standing_id: f1.row.standing_id, verdict: "end" }]);
-    expect(s1.getStandingApproval(f1.row.standing_id)).toMatchObject({ state: "ended", ended_reason: "sealed_trial_failed", move_id: null });
-    expect(s1.findOpenIncident(s1.incidentFingerprint("standing_evidence_failed", `standing:${f1.row.standing_id}`))).toBeDefined();
-    const s2 = RunStore.openInMemory(); const f2 = sealed(s2);
-    raw(s2).prepare(`UPDATE tool_approvals SET run_id = (SELECT run_id FROM tool_approvals WHERE approval_id = ?) WHERE approval_id = ?`).run(f2.credited[0], f2.credited[1]);
-    expect(settleSealing(s2, f2.run_id, NOW)).toEqual([{ standing_id: f2.row.standing_id, verdict: "end" }]);
-    const s3 = RunStore.openInMemory(); const f3 = sealed(s3);
-    raw(s3).prepare(`UPDATE standing_approvals SET approval_ids_json = '["a1","a2","a3","a4"]', sealing_approval_id = 'a4' WHERE standing_id = ?`).run(f3.row.standing_id);
-    expect(settleSealing(s3, f3.run_id, NOW)).toEqual([{ standing_id: f3.row.standing_id, verdict: "end" }]);
-    for (const s of [s1, s2, s3]) { expect(moves(s)).toEqual([]); expect(events(s, "standing_granted")).toEqual([]); }
+  it("the grant re-reads its evidence: each gap ends the row sealed_trial_failed, names itself in standing_evidence_failed, and never grants", () => {
+    // one case per guard, each asserting the gap it names: a case that still ends with that guard removed would name another gap
+    type F = ReturnType<typeof sealed>;
+    const sql = (s: RunStore, q: string, ...a: unknown[]) => { raw(s).prepare(q).run(...a); };
+    const cases: Array<[string, (s: RunStore, f: F) => void, (f: F) => string]> = [
+      ["a credited approval no longer consumed", (s, f) => sql(s, `UPDATE tool_approvals SET state = 'expired' WHERE approval_id = ?`, f.credited[0]), (f) => `approval:${f.credited[0]}`],
+      ["two credits naming one run", (s, f) => sql(s, `UPDATE tool_approvals SET run_id = ? WHERE approval_id = ?`, f.runs[0], f.credited[1]), (f) => `approval:${f.credited[1]}`],
+      ["fabricated credited ids", (s, f) => sql(s, `UPDATE standing_approvals SET approval_ids_json = ? WHERE standing_id = ?`, JSON.stringify(["a1", "a2", "a3", f.a4]), f.row.standing_id), () => "approval:a1"],
+      ["a credited approval keyed to a foreign schedule", (s, f) => sql(s, `UPDATE runs SET requested_by_json = '{"kind":"schedule","id":"sch_foreign"}' WHERE run_id = ?`, f.runs[0]), (f) => `approval:${f.credited[0]}`],
+      ["duplicate credited runs", (s, f) => sql(s, `UPDATE standing_approvals SET credited_runs_json = ? WHERE standing_id = ?`, JSON.stringify([f.runs[0], f.runs[0], f.runs[2]]), f.row.standing_id), () => "credited_runs"],
+      ["the sealed run inside the credited list", (s, f) => sql(s, `UPDATE standing_approvals SET credited_runs_json = ? WHERE standing_id = ?`, JSON.stringify([f.runs[0], f.runs[1], f.run_id]), f.row.standing_id), () => "credited_runs"],
+      ["the fourth approval on another run", (s, f) => sql(s, `UPDATE tool_approvals SET run_id = ? WHERE approval_id = ?`, f.runs[0], f.a4), () => "sealing_approval"],
+      ["the fourth approval on another tool call", (s, f) => sql(s, `UPDATE tool_approvals SET tool_call_id = 'tc_other' WHERE approval_id = ?`, f.a4), () => "sealing_approval"],
+      ["the fourth approval not consumed", (s, f) => sql(s, `UPDATE tool_approvals SET state = 'approved' WHERE approval_id = ?`, f.a4), () => "sealing_approval"],
+      ["the row lost its sealing approval id", (s, f) => sql(s, `UPDATE standing_approvals SET sealing_approval_id = NULL WHERE standing_id = ?`, f.row.standing_id), () => "sealing_fields"]
+    ];
+    for (const [name, mutate, missing] of cases) {
+      const s = RunStore.openInMemory(); const f = sealed(s); mutate(s, f);
+      expect([name, settleSealing(s, f.run_id, NOW)]).toEqual([name, [{ standing_id: f.row.standing_id, verdict: "end" }]]);
+      expect([name, s.getStandingApproval(f.row.standing_id)?.ended_reason, s.getStandingApproval(f.row.standing_id)?.move_id]).toEqual([name, "sealed_trial_failed", null]);
+      const inc = s.findOpenIncident(s.incidentFingerprint("standing_evidence_failed", `standing:${f.row.standing_id}`));
+      expect([name, inc ? (JSON.parse(inc.detail_json) as { missing?: string }).missing : "no incident"]).toEqual([name, missing(f)]);
+      expect([name, moves(s).length, events(s, "standing_granted").length]).toEqual([name, 0, 0]);
+    }
+  });
+  it("a trial that changed between the settle's read and the grant is lost: the older trial's evidence neither grants nor ends the newer one", () => {
+    // interleaved: between settleSealing's read and grantStanding's transaction the trial is reset and a newer fourth approval seals it again
+    const s = RunStore.openInMemory(); const f = sealed(s);
+    const racy = Object.create(s) as RunStore; let newer = "";
+    racy.inTransaction = <T,>(fn: () => T): T => {
+      if (newer === "") {
+        s.resetStandingToCandidate({ standing_id: f.row.standing_id, now: NOW, reason: "race" });
+        newer = scheduledRun(s, f.schedule_id); consumed(s, newer, "tc4b", { standing_id: f.row.standing_id });
+      }
+      return RunStore.prototype.inTransaction.call(racy, fn) as T;
+    };
+    expect(settleSealing(racy, f.run_id, NOW)).toEqual([{ standing_id: f.row.standing_id, verdict: "wait" }]);
+    expect(s.getStandingApproval(f.row.standing_id)).toMatchObject({ state: "sealing", sealed_run_id: newer, sealed_tool_call_id: "tc4b", move_id: null });
+    expect(moves(s)).toEqual([]);
+    expect(s.findOpenIncident(s.incidentFingerprint("standing_evidence_failed", `standing:${f.row.standing_id}`))).toBeUndefined();
+    expect(settleSealing(s, newer, NOW)).toEqual([{ standing_id: f.row.standing_id, verdict: "wait" }]); // the newer trial has no facts of its own yet
   });
   it("a grant whose Revoke card cannot be queued does not commit: the row stays sealing with no move, no event, no card id", () => {
     const s = RunStore.openInMemory(); const { row, run_id } = sealed(s);
@@ -1668,19 +1699,20 @@ describe("settleSealing (Decision 1-A: the grant is immediate)", () => {
   });
 });
 
+/** A granted row on an enabled schedule, one real use through the store CAS, then that call's facts (null: still in flight). */
+function used(s: RunStore, facts: Record<string, unknown> | null) {
+  const schedule_id = s.addScheduledTask({ chat_id: "555", goal: "post", spec_json: '{"kind":"daily","at":"11:00"}', tz: "Australia/Sydney", next_run_at: "2027-01-01T00:00:00.000Z", now: NOW }).schedule_id;
+  const move_id = s.insertLadderMove({ entry_id: "tool.policy", scope: "x", from_rung: "paco", to_rung: "rule", evidence: [], granted_by: "auto", granted_via: "approval.standing", paco_callback_id: null, revocable: true });
+  const row = s.insertStandingApprovalForTest({ schedule_id, chat_id: "555", action_fingerprint: FP, state: "standing", move_id, expires_at: FUTURE });
+  const run_id = scheduledRun(s, schedule_id);
+  const u = s.standingUse({ standing_id: row.standing_id, action_fingerprint: FP, run_id, tool_call_id: "tc5", now: NOW });
+  if (!u.ok) throw new Error(u.code);
+  if (facts !== null) s.appendRunLedgerEvent(run_id, "tool_finished", "capability_runner", { tool_call_id: "tc5", status: "succeeded", output_hash: "h", duration_ms: 1, bytes_out: 3, tool: "bash",
+    executor: "cleanroom", cleanroom: { ...FACTS, ...facts } });
+  return { row, run_id, move_id };
+}
+
 describe("settleStandingUses (a broken seal on a standing use ends the grant)", () => {
-  /** A granted row on an enabled schedule, one real use through the store CAS, then that call's facts (null: still in flight). */
-  function used(s: RunStore, facts: Record<string, unknown> | null) {
-    const schedule_id = s.addScheduledTask({ chat_id: "555", goal: "post", spec_json: '{"kind":"daily","at":"11:00"}', tz: "Australia/Sydney", next_run_at: "2027-01-01T00:00:00.000Z", now: NOW }).schedule_id;
-    const move_id = s.insertLadderMove({ entry_id: "tool.policy", scope: "x", from_rung: "paco", to_rung: "rule", evidence: [], granted_by: "auto", granted_via: "approval.standing", paco_callback_id: null, revocable: true });
-    const row = s.insertStandingApprovalForTest({ schedule_id, chat_id: "555", action_fingerprint: FP, state: "standing", move_id, expires_at: FUTURE });
-    const run_id = scheduledRun(s, schedule_id);
-    const u = s.standingUse({ standing_id: row.standing_id, action_fingerprint: FP, run_id, tool_call_id: "tc5", now: NOW });
-    if (!u.ok) throw new Error(u.code);
-    if (facts !== null) s.appendRunLedgerEvent(run_id, "tool_finished", "capability_runner", { tool_call_id: "tc5", status: "succeeded", output_hash: "h", duration_ms: 1, bytes_out: 3, tool: "bash",
-      executor: "cleanroom", cleanroom: { ...FACTS, ...facts } });
-    return { row, run_id, move_id };
-  }
   it("tampered, escaped, a failed check, or a room left behind each end the grant tampered_use with its move, and Paco gets an urgent card", () => {
     for (const over of [{ tampered: true }, { escaped: true }, { check_failed: true }, { torn_down: false }]) {
       const s = RunStore.openInMemory(); const { row, run_id, move_id } = used(s, over);
@@ -1728,6 +1760,19 @@ describe("settleDeliveredReport (the dispatcher's hook)", () => {
     expect(() => settleDeliveredReport(c, { intent_type: "final_report", idempotency_key: `${f.run_id}:final_report`, run_id: f.run_id }, {}, NOW)).not.toThrow();
     expect(c.findOpenIncident(c.incidentFingerprint("standing_settle_failed", `run:${f.run_id}`))).toBeDefined();
     expect(c.getStandingApproval(f.row.standing_id)?.state).toBe("sealing");
+  });
+  it("the delivery hook, not only the sweep, ends a tampered standing use when the run's report is delivered", () => {
+    const s = RunStore.openInMemory(); const { row, run_id } = used(s, { tampered: true });
+    settleDeliveredReport(s, { intent_type: "final_report", idempotency_key: `${run_id}:final_report`, run_id }, {}, NOW);
+    expect(s.getStandingApproval(row.standing_id)?.ended_reason).toBe("tampered_use");
+  });
+  it("a failed trial settle never skips the standing-use check: each failure is its own incident", () => {
+    const s = RunStore.openInMemory(); const { row, run_id } = used(s, { escaped: true });
+    const broken = Object.create(s) as RunStore;
+    (broken as { listStandingApprovals: unknown }).listStandingApprovals = () => { throw new Error("disk I/O error"); }; // settleSealing fails; settleStandingUses never lists
+    settleDeliveredReport(broken, { intent_type: "final_report", idempotency_key: `${run_id}:final_report`, run_id }, {}, NOW);
+    expect(s.getStandingApproval(row.standing_id)?.ended_reason).toBe("tampered_use");
+    expect(s.findOpenIncident(s.incidentFingerprint("standing_settle_failed", `run:${run_id}`))).toBeDefined();
   });
 });
 
@@ -1817,7 +1862,7 @@ describe("the standing sweep rides the schedule tick (Stage 4A §7)", () => {
 
 `src/decisions/urgent.ts`:
 ```ts
-/** The outbox row id (a redelivered key returns the first row's): Stage 4A stores the grant card's id on the standing row. Null on a payload conflict — the grant treats that as fatal (Ruling 9). */
+/** The outbox row id (a redelivered key returns the first row's): Stage 4A stores the grant card's id on the standing row. Null on a payload conflict — the grant treats that as fatal: no grant without its Revoke card. */
 export function enqueueUrgentCard(store: RunStore, c: UrgentCard): string | null {
   const r = store.enqueueNotification({
     target: { kind: "telegram", chat_id: c.chat_id }, intent_type: "progress", idempotency_key: `urgent:${c.key}`, correlation_id: c.key,
@@ -1833,7 +1878,7 @@ export function enqueueUrgentCard(store: RunStore, c: UrgentCard): string | null
   /**
    * Decision 1-A: sealing → standing behind one CAS; the auto move (§4.3: approval.standing on tool.policy only), the seal facts and
    * the grant land together. Null when the row is no longer sealing. Called only by `grantStanding`, inside the transaction that
-   * re-read the evidence (Ruling 6): this method checks the row's state, not the evidence.
+   * re-read the evidence: this method checks the row's state, not the evidence.
    */
   markStandingGranted(i: { standing_id: string; evidence: string[]; expires_at: string; now: string; facts: Record<string, unknown> }): string | null {
     return this.joinTransaction(() => {
@@ -1866,7 +1911,7 @@ export function enqueueUrgentCard(store: RunStore, c: UrgentCard): string | null
   setStandingGrantNotification(standing_id: string, notification_id: string, now: string): void {
     this.db.prepare(`UPDATE standing_approvals SET grant_notification_id = ?, updated_at = ? WHERE standing_id = ?`).run(notification_id, now, standing_id);
   }
-  /** The per-run uses of one grant (at most one per fire): the sweep re-reads their facts (Ruling 3). */
+  /** The per-run uses of one grant (at most one per fire): the sweep re-reads their facts so a broken seal ends the grant. */
   listStandingUses(standing_id: string): Array<{ run_id: string; tool_call_id: string; used_at: string }> {
     return this.db.prepare(`SELECT run_id, tool_call_id, used_at FROM standing_uses WHERE standing_id = ? ORDER BY used_at ASC, run_id ASC`).all<{ run_id: string; tool_call_id: string; used_at: string }>(standing_id);
   }
@@ -1915,7 +1960,7 @@ function sealedCall(fin: Record<string, unknown>, f: CleanroomFacts | null): boo
     && f.ran && f.torn_down && !f.tampered && !f.escaped && !f.check_failed;
 }
 
-/** Pre-spawn first (whatever the run's fate), then the 24 h TTL (Ruling 7, before delivery), then the call, the run, the notice. */
+/** Pre-spawn first (whatever the run's fate), then the 24 h TTL (before delivery: a late report never stands a command up), then the call, the run, the notice. */
 export function sealVerdict(i: SealInput): SealVerdict {
   const f = factsOf(i.fin);
   if (f && !f.ran && f.reason !== undefined && PRE_SPAWN_REASONS.has(f.reason)) return "reset";
@@ -1929,7 +1974,7 @@ export function sealVerdict(i: SealInput): SealVerdict {
 
 export interface SettleOutcome { standing_id: string; verdict: SealVerdict }
 
-/** Idempotent and total over the run's sealing rows: each transition is a store CAS on state = 'sealing', so a second call finds none. Throws on a grant card conflict (Ruling 9); both callers catch. */
+/** Idempotent and total over the run's sealing rows: each transition is a store CAS on state = 'sealing', so a second call finds none. Throws on a grant card conflict (no grant without its Revoke card); both callers catch. */
 export function settleSealing(store: RunStore, run_id: string, now: string = new Date().toISOString()): SettleOutcome[] {
   return store.listStandingApprovals({ state: "sealing" }).filter((r) => r.sealed_run_id === run_id).map((row) => ({ standing_id: row.standing_id, verdict: settleRow(store, row, now) }));
 }
@@ -1951,23 +1996,35 @@ function settleRow(store: RunStore, row: StandingApprovalRow, now: string): Seal
   return verdict;
 }
 
-/** Ruling 6 runs only on a seal verdict: a gap in the evidence ends the trial and names the gap; it never grants around it. */
-function grantOrEnd(store: RunStore, row: StandingApprovalRow, now: string): SealVerdict {
-  const g = grantStanding(store, row, now);
-  if (g.status !== "evidence_missing") return "seal";
-  store.endStandingApproval({ standing_id: row.standing_id, reason: "sealed_trial_failed", now });
-  openAlertedIncident(store, { kind: "standing_evidence_failed", subject: `standing:${row.standing_id}`, detail: { missing: g.missing }, now });
+/**
+ * Runs only on a seal verdict, so a trial that failed its facts has already ended for that reason. A gap in the evidence ends the
+ * trial and names the gap; a row that became another trial meanwhile is "lost" — nothing settled here, the newer trial waits.
+ */
+function grantOrEnd(store: RunStore, observed: StandingApprovalRow, now: string): SealVerdict {
+  const g = grantStanding(store, observed, now);
+  if (g.status === "lost") return "wait";
+  if (g.status === "granted") return "seal";
+  openAlertedIncident(store, { kind: "standing_evidence_failed", subject: `standing:${observed.standing_id}`, detail: { missing: g.missing }, now });
   return "end";
 }
 
 type GrantOutcome = { status: "granted" | "lost" } | { status: "evidence_missing"; missing: string };
+/** The same trial: a reset and a newer fourth approval between the settle's read and the grant make the row another trial. */
+const sameTrial = (a: StandingApprovalRow, b: StandingApprovalRow): boolean =>
+  a.sealing_approval_id === b.sealing_approval_id && a.sealed_run_id === b.sealed_run_id && a.sealed_tool_call_id === b.sealed_tool_call_id;
 
-/** The evidence re-read (Ruling 6), the grant and its card in one transaction; a card that cannot be queued rolls the grant back (Ruling 9). */
-function grantStanding(store: RunStore, row: StandingApprovalRow, now: string): GrantOutcome {
+/**
+ * The evidence re-read, the grant and its card in one transaction. The row is re-read HERE and every evidence, card and
+ * transition field comes from that read: an older trial's evidence must neither grant nor end a newer trial. A card that cannot
+ * be queued rolls the grant back (no grant without its Revoke card); a gap ends this trial inside the same transaction.
+ */
+function grantStanding(store: RunStore, observed: StandingApprovalRow, now: string): GrantOutcome {
   const expires_at = new Date(Date.parse(now) + STANDING_EXPIRY_MS).toISOString();
   return store.inTransaction((): GrantOutcome => {
+    const row = store.getStandingApproval(observed.standing_id);
+    if (!row || row.state !== "sealing" || !sameTrial(row, observed)) return { status: "lost" };
     const proof = grantEvidence(store, row, now);
-    if ("missing" in proof) return { status: "evidence_missing", missing: proof.missing };
+    if ("missing" in proof) { store.endStandingApproval({ standing_id: row.standing_id, reason: "sealed_trial_failed", now }); return { status: "evidence_missing", missing: proof.missing }; }
     const move_id = store.markStandingGranted({ standing_id: row.standing_id, evidence: proof.evidence, expires_at, now, facts: { ...proof.facts } });
     if (move_id === null) return { status: "lost" };
     const text = grantCardText({ label: row.label, schedule: scheduleDisplayName(store.getScheduledTask(row.schedule_id)?.goal ?? ""),
@@ -1979,7 +2036,7 @@ function grantStanding(store: RunStore, row: StandingApprovalRow, now: string): 
   });
 }
 
-/** Ruling 6: the whole evidence, re-read inside the grant's transaction, in §4.3 order (approval/decision ids, then execution ids). */
+/** The whole evidence, re-read inside the grant's transaction (a row that merely says "sealing" never grants), in §4.3 order (approval/decision ids, then execution ids). */
 function grantEvidence(store: RunStore, row: StandingApprovalRow, now: string): { evidence: string[]; facts: CleanroomFacts } | { missing: string } {
   const { sealed_run_id: run_id, sealed_tool_call_id: tc, sealing_approval_id: fourth } = row;
   if (!run_id || !tc || !fourth) return { missing: "sealing_fields" };
@@ -2034,7 +2091,7 @@ export function revokeButton(standing_id: string, text = "🛑 Revoke"): Notific
 }
 
 /**
- * Ruling 3: a standing use whose own facts show a broken seal ends its grant (tampered_use; the move ends with it) and tells
+ * A standing use whose own facts show a broken seal ends its grant (tampered_use; the move ends with it) and tells
  * Paco. A use with no tool_finished yet is in flight and waits; one without clean-room facts has nothing to judge. Ending wins
  * over notifying: a card conflict is an incident, never a revived grant. Idempotent: an ended row is skipped.
  */
@@ -2065,11 +2122,15 @@ function brokeSeal(fin: Record<string, unknown>): boolean {
 export function settleDeliveredReport(store: RunStore, record: Pick<NotificationRecord, "intent_type" | "idempotency_key" | "run_id">, env: NodeJS.ProcessEnv = process.env,
   now: string = new Date().toISOString()): void {
   if (record.intent_type !== "final_report" || record.run_id === null || record.idempotency_key !== `${record.run_id}:final_report`) return;
-  try { settleSealing(store, record.run_id, now); settleStandingUses(store, record.run_id, now); }
-  catch (e) {
-    try { openAlertedIncident(store, { kind: "standing_settle_failed", subject: `run:${record.run_id}`, detail: { error: errorCode(e) }, env }); }
-    catch (inner) { console.error(`[standing] settle incident not recorded: ${errorCode(inner)}`); }
-  }
+  // two settlements, two catches: a failed trial settle (a grant card conflict, say) must not skip the standing-use check, nor the reverse
+  const run_id = record.run_id;
+  try { settleSealing(store, run_id, now); } catch (e) { settleFailed(store, `run:${run_id}`, e, env); }
+  try { settleStandingUses(store, run_id, now); } catch (e) { settleFailed(store, `uses:${run_id}`, e, env); }
+}
+
+function settleFailed(store: RunStore, subject: string, e: unknown, env: NodeJS.ProcessEnv): void {
+  try { openAlertedIncident(store, { kind: "standing_settle_failed", subject, detail: { error: errorCode(e) }, env }); }
+  catch (inner) { console.error(`[standing] settle incident not recorded: ${errorCode(inner)}`); }
 }
 
 export interface StandingSweepResult { settled: number; ended: number }
@@ -2087,7 +2148,7 @@ function settleQuietly(store: RunStore, run_id: string, now: string): number {
   catch (e) { openAlertedIncident(store, { kind: "standing_settle_failed", subject: `run:${run_id}`, detail: { error: errorCode(e) }, now }); return 0; }
 }
 
-/** Ruling 3's net: each standing row's uses (at most one per fire over 30 days) are re-read every cycle, so a missed delivery hook still ends a broken grant. */
+/** The net under the delivery hook: each standing row's uses (at most one per fire over 30 days) are re-read every cycle, so a missed delivery hook still ends a broken grant. */
 function endTamperedUses(store: RunStore, now: string): number {
   const runs = new Set(store.listStandingApprovals({ state: "standing" }).flatMap((r) => store.listStandingUses(r.standing_id).map((u) => u.run_id)));
   let n = 0;
@@ -2938,7 +2999,7 @@ git commit -m "test(rollback): the previous build asks again on a DB holding sta
 
 **Shape (why this and not a planner turn):** spec §10 asks for "the real bridge, wrapper and clean room" and the taps through `resolveToolApprovalForTest` + the waiter (`live-gate-ladder-2b-hooks.mjs:207–228`). The gate drives `createBridgeHandler` from `dist/` with an `ActiveTurn` built the way `planner-supervisor.ts:502–513` builds one (scheduled requester, operator approver, a real `TurnTrust`), on a registry whose three shell entries are the real `shellToolExecute` (`shell-adapter.ts:87`) with the real `OMP_SHELL_META` (`omp-turn-wiring.ts:35`) — the same execute the worker registers (`core-worker.ts:2480–2489`), plus the test seams `cleanroomDeps` (`shell-adapter.ts:83`: `rm`, `lsof`, `afterSidecar`, `afterSpawn`) that the worker cannot inject. No planner model is called: the command bytes are the input under test, and a planner that rewrote them would make every line INCONCLUSIVE. Delivery: claim → adapter → `markDelivered` through the daemon's own `createOutboxDispatcher(store, adapters)` (Task 7) with a stub adapter that records and never sends. **Stated residual:** the gate drives each run's terminal path by hand (`finishRun` + `enqueueFinalReportNotification` / `enqueueFailureNotification`, the store methods the planner calls); the planner's own enqueue of `<run_id>:final_report` after `completed` and after a failure is pinned by `tests/core/core-worker-omp-turn.test.ts` (lines 62, 82, 92, 104 read that key), not by this gate. The slice report repeats this sentence. Revoke: a real callback update through `normalizeTelegramUpdate` → `Gateway.intake` (parser, adapter, gateway, handler).
 
-**Isolation:** the base is one VACUUM copy of the live DB; every case gets its own VACUUM copy of the base and its own data dir under `/tmp/hg-4a-*` (outside the daemon temp root, which the shell profile denies). `HOUGE_DAEMON_TMP_DIR` is a gate root `<real cache>/gate-sa-*` set before any runtime import, so every room and home lands there, never under the real `<cache>/cleanroom/`; the last line proves the real `cleanroom/` names are unchanged and both roots are gone. The gate removes **only its own** roots: its gate root carries `owner.json` (`{ pid, keep }`); at start, another `gate-sa-*` root is removed only when its owner file names a dead pid and `keep` is false — a live gate's room and a `--keep` artifact are never touched, a root without an owner file is reported and left. Telegram tokens are deleted from `process.env` and no Telegram client is constructed; the gate chat is `-4300`, a chat id that is not Paco's. A third-party write: the sealed runs POST `a=1` to `https://httpbin.org/post` (Slice 1's gate does the same) — stated so it is not read as Tier B. INCONCLUSIVE when the unsandboxed control POST to httpbin is not `200` (exit 2, `ok:false`; rerun once). An unknown `--only` name is a setup error before anything runs; a run with `--only` that passes is **PARTIAL** (exit 3, `ok:false`) — only a run of every case is a shipping PASS. Exit 0 PASS (every case ran and passed) · 1 FAIL · 2 INCONCLUSIVE · 3 PARTIAL; the last stdout line is the JSON summary, as `live-gate-cleanroom-runtime.mjs:298`.
+**Isolation:** the base is one VACUUM copy of the live DB; every case gets its own VACUUM copy of the base and its own data dir under `/tmp/hg-4a-*` (outside the daemon temp root, which the shell profile denies). `HOUGE_DAEMON_TMP_DIR` is a gate root `<real cache>/gate-sa-*` set before any runtime import, so every room and home lands there, never under the real `<cache>/cleanroom/`; the last line proves the real `cleanroom/` names are unchanged and both roots are gone. The gate removes **only its own** roots: its gate root carries `owner.json` (`{ pid, keep }`); at start, another `gate-sa-*` root is removed only when its owner file names a dead pid and `keep` is false — a live gate's room and a `--keep` artifact are never touched, a root without an owner file is reported and left. Telegram tokens are deleted from `process.env` and no Telegram client is constructed; the gate chat is `-4300`, a chat id that is not Paco's. A third-party write: the sealed runs POST `a=1` to `https://httpbin.org/post` (Slice 1's gate does the same) — stated so it is not read as Tier B. INCONCLUSIVE when the unsandboxed control POST to httpbin is not `200` (exit 2, `ok:false`; rerun once). An unknown `--only` name is a setup error before anything runs (exit 2, `ok:false`); a run with `--only` that passes is **PARTIAL** (exit 3, `ok:false`) — only a run of every case is a shipping PASS. Exit 0 PASS (every case ran and passed) · 1 FAIL · 2 INCONCLUSIVE · 3 PARTIAL; the last stdout line is the JSON summary, as `live-gate-cleanroom-runtime.mjs:298`.
 
 **Lines (spec §10, in order):** 1 three approvals on three runs → candidate · 2 the fourth asks with the trial line and, approved, runs sealed (facts on `tool_finished`, room under `cleanroom/`, nothing left) · 3 completed + delivered → standing, auto move, grant card with Revoke · **4 the fifth run: zero `approval_requested`, reason `standing`, `cleanroom.sb` selected (the PASS line that fails on silent degradation)** · 5 a sixth call in the same run asks · 6 one byte changed asks · 7 Revoke → the next run asks (a foreign-chat tap changes nothing) · 8 deny from a user turn → ended + `denied_until`, no new streak · 9 sandbox off → asks · 10 non-zero exit → no seal · 11 teardown failure (`rm` seam) → no seal · 12 `check_error` (`lsof` seam) → no seal · 13 failed run with a delivered failure notice → no seal (every no-seal line also asserts the run's `final_report` was delivered, so "no seal" is never "no delivery") · 14 planted `.curlrc` mid-run (`afterSpawn`) → tampered → no seal · 15 nothing left.
 
@@ -3101,12 +3162,17 @@ function startRun(e, kind = "schedule") {
   return r.run_id;
 }
 const call = (e, command, tc) => e.handle({ id: `r-${tc}`, kind: "call", tool: "bash", input: { command }, toolCallId: tc });
-async function deliver(e) { for (let i = 0; i < 50; i++) if ((await e.dispatcher.dispatchOnce("gate")).status === "idle") return; }
+const queuedRows = (e) => { const db = new DatabaseSync(e.path, { readOnly: true }); try { return db.prepare(`SELECT COUNT(*) AS n FROM notification_outbox WHERE state = 'queued'`).get().n; } finally { db.close(); } };
+/** Dispatch until this run's own final_report is delivered, at most one pass per queued row (the copy may carry older rows); never a silent miss. */
+async function deliver(e, run) {
+  for (let i = 0, bound = queuedRows(e); i < bound && e.store.finalReportState(run) !== "delivered"; i++) if ((await e.dispatcher.dispatchOnce("gate")).status === "idle") break;
+  if (e.store.finalReportState(run) !== "delivered") throw new Error(`${run}:final_report not delivered (${e.store.finalReportState(run) ?? "none"})`);
+}
 /** Terminal state and its one notice (success and failure share the key, §2), then delivery through the daemon's dispatcher options. */
 async function finish(e, run, ok = true) {
   if (ok) { e.store.finishRun({ run_id: run, expected_worker_id: e.turn.worker_id, next: "completed", report_ref: `runs/gate4a-${run}.md`, duration_ms: 1, tool_calls: 1 }); e.store.enqueueFinalReportNotification(run, { text: "200", report_path: `runs/gate4a-${run}.md` }); }
   else { e.store.finishRun({ run_id: run, expected_worker_id: e.turn.worker_id, next: "failed", error_type: "planner_exit", error_ref: "gate" }); e.store.enqueueFailureNotification(run, "I hit an error on that one: gate"); }
-  await deliver(e);
+  await deliver(e, run);
 }
 const evs = (e, run, type) => e.store.getLedgerEvents(run).filter((x) => x.event_type === type);
 const fin = (e, run, tc) => evs(e, run, "tool_finished").find((x) => x.payload.tool_call_id === tc)?.payload;
@@ -3214,9 +3280,6 @@ const CASES = [
 ];
 
 async function main() {
-  const known = new Set(CASES.map(([id]) => id));
-  const unknown = only ? [...only].filter((id) => !known.has(id)) : [];
-  if (unknown.length > 0 || (only && only.size === 0)) throw new Error(`--only names no known case (${unknown.join(",") || "empty"}); known: ${[...known].join(",")}`);
   const control = spawnSync("/usr/bin/curl", ["-s", "-m", "10", "-o", "/dev/null", "-w", "%{http_code}", "-X", "POST", "-d", "a=1", "https://httpbin.org/post"], { encoding: "utf8" });
   if (control.status === null || control.error) return check("network: unsandboxed control curl runs", false, `curl unavailable: ${control.error?.message ?? control.signal}`);
   if (control.status !== 0 || control.stdout !== "200") {
@@ -3238,6 +3301,13 @@ function nothingLeft() {
   check("15 nothing left", !existsSync(gateRoot) && !existsSync(dataRoot) && after === realCrBefore, `gate root exists ${existsSync(gateRoot)} · data root exists ${existsSync(dataRoot)} · real cleanroom/ before [${realCrBefore}] after [${after}]`);
 }
 
+// a setup error, before anything runs: an unknown --only name would otherwise skip every case
+const known = new Set(CASES.map(([id]) => id));
+const unknownOnly = only ? [...only].filter((id) => !known.has(id)) : [];
+if (unknownOnly.length > 0 || (only && only.size === 0)) {
+  console.log(`setup error: --only names no known case (${unknownOnly.join(",") || "empty"}); known: ${[...known].join(",")}`);
+  cleanup(); console.log(JSON.stringify({ ok: false, setup_error: "unknown --only" })); process.exit(2);
+}
 try { await main(); } catch (e) { check("gate ran to the end", false, String(e?.stack ?? e)); }
 finally { cleanup(); }
 if (!keep) nothingLeft();
@@ -3268,7 +3338,7 @@ Done by the orchestrator after Task 11's gate PASS and the whole-branch reviews;
 - [ ] **1. `docs/decisions/0030-decision-ladder.md`** — append after the last amendment (the 2026-10-28 clean-room one, line 575 today) a section `## Amendment (2026-10-28): Stage 4A, standing approval for a scheduled command (drafted under the approved spec — awaiting Paco's signature)`. Opening line: "This file is protected (ADR 0011); this amendment is drafted for Paco's hand. Spec: `docs/superpowers/specs/2026-10-28-ladder-stage4a-standing-approval-design.md` (Rev 4, approved 2026-10-28, Decision 1-A)." Bullets, each a decision (compromises go to `tasks/todo.md`, not here):
   - **§8.3's grant criterion, restated (Tier C, Paco's Decision 1-A):** "its report reaches Paco" alone never grants — failed runs deliver on the same `final_report` key. A key (schedule, chat, fingerprint) stands up only when the fourth approved call ran sealed and **every** code-owned fact is true: `status succeeded ∧ exit_code 0 ∧ ¬truncated ∧ ran ∧ torn_down ∧ ¬tampered ∧ ¬escaped ∧ ¬check_failed ∧ run completed ∧ final_report delivered`. The grant is then immediate and automatic (`granted_by: auto`, `granted_via: approval.standing`, §4.3 unchanged), with an urgent card and Revoke. Residual, stated: a sealed run with exit 0 and a plausible but wrong report stands until Paco revokes.
   - **Storage moves off `ladder_moves` alone:** `standing_approvals` (one live row per key, ended rows kept for audit and the deny block) and `standing_uses` (the per-run cap), additive migration `2026-10-28-standing-approval`; the ladder move is the grant's record, the row is its state.
-  - **Executor-setting path:** the bridge is a selector only; the runner turns a gated ask into an allow only after the store's `standingUse` CAS wins at the execution boundary; the fourth call's `candidate → sealing` rides the approval's own consume CAS. No model path opens, advances or grants anything.
+  - **Executor-setting path:** the bridge is a selector only; the runner turns a gated ask into an allow only after the store's `standingUse` CAS wins at the execution boundary; the fourth call's `candidate → sealing` runs in its own transaction right after the approval's consume committed: sealing records intent for sealed execution after a committed consume, and a sealing row with no call facts ends at its 24 h TTL. No model path opens, advances or grants anything.
   - **Eligibility:** scheduled `shell_external` with a readable label, the run's notify chat, trust not asking (a trust ask beats standing), posture live, the clean room available, one use per run; byte-identical bytes only (the canonical fingerprint).
   - **Ends:** Revoke (any time in the 30 days, the row's chat only), 30-day expiry, schedule cancelled/disabled, a fingerprint mismatch from the key's own schedule and chat, a denial on (chat, fingerprint) from **any** run (30-day block), a streak idle 30 days (ended even inside the consume, before a credit), a sealed trial that did not seal or whose report arrived after its 24 h, a standing use whose own facts show a broken seal (`tampered_use`); a pre-spawn failure with `ran:false` voids the trial back to candidate.
   - **The grant re-reads its evidence** in its own transaction (three distinct consumed approvals of the key, the consumed fourth on the sealed call, the facts, the completed run, the delivered report) and never commits without its Revoke card.
@@ -3323,8 +3393,8 @@ git commit -m "docs(todo): Stage 4A shipped — state block, session arc, lesson
 | §7 Runner | fingerprint before policy; standing only satisfies a gate; CAS via sink only with a clean-room ctx (Ruling 4); fail closed without `standingUse`; forged selector asks; v3 reasons | 2 |
 | §7 Use CAS | every fact re-read in one transaction; the caller's schedule/chat binding before a fingerprint mismatch may end the row (Ruling 10); `standing_uses` per-run cap | 4 |
 | §7 Seal facts at the source | `exit_code`, `truncated` (null when not a boolean), `check_failed`, `room`, `reason` | 5 |
-| §7 `settleSealing` | idempotent, total, own transaction; dispatcher after `markDelivered` (`createOutboxDispatcher`, structurally pinned as the daemon's only sender); per-cycle sweep, one poisoned trial never stops the rest | 7 |
-| §7 Grant (1-A) | evidence re-read in the grant's transaction, only on a seal verdict (Ruling 6); `insertLadderMove` auto with evidence order; row → standing; `expires_at`; event; card with Revoke, rolled back with the grant when the card cannot be queued (Ruling 9); `grant_notification_id` | 7 |
+| §7 `settleSealing` | idempotent, total, own transaction; dispatcher after `markDelivered` (`createOutboxDispatcher`, structurally pinned as the daemon's only sender); per-cycle sweep, one poisoned trial never stops the rest; the delivery hook catches the trial settle and the standing-use check separately | 7 |
+| §7 Grant (1-A) | the row and its whole evidence re-read in the grant's transaction, only on a seal verdict; a trial changed meanwhile is `lost`, never granted or ended on the older evidence (Ruling 6; one test per evidence guard + an interleaved race test); `insertLadderMove` auto with evidence order; row → standing; `expires_at`; event; card with Revoke, rolled back with the grant when the card cannot be queued (Ruling 9); `grant_notification_id` | 7 |
 | Ruling 3 (post-grant tamper) | a standing use's `tampered` / `escaped` / `check_failed` / `ran ∧ ¬torn_down` → `ended(tampered_use)`, move ended, urgent card | 7 (`settleStandingUses`, `listStandingUses`) |
 | §7 Taps | `dec:sa:<id>:revoke`, no `TAP_STALE_DAYS`, chat check, one-shot, one transaction, rich renderer reply | 8 |
 | §7 `/schedule` | "常驻批准" section with Revoke buttons | 8 |
