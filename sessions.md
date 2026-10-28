@@ -1794,4 +1794,4 @@ refusal codes were not handled intake denials, so one cross-chat `/approve` woul
 kill switch included — fixed with poll-loop tests. Evidence on `6be9529`: 404 files / 5540 tests (two failures in the
 pre-existing Jev-job flake); live gate 15/15 with the silent-degradation line; clean-room gate; rollback PASS against the
 previous build. Fable hit its usage limit mid-plan; Opus finished it and the orchestrator moved to Opus. Open for Paco:
-two ADR signatures and a kickstart. Taps this slice: two ("go ahead" was the spec approval; "A" chose the grant rule).
+two ADR signatures and a kickstart. Taps this slice: one ("A" — approved the spec and chose the grant rule).
