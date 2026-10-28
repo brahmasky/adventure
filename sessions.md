@@ -1779,3 +1779,19 @@ incident emitter and seal facts on every result arm and the `tool_finished` ledg
 whole-branch review (Opus + codex) → one fix wave (cancel/timeout keep their facts; gate runs on a fresh machine; +30 s
 shell headroom). Evidence on the final head: 397 files / 5430 tests, 0 skipped; both gates PASS. Open for Paco: the
 unsandboxed self-write test gate (Tier B); the ADR amendment signature; kickstart owed. Taps this slice: one ("go ahead").
+
+## 2026-10-28 — Decision ladder Stage 4A, standing approval (ADR 0030 §8.3): SHIPPED, nothing stands yet
+Rev 1 of the spec predated the clean room; Rev 2–4 were rewritten against it and the live DB. Two measured facts changed
+the design: a delivered `final_report` proves receipt, not success (6 failed runs had delivered notices on the same key),
+so Paco chose Decision 1-A — an automatic grant only when the sealed fourth run's ten code-owned facts all hold and its
+report was delivered, with Revoke; and `consumeToolApproval` had no transaction, so credits run in their own transaction
+after the CAS and can never block the approved command. Spec reviewed by a senior on Opus (live DB) and codex ×3; plan
+by Sonnet, which applied and ran nine of its tasks, and codex ×4. Built by Sonnet and Opus implementers, each task
+reviewed by the other model; codex as a second seat on the store CAS, the hooks and the settle path found three holes the
+first reviewer passed (the legacy approvals table skipped the chat check; a non-schedule source could pass the use
+binding; an invalid sealing timestamp bypassed the 24 h TTL). The whole-branch review found a critical: the two new
+refusal codes were not handled intake denials, so one cross-chat `/approve` would have wedged the Telegram poll loop,
+kill switch included — fixed with poll-loop tests. Evidence on `6be9529`: 404 files / 5540 tests (two failures in the
+pre-existing Jev-job flake); live gate 15/15 with the silent-degradation line; clean-room gate; rollback PASS against the
+previous build. Fable hit its usage limit mid-plan; Opus finished it and the orchestrator moved to Opus. Open for Paco:
+two ADR signatures and a kickstart. Taps this slice: two ("go ahead" was the spec approval; "A" chose the grant rule).
