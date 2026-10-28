@@ -571,3 +571,45 @@ plan: [2026-10-21-ladder-2b-ii-improve-route.md](../superpowers/plans/2026-10-21
   `src/run/run-ledger.ts`, this ADR and its index row. `src/core/skill-job.ts` is not protected. Follow-up, on Paco's word
   (2026-10-22): `src/skills/promote.ts` (nothing reaches the active skills tree without Paco's tap) and
   `src/gateway/improvement-commands.ts` (taps are chat-bound and state-fenced) joined `PROTECTED_FILES`; the rest of `src/gateway/` is not protected.
+
+## Amendment (2026-10-28): clean-room runtime landed; P8 closed (drafted under the approved Slice 1 spec — awaiting Paco's signature)
+
+This file is protected (ADR 0011); this amendment is drafted for Paco's hand. Spec:
+`docs/superpowers/specs/2026-10-28-ladder-cleanroom-runtime-slice1-design.md` (Rev 5, approved 2026-10-28, reading A of
+§Decision needed). Slice 0 (profile renderer and validator) shipped 2026-10-27 under
+`2026-10-27-ladder-cleanroom-profile-design.md`.
+
+- **§8.3's clean room exists at runtime.** `runCleanroomShell` makes a fresh room and home under `<cache>/cleanroom/`,
+  validates them (inode lineage, no symlink, empty), writes the profile sidecar into the home, checks both directories
+  immediately before the spawn and again after the run, runs the command through the shell wrapper's clean-room branch
+  (`sandbox-exec` → `env -i` with the six fixed names → `nice` → `bash -c`), scans for orphans whose cwd is still the room
+  (`lsof`) and kills them, and removes both directories in `finally`. The result is total and typed (`ran`, `torn_down`,
+  `tampered`, `escaped`/`escape_source`, one reason per exit).
+- **P8 is closed by measurement, not by the design text.** The 2026-10-28 probes found that Seatbelt's `localhost` class
+  misses IPv4-mapped IPv6 (`[::ffff:127.0.0.1]` reached a local `::` listener) and that LAN broadcast UDP left the sandbox;
+  network filters also interact non-locally (a bare `ip` filter stops matching IPv4 loopback once any `ip6` rule exists).
+  The profile therefore denies **all IPv6 egress and all UDP** in one rule with named families, all Unix sockets but the
+  resolver's, listening, and **all Mach lookups** (HTTPS, TLS validation and cookie jars need none). A sealed command has
+  TCP egress only. The property §8.3 claims — no planted file, no planted config, no Houge-managed local service reachable
+  — holds and is re-proven on every suite run and by the live gate; "all local services blocked" means every service but
+  mDNSResponder's socket.
+- **Exec allowlist and a room that cannot be re-created.** Only a named set of binaries may exec (no `perl`, `python3`,
+  `ruby`, `script`, `screen` — the carriers of `setsid()`); the room write rule is a regex that excludes the room path, so
+  an orphan cannot recreate the room after teardown. The room's clock is the host's (zoneinfo readable, root-owned).
+- **Children's TMPDIR.** agy, codex, the omp one-shots and the catalog now get `<cache>/children` as TMPDIR, a sibling of
+  the rooms; codex's workspace-write sandbox additionally excludes `$TMPDIR` (measured: default WROTE into TMPDIR; with the
+  key, denied). The one Houge child not bounded by any lock is the self-write **test gate** (`npm run` on codex-written
+  code, unsandboxed, `src/run/test-gate.ts`): pre-existing, not worsened here, named for Paco — Stage 4A must not seal a
+  run while a self-write is in flight, or that gate must be sandboxed first.
+- **The executor is a selector, not a proof.** `executor: "cleanroom"` lives on the per-call runtime context, outside the
+  fingerprinted input (a sealed 4th call has the same fingerprint as the first three); the adapter refuses it without a run
+  id and tool-call id; nothing in production sets it until Stage 4A's validated standing match does. Seal facts ride both
+  adapter result arms, the runner's failed/timed-out/cancelled arms, and the `tool_finished` ledger event (shell entries
+  only, four typed booleans) — the audit trail until Stage 4A's execution record.
+- **Reading A (Paco 2026-10-28) on bash job-control orphans:** bounded and detected, not prevented (see
+  `configuration.md` §Clean room). Stage 4A may grant; the approval card states the condition.
+- **Protected files touched (Tier A under the approved spec):** `src/omp/seatbelt.ts`, `src/omp/shell-wrapper.sh`,
+  `src/omp/shell-wrapper.ts`, `src/omp/shell-adapter.ts`, `src/omp/bridge-handler.ts`, `src/omp/cleanroom-run.ts` (new),
+  `src/omp/model-catalog.ts`, `src/llm/providers/omp.ts`, `src/capabilities/capability-runner.ts`,
+  `src/capabilities/coding-agent.ts`, this ADR and its index row, `AGENTS.md` (one Commands line).
+

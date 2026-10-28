@@ -38,7 +38,7 @@ launchd: [deploy/launchd/README.md](../../deploy/launchd/README.md).
 | `HOUGE_TELEGRAM_LONGPOLL_TIMEOUT_S` | `30` | Telegram `getUpdates` long-poll timeout (seconds). The daemon blocks on a held connection for up to this long; a message arriving sooner is delivered immediately. Not your message latency — just how long an *idle* connection is held. |
 | `HOUGE_DAEMON_BACKOFF_BASE_MS` | `1000` | Base delay for exponential backoff after a Telegram error (`base · 2^(failures-1)`). |
 | `HOUGE_DAEMON_BACKOFF_MAX_MS` | `60000` | Cap on the backoff delay. |
-| `HOUGE_DAEMON_TMP_DIR` | `~/Library/Caches/houge-daemon` | The daemon's temp root (media downloads, codex out-files, agy workdirs). Must be absolute (a relative value falls back to the default). Created and kept at 0700; both Seatbelt profiles read- and write-deny it. It must sit outside any git repo: at boot an ancestor holding `.git` raises the `daemon_tmp_in_git_repo` incident (one alert) and voice ingest refuses with the code-owned "media ingest is off" reply, because agy may root file access at the repo's top level (`.env` included). Never `<repo>/tmp`. |
+| `HOUGE_DAEMON_TMP_DIR` | `~/Library/Caches/houge-daemon` | The daemon's temp root (media downloads, codex out-files, agy workdirs). Two fixed subdirectories (2026-10-28): `children/` is every CLI child's `TMPDIR` (agy, codex, omp one-shots, the catalog; codex also runs with `sandbox_workspace_write.exclude_tmpdir_env_var=true`), and `cleanroom/` holds the per-run rooms and homes of sealed commands; neither is ever an ancestor of the other, and nothing else may write under `cleanroom/`. Must be absolute (a relative value falls back to the default). Created and kept at 0700; both Seatbelt profiles read- and write-deny it. It must sit outside any git repo: at boot an ancestor holding `.git` raises the `daemon_tmp_in_git_repo` incident (one alert) and voice ingest refuses with the code-owned "media ingest is off" reply, because agy may root file access at the repo's top level (`.env` included). Never `<repo>/tmp`. |
 | `HOUGE_DAEMON_LOCK_PATH` | `houge.daemon.lock` (cwd) | PID lockfile for the single-instance guard; a second daemon with the same lock exits instead of fighting over the Telegram long-poll (which would cause HTTP 409). |
 
 ## LLM runtime — omp (ADR 0028)
@@ -1201,3 +1201,36 @@ the cutover deletions) and not at the head of `feat/omp-runtime`, checked by gre
 These were documented here but unread even before the cutover, and their rows are gone too:
 `HOUGE_LLM_PROVIDER`, `HOUGE_CLAUDE_MODEL`, `HOUGE_CLAUDE_WRITER_MODEL`,
 `HOUGE_CLAUDE_REVIEWER_MODEL`, `HOUGE_CLAUDE_TIMEOUT_MS`.
+
+## Clean room (sealed runs, ADR 0030 §8.3 — runtime landed 2026-10-28, selected by nothing yet)
+
+Not configurable; recorded here so an operator knows what a sealed command can and cannot do. A command runs in the clean
+room only when the validated execution record carries `executor: "cleanroom"` (Stage 4A's standing match will be the
+first setter; until then no production call selects it).
+
+- **Directories:** a fresh empty room (cwd, the only writable place; the room path itself cannot be re-created once removed)
+  and a fresh empty home holding only the profile sidecar `cleanroom.sb`, both under `<cache>/cleanroom/`, removed after the
+  run; a leftover older than one hour (or twice `HOUGE_OMP_SHELL_TIMEOUT_MS`) is swept on the next sealed run.
+- **Environment (exactly six):** `PATH=/usr/bin:/bin:/usr/sbin:/sbin`, `LANG=C.UTF-8`, `HOME`/`CURL_HOME`/`XDG_CONFIG_HOME` =
+  the fresh home, `TMPDIR` = the room. Nothing is inherited from the daemon.
+- **Network:** TCP egress only. No IPv6 egress (the only way to close IPv4-mapped loopback), no UDP of any kind (no raw
+  DNS, no broadcast/multicast), no connection to any address this host owns (loopback in every spelling, the LAN address),
+  no Unix socket but the resolver's (`/private/var/run/mDNSResponder`), no listening. Other LAN hosts stay reachable.
+- **Processes:** only the binaries in `CLEANROOM_EXEC_ALLOW` (`src/omp/seatbelt.ts`: bash, curl, env, nice, date and a
+  short list of text tools; 32 entries) may exec; `perl`, `python3`, `ruby`, `script`, `screen`, `osascript`, `nc`,
+  `openssl` cannot. All Mach lookups are denied. Known non-file surface not covered: Mach operations other than lookup,
+  `sysctl` reads.
+- **Reads:** `/usr` (not `/usr/local`), `/bin`, `/System`, `/private/etc/ssl`, the time-zone files (the room's clock is
+  the host's), `/dev/null`, the room, the home. Not `/Library`, not `$HOME`, not `/private/tmp`, not the daemon cache.
+- **Background processes (reading A, Paco 2026-10-28):** a command's own bytes can leave a `set -m … &` orphan behind. It
+  cannot write anywhere, read anything new or reach a local service, and it is killed if its cwd is still the room; one
+  that leaves the room keeps TCP egress until it exits (CPU-bounded by `ulimit -t 600`, not wall-bounded). Nothing
+  enforces "no background processes"; the approval card states it as a condition.
+- **Audit:** the `tool_finished` ledger event of a sealed call carries `executor: "cleanroom"` and
+  `cleanroom: { ran, torn_down, tampered, escaped }` (booleans, never bodies), on success, failure, timeout and cancel.
+  Incident kinds: `cleanroom_sweep`, `cleanroom_unavailable`, `cleanroom_setup`, `cleanroom_invalid`,
+  `cleanroom_tampered` (pre-spawn or post-run), `cleanroom_check_failed`, `cleanroom_teardown_failed`, plus the shell
+  tool's `shell_escaped` (`source: pipe | orphan_scan | both`).
+- **Gate:** `node scripts/live-gate-cleanroom-runtime.mjs` (23 lines; PASS requires HTTPS 200 from a sealed run; offline
+  → INCONCLUSIVE, exit 2).
+

@@ -1,6 +1,6 @@
 # Decision ladder — clean-room runtime (Slice 1 of the clean-room profile)
 
-**Status:** **Approved by Paco 2026-10-28 ("go ahead")** on Rev 5, reading **A** of §Decision needed taken as the recommended default (B can be chosen later; only Stage 4A depends on it). Review history: senior (Opus, live probes: 0 blockers, 6 warnings taken); codex ×4 rounds, all findings closed.
+**Status:** **Shipped 2026-10-28** on `main` (branch `feat/cleanroom-slice1`; approved by Paco on Rev 5, reading **A** of §Decision needed). Build rulings and evidence: `tasks/todo.md` state block and `sessions.md`. One finding from the final review stands open for Paco: the self-write test gate (`src/run/test-gate.ts`) runs codex-written code unsandboxed — a Houge child not bounded by any lock in §Children's TMPDIR; Stage 4A must not seal a run while a self-write is in flight, or that gate gets a profile first.
 **Date:** 2026-10-28
 **Amends:** `docs/superpowers/specs/2026-10-27-ladder-cleanroom-profile-design.md` (Slice 0; its §Slice 0 rulings stand). Implements ADR 0030 §8.3's clean-room execution; **grants no standing approval and no sealed credit** — that is Stage 4A (`2026-10-26-ladder-stage4-standing-approval-scheduled-design.md`), which this slice unblocks.
 **Depends on:** Slice 0 on `main` (`10df6b6`): `src/omp/cleanroom.ts` (validator, branded pair, sidecar writer, fixed env), `renderCleanroom` in `src/omp/seatbelt.ts`, `tests/omp/cleanroom.test.ts`, `scripts/live-gate-cleanroom-profile.mjs`.
@@ -111,7 +111,7 @@ export interface SsrfContext {
 
 - The field is outside `input.input`, so the action fingerprint (`capability-runner.ts:143`, `stableHash` over the input) is unchanged; a test asserts the fingerprint of a call with and without `executor` is identical.
 - `shellToolExecute` reads `ctx?.executor === "cleanroom"` and calls `runCleanroomShell`; otherwise today's path, byte for byte.
-- **No production caller sets it in this slice.** `bridge-handler.ts` is not touched. Stage 4A's standing match is the first setter. A test proves the bridge path *without* the field still selects `shell.sb` (the planner's cwd is the workspace).
+- **No production caller sets it in this slice.** `bridge-handler.ts` never sets it (it gains only the ledger-side `cleanroomFacts`). Stage 4A's standing match is the first setter. A test proves the bridge path *without* the field still selects `shell.sb` (the planner's cwd is the workspace).
 - `readonly` tools, loop tools, `http_fetch`: ignore the field (they never spawn a shell).
 - **The field is a selector, not a proof** (codex W7). `CapabilityRunner.execute` accepts a caller-built context, so Slice 1 adds the one check it can make without a standing record: `shellToolExecute` honours `executor: "cleanroom"` only when the context also carries `run_id` and `tool_call_id` (an anonymous direct call with the flag is refused with `cleanroom_invalid` and an incident). Binding the flag to a validated standing match (fingerprint + chat + B14) is Stage 4A's, in §Hand-off; the tests here cover the first execution path, the approval-resume path (`bridge-handler.ts:377`) and a direct runner entry, all without the flag → `shell.sb`.
 

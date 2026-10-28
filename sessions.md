@@ -1763,3 +1763,19 @@ Sonnet, codex) found one real seal hole — `room-1`/`ROOM-1` validated as disjo
 caller root; one fix round closed both, scoped re-review approved. Evidence on `31e335d`: 395 files / 5376 tests, 0
 skipped; gate PASS exit 0. Nothing selects the profile at runtime; no sealed credit; Stage 4A stays draft. Slice 1 owes
 the child-TMPDIR move, P8, the runtime seam and teardown (see `tasks/todo.md`).
+
+## 2026-10-28 — Clean-room runtime, Slice 1 (ADR 0030 §8.3): SHIPPED, nothing selects it yet
+Spec Rev 5 (`2026-10-28-ladder-cleanroom-runtime-slice1-design.md`) written after a live P8 probe on the Mac mini that
+overturned two Slice 0 assumptions: Seatbelt's `localhost` class misses IPv4-mapped IPv6, LAN broadcast UDP escapes, and
+network filters compose non-locally (a bare `ip` filter breaks beside any `ip6` rule). Senior review on Opus (live
+probes) plus four codex rounds; Paco approved with reading A (bash job-control orphans bounded + detected, not prevented).
+Plan reviewed by a senior that ran the plan's code (5 blockers) and codex (two rounds) before dispatch. Built by
+subagents (Sonnet ×3, Opus ×4), every task reviewed by a non-author model, codex as a second seat on the lifecycle and
+the seam (it found the two real blockers: a post-spawn throw reported as `ran:false`; the orphan scan could SIGKILL the
+daemon). Shipped: P8 block + exec allowlist + regex room write rule + zoneinfo reads in the profile; children's TMPDIR
+→ `<cache>/children` (codex also excludes `$TMPDIR`, measured both ways); wrapper clean-room branch; `runCleanroomShell`
+(total lifecycle, tamper checks, `lsof` orphan scan, teardown in `finally`); `executor: "cleanroom"` seam with a single
+incident emitter and seal facts on every result arm and the `tool_finished` ledger event; live gate 23/23. Final
+whole-branch review (Opus + codex) → one fix wave (cancel/timeout keep their facts; gate runs on a fresh machine; +30 s
+shell headroom). Evidence on the final head: 397 files / 5430 tests, 0 skipped; both gates PASS. Open for Paco: the
+unsandboxed self-write test gate (Tier B); the ADR amendment signature; kickstart owed. Taps this slice: one ("go ahead").
