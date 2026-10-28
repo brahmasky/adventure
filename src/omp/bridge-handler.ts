@@ -229,7 +229,12 @@ interface Finish {
   /** A sealed run's code-owned facts: the ledger holds hashes only, so this is how Stage 4A sees the seal. */
   cleanroom?: CleanroomFacts;
 }
-type CleanroomFacts = { ran: boolean; torn_down: boolean; tampered: boolean; escaped: boolean };
+/** Nested under tool_finished.cleanroom (never top level): a top-level tool_finished.reason already carries policy/cancel reasons. */
+export type CleanroomFacts = { ran: boolean; torn_down: boolean; tampered: boolean; escaped: boolean; exit_code: number | null; truncated: boolean | null; check_failed: boolean; room?: string; reason?: string };
+/** The adapter's bounded failure words; a reason outside the set is dropped, never copied into the ledger. */
+export const CLEANROOM_REASONS: ReadonlySet<string> = new Set(["timeout", "output_cap", "aborted", "limits_failed", "cleanup_failed", "wrapper_unknown", "spawn",
+  "cleanroom_unavailable", "cleanroom_setup", "cleanroom_invalid", "cleanroom_tampered"]);
+const ROOM_NAME = /^room-[A-Za-z0-9]+$/; // mkdtempSync's shape; a path or anything else is not a room name
 
 /**
  * The seal facts from either result arm of a shell entry only: another tool's output is model- or web-shaped and must never
@@ -242,7 +247,11 @@ function cleanroomFacts(entry: RegistryEntry, r: CapabilityResult): CleanroomFac
   if (out?.executor !== "cleanroom" || typeof out.cleanroom !== "object" || out.cleanroom === null) return undefined;
   const c = out.cleanroom as Record<string, unknown>;
   if (typeof c.ran !== "boolean" || typeof c.torn_down !== "boolean" || typeof c.tampered !== "boolean" || typeof c.escaped !== "boolean") return undefined;
-  return { ran: c.ran, torn_down: c.torn_down, tampered: c.tampered, escaped: c.escaped };
+  // truncated: only a boolean is a fact; absent or malformed is unknown (null), and a seal requires false
+  // reason: the cleanroom failure word is persisted as cleanroom.reason; tool_finished.reason (top level) is the bridge's own finish reason (e.g. cancelled), kept apart
+  return { ran: c.ran, torn_down: c.torn_down, tampered: c.tampered, escaped: c.escaped, exit_code: Number.isInteger(out.exit_code) ? (out.exit_code as number) : null,
+    truncated: typeof out.truncated === "boolean" ? out.truncated : null, check_failed: typeof c.check_error === "string" && c.check_error.length > 0,
+    ...(typeof c.room === "string" && ROOM_NAME.test(c.room) ? { room: c.room } : {}), ...(typeof out.reason === "string" && CLEANROOM_REASONS.has(out.reason) ? { reason: out.reason } : {}) };
 }
 
 /** tool_finished + loop_step: counts, hashes, ids and code-owned reasons only (never bodies). */

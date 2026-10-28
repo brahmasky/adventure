@@ -233,7 +233,7 @@ describe("bridge handler — call (spec §5.2)", () => {
     await handle(call("bash", { command: "ls" }, "cr1"));
     const fin = events("tool_finished").find((e) => e.tool_call_id === "cr1");
     expect(fin).toMatchObject({ executor: "cleanroom", cleanroom: { ran: true, torn_down: true, tampered: false, escaped: false } });
-    expect(fin?.cleanroom).toEqual({ ran: true, torn_down: true, tampered: false, escaped: false }); // no room name, no body
+    expect(fin?.cleanroom).toEqual({ ran: true, torn_down: true, tampered: false, escaped: false, exit_code: 0, truncated: false, check_failed: false, room: "room-x" }); // code-owned facts; no body
     expect(JSON.stringify(store.getLedgerEvents(run_id))).not.toContain(MARKER);
     const plain = setup();
     await plain.handle(call("bash", { command: "ls" }, "cr2"));
@@ -264,7 +264,25 @@ describe("bridge handler — call (spec §5.2)", () => {
     const { handle, events } = setup({ shell: failed });
     await handle(call("bash", { command: "ls" }, "cr3"));
     expect(events("tool_finished").find((e) => e.tool_call_id === "cr3")).toMatchObject({ status: "failed", executor: "cleanroom",
-      cleanroom: { ran: true, torn_down: false, tampered: true, escaped: true } });
+      cleanroom: { ran: true, torn_down: false, tampered: true, escaped: true, exit_code: null, truncated: null, check_failed: false, reason: "timeout" } });
+  });
+
+  it("seal facts a settlement needs are bounded values: check_error becomes check_failed (its text stays out), reason only from the closed set, exit_code only an integer, truncated unknown unless a boolean, room only a mkdtemp name", async () => {
+    const odd: Exec = async () => ({ ok: false, error: `bash wrapper_unknown ${MARKER}`, output: { ran: true, reason: "wrapper_unknown", executor: "cleanroom",
+      cleanroom: { room: "../escape", ran: true, torn_down: true, tampered: false, escaped: false, check_error: `lsof: boom ${MARKER}` } } });
+    const { handle, events, store, run_id } = setup({ shell: odd });
+    await handle(call("bash", { command: "ls" }, "cr7"));
+    expect(events("tool_finished").find((e) => e.tool_call_id === "cr7")?.cleanroom).toEqual({ ran: true, torn_down: true, tampered: false, escaped: false, exit_code: null, truncated: null, check_failed: true, reason: "wrapper_unknown" });
+    expect(JSON.stringify(store.getLedgerEvents(run_id))).not.toContain(MARKER);
+    const loose: Exec = async () => ({ ok: false, error: "bash x", output: { ran: false, reason: `made up ${MARKER}`, executor: "cleanroom", cleanroom: { ran: false, torn_down: true, tampered: false, escaped: false } } });
+    const l = setup({ shell: loose });
+    await l.handle(call("bash", { command: "ls" }, "cr8"));
+    const f = l.events("tool_finished").find((e) => e.tool_call_id === "cr8")?.cleanroom as Record<string, unknown>;
+    expect(f).not.toHaveProperty("reason"); expect(f).not.toHaveProperty("room"); expect(f.exit_code).toBeNull();
+    const frac: Exec = async () => ({ ok: true, output: { exit_code: 1.5, output: "", truncated: "yes", executor: "cleanroom", cleanroom: { room: "room-abc123", ran: true, torn_down: true, tampered: false, escaped: false } } });
+    const fr = setup({ shell: frac });
+    await fr.handle(call("bash", { command: "ls" }, "cr9"));
+    expect(fr.events("tool_finished").find((e) => e.tool_call_id === "cr9")?.cleanroom).toMatchObject({ exit_code: null, truncated: null, room: "room-abc123" }); // "yes" is not proof the output was whole
   });
 
   it("a cancelled sealed run's facts reach tool_finished too: the abort did not erase whether the room ran and was torn down", async () => {
