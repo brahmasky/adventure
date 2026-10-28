@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { resolve as resolvePath } from "node:path";
-import { CapabilityRunner, type ApprovalRequestSink, type CapabilityExecutionInput, type CapabilityResult } from "../capabilities/capability-runner.js";
+import { actionFingerprint, CapabilityRunner, type ApprovalRequestSink, type CapabilityExecutionInput, type CapabilityResult } from "../capabilities/capability-runner.js";
 import type { JEV_PROVIDER } from "../llm/metered-pricing.js";
 import { decideCapability } from "../policy/capability-policy.js";
 import type { BudgetLedger } from "../budget/budget-ledger.js";
@@ -25,10 +25,11 @@ import { countTrustAsk, effectiveAsk, HOSTILE_REASON, MASKED_READ_REASON, target
 import { resolveTrustAskTtlMs, type TurnTrust } from "../decisions/trust.js";
 import type { CompiledTaskContract, Identity } from "../domain/types.js";
 import type { RunStore } from "../run/run-store.js";
-import type { ToolRegistry } from "../tools/tool-registry.js";
+import type { SsrfContext, ToolRegistry } from "../tools/tool-registry.js";
 import type { BridgeRequest, SettleReply } from "./bridge-protocol.js";
 import { BUILTIN_CAPABILITY, capabilityFor, type RegistryEntry } from "./capability-map.js";
-import { classifyCommand } from "./command-matcher.js";
+import { cleanroomAvailable } from "./cleanroom-run.js";
+import { classifyCommand, UNSEEN_SCRIPT_LABEL } from "./command-matcher.js";
 import { gateTargets } from "./gate-path.js";
 import { handleJudgeRead, maskedKey, noteReportApplied, raisePendingAtFlush, raiseStalePending, type JudgedOutcome, type JudgePending, type PathDeps } from "./bridge-read-judge.js";
 import { sharedOmpVersionCache } from "./omp-version-cache.js";
@@ -379,13 +380,32 @@ function waitPolicy(deps: BridgeHandlerDeps, turn: ActiveTurn, entry: RegistryEn
   return { timeoutMs: turn.trustWaitMs ? turn.trustWaitMs(ttlMs) : ttlMs, pause: { pause: "bounded", ttlMs }, trustTap: true };
 }
 
-/** The card: the command (cut at the cap; a hostile one past it also names its targets), and why trust asks. */
+/** The card: the command (cut at the cap; a hostile one past it also names its targets), and why trust asks — or, when trust does not ask, the standing trial line. */
 function approvalSink(deps: BridgeHandlerDeps, turn: ActiveTurn, req: CallReq, command: string | undefined, preDetail: string | undefined, ask: TrustAsk,
-  policy: WaitPolicy): ApprovalRequestSink {
+  policy: WaitPolicy, note?: string): ApprovalRequestSink {
   const targets = ask.ask && ask.reason === HOSTILE_REASON && command !== undefined && command.length > CARD_DETAIL_CAP ? `\n${targetsLine(command)}` : "";
   const detail = command !== undefined ? `${cardDetail(command)}${targets}` : preDetail;
   return createToolApprovalSink({ store: deps.store, worker_id: turn.worker_id, tool_call_id: req.toolCallId, approvalTimeoutMs: policy.timeoutMs,
-    ...(detail !== undefined ? { card_detail: detail } : {}), ...(ask.ask ? { reason: ask.reason } : {}), ...(turn.approver ? { approver: turn.approver } : {}) });
+    ...(detail !== undefined ? { card_detail: detail } : {}), ...(ask.ask ? { reason: ask.reason } : note !== undefined ? { reason: note } : {}), ...(turn.approver ? { approver: turn.approver } : {}) });
+}
+
+/** The fourth-run card's "Why:" line; only when the clean room is available at that moment, else the plain card. */
+export const STANDING_TRIAL_LINE = "You've approved this exact command on three runs. Approving this one runs it in a sealed folder; if it completes and its report reaches you, I stop asking for it on this schedule.";
+type StandingSelect = { standing: { standing_id: string } } | { standing_trial: { standing_id: string } } | null;
+
+/**
+ * A selector only: the runner's standing-use CAS and the store's consume CAS decide. Scheduled shell_external with a readable
+ * label, trust not asking, the room available; the key's chat is turn.chat_id — the run's notify chat, the column the store reads.
+ */
+function standingSelect(deps: BridgeHandlerDeps, turn: ActiveTurn, req: CallReq, entry: RegistryEntry, command: string | undefined, ask: TrustAsk): StandingSelect {
+  if (turn.requester.kind !== "schedule" || entry !== "shell_external" || command === undefined || turn.trust === undefined || ask.ask) return null;
+  const c = classifyCommand(command);
+  if (c.kind === "plain" || c.label.split(", ").includes(UNSEEN_SCRIPT_LABEL)) return null;
+  const meta = turn.registry.get(entry);
+  if (!meta || !cleanroomAvailable(deps.cfg)) return null;
+  const row = deps.store.standingFor({ schedule_id: turn.requester.id, chat_id: turn.chat_id, action_fingerprint: actionFingerprint(entry, meta, req.input) });
+  if (row?.state === "standing") return { standing: { standing_id: row.standing_id } };
+  return row?.state === "candidate" ? { standing_trial: { standing_id: row.standing_id } } : null;
 }
 
 /** First execute; on requires_approval wait in-turn (policy by ask kind), then re-execute on the reserved budget unit. */
@@ -393,16 +413,18 @@ async function executeWithApproval(deps: BridgeHandlerDeps, turn: ActiveTurn, re
   const command = req.tool === "bash" && typeof req.input.command === "string" ? req.input.command : undefined;
   const policy = waitPolicy(deps, turn, entry, ask);
   if (policy.pause.pause === "bounded" && policy.timeoutMs < Math.min(TRUST_WAIT_MIN_MS, policy.pause.ttlMs)) return { refusal: { reason: "trust_ask_no_time", text: TRUST_ASK_NO_TIME_TEXT } };
-  const runner = new CapabilityRunner(turn.registry, approvalSink(deps, turn, req, command, preDetail, ask, policy));
+  const select = standingSelect(deps, turn, req, entry, command, ask);
+  const runner = new CapabilityRunner(turn.registry, approvalSink(deps, turn, req, command, preDetail, ask, policy, select && "standing_trial" in select ? STANDING_TRIAL_LINE : undefined));
   const base: CapabilityExecutionInput = { run_id: turn.run_id, requester: turn.requester, contract: turn.contract, capability: entry,
     input: req.input, budget: turn.budget, signal: turn.signal, tool_call_id: req.toolCallId, action_summary: summaryFor(deps, turn, req.toolCallId, req.tool, command),
-    recorder: storeRecorder(deps.store, { env: deps.env }),
-    ...(ask.ask ? { trust_ask: true } : {}) };
-  const first = await runner.execute(base, turn.signal, { run_id: turn.run_id, tool_call_id: req.toolCallId, ...(base.recorder ? { recorder: base.recorder } : {}) });
+    recorder: storeRecorder(deps.store, { env: deps.env }), ...(ask.ask ? { trust_ask: true } : {}), ...(select ?? {}) };
+  // the room is selected on the standing use at once and on any selector's approved resume (the stricter execution, even when the CAS lost meanwhile); a trial's first call asks unsealed
+  const ctx = (room: boolean): SsrfContext => ({ run_id: turn.run_id, tool_call_id: req.toolCallId, ...(base.recorder ? { recorder: base.recorder } : {}), ...(room ? { executor: "cleanroom" as const } : {}) });
+  const first = await runner.execute(base, turn.signal, ctx(select !== null && "standing" in select));
   if (first.status !== "requires_approval") return { result: first };
   if (policy.trustTap) countTrustAsk(deps.store, deps.env, new Date().toISOString()); // added taps only (spec §7.2)
   const outcome = await awaitApproval(turn, first.approval_id, policy);
-  if (outcome === "approved") return { result: await runner.execute({ ...base, approved_approval_id: first.approval_id, budget_reserved: true }, turn.signal, { run_id: turn.run_id, tool_call_id: req.toolCallId, ...(base.recorder ? { recorder: base.recorder } : {}) }) };
+  if (outcome === "approved") return { result: await runner.execute({ ...base, approved_approval_id: first.approval_id, budget_reserved: true }, turn.signal, ctx(select !== null)) };
   if (outcome === "denied") return { refusal: { reason: "denied_by_paco", text: APPROVAL_DENIED_TEXT } };
   deps.store.expireToolApproval(first.approval_id, new Date().toISOString());
   if (outcome === "expired") recordApprovalExpired(deps.store, { run_id: turn.run_id, approval_id: first.approval_id }); // an aborted wait is not Paco's silence

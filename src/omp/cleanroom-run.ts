@@ -49,7 +49,7 @@ function base(over: Partial<CleanroomRunResult>): CleanroomRunResult {
 }
 
 /** A clean room without the sandbox would be an ordinary shell with a fake name: refuse rather than degrade. */
-function available(cfg: Pick<OmpConfig, "sandbox">): boolean {
+export function cleanroomAvailable(cfg: Pick<OmpConfig, "sandbox">): boolean {
   if (!cfg.sandbox) return false;
   try { accessSync(SANDBOX_EXEC, constants.X_OK); return true; } catch { return false; }
 }
@@ -96,7 +96,7 @@ export function orphansIn(room: string, lsofOut: string): number[] {
  */
 export async function runCleanroomShell(deps: CleanroomDeps, command: string, signal?: AbortSignal): Promise<CleanroomRunResult> {
   if (signal?.aborted) return base({ reason: "aborted" });
-  if (!available(deps.cfg)) return base({ reason: "cleanroom_unavailable" });
+  if (!cleanroomAvailable(deps.cfg)) return base({ reason: "cleanroom_unavailable" });
   const rm = deps.rm ?? ((p: string) => rmSync(p, { recursive: true, force: true, maxRetries: 3 }));
   const made: string[] = []; let out = base({ swept: [] });
   try {

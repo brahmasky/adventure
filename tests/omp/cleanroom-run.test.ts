@@ -1,10 +1,10 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { accessSync, constants, existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanroomEnv, cleanroomRoot } from "../../src/omp/cleanroom.js";
-import { CLEANROOM_SWEEP_MIN_MS, killable, orphansIn, runCleanroomShell } from "../../src/omp/cleanroom-run.js";
+import { CLEANROOM_SWEEP_MIN_MS, cleanroomAvailable, killable, orphansIn, runCleanroomShell } from "../../src/omp/cleanroom-run.js";
 import { resolveOmpConfig } from "../../src/omp/omp-config.js";
 import { tmpOmpDist } from "../helpers/omp-env.js";
 
@@ -159,5 +159,12 @@ describe.runIf(process.platform === "darwin")("runCleanroomShell — one sealed 
     expect(r.swept).toEqual(["room-old"]); expect(readdirSync(cleanroomRoot())).toEqual(["home-fresh"]);
     expect(CLEANROOM_SWEEP_MIN_MS).toBeGreaterThan(resolveOmpConfig({}).shellTimeoutMs + 5000);
     rmSync(join(cleanroomRoot(), "home-fresh"), { recursive: true, force: true });
+  });
+});
+describe("cleanroomAvailable", () => {
+  it("is false with the sandbox off and otherwise exactly the executability of /usr/bin/sandbox-exec (a room without the sandbox would be an ordinary shell with a fake name)", () => {
+    expect(cleanroomAvailable({ sandbox: false })).toBe(false);
+    let exec = true; try { accessSync("/usr/bin/sandbox-exec", constants.X_OK); } catch { exec = false; }
+    expect(cleanroomAvailable({ sandbox: true })).toBe(exec);
   });
 });
