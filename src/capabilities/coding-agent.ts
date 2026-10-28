@@ -101,9 +101,11 @@ export function buildCodexArgs(worktree: string, outfile: string, model?: string
  * The artifact is still the edited files in the worktree; the JSONL is observability only.
  */
 export function buildCodexWriteArgs(worktree: string, model?: string): string[] {
-  // codex's workspace-write grants writes to $TMPDIR by default (measured 2026-10-28: a sandboxed command wrote into
-  // it; with this key it got Operation not permitted), so the grant is withdrawn.
-  const args = ["exec", "--json", "--sandbox", "workspace-write", "-C", worktree, "-c", "sandbox_workspace_write.exclude_tmpdir_env_var=true"];
+  // Deliberately NO `-c sandbox_workspace_write.exclude_tmpdir_env_var=true`. Measured 2026-10-28: with that key a
+  // `mktemp` inside codex's shell fails with `Operation not permitted`, so a self-write step needing a temp file would
+  // break. The TMPDIR move to `<cache>/children` (`childTmpRoot()`, see `codexChildEnv`) already keeps codex's
+  // writable temp space disjoint from the clean rooms, which is the lock that matters.
+  const args = ["exec", "--json", "--sandbox", "workspace-write", "-C", worktree];
   if (model) {
     args.push("-m", model);
   }

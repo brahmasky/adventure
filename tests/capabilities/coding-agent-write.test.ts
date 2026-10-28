@@ -51,8 +51,6 @@ describe("buildCodexWriteArgs", () => {
       "workspace-write",
       "-C",
       "/wt",
-      "-c",
-      "sandbox_workspace_write.exclude_tmpdir_env_var=true",
       "-"
     ]);
   });
@@ -76,18 +74,16 @@ describe("buildCodexWriteArgs", () => {
       "workspace-write",
       "-C",
       "/wt",
-      "-c",
-      "sandbox_workspace_write.exclude_tmpdir_env_var=true",
       "-m",
       "gpt-5",
       "-"
     ]);
   });
 
-  it("excludes $TMPDIR from codex's writable set: with the default, a sandboxed command wrote into TMPDIR (executed 2026-10-28); with the key it got Operation not permitted", () => {
-    const args = buildCodexWriteArgs("/wt");
-    const i = args.indexOf("-c");
-    expect(args.slice(i, i + 2)).toEqual(["-c", "sandbox_workspace_write.exclude_tmpdir_env_var=true"]);
+  it("keeps codex's TMPDIR writable: the children/ move, not a deny, is what keeps temp files away from the clean rooms", () => {
+    const args = buildCodexWriteArgs("/wt", "gpt-5");
+    expect(args).not.toContain("-c");
+    expect(args.join(" ")).not.toContain("exclude_tmpdir");
   });
 
   it("NEVER includes a bypass / yolo / skip-git-repo-check flag", async () => {
