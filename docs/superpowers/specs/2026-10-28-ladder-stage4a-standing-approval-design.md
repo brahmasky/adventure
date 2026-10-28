@@ -1,6 +1,6 @@
 # Decision ladder, stage 4 slice A — standing approval for a scheduled command (Rev 3, against the real clean room)
 
-**Status:** draft Rev 4 (+ codex round 3: lost-CAS call runs sealed without credit; PRE_SPAWN uses the stored values) — Rev 2 reviewed by senior (Opus, live DB read-only: 4 blockers, 9 warnings) and codex (6 blockers, 7 warnings); Rev 3 re-reviewed by both (senior: all closed, 4 warnings; codex: 3 new blockers in the new plumbing, 3 warnings) — all folded in here. Awaiting Paco's tap (**§Decision needed 1 is Tier C**).
+**Status:** **Approved by Paco 2026-10-28 on Rev 4 — Decision 1-A (automatic grant after the sealed run, Revoke card); Decisions 2–4 as recommended.** The 1-B text below (✅/❌ card, `sealed` 7-day window, `granted_by: paco`) is NOT built; under 1-A `sealed` grants immediately inside `settleSealing` and the callback family is `dec:sa:<id>:revoke` only.
 **Date:** 2026-10-28
 **Supersedes:** `2026-10-26-ladder-stage4-standing-approval-scheduled-design.md` (Rev 1).
 **Amends:** ADR 0030 §4.3 / §8.3 (storage, the executor-setting path, the grant criterion — see §Decision needed 1); `docs/ROADMAP.md` Stage 4 #5.
