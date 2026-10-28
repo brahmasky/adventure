@@ -66,9 +66,9 @@ export function createToolApprovalSink(deps: {
       return { approval_id: row.approval_id };
     },
     consumeApprovedApproval: (input) => {
-      const r = deps.store.consumeToolApproval({ approval_id: input.approval_id, run_id: input.run_id, worker_id: deps.worker_id,
-        capability: input.capability, action_fingerprint: input.action_fingerprint, requester: who(input.requester), now: input.consumed_at });
-      return r.ok ? { ok: true, approval_id: input.approval_id, state: "consumed" } : { ok: false, error: { code: r.code, message: r.code } };
+      const r = deps.store.consumeToolApproval({ approval_id: input.approval_id, run_id: input.run_id, worker_id: deps.worker_id, capability: input.capability,
+        action_fingerprint: input.action_fingerprint, requester: who(input.requester), now: input.consumed_at, ...(input.standing_trial ? { standing_trial: input.standing_trial } : {}) });
+      return r.ok ? { ok: true, approval_id: input.approval_id, state: "consumed", sealing: r.sealing } : { ok: false, error: { code: r.code, message: r.code } };
     }
   };
 }

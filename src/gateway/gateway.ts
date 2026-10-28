@@ -126,7 +126,9 @@ const APPROVAL_REFUSAL_TEXT: Readonly<Record<string, string>> = {
   APPROVAL_NOT_FOUND: "no such approval.",
   APPROVAL_NOT_PENDING: "already answered.",
   APPROVAL_REQUESTER_MISMATCH: "not yours to answer.",
-  APPROVAL_EXPIRED: "expired before it was answered."
+  APPROVAL_EXPIRED: "expired before it was answered.",
+  // Stage 4A: a deny whose standing hook failed rolled back whole, so the command's standing approval (if any) was not ended — say so and point at Revoke
+  STANDING_HOOK_FAILED: "not recorded — a standing-approval check failed, so it is still pending and a standing approval on this command may still be live. Tap again, or open /schedule and tap Revoke."
 };
 /** An `appr_<uuid>` is 41 characters; anything longer is not an id and is not echoed in full. */
 const APPROVAL_ID_ECHO_MAX = 48;

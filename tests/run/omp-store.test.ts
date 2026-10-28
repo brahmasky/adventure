@@ -82,7 +82,7 @@ describe("store changes for detached planner turns (spec §7.1, §7.2, §8)", ()
       capability: "shell_external", action_fingerprint: "f", requester, now: new Date().toISOString() });
     expect(consume()).toMatchObject({ ok: false, code: "not_approved" });
     store.resolveToolApprovalForTest(row.approval_id, "approved");
-    expect(consume()).toEqual({ ok: true });
+    expect(consume()).toEqual({ ok: true, sealing: false }); // a user turn earns no standing credit
     expect(consume()).toMatchObject({ ok: false });
   });
 

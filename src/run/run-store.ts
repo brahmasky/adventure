@@ -46,6 +46,7 @@ import { DECISION_STAGES, FALLBACK_REASONS, RUNG_KINDS } from "../decisions/type
 import type { DecidedBy, DecisionSignal, DecisionStage, FallbackReason, RecordedArmedMode, RungKind } from "../decisions/types.js";
 import { checkOutcomeValue, OutcomeRejected, outcomeValueOf, PLANNER_FAILED_VALUES } from "../decisions/outcomes.js";
 import { errorCode } from "../domain/error-code.js";
+import { UNSEEN_SCRIPT_LABEL } from "../omp/command-matcher.js";
 import { LOCKED_ENTRY_IDS } from "../decisions/entry-ids.js";
 import type { SkipReason } from "../jev/decide.js";
 import type { Category } from "../jev/questions/tree.js";
@@ -277,7 +278,9 @@ type ApprovalErrorCode =
   | "APPROVAL_RUN_MISMATCH"
   | "RUN_NOT_WAITING_FOR_APPROVAL"
   | "RUN_NOT_RUNNING"
-  | "TRIGGER_IDEMPOTENCY_CONFLICT";
+  | "TRIGGER_IDEMPOTENCY_CONFLICT"
+  | "APPROVAL_CHAT_MISMATCH"
+  | "STANDING_HOOK_FAILED";
 
 type ApprovalFailure = { ok: false; error: { code: ApprovalErrorCode; message: string } };
 
@@ -1071,6 +1074,12 @@ function jobTransitionSets(i: { to: JobState; now: string; patch?: JobPatch; bum
 const sqlList = (xs: readonly string[]): string => xs.map((x) => `'${x}'`).join(", ");
 /** The only automatic ladder move the store accepts (spec §4.3): standing approvals, on tool.policy, granted by approval.standing. */
 const AUTO_MOVE = { entry_id: "tool.policy", granted_via: "approval.standing" } as const;
+/** Spec §6: distinct consumed scheduled runs that make a key a candidate; and the block a denial anywhere on the bytes sets. */
+export const STANDING_STREAK = 3;
+export const STANDING_DENY_BLOCK_MS = 30 * 24 * 60 * 60 * 1000;
+/** A streak or candidate with no new credit this long is stale (spec §Decision 4): the consume hook (before it credits, since after downtime no sweep has run) and the sweep read it. */
+export const STANDING_STALE_MS = 30 * 24 * 60 * 60 * 1000;
+export class StandingHookError extends Error { constructor(readonly detail: string) { super(`standing hook failed: ${detail}`); } }
 const LOCKED: ReadonlySet<string> = new Set(LOCKED_ENTRY_IDS);
 
 const DECISION_LADDER_2A_DDL = `
@@ -6811,9 +6820,9 @@ export class RunStore {
         requester: input.event.requested_by,
         resolved_at: input.resolved_at
       };
-      const result = this.getToolApproval(resolveInput.approval_id)
-        ? this.resolveToolApprovalWithinTransaction(resolveInput)
-        : this.resolveApprovalWithinTransaction(resolveInput);
+      const tool = this.getToolApproval(resolveInput.approval_id);
+      const result = tool && !this.approvalChatBound(tool.run_id, input.event) ? approvalFailure("APPROVAL_CHAT_MISMATCH")
+        : tool ? this.resolveToolApprovalWithinTransaction(resolveInput) : this.resolveApprovalWithinTransaction(resolveInput);
 
       if (result.ok) {
         const approval_id = input.event.approval_id ?? "";
@@ -6839,11 +6848,19 @@ export class RunStore {
       activeTransaction = false;
       return result;
     } catch (error) {
-      if (activeTransaction) {
-        this.db.exec("ROLLBACK");
-      }
+      if (activeTransaction) this.db.exec("ROLLBACK");
+      if (error instanceof StandingHookError) return this.standingHookRefusal(input.event.approval_id ?? "", error);
       throw error;
     }
+  }
+  /**
+   * The deny hook never throws out of intake — a throw would leave the Telegram offset unadvanced and block every later
+   * update, the kill switch included. The resolution already rolled back whole (the approval is still pending, any standing row
+   * still live); the incident opens after the rollback, outside any transaction, and the refusal tells Paco through the gateway.
+   */
+  private standingHookRefusal(approval_id: string, error: StandingHookError): ApprovalFailure {
+    this.openStandingIncident("standing_hook_failed", `approval:${approval_id}`, { hook: "deny", error: error.detail });
+    return approvalFailure("STANDING_HOOK_FAILED");
   }
 
   createToolApproval(input: ToolApprovalInput): ToolApprovalRow {
@@ -6902,34 +6919,109 @@ export class RunStore {
     return { ...rest, summary, requester: JSON.parse(requester_json) as Identity };
   }
 
-  /** Single CAS approved -> consumed; valid only while the same owner still holds the run lease. */
-  consumeToolApproval(input: {
-    approval_id: string;
-    run_id: string;
-    worker_id: string;
-    capability: string;
-    action_fingerprint: string;
-    requester: Identity;
-    now: string;
-  }): { ok: true } | { ok: false; code: string } {
+  /**
+   * The approved → consumed CAS (one guarded UPDATE, valid only while the same owner holds the lease) commits on its own; the
+   * standing credit it earns runs after it in its own transaction (§7), so a credit fault never blocks the approved command. `sealing` is audit/test-only: no production reader.
+   */
+  consumeToolApproval(input: { approval_id: string; run_id: string; worker_id: string; capability: string; action_fingerprint: string; requester: Identity; now: string;
+    standing_trial?: { standing_id: string } }): { ok: true; sealing: boolean } | { ok: false; code: string } {
     const row = this.getToolApproval(input.approval_id);
     if (!row || row.run_id !== input.run_id) return { ok: false, code: "unknown_approval" };
     if (row.state !== "approved") return { ok: false, code: "not_approved" };
     if (row.expires_at <= input.now) return { ok: false, code: "expired" };
-    if (row.capability !== input.capability || row.action_fingerprint !== input.action_fingerprint) {
-      return { ok: false, code: "action_mismatch" };
-    }
+    if (row.capability !== input.capability || row.action_fingerprint !== input.action_fingerprint) return { ok: false, code: "action_mismatch" };
     if (row.worker_id !== input.worker_id) return { ok: false, code: "owner_mismatch" };
     if (!sameIdentity(row.requester, input.requester)) return { ok: false, code: "requester_mismatch" };
     const updated = this.db.prepare(`
       UPDATE tool_approvals SET state = 'consumed', resolved_at = COALESCE(resolved_at, ?)
       WHERE approval_id = ? AND state = 'approved'
-        AND EXISTS (
-          SELECT 1 FROM runs
-          WHERE run_id = ? AND worker_id = ? AND state = 'running' AND lease_expires_at > ?
-        )
+        AND EXISTS (SELECT 1 FROM runs WHERE run_id = ? AND worker_id = ? AND state = 'running' AND lease_expires_at > ?)
     `).run(input.now, input.approval_id, input.run_id, input.worker_id, input.now);
-    return updated.changes === 1 ? { ok: true } : { ok: false, code: "lease_lost" };
+    if (updated.changes !== 1) return { ok: false, code: "lease_lost" };
+    return { ok: true, sealing: this.creditAfterConsume(row, input.now, input.standing_trial) };
+  }
+  /**
+   * The credit's own transaction, after the consume committed — so a sealing row only ever follows a consumed fourth
+   * approval. A fault rolls back the credit alone, opens standing_credit_failed and never blocks the approved command. A crash
+   * between the two loses one credit (the next scheduled run credits). Callers (the two sinks) never hold a transaction here.
+   */
+  private creditAfterConsume(a: ToolApprovalRow, now: string, trial?: { standing_id: string }): boolean {
+    try { return this.inTransaction(() => this.standingCredit(a, now, trial)); }
+    catch (e) { this.openStandingIncident("standing_credit_failed", `approval:${a.approval_id}`, { error: e instanceof Error ? e.message : String(e) }); return false; }
+  }
+  /** One open incident per subject (a repeat touches it); never throws — it runs on paths that must not fail (the deny refusal, the credit fault). */
+  private openStandingIncident(kind: string, subject: string, detail: Record<string, unknown>): void {
+    try {
+      const open = this.findOpenIncident(this.incidentFingerprint(kind, subject));
+      if (open) this.touchIncident(open.incident_id, new Date().toISOString()); else this.openIncident({ kind, subject, detail });
+    } catch (e) { console.error(`[standing] ${kind} not recorded: ${e instanceof Error ? e.message : String(e)}`); }
+  }
+  /** §6: one credit per distinct scheduled run; candidate at STANDING_STREAK; the fourth consume with the bridge's trial selector moves candidate → sealing. A no-op on sealing/sealed/standing. */
+  private standingCredit(a: ToolApprovalRow, now: string, trial?: { standing_id: string }): boolean {
+    const key = this.standingKeyOf(a.run_id, a);
+    if (!key || this.standingDenied(key.chat_id, key.action_fingerprint, now)) return false;
+    let live = this.standingFor(key);
+    // a streak dead for 30 days is ended here, before it is credited (after downtime no sweep has run); this approval starts afresh
+    if (live && (live.state === "streak" || live.state === "candidate") && live.updated_at <= new Date(Date.parse(now) - STANDING_STALE_MS).toISOString()) {
+      this.endStandingTx({ standing_id: live.standing_id, reason: "stale", now }); live = undefined;
+    }
+    if (!live) { this.insertStreak(key, a, now); return false; }
+    if (live.state !== "streak" && live.state !== "candidate") return false;
+    const runs = JSON.parse(live.credited_runs_json) as string[];
+    if (runs.includes(a.run_id)) return false; // a second approval in the same run adds nothing (Paco approved one run, not one call)
+    if (live.state === "candidate") return trial?.standing_id === live.standing_id && this.startSealing(live, a, now);
+    const credited = [...runs, a.run_id]; const ids = [...(JSON.parse(live.approval_ids_json) as string[]), a.approval_id];
+    this.db.prepare(`UPDATE standing_approvals SET state = ?, credited_runs_json = ?, approval_ids_json = ?, updated_at = ? WHERE standing_id = ? AND state = 'streak'`)
+      .run(credited.length >= STANDING_STREAK ? "candidate" : "streak", JSON.stringify(credited), JSON.stringify(ids), now, live.standing_id);
+    this.appendStandingLedgerEvent("standing_streak", { standing_id: live.standing_id, run_id: a.run_id, approval_id: a.approval_id, streak: credited.length }, a.run_id);
+    return false;
+  }
+  /** The key (§4), only for an eligible action on a scheduled run: shell_external, a label the matcher could read, a Telegram notify chat (the same source the bridge uses). */
+  private standingKeyOf(run_id: string, a: Pick<ToolApprovalRow, "capability" | "action_fingerprint" | "summary">): StandingKey | null {
+    const run = this.getRunForWorker(run_id);
+    if (!run || run.source !== "schedule" || run.requested_by.kind !== "schedule" || run.notify.kind !== "telegram") return null;
+    if (a.capability !== "shell_external" || a.summary.split(", ").includes(UNSEEN_SCRIPT_LABEL)) return null;
+    return { schedule_id: run.requested_by.id, chat_id: run.notify.chat_id, action_fingerprint: a.action_fingerprint };
+  }
+  private insertStreak(key: StandingKey, a: ToolApprovalRow, now: string): void {
+    const standing_id = `sa_${randomUUID()}`;
+    this.db.prepare(`INSERT INTO standing_approvals (standing_id, schedule_id, chat_id, action_fingerprint, capability, label, state, credited_runs_json, approval_ids_json, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, 'streak', ?, ?, ?, ?)`).run(standing_id, key.schedule_id, key.chat_id, key.action_fingerprint, a.capability, a.summary, JSON.stringify([a.run_id]), JSON.stringify([a.approval_id]), now, now);
+    this.appendStandingLedgerEvent("standing_streak", { standing_id, run_id: a.run_id, approval_id: a.approval_id, streak: 1 }, a.run_id);
+  }
+  /** candidate → sealing behind the fourth consume's CAS; the sealed call is the approval row's tool_call_id (unique per run, set by the omp sink). */
+  private startSealing(live: StandingApprovalRow, a: ToolApprovalRow, now: string): boolean {
+    if (this.getToolApproval(a.approval_id)?.state !== "consumed") return false; // only behind a committed consume: sealing never precedes the fourth approval's CAS
+    const ids = [...(JSON.parse(live.approval_ids_json) as string[]), a.approval_id];
+    const r = this.db.prepare(`UPDATE standing_approvals SET state = 'sealing', sealing_approval_id = ?, sealed_run_id = ?, sealed_tool_call_id = ?, sealing_started_at = ?, approval_ids_json = ?, updated_at = ?
+      WHERE standing_id = ? AND state = 'candidate'`).run(a.approval_id, a.run_id, a.tool_call_id, now, JSON.stringify(ids), now, live.standing_id);
+    if (r.changes !== 1) return false;
+    this.appendStandingLedgerEvent("standing_sealing", { standing_id: live.standing_id, run_id: a.run_id, tool_call_id: a.tool_call_id, approval_id: a.approval_id }, a.run_id);
+    return true;
+  }
+  /** §7 deny hook, plain statements in the caller's transaction: every live row of (chat, fingerprint) ends with the 30-day block; a scheduled run with no row gets an ended row carrying it. */
+  private standingDeny(a: ToolApprovalRow, now: string): void {
+    try {
+      const run = this.getRunForWorker(a.run_id);
+      if (!run || run.notify.kind !== "telegram") return;
+      const until = new Date(Date.parse(now) + STANDING_DENY_BLOCK_MS).toISOString();
+      const live = this.db.prepare(`SELECT standing_id FROM standing_approvals WHERE chat_id = ? AND action_fingerprint = ? AND state <> 'ended'`).all<{ standing_id: string }>(run.notify.chat_id, a.action_fingerprint);
+      for (const { standing_id } of live) this.endStandingTx({ standing_id, reason: "denied", now, denied_until: until });
+      if (live.length > 0) return;
+      // only an eligible action on a scheduled run (the consume hook's own key rule) gets a row carrying the block alone; a denied fs_write never could stream
+      const key = this.standingKeyOf(a.run_id, a);
+      if (!key) return;
+      const standing_id = `sa_${randomUUID()}`;
+      this.db.prepare(`INSERT INTO standing_approvals (standing_id, schedule_id, chat_id, action_fingerprint, capability, label, state, denied_until, created_at, updated_at, ended_at, ended_reason)
+        VALUES (?, ?, ?, ?, ?, ?, 'ended', ?, ?, ?, ?, 'denied')`).run(standing_id, key.schedule_id, key.chat_id, key.action_fingerprint, a.capability, a.summary, until, now, now, now);
+      this.appendStandingLedgerEvent("standing_ended", { standing_id, reason: "denied" }, a.run_id);
+    } catch (e) { throw new StandingHookError(e instanceof Error ? e.message : String(e)); }
+  }
+  /** §7: a scheduled run's approval is answered only from the run's own notify chat (the tap carries its chat as event.notify); a local or foreign target resolves nothing. */
+  private approvalChatBound(run_id: string, event: TypedTaskEvent): boolean {
+    const run = this.getRunForWorker(run_id);
+    if (!run || run.source !== "schedule") return true;
+    return run.notify.kind === "telegram" && event.notify.kind === "telegram" && event.notify.chat_id === run.notify.chat_id;
   }
 
   expireToolApproval(approval_id: string, now: string): boolean {
@@ -6974,6 +7066,7 @@ export class RunStore {
       return result;
     } catch (error) {
       this.db.exec("ROLLBACK");
+      if (error instanceof StandingHookError) return this.standingHookRefusal(approval_id, error);
       throw error;
     }
   }
@@ -7939,6 +8032,7 @@ export class RunStore {
       WHERE approval_id = ? AND state = 'pending' AND expires_at > ?
     `).run(input.decision, input.resolved_at, input.approval_id, input.resolved_at);
     if (updated.changes !== 1) return approvalFailure("APPROVAL_NOT_PENDING");
+    if (input.decision === "denied") this.standingDeny(row, input.resolved_at);
     return { ok: true, run_id: row.run_id, status: "approval_resolved" };
   }
 
@@ -10323,7 +10417,9 @@ function approvalFailure(code: ApprovalErrorCode): ApprovalFailure {
     APPROVAL_RUN_MISMATCH: "Approval run does not match",
     RUN_NOT_WAITING_FOR_APPROVAL: "Run is not waiting for approval",
     RUN_NOT_RUNNING: "Run is not running",
-    TRIGGER_IDEMPOTENCY_CONFLICT: "Trigger idempotency key conflicts with a different payload"
+    TRIGGER_IDEMPOTENCY_CONFLICT: "Trigger idempotency key conflicts with a different payload",
+    APPROVAL_CHAT_MISMATCH: "Approval must be answered from the run's own chat",
+    STANDING_HOOK_FAILED: "A standing-approval check failed; the approval is still pending"
   };
 
   return { ok: false, error: { code, message: messages[code] } };
