@@ -1202,11 +1202,10 @@ These were documented here but unread even before the cutover, and their rows ar
 `HOUGE_LLM_PROVIDER`, `HOUGE_CLAUDE_MODEL`, `HOUGE_CLAUDE_WRITER_MODEL`,
 `HOUGE_CLAUDE_REVIEWER_MODEL`, `HOUGE_CLAUDE_TIMEOUT_MS`.
 
-## Clean room (sealed runs, ADR 0030 §8.3 — runtime landed 2026-10-28, selected by nothing yet)
+## Clean room (sealed runs, ADR 0030 §8.3 — runtime landed 2026-10-28; selected by Stage 4A standing approval)
 
 Not configurable; recorded here so an operator knows what a sealed command can and cannot do. A command runs in the clean
-room only when the validated execution record carries `executor: "cleanroom"` (Stage 4A's standing match will be the
-first setter; until then no production call selects it).
+room only when the validated execution record carries `executor: "cleanroom"` (Stage 4A selects it for a scheduled command's fourth approved run and for every standing use; see Standing approval).
 
 - **Directories:** a fresh empty room (cwd, the only writable place; the room path itself cannot be re-created once removed)
   and a fresh empty home holding only the profile sidecar `cleanroom.sb`, both under `<cache>/cleanroom/`, removed after the
@@ -1227,10 +1226,24 @@ first setter; until then no production call selects it).
   that leaves the room keeps TCP egress until it exits (CPU-bounded by `ulimit -t 600`, not wall-bounded). Nothing
   enforces "no background processes"; the approval card states it as a condition.
 - **Audit:** the `tool_finished` ledger event of a sealed call carries `executor: "cleanroom"` and
-  `cleanroom: { ran, torn_down, tampered, escaped }` (booleans, never bodies), on success, failure, timeout and cancel.
+  `cleanroom: { ran, torn_down, tampered, escaped, exit_code, truncated, check_failed, room, reason }` (booleans, an exit code and short reason codes, never bodies), on success, failure, timeout and cancel.
   Incident kinds: `cleanroom_sweep`, `cleanroom_unavailable`, `cleanroom_setup`, `cleanroom_invalid`,
   `cleanroom_tampered` (pre-spawn or post-run), `cleanroom_check_failed`, `cleanroom_teardown_failed`, plus the shell
   tool's `shell_escaped` (`source: pipe | orphan_scan | both`).
 - **Gate:** `node scripts/live-gate-cleanroom-runtime.mjs` (23 lines; PASS requires HTTPS 200 from a sealed run; offline
   → INCONCLUSIVE, exit 2).
+
+## Standing approval (Stage 4A, ADR 0030 §8.3)
+
+**No environment variable.** Durations are code constants (`src/decisions/standing-approval.ts`, and `STANDING_STREAK` in `run-store.ts`). Not configurable; recorded here so an operator knows what stands and how to end it.
+
+- **The rule:** three distinct consumed approvals of the same key (schedule, chat, byte-identical command fingerprint) from three distinct scheduled runs make it a candidate; the fourth runs sealed in the clean room; the grant is automatic when every fact is true (`succeeded`, exit 0, not truncated, ran, torn down, not tampered, not escaped, check not failed, run completed, report delivered). One use per run (store CAS); 30-day expiry; deny block 30 days; a streak or candidate idle 30 days is ended; a sealing row with no call facts ends at 24 h. No credit is earned for an approval consumed while the chat's transcript is hostile; clean-room availability is checked at trial selection and at every use.
+- **What Paco sees:** the fourth card's "Why:" line (verbatim `STANDING_TRIAL_LINE`); the grant card with Revoke; `/schedule` → "常驻批准" with `#N label · schedule · 到期 date` and one Revoke each; digest "Standing approvals" lines for `sealed_trial_failed`, `denied`, `expired`, `stale`, `mismatch`, covering `[previous cutoff, now)` so each ending is listed once. A broken seal on a use (`tampered_use`) or a use with no readable clean-room facts (`unverified_use`) ends the grant with an urgent card (`standing_unverified:<id>` for the latter) and no digest line.
+- **Callback:** `dec:sa:<standing_id>:revoke` (the row's chat only, one-shot).
+- **Intake denials:** `APPROVAL_CHAT_MISMATCH` (no reply on purpose, so a foreign chat cannot learn an approval id is live) and `STANDING_HOOK_FAILED` are handled denials; the poll loop advances.
+- **Ledger events:** `standing_streak|sealing|sealed|granted|used|ended` (ids, reasons, counts, seal facts — never command bytes).
+- **Incident kinds:** `standing_hook_failed` (deny hook SQL error: the resolution rolls back whole, the tap is refused with `STANDING_HOOK_FAILED` and Paco is told the standing approval may still be live — Revoke from `/schedule` or tap again), `standing_credit_failed` (a credit fault after a consume: the command ran, uncredited), `standing_evidence_failed` (a seal whose evidence re-read found a gap: the trial ended), `standing_card_failed` (a tamper end whose urgent card could not be queued), `standing_settle_failed` (keyed per standing row), `standing_sweep_failed`.
+- **End reasons** include `tampered_use` and `unverified_use` (see above).
+- **Tables:** `standing_approvals`, `standing_uses`.
+- **Gate:** `node scripts/live-gate-standing-approval.mjs` (15 lines; offline → INCONCLUSIVE exit 2; `--only` → PARTIAL exit 3, never a shipping PASS). Rollback: `node scripts/check-standing-rollback.mjs --old-dist …`.
 
