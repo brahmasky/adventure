@@ -75,6 +75,8 @@ describe("standing_* ledger events", () => {
     expect(ev("standing_streak", { standing_id: "sa_1", run_id: "r", approval_id: "a" })).toEqual({ ok: false, error: "standing_streak missing required payload field: streak" });
     expect(ev("standing_sealing", { standing_id: "sa_1", run_id: "r", tool_call_id: "t", approval_id: "a" })).toEqual({ ok: true });
     expect(ev("standing_sealed", { standing_id: "sa_1", run_id: "r", tool_call_id: "t" })).toEqual({ ok: true });
+    expect(ev("standing_sealing", { standing_id: "sa_1", run_id: "r", tool_call_id: "t" })).toEqual({ ok: false, error: "standing_sealing missing required payload field: approval_id" });
+    expect(ev("standing_sealed", { standing_id: "sa_1", run_id: "r" })).toEqual({ ok: false, error: "standing_sealed missing required payload field: tool_call_id" });
     expect(ev("standing_ended", { standing_id: "sa_1" })).toEqual({ ok: false, error: "standing_ended missing required payload field: reason" });
   });
 });
