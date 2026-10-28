@@ -120,6 +120,9 @@ function seedRows(m, path, root) {
     });
     const used = s.standingUse({ standing_id: seed.standing_id, action_fingerprint, run_id: run, tool_call_id: "rb-tc5", now }); // the sixth event type, through the real CAS
     if (!used.ok) throw new Error(`seed standing use refused: ${used.code}`);
+    // A standing use with no readable clean-room facts after a terminal run is ended as unverified, so the use carries its seal facts.
+    s.appendRunLedgerEvent(run, "tool_finished", "core", { tool_call_id: "rb-tc5", status: "succeeded", output_hash: "rb-out", duration_ms: 1, bytes_out: 3, executor: "cleanroom",
+      cleanroom: { ran: true, torn_down: true, tampered: false, escaped: false, exit_code: 0, truncated: false, check_failed: false, room: "room-rb4a" } });
     if (!s.finishRun({ run_id: run, expected_worker_id: "rollback-4a", next: "completed", report_ref: "runs/rollback-check-4a.md", duration_ms: 1, tool_calls: 1 })) throw new Error("the seed run did not complete");
     return { run, schedule_id, action_fingerprint, ...seed };
   } finally { s.close(); }
