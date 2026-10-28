@@ -570,3 +570,8 @@ Rules Claude writes for itself after corrections. Review at session start.
   the resolver's socket; TCP egress only; other LAN hosts reachable" after codex asked what each rule actually covered.
 - **A reviewer's "ran the plan's code" catches what reading cannot.** The in-process listener deadlock (spawnSync blocks
   the loop the listener needs) would have cost an implementer round; the senior hit it in minutes on a scratch copy.
+- **A Seatbelt profile cannot wrap a process that itself needs `ps` or `sandbox-exec`** (measured 2026-10-28 while
+  trying to sandbox the self-write test gate): inside any profile, even a bare `(allow default)`, `/bin/ps` refuses to
+  exec and a second `sandbox-exec` fails with `sandbox_apply: Operation not permitted`. Houge's shell wrapper uses `ps`
+  and its own test suite runs sealed rooms, so the test gate can only be isolated by a different mechanism (an OS user,
+  SP3). Measure the wrapped workload under a bare profile before designing the rules.
