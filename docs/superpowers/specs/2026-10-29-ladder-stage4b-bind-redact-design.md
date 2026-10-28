@@ -1,6 +1,6 @@
 # Decision ladder, stage 4 slice B — `approval.bind` and `secret.redact` as locked entries, and Stage 4's differential gate (Rev 2)
 
-**Status:** **Rev 2 — after the senior review (Sonnet, probed live code + DB: 1 blocker, 4 warnings, 4 suggestions) and the codex review (4 blockers, 2 warnings, 1 suggestion); every finding applied (§Rev 2 changes).** Not approved. Both reviewers back 1-A, 2-A, 3-A. Decisions 1–3 below are Paco's.
+**Status:** **Rev 2 — after the senior review (Sonnet, probed live code + DB: 1 blocker, 4 warnings, 4 suggestions) and the codex review (4 blockers, 2 warnings, 1 suggestion); every finding applied (§Rev 2 changes). APPROVED by Paco 2026-10-29: Decisions 1-A, 2-A, 3-A.**
 **Date:** 2026-10-29
 **Amends:** ADR 0030 Amendment 2026-10-28 (Stage 4A), its line "**B14 / `approval.bind`:** … `approval.bind` stays a locked id with no module" — under **either** answer to Decision 1 that line is false once this slice registers the module, so it is rewritten; under 1-A it becomes "`approval.bind` records the consume; the standing case stays in `tool.policy` + the sink CAS". `docs/ROADMAP.md` Stage 4 (closes the stage's gate column).
 **Depends on:** ADR 0030 §4.1 (entry), §6.1 (inventory rows B14, E8), §6.2 (move, don't improve), §13 rollout row 4 (`docs/superpowers/specs/2026-10-12-decision-ladder-design.md:1150`); Stage 3 wiring (`2026-10-26-ladder-stage-3-wiring-design.md` §2–§5, merged through `fb03d00`); Stage 4A (`2026-10-28-ladder-stage4a-standing-approval-design.md`, shipped `6be9529`, kickstart owed).
