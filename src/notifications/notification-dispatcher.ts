@@ -14,6 +14,8 @@ export interface NotificationAdapters {
 export interface NotificationDispatcherOptions {
   lease_ttl_seconds?: number;
   max_attempts?: number;
+  /** Called after markDelivered committed (Stage 4A settles a sealed run here). A throw is logged and never reclassifies the delivered message. */
+  onDelivered?: (record: NotificationRecord) => void;
 }
 
 export type DispatchResult =
@@ -26,6 +28,7 @@ const DEFAULT_LEASE_TTL_SECONDS = 30;
 export class NotificationDispatcher {
   private readonly leaseTtlSeconds: number;
   private readonly maxAttempts: number;
+  private readonly onDelivered: ((record: NotificationRecord) => void) | undefined;
 
   constructor(
     private readonly outbox: NotificationOutbox,
@@ -34,6 +37,7 @@ export class NotificationDispatcher {
   ) {
     this.leaseTtlSeconds = options.lease_ttl_seconds ?? DEFAULT_LEASE_TTL_SECONDS;
     this.maxAttempts = options.max_attempts ?? NOTIFICATION_MAX_ATTEMPTS;
+    this.onDelivered = options.onDelivered;
   }
 
   async dispatchOnce(lease_owner: string): Promise<DispatchResult> {
@@ -46,6 +50,7 @@ export class NotificationDispatcher {
     try {
       const sent = await adapter.send(toDispatchRecord(claimed));
       this.outbox.markDelivered(claimed.notification_id, sent.provider_message_id);
+      this.afterDelivered(claimed);
       return { status: "delivered", notification_id: claimed.notification_id };
     } catch (error) {
       const error_ref = error instanceof Error ? error.message : String(error);
@@ -63,6 +68,13 @@ export class NotificationDispatcher {
         retryable: after?.state === "retry_wait"
       };
     }
+  }
+
+  /** Its own catch: the row is already delivered, so nothing here may reach the markFailed arm below. */
+  private afterDelivered(record: NotificationRecord): void {
+    if (!this.onDelivered) return;
+    try { this.onDelivered(record); }
+    catch (error) { console.error(`[notification-dispatcher] onDelivered failed for ${record.notification_id}: ${error instanceof Error ? error.message : String(error)}`); }
   }
 
   private selectAdapter(record: NotificationRecord): NotificationAdapter {

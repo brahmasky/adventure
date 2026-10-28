@@ -56,4 +56,21 @@ describe("NotificationDispatcher", () => {
       store.close();
     }
   });
+  it("onDelivered runs after the delivered row committed; a throwing hook never turns the delivered message into a failure", async () => {
+    // Stage 4A §7: settlement rides delivery, but a settlement error must not make Houge resend (or mark failed) what Paco already has
+    const store = RunStore.openInMemory();
+    try {
+      const outbox = new NotificationOutbox(store);
+      const record = outbox.enqueue({ target: { kind: "telegram", chat_id: "222" }, intent_type: "final_report", idempotency_key: "run_9:final_report", run_id: "run_9", correlation_id: "run_9", payload: { text: "200" } });
+      const seen: string[] = [];
+      const dispatcher = new NotificationDispatcher(outbox, { local: { send: async () => ({ provider_message_id: "local:1" }) }, telegram: { send: async () => ({ provider_message_id: "telegram:7" }) } },
+        { onDelivered: (r) => { seen.push(`${r.idempotency_key}=${String(outbox.get(r.notification_id)?.state)}`); throw new Error("settle failed"); } });
+      await expect(dispatcher.dispatchOnce("sender-1")).resolves.toEqual({ status: "delivered", notification_id: record.notification_id });
+      expect(seen).toEqual(["run_9:final_report=delivered"]);
+      expect(outbox.get(record.notification_id)?.state).toBe("delivered");
+      await expect(dispatcher.dispatchOnce("sender-1")).resolves.toEqual({ status: "idle" }); // nothing requeued
+    } finally {
+      store.close();
+    }
+  });
 });

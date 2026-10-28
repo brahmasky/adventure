@@ -8,9 +8,11 @@ import type { RunStore } from "../run/run-store.js";
  */
 export interface UrgentCard { chat_id: string; key: string; text: string; buttons?: NotificationButton[] }
 
-export function enqueueUrgentCard(store: RunStore, c: UrgentCard): void {
-  store.enqueueNotification({
+/** The outbox row id (a redelivered key returns the first row's): Stage 4A stores the grant card's id on the standing row. Null on a payload conflict — the grant treats that as fatal: no grant without its Revoke card. */
+export function enqueueUrgentCard(store: RunStore, c: UrgentCard): string | null {
+  const r = store.enqueueNotification({
     target: { kind: "telegram", chat_id: c.chat_id }, intent_type: "progress", idempotency_key: `urgent:${c.key}`, correlation_id: c.key,
     payload: { text: c.text, ...(c.buttons && c.buttons.length > 0 ? { buttons: c.buttons } : {}) }
   });
+  return r.status === "conflict" ? null : r.record.notification_id;
 }

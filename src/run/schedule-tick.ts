@@ -1,3 +1,5 @@
+import { runStandingSweep } from "../decisions/standing-approval.js";
+import { errorCode } from "../domain/error-code.js";
 import { buildTypedTaskEvent } from "../domain/types.js";
 import type { TypedTaskEvent } from "../domain/types.js";
 import type { GatewayIntakeResult } from "../gateway/gateway.js";
@@ -7,6 +9,7 @@ import {
   resolveSchedulerEnabled,
   type ScheduleSpec
 } from "./schedule-spec.js";
+import { openAlertedIncident } from "./incident-alert.js";
 import type { RunStore, ScheduledTaskRow } from "./run-store.js";
 
 /**
@@ -54,6 +57,15 @@ export interface ScheduleTickResult {
   failures: number;
 }
 
+/** Stage 4A's per-cycle sweep. Its own catch: a sweep error is an incident and never blocks a due fire. */
+function sweepStanding(store: RunStore, now: string, env: NodeJS.ProcessEnv): void {
+  try { runStandingSweep(store, now); }
+  catch (error) {
+    console.error(`[schedule-tick] standing sweep failed: ${errorCode(error)}`);
+    try { openAlertedIncident(store, { kind: "standing_sweep_failed", subject: "daemon", detail: { error: errorCode(error) }, env, now }); } catch { /* the store itself may be the failure */ }
+  }
+}
+
 /**
  * Fire due schedules (at most {@link SCHEDULE_TICK_MAX_FIRES_PER_TICK}). Per task:
  * intake → on created: advance next_run_at (fire-then-run — a crash mid-run must not
@@ -66,6 +78,7 @@ export interface ScheduleTickResult {
 export async function maybeFireScheduledTasks(input: ScheduleTickInput): Promise<ScheduleTickResult> {
   const env = input.env ?? process.env;
   const result: ScheduleTickResult = { fired: 0, skipped_duplicates: 0, failures: 0 };
+  sweepStanding(input.store, input.now, env); // before the flag: a scheduler that is off still settles, expires and ends standing rows
   if (!resolveSchedulerEnabled(env)) return result;
 
   for (const task of input.store.listDueScheduledTasks(input.now, SCHEDULE_TICK_MAX_FIRES_PER_TICK)) {

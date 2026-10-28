@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { SEALING_TTL_MS } from "../../src/decisions/standing-approval.js";
+import { buildTypedTaskEvent } from "../../src/domain/types.js";
 import { Gateway } from "../../src/gateway/gateway.js";
 import type { GatewayIntakeResult } from "../../src/gateway/gateway.js";
 import { RunStore } from "../../src/run/run-store.js";
@@ -303,5 +305,29 @@ describe("maybeFireScheduledTasks — the daemon's stop (live 2026-10-02)", () =
     const due = store.listDueScheduledTasks(NOW, 10).map((t) => t.schedule_id);
     expect(due).toHaveLength(1);
     expect([first.schedule_id, second.schedule_id]).toContain(due[0]);
+  });
+});
+
+describe("the standing sweep rides the schedule tick (Stage 4A §7)", () => {
+  function sealingPastTtl() {
+    const r = new Gateway(store).intake(buildTypedTaskEvent({ source: "schedule", type: "turn", program: "turn", goal: "post", requested_by: { kind: "schedule", id: "sch_x" },
+      notify: { kind: "telegram", chat_id: "555" }, idempotency_key: "schedule:sch_x:1", source_reference: "scheduled_tasks.sch_x" }));
+    if (!r.ok) throw new Error("intake");
+    return store.insertStandingApprovalForTest({ schedule_id: "sch_x", chat_id: "555", action_fingerprint: "fp", state: "sealing", sealed_run_id: r.run_id, sealed_tool_call_id: "tc",
+      sealing_started_at: new Date(Date.parse(NOW) - SEALING_TTL_MS - 1).toISOString() });
+  }
+  it("runs before the scheduler flag: with the scheduler off a sealing row past its 24 h TTL still ends", async () => {
+    const row = sealingPastTtl();
+    await maybeFireScheduledTasks({ store, gateway: new Gateway(store), worker: fakeWorker([]), now: NOW, env: {} });
+    expect(store.getStandingApproval(row.standing_id)).toMatchObject({ state: "ended", ended_reason: "sealed_trial_failed" });
+  });
+  it("a sweep that throws opens standing_sweep_failed and the due schedule still fires", async () => {
+    addWeekly();
+    const broken = Object.create(store) as RunStore;
+    (broken as { listStandingApprovals: unknown }).listStandingApprovals = () => { throw new Error("disk I/O error"); };
+    const executed: Array<{ run_id: string; worker_id: string }> = [];
+    const result = await maybeFireScheduledTasks({ store: broken, gateway: new Gateway(store), worker: fakeWorker(executed), now: NOW, env: ARMED });
+    expect(result.fired).toBe(1);
+    expect(store.findOpenIncident(store.incidentFingerprint("standing_sweep_failed", "daemon"))).toBeDefined();
   });
 });

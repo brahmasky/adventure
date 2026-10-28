@@ -7043,6 +7043,46 @@ export class RunStore {
     if (this.getScheduledTask(row.schedule_id)?.state !== "enabled") return "schedule_not_enabled";
     return null;
   }
+  /**
+   * Decision 1-A: sealing → standing behind one CAS; the auto move (§4.3: approval.standing on tool.policy only), the seal facts and
+   * the grant land together. Null when the row is no longer sealing. Called only by `grantStanding`, inside the transaction that
+   * re-read the evidence: this method checks the row's state, not the evidence.
+   */
+  markStandingGranted(i: { standing_id: string; evidence: string[]; expires_at: string; now: string; facts: Record<string, unknown> }): string | null {
+    return this.joinTransaction(() => {
+      const row = this.getStandingApproval(i.standing_id);
+      if (!row || row.state !== "sealing" || !row.sealed_run_id || !row.sealed_tool_call_id) return null;
+      const r = this.db.prepare(`UPDATE standing_approvals SET state = 'standing', expires_at = ?, updated_at = ? WHERE standing_id = ? AND state = 'sealing'`).run(i.expires_at, i.now, i.standing_id);
+      if (r.changes !== 1) return null;
+      const move_id = this.insertLadderMove({ entry_id: "tool.policy", scope: i.standing_id, from_rung: "paco", to_rung: "rule", evidence: i.evidence, granted_by: "auto",
+        granted_via: "approval.standing", paco_callback_id: null, revocable: true, created_at: i.now });
+      this.db.prepare(`UPDATE standing_approvals SET move_id = ? WHERE standing_id = ?`).run(move_id, i.standing_id);
+      this.appendStandingLedgerEvent("standing_sealed", { standing_id: i.standing_id, run_id: row.sealed_run_id, tool_call_id: row.sealed_tool_call_id, ...i.facts }, row.sealed_run_id);
+      this.appendStandingLedgerEvent("standing_granted", { standing_id: i.standing_id, move_id });
+      return move_id;
+    });
+  }
+  /** §6 pre-spawn: nothing ran, so the trial is void — back to candidate on the three credited approvals; the spent fourth is dropped and the next run asks again. */
+  resetStandingToCandidate(i: { standing_id: string; now: string; reason: string }): boolean {
+    return this.joinTransaction(() => {
+      const row = this.getStandingApproval(i.standing_id);
+      if (!row || row.state !== "sealing") return false;
+      const ids = (JSON.parse(row.approval_ids_json) as string[]).slice(0, STANDING_STREAK);
+      const r = this.db.prepare(`UPDATE standing_approvals SET state = 'candidate', approval_ids_json = ?, sealing_approval_id = NULL, sealed_run_id = NULL, sealed_tool_call_id = NULL,
+        sealing_started_at = NULL, updated_at = ? WHERE standing_id = ? AND state = 'sealing'`).run(JSON.stringify(ids), i.now, i.standing_id);
+      if (r.changes !== 1) return false;
+      this.appendStandingLedgerEvent("standing_streak", { standing_id: i.standing_id, run_id: row.sealed_run_id ?? "", approval_id: row.sealing_approval_id ?? "", streak: ids.length, reset: i.reason },
+        row.sealed_run_id ?? undefined);
+      return true;
+    });
+  }
+  setStandingGrantNotification(standing_id: string, notification_id: string, now: string): void {
+    this.db.prepare(`UPDATE standing_approvals SET grant_notification_id = ?, updated_at = ? WHERE standing_id = ?`).run(notification_id, now, standing_id);
+  }
+  /** The per-run uses of one grant (at most one per fire): the sweep re-reads their facts so a broken seal ends the grant. */
+  listStandingUses(standing_id: string): Array<{ run_id: string; tool_call_id: string; used_at: string }> {
+    return this.db.prepare(`SELECT run_id, tool_call_id, used_at FROM standing_uses WHERE standing_id = ? ORDER BY used_at ASC, run_id ASC`).all<{ run_id: string; tool_call_id: string; used_at: string }>(standing_id);
+  }
   /** §7 deny hook, plain statements in the caller's transaction: every live row of (chat, fingerprint) ends with the 30-day block; a scheduled run with no row gets an ended row carrying it. */
   private standingDeny(a: Pick<ToolApprovalRow, "run_id" | "capability" | "action_fingerprint" | "summary">, now: string): void {
     try {

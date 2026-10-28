@@ -10,6 +10,7 @@ import { runLessonConsolidateTick } from "../capabilities/lesson-consolidate.js"
 import { runSkillReverifyTick } from "../capabilities/skill-reverify.js";
 import { resolveWikiEnabled } from "../capabilities/wiki.js";
 import { runDecisionDigestTick } from "../decisions/digest.js";
+import { settleDeliveredReport } from "../decisions/standing-approval.js";
 import { reportOmpCheck, tickCorrelationId, tickSeat } from "../llm/registry.js";
 import { newestMtimeMs } from "../capabilities/self-write-merge.js";
 import { maybeAskSessionRating } from "../capabilities/session-rating.js";
@@ -35,7 +36,7 @@ import { warnUnknownJevLanesOff } from "../jev/jev-flags.js";
 import { embedText, resolveEmbedConfig } from "../llm/embeddings.js";
 import { resolveMediaIngestEnabled } from "../media/media-config.js";
 import { LocalNotificationAdapter } from "../notifications/local-notification-adapter.js";
-import { NotificationDispatcher } from "../notifications/notification-dispatcher.js";
+import { NotificationDispatcher, type NotificationAdapters } from "../notifications/notification-dispatcher.js";
 import { NotificationOutbox } from "../notifications/notification-outbox.js";
 import { resolveBackupEnabled, runDbBackupTick } from "../run/db-backup.js";
 import type { LlmCallRole, ReloadMarker, RunStore } from "../run/run-store.js";
@@ -165,6 +166,11 @@ function isAbortError(err: unknown): boolean {
   return err instanceof Error && err.name === "AbortError";
 }
 
+/** The daemon's one sender: a delivered terminal notice settles that run's sealed trial and standing uses at once (Stage 4A §7); the schedule tick's sweep is the net. */
+export function createOutboxDispatcher(store: RunStore, adapters: NotificationAdapters): NotificationDispatcher {
+  return new NotificationDispatcher(new NotificationOutbox(store), adapters, { onDelivered: (record) => settleDeliveredReport(store, record) });
+}
+
 /**
  * The always-on daemon: a continuous long-poll loop that holds a Telegram
  * connection and answers commands in near-real-time. Resilient by construction —
@@ -246,7 +252,7 @@ export async function runTelegramDaemon(
       });
     }
   });
-  const dispatcher = new NotificationDispatcher(new NotificationOutbox(options.store), {
+  const dispatcher = createOutboxDispatcher(options.store, {
     local: new LocalNotificationAdapter(),
     telegram: workspaceTelegramAdapter(options.telegramClient, options.omp?.dataDir ?? options.projectRoot)
   });
