@@ -1,5 +1,5 @@
 import type { Entry, RungAnswer } from "../types.js";
-import type { CapabilityDecision } from "../../policy/capability-policy.js";
+import { STANDING_MISMATCH_REASON, STANDING_REASON, type CapabilityDecision } from "../../policy/capability-policy.js";
 
 export type ToolPolicyVerdict = "allowed" | "requires_approval" | "denied";
 
@@ -9,6 +9,8 @@ const REASON_MAP: Readonly<Record<string, string>> = {
   "Capability not allowed by task contract": "capability_not_allowed",
   "Capability has gated side effects": "gated_side_effect",
   "Turn trust asks for a tap": "trust_ask",
+  [STANDING_REASON]: "standing",
+  [STANDING_MISMATCH_REASON]: "standing_mismatch",
   "Capability allowed by task contract": "allowed",
 };
 function rule(s: { decision: CapabilityDecision["decision"]; reason?: string }): RungAnswer<ToolPolicyVerdict> {
@@ -21,7 +23,7 @@ function rule(s: { decision: CapabilityDecision["decision"]; reason?: string }):
 }
 
 export const TOOL_POLICY: Entry<{ decision: CapabilityDecision["decision"]; reason?: string }, ToolPolicyVerdict> = {
-  id: "tool.policy", version: 2, stage: "pre_tool", input: "tool",
+  id: "tool.policy", version: 3, stage: "pre_tool", input: "tool",
   question: "Is this tool call permitted by policy?",
   verdicts: ["allowed", "requires_approval", "denied"],
   ladder: [{ kind: "rule", name: "policy", decide: rule }],
@@ -33,6 +35,8 @@ export const TOOL_POLICY: Entry<{ decision: CapabilityDecision["decision"]; reas
     "capability_not_allowed",
     "gated_side_effect",
     "trust_ask",
+    "standing",
+    "standing_mismatch",
     "allowed",
   ],
 };

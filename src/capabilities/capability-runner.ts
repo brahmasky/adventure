@@ -5,7 +5,7 @@ import { TOOL_POLICY } from "../decisions/entries/tool-policy.js";
 import type { DecisionRecorder } from "../decisions/types.js";
 import { canonicalJson, stableHash } from "../domain/canonical.js";
 import type { CompiledTaskContract, Identity } from "../domain/types.js";
-import { decideCapability } from "../policy/capability-policy.js";
+import { decideCapability, type CapabilityDecision, STANDING_MISMATCH_REASON, STANDING_REASON } from "../policy/capability-policy.js";
 import type { SsrfContext, ToolAdapterResult, ToolMetadata, ToolRegistry } from "../tools/tool-registry.js";
 import type { BudgetLedger } from "../budget/budget-ledger.js";
 import type { ApprovalRequestInput } from "../run/run-store.js";
@@ -45,8 +45,28 @@ export interface ApprovalRequestSink {
     tool_call_id: string;
     operation_id: string;
     consumed_at: string;
-  }): { ok: true; approval_id: string; state: "consumed" } | { ok: false; error: { code: string; message: string } };
+    standing_trial?: { standing_id: string };
+  }):
+    | {
+        ok: true;
+        approval_id: string;
+        state: "consumed";
+        /** Audit/test-only: the store owns candidate → sealing; no production caller reads this. */
+        sealing?: boolean;
+      }
+    | { ok: false; error: { code: string; message: string } };
+  /** The store CAS behind a standing use (Stage 4A §7). A sink that cannot authorise one omits it; the runner then asks. */
+  standingUse?(input: StandingUseInput): StandingUseResult;
 }
+
+export interface StandingUseInput {
+  standing_id: string;
+  action_fingerprint: string;
+  run_id: string;
+  tool_call_id: string;
+}
+
+export type StandingUseResult = { ok: true; move_id: string } | { ok: false; code: string };
 
 export interface CapabilityExecutionInput {
   run_id?: string;
@@ -63,6 +83,10 @@ export interface CapabilityExecutionInput {
   tool_call_id?: string;
   /** turn.trust's added tap (spec §7.2), outside `input` so the action fingerprint is unchanged. */
   trust_ask?: boolean;
+  /** Stage 4A: the bridge's selector for a `standing` row of this run's schedule — authorised only by the sink's CAS. Outside `input`, so the fingerprint is unchanged. */
+  standing?: { standing_id: string };
+  /** Stage 4A: the fourth-run trial selector; rides the consume so the store can move candidate → sealing behind the same CAS. */
+  standing_trial?: { standing_id: string };
 }
 
 export class CapabilityRunner {
@@ -103,22 +127,22 @@ export class CapabilityRunner {
       };
     }
 
-    const decision = decideCapability({
-      capability: input.capability,
-      category: metadata.category,
-      side_effect_level: metadata.side_effect_level,
-      risk_level: metadata.risk_level,
-      allowed_actions: input.contract.allowed_actions,
-      forbidden_actions: input.contract.forbidden_actions,
-      approval_gates: input.contract.approval_gates,
-      ...(input.trust_ask === true ? { trust_ask: true } : {})
-    });
+    // The verbatim Task 6 test asserts adapter_input_json === JSON.stringify(input.input)
+    // (insertion order preserved). stableHash re-canonicalizes regardless of key order,
+    // so adapter_input_hash === stableHash(JSON.parse(adapter_input_json)) still holds.
+    // Computed before policy: a standing use's CAS is keyed on the same fingerprint the card would carry.
+    const adapter_input_json = JSON.stringify(input.input);
+    const adapter_input_hash = stableHash(input.input);
+    const action_fingerprint = actionFingerprint(input.capability, metadata, input.input);
 
-    decideSync(TOOL_POLICY, { decision: decision.decision, reason: decision.reason }, {
-      run_id: input.run_id ?? null,
-      tool_call_id: input.tool_call_id ?? null,
-      recorder: input.recorder ?? { record: () => null },
+    const policy = decideCapability({
+      capability: input.capability, category: metadata.category, side_effect_level: metadata.side_effect_level, risk_level: metadata.risk_level,
+      allowed_actions: input.contract.allowed_actions, forbidden_actions: input.contract.forbidden_actions, approval_gates: input.contract.approval_gates,
+      ...(input.trust_ask === true ? { trust_ask: true } : {}), ...(input.standing ? { standing: input.standing } : {})
     });
+    // the approved resume's authority is the approval row, never the selector
+    const decision = policy.standing && !input.approved_approval_id ? this.authoriseStanding(policy.standing.standing_id, input, action_fingerprint, ctx) : { decision: policy.decision, reason: policy.reason };
+    decideSync(TOOL_POLICY, { decision: decision.decision, reason: decision.reason }, { run_id: input.run_id ?? null, tool_call_id: input.tool_call_id ?? null, recorder });
 
     if (decision.decision === "deny") {
       if (input.approved_approval_id) {
@@ -134,19 +158,6 @@ export class CapabilityRunner {
         recovery_hint: "Report the blocked action to the user"
       };
     }
-
-    // The verbatim Task 6 test asserts adapter_input_json === JSON.stringify(input.input)
-    // (insertion order preserved). stableHash re-canonicalizes regardless of key order,
-    // so adapter_input_hash === stableHash(JSON.parse(adapter_input_json)) still holds.
-    const adapter_input_json = JSON.stringify(input.input);
-    const adapter_input_hash = stableHash(input.input);
-    const action_fingerprint = stableHash({
-      capability: input.capability,
-      side_effect_level: metadata.side_effect_level,
-      risk_level: metadata.risk_level,
-      affected_resources: [...affectedResources(input.input)].sort(),
-      adapter_input_hash
-    });
 
     if (decision.decision === "requires_approval") {
       if (!input.approved_approval_id) {
@@ -195,7 +206,8 @@ export class CapabilityRunner {
         action_fingerprint,
         tool_call_id: `tool_${randomUUID()}`,
         operation_id: `op_${randomUUID()}`,
-        consumed_at: new Date().toISOString()
+        consumed_at: new Date().toISOString(),
+        ...(input.standing_trial ? { standing_trial: input.standing_trial } : {})
       });
 
       if (!consumption.ok) {
@@ -207,6 +219,17 @@ export class CapabilityRunner {
     }
 
     return this.executeAdapter(metadata, input, signal ?? input.signal, ctx);
+  }
+
+  /**
+   * The atomic authorisation at the execution boundary (§7): only a won store CAS turns the gate into an allow; a missing sink, a
+   * missing CAS or a lost one asks. The CAS is consulted only when this call will run in the clean room — the adapter
+   * selects the room from ctx.executor alone, so a grant is never spent on an ordinary shell.
+   */
+  private authoriseStanding(standing_id: string, input: CapabilityExecutionInput, action_fingerprint: string, ctx: SsrfContext | undefined): CapabilityDecision {
+    if (ctx?.executor !== "cleanroom") return { decision: "requires_approval", reason: STANDING_MISMATCH_REASON };
+    const use = this.approvals?.standingUse?.({ standing_id, action_fingerprint, run_id: input.run_id ?? "", tool_call_id: input.tool_call_id ?? `tool_${randomUUID()}` });
+    return use?.ok ? { decision: "allow", reason: STANDING_REASON } : { decision: "requires_approval", reason: STANDING_MISMATCH_REASON };
   }
 
   private async executeAdapter(
@@ -242,6 +265,11 @@ export class CapabilityRunner {
       return { status: "failed", error_ref: errorRef(error) };
     }
   }
+}
+
+/** The action identity three approvals and a standing row are keyed on: canonical JSON of the adapter input, so key order never matters and one byte does. */
+export function actionFingerprint(capability: string, metadata: Pick<ToolMetadata, "side_effect_level" | "risk_level">, input: Record<string, unknown>): string {
+  return stableHash({ capability, side_effect_level: metadata.side_effect_level, risk_level: metadata.risk_level, affected_resources: [...affectedResources(input)].sort(), adapter_input_hash: stableHash(input) });
 }
 
 function affectedResources(input: Record<string, unknown>): string[] {

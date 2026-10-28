@@ -13,13 +13,19 @@ export interface CapabilityDecisionInput {
    * into an ask, nothing else: never a deny into an ask, never an ask into an allow, never a deny on its own.
    */
   trust_ask?: boolean;
+  /** Stage 4A: the bridge's standing selector. It can satisfy a GATE only, and only when trust does not ask; the runner must still win the store CAS. */
+  standing?: { standing_id: string };
 }
 
 export const TRUST_ASK_REASON = "Turn trust asks for a tap";
+export const STANDING_REASON = "Standing approval authorised this call";
+export const STANDING_MISMATCH_REASON = "Standing approval did not match";
 
 export interface CapabilityDecision {
   decision: PolicyDecision;
   reason: string;
+  /** echoed from the input on a gated ask with no trust ask: the runner's cue to try the CAS */
+  standing?: { standing_id: string };
 }
 
 export function decideCapability(input: CapabilityDecisionInput): CapabilityDecision {
@@ -43,7 +49,9 @@ export function decideCapability(input: CapabilityDecisionInput): CapabilityDeci
   }
 
   if (input.approval_gates.includes(input.side_effect_level)) {
-    return { decision: "requires_approval", reason: "Capability has gated side effects" };
+    // a trust ask beats standing: Paco approved these bytes on clean turns, not on one that read text aimed at the assistant
+    const standing = input.standing !== undefined && input.trust_ask !== true ? { standing: input.standing } : {};
+    return { decision: "requires_approval", reason: "Capability has gated side effects", ...standing };
   }
 
   if (input.trust_ask === true) {
