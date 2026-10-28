@@ -348,6 +348,34 @@ describe("Standing approvals in the digest (Stage 4A §8)", () => {
     const next = new Date(Date.parse(NOW) + 24 * 60 * 60 * 1000).toISOString();
     expect(buildDecisionDigest(s, next, ENV, "555")?.text ?? "").not.toContain(STANDING_DIGEST_TEXT.expired);
   });
+  it("an end stamped exactly at a digest's cutoff is listed once, by the next digest: windows are [cutoff, now), so no instant falls in two or in none", () => {
+    // the digest is built before its row commits: an end stamped at that same instant may land after the build, so `now` must belong to the next window
+    const s = RunStore.openInMemory();
+    ended(s, "denied", "2026-10-21T09:00:00.000Z");
+    ended(s, "expired", NOW); // the same millisecond as this digest's created_at
+    expect(runDecisionDigestTick({ store: s, chatId: "555", now: NOW, env: ENV })).toEqual({ ran: true, sent: true });
+    const first = String(drainOutbox(s).get("decision_digest:2026-10-21")?.text);
+    expect(first).toContain(STANDING_DIGEST_TEXT.denied);
+    expect(first).not.toContain(STANDING_DIGEST_TEXT.expired);
+    const next = new Date(Date.parse(NOW) + 24 * 60 * 60 * 1000).toISOString();
+    expect(runDecisionDigestTick({ store: s, chatId: "555", now: next, env: ENV })).toEqual({ ran: true, sent: true });
+    const second = String(drainOutbox(s).get("decision_digest:2026-10-22")?.text);
+    expect(second).toContain(STANDING_DIGEST_TEXT.expired);
+    expect(second).not.toContain(STANDING_DIGEST_TEXT.denied);
+  });
+  it("the cutoff advances only with the enqueue: a digest whose latch row cannot be written queues no message and leaves the cutoff where it was", () => {
+    const s = RunStore.openInMemory();
+    s.recordDecisionDigest({ local_date: "2026-10-19", sent: true, offered: [], created_at: "2026-10-19T10:00:00.000Z" });
+    ended(s, "expired", "2026-10-20T12:00:00.000Z");
+    const broken = Object.create(s) as RunStore;
+    broken.recordDecisionDigest = () => { throw new Error("disk I/O error"); };
+    expect(() => runDecisionDigestTick({ store: broken, chatId: "555", now: NOW, env: ENV })).toThrow(/disk I\/O/);
+    expect(s.countNotificationsByIdempotencyKey("decision_digest:2026-10-21")).toBe(0);
+    expect(s.lastSentDecisionDigestAt()).toBe("2026-10-19T10:00:00.000Z");
+    // the next tick still carries the end the failed one would have sent
+    expect(runDecisionDigestTick({ store: s, chatId: "555", now: NOW, env: ENV })).toEqual({ ran: true, sent: true });
+    expect(String(drainOutbox(s).get("decision_digest:2026-10-21")?.text)).toContain(STANDING_DIGEST_TEXT.expired);
+  });
   it("a digest that was not sent (a conflict or an empty day) does not advance the cutoff", () => {
     const s = RunStore.openInMemory();
     s.recordDecisionDigest({ local_date: "2026-10-19", sent: true, offered: [], created_at: "2026-10-19T10:00:00.000Z" });

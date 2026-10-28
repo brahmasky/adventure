@@ -277,10 +277,14 @@ export const STANDING_DIGEST_TEXT = {
   mismatch: "the command changed under the grant; it asks again"
 } as const;
 
-/** One line per standing row ended in (since, until] for one of those reasons, in the chat's own rows only (the taps it implies are chat-bound). */
+/**
+ * One line per standing row ended in [since, until) for one of those reasons, in the chat's own rows only (the taps it implies are
+ * chat-bound). Half-open, because `since` is the previous digest's `until`: consecutive windows partition time, so an end stamped at
+ * the very instant a digest was built (and perhaps committed after the build) is the next digest's, once — no dedupe, no cursor column.
+ */
 export function standingLines(store: RunStore, since: string, until: string, chatId?: string): string[] {
   const rows = store.listStandingApprovals({ state: "ended", ...(chatId !== undefined ? { chat_id: chatId } : {}) });
-  return rows.filter((r) => r.ended_at !== null && r.ended_at > since && r.ended_at <= until && r.ended_reason !== null && Object.hasOwn(STANDING_DIGEST_TEXT, r.ended_reason))
+  return rows.filter((r) => r.ended_at !== null && r.ended_at >= since && r.ended_at < until && r.ended_reason !== null && Object.hasOwn(STANDING_DIGEST_TEXT, r.ended_reason))
     .map((r) => `· ${r.label} · ${scheduleDisplayName(store.getScheduledTask(r.schedule_id)?.goal ?? "") || r.schedule_id} — ${STANDING_DIGEST_TEXT[r.ended_reason as keyof typeof STANDING_DIGEST_TEXT]}`);
 }
 
