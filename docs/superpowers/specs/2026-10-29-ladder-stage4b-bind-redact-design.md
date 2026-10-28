@@ -135,7 +135,7 @@ Lines (each PASS/FAIL; exit 0 only if all PASS):
 
 ## 8. Rollback check — `scripts/check-ladder-stage4b-rollback.mjs` (pattern `check-decisions-rollback.mjs`)
 
-No schema change: the two ids are new values in existing `decisions` columns. On a VACUUM copy written by this build (rows of both ids present, a standing row from the 4A seed), the `1451a66` dist opens it, runs its migrations, renders the digest and `/status` (count lines for unknown ids render, `digest.ts:91–103`), resolves an approval, runs a resume (no bind row written), enqueues a masked report (no redact row), and refuses a `review_ok` tap on an `approval.bind` decision (`outcomes.ts:40` checks `ENTRY_IDS`); then this build reopens it. PASS = no throw, no row lost, outputs as the old build alone would give.
+No schema change: the two ids are new values in existing `decisions` columns. On a VACUUM copy written by this build (rows of both ids present, a standing row from the 4A seed), the `1451a66` dist opens it, runs its migrations, renders the digest and `/status` (count lines for unknown ids render, `digest.ts:91–103`), resolves an approval, runs a resume (no bind row written), enqueues a masked report (no redact row), and refuses a `review_ok` outcome whose value is `approval.bind` or `secret.redact` (`outcomes.ts:37–40` checks the value against its own `ENTRY_IDS`); then this build reopens it. PASS = no throw, no row lost, outputs as the old build alone would give.
 
 ## 9. Protected files touched (Tier A under the approved spec)
 
