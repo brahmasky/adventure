@@ -3,6 +3,7 @@ import { buildTypedTaskEvent, type Identity } from "../../src/domain/types.js";
 import { Gateway } from "../../src/gateway/gateway.js";
 import { CLEANROOM_REASONS } from "../../src/omp/bridge-handler.js";
 import { PRE_SPAWN_REASONS, revokeButton, runStandingSweep, SA_PREFIX, SEALING_TTL_MS, sealVerdict, settleDeliveredReport, settleSealing, settleStandingUses, type SealInput } from "../../src/decisions/standing-approval.js";
+import { standingLines } from "../../src/decisions/digest.js";
 import { parseImprovementCallback } from "../../src/triggers/telegram-command-parser.js";
 import { RunStore } from "../../src/run/run-store.js";
 
@@ -187,10 +188,11 @@ describe("settleSealing (Decision 1-A: the grant is immediate)", () => {
     expect(s.findOpenIncident(s.incidentFingerprint("standing_evidence_failed", `standing:${f.row.standing_id}`))).toBeUndefined();
     expect(settleSealing(s, newer, NOW)).toEqual([{ standing_id: f.row.standing_id, verdict: "wait" }]); // the newer trial has no facts of its own yet
   });
-  it("a grant whose Revoke card cannot be queued does not commit: the row stays sealing with no move, no event, no card id", () => {
+  it("a grant whose Revoke card cannot be queued does not commit: the row stays sealing with no move, no event, no card id, and its own incident opens", () => {
     const s = RunStore.openInMemory(); const { row, run_id } = sealed(s);
     s.enqueueNotification({ target: { kind: "telegram", chat_id: "555" }, intent_type: "progress", idempotency_key: `urgent:standing_grant:${row.standing_id}`, correlation_id: "x", payload: { text: "another payload" } });
-    expect(() => settleSealing(s, run_id, NOW)).toThrow(/grant card/);
+    expect(settleSealing(s, run_id, NOW)).toEqual([{ standing_id: row.standing_id, verdict: "wait" }]); // nothing moved, so the next settle retries it
+    expect(s.findOpenIncident(s.incidentFingerprint("standing_settle_failed", `standing:${row.standing_id}`))).toBeDefined();
     expect(s.getStandingApproval(row.standing_id)).toMatchObject({ state: "sealing", move_id: null, grant_notification_id: null });
     expect(moves(s)).toEqual([]); expect(events(s, "standing_granted")).toEqual([]); expect(events(s, "standing_sealed")).toEqual([]);
   });
@@ -246,6 +248,18 @@ describe("settleSealing (Decision 1-A: the grant is immediate)", () => {
     const s2 = RunStore.openInMemory(); const nd = sealed(s2, { decision: false });
     expect(settleSealing(s2, nd.run_id, NOW)).toEqual([{ standing_id: nd.row.standing_id, verdict: "end" }]);
   });
+  it("one sealing row that throws never stops the next on the same run: the first opens its own incident and stays sealing, the second grants", () => {
+    const s = RunStore.openInMemory(); const f = sealed(s);
+    // listed first (older), on the same run and call; its settle is the one that throws
+    const first = s.insertStandingApprovalForTest({ schedule_id: f.schedule_id, chat_id: "555", action_fingerprint: "fp_other", state: "sealing", sealed_run_id: f.run_id, sealed_tool_call_id: "tc4",
+      sealing_approval_id: "appr_x", sealing_started_at: NOW, created_at: "2026-10-01T00:00:00.000Z" });
+    const flaky = Object.create(s) as RunStore; let calls = 0;
+    flaky.findRunState = (run_id: string) => { if (++calls === 1) throw new Error("disk I/O error"); return RunStore.prototype.findRunState.call(s, run_id); };
+    expect(settleSealing(flaky, f.run_id, NOW)).toEqual([{ standing_id: first.standing_id, verdict: "wait" }, { standing_id: f.row.standing_id, verdict: "seal" }]);
+    expect(s.getStandingApproval(first.standing_id)?.state).toBe("sealing");
+    expect(s.findOpenIncident(s.incidentFingerprint("standing_settle_failed", `standing:${first.standing_id}`))).toBeDefined();
+    expect(s.getStandingApproval(f.row.standing_id)?.state).toBe("standing");
+  });
   it("tool_finished of ANOTHER call in the run is not the sealed call's facts", () => {
     const s = RunStore.openInMemory(); const { row, run_id } = sealed(s, { facts: null });
     s.appendRunLedgerEvent(run_id, "tool_finished", "capability_runner", { ...FIN, tool_call_id: "tc_other", output_hash: "h", duration_ms: 1, bytes_out: 1 });
@@ -287,6 +301,38 @@ describe("settleStandingUses (a broken seal on a standing use ends the grant)", 
     expect(settleStandingUses(s3, bad.run_id, NOW)).toBe(0);
     expect(events(s3, "standing_ended")).toHaveLength(1);
   });
+  it("a use whose run ended with no clean-room facts, or malformed ones, ends the grant unverified_use with its move, sends Paco an urgent card, and adds no digest line", () => {
+    // a crash between the use CAS and tool_finished, or a fact the ledger cannot read: nothing proves the seal held, so the grant must not outlive the run
+    const finish = (s: RunStore, run_id: string, next: "completed" | "failed") => next === "completed"
+      ? s.finishRun({ run_id, expected_worker_id: WORKER, next, report_ref: "r.md", duration_ms: 1, tool_calls: 1 })
+      : s.finishRun({ run_id, expected_worker_id: WORKER, next, error_type: "planner_exit", error_ref: "x" });
+    const fin = (s: RunStore, run_id: string, extra: Record<string, unknown>) => s.appendRunLedgerEvent(run_id, "tool_finished", "capability_runner", { tool_call_id: "tc5", status: "succeeded",
+      output_hash: "h", duration_ms: 1, bytes_out: 3, tool: "bash", executor: "cleanroom", ...extra });
+    const cases: Array<[string, "completed" | "failed", (s: RunStore, run_id: string) => void]> = [
+      ["no tool_finished, run completed", "completed", () => undefined],
+      ["no tool_finished, run failed", "failed", () => undefined],
+      ["tool_finished without a cleanroom object", "completed", (s, r) => fin(s, r, {})],
+      ["a malformed exit code", "completed", (s, r) => fin(s, r, { cleanroom: { ...FACTS, exit_code: "0" } })]
+    ];
+    for (const [name, next, write] of cases) {
+      const s = RunStore.openInMemory(); const { row, run_id, move_id } = used(s, null);
+      write(s, run_id); finish(s, run_id, next);
+      expect([name, settleStandingUses(s, run_id, NOW)]).toEqual([name, 1]);
+      expect([name, s.getStandingApproval(row.standing_id)]).toMatchObject([name, { state: "ended", ended_reason: "unverified_use" }]);
+      expect([name, s.getLadderMove(move_id)?.state]).toEqual([name, "ended"]);
+      expect([name, s.countNotificationsByIdempotencyKey(`urgent:standing_unverified:${row.standing_id}`)]).toEqual([name, 1]);
+      expect([name, standingLines(s, "2000-01-01T00:00:00.000Z", "2100-01-01T00:00:00.000Z")]).toEqual([name, []]); // the urgent card already told him
+    }
+  });
+  it("a use with no facts yet whose run is still running waits, and the sweep keeps waiting until the run ends", () => {
+    const s = RunStore.openInMemory(); const { row, run_id } = used(s, null);
+    expect(settleStandingUses(s, run_id, NOW)).toBe(0);
+    expect(runStandingSweep(s, NOW)).toMatchObject({ ended: 0 });
+    expect(s.getStandingApproval(row.standing_id)?.state).toBe("standing");
+    s.finishRun({ run_id, expected_worker_id: WORKER, next: "completed", report_ref: "r.md", duration_ms: 1, tool_calls: 1 });
+    expect(runStandingSweep(s, NOW)).toMatchObject({ ended: 1 });
+    expect(s.getStandingApproval(row.standing_id)?.ended_reason).toBe("unverified_use");
+  });
   it("the sweep re-reads every standing row's uses, so a broken use ends its grant even when no delivery hook ran", () => {
     const s = RunStore.openInMemory(); const { row } = used(s, { escaped: true });
     expect(runStandingSweep(s, NOW)).toMatchObject({ ended: 1 });
@@ -312,7 +358,7 @@ describe("settleDeliveredReport (the dispatcher's hook)", () => {
     const c = RunStore.openInMemory(); const f = sealed(c);
     c.enqueueNotification({ target: { kind: "telegram", chat_id: "555" }, intent_type: "progress", idempotency_key: `urgent:standing_grant:${f.row.standing_id}`, correlation_id: "x", payload: { text: "another payload" } });
     expect(() => settleDeliveredReport(c, { intent_type: "final_report", idempotency_key: `${f.run_id}:final_report`, run_id: f.run_id }, {}, NOW)).not.toThrow();
-    expect(c.findOpenIncident(c.incidentFingerprint("standing_settle_failed", `run:${f.run_id}`))).toBeDefined();
+    expect(c.findOpenIncident(c.incidentFingerprint("standing_settle_failed", `standing:${f.row.standing_id}`))).toBeDefined(); // a row's own fault is keyed on the row
     expect(c.getStandingApproval(f.row.standing_id)?.state).toBe("sealing");
   });
   it("the delivery hook, not only the sweep, ends a tampered standing use when the run's report is delivered", () => {

@@ -268,7 +268,7 @@ export function improvementsToday(store: RunStore, since: string, chatId?: strin
   return { lines, button_rows, job_ids };
 }
 
-/** An end Paco did not cause by his own tap; Revoke and a cancelled schedule are his acts, and a tampered use already sent an urgent card, so none gets a line. */
+/** An end Paco did not cause by his own tap; Revoke and a cancelled schedule are his acts, and a tampered or unverified use already sent an urgent card, so none gets a line. */
 export const STANDING_DIGEST_TEXT = {
   sealed_trial_failed: "the sealed run did not seal; it keeps asking",
   denied: "denied; no standing approval for these bytes for 30 days",

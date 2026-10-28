@@ -1042,7 +1042,7 @@ export type StandingState = "streak" | "candidate" | "sealing" | "sealed" | "sta
 export type StandingTrial = Pick<StandingApprovalRow, "sealing_approval_id" | "sealed_run_id" | "sealed_tool_call_id">;
 const isTrial = (row: StandingApprovalRow, t: StandingTrial | undefined): boolean => t === undefined
   || (row.sealing_approval_id === t.sealing_approval_id && row.sealed_run_id === t.sealed_run_id && row.sealed_tool_call_id === t.sealed_tool_call_id);
-export type StandingEndReason = "sealed_trial_failed" | "denied" | "revoked" | "expired" | "schedule_ended" | "stale" | "mismatch" | "tampered_use";
+export type StandingEndReason = "sealed_trial_failed" | "denied" | "revoked" | "expired" | "schedule_ended" | "stale" | "mismatch" | "tampered_use" | "unverified_use";
 /** Why a standing use was refused; the runner then asks Paco instead (fails closed). */
 export type StandingUseRefusal = "not_standing" | "fingerprint_mismatch" | "expired" | "move_inactive" | "schedule_not_enabled" | "schedule_mismatch" | "chat_mismatch" | "already_used" | "lost";
 export interface StandingKey { schedule_id: string; chat_id: string; action_fingerprint: string }

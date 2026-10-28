@@ -56,9 +56,21 @@ export function sealVerdict(i: SealInput): SealVerdict {
 /** A seal whose evidence re-read fails reports "end"; a trial replaced before its grant, reset or end landed reports "wait" (lost: nothing moved). */
 export interface SettleOutcome { standing_id: string; verdict: SealVerdict }
 
-/** Idempotent and total over the run's sealing rows: each transition is a store CAS on state = 'sealing', so a second call finds none. Throws on a grant card conflict (no grant without its Revoke card); both callers catch. */
+/**
+ * Idempotent and total over the run's sealing rows: each transition is a store CAS on state = 'sealing', so a second call finds none.
+ * A row that throws (a grant card conflict: no grant without its Revoke card) is that row's own incident and reports "wait" — nothing
+ * moved, so the next settle retries it — and never stops the rows after it. Only the listing itself can still throw; both callers catch.
+ */
 export function settleSealing(store: RunStore, run_id: string, now: string = new Date().toISOString()): SettleOutcome[] {
-  return store.listStandingApprovals({ state: "sealing" }).filter((r) => r.sealed_run_id === run_id).map((row) => ({ standing_id: row.standing_id, verdict: settleRow(store, row, now) }));
+  return store.listStandingApprovals({ state: "sealing" }).filter((r) => r.sealed_run_id === run_id).map((row) => {
+    try { return { standing_id: row.standing_id, verdict: settleRow(store, row, now) }; }
+    catch (e) { rowSettleFailed(store, row.standing_id, e, now); return { standing_id: row.standing_id, verdict: "wait" as const }; }
+  });
+}
+
+function rowSettleFailed(store: RunStore, standing_id: string, e: unknown, now: string): void {
+  try { openAlertedIncident(store, { kind: "standing_settle_failed", subject: `standing:${standing_id}`, detail: { error: errorCode(e) }, now }); }
+  catch (inner) { console.error(`[standing] settle incident not recorded: ${errorCode(inner)}`); }
 }
 
 /** The reads a verdict needs; the settle and the grant's in-transaction re-read share them. */
@@ -168,6 +180,10 @@ export function tamperedUseText(label: string): string {
   return `🛑 **Standing approval ended** — a standing run of **${label}** reported a broken seal (tampered, escaped, a failed check or a room left behind). From the next run it asks for a tap again.`;
 }
 
+export function unverifiedUseText(label: string): string {
+  return `🛑 **Standing approval ended** — a standing run of **${label}** finished without the sealed room's report, so nothing shows the seal held. From the next run it asks for a tap again.`;
+}
+
 export function revokeButton(standing_id: string, text = "🛑 Revoke"): NotificationButton {
   const data = `${SA_PREFIX}${standing_id}:revoke`;
   if (Buffer.byteLength(data, "utf8") > 64) throw new Error("standing callback_data exceeds 64 bytes");
@@ -175,26 +191,37 @@ export function revokeButton(standing_id: string, text = "🛑 Revoke"): Notific
 }
 
 /**
- * A standing use whose own facts show a broken seal ends its grant (tampered_use; the move ends with it) and tells
- * Paco. A use with no tool_finished yet is in flight and waits; one without clean-room facts has nothing to judge. Ending wins
- * over notifying: a card conflict is an incident, never a revived grant. Idempotent: an ended row is skipped.
+ * A standing use ends its grant (the move ends with it) and Paco gets an urgent card when its own facts show a broken seal
+ * (tampered_use), or when its run ended and no well-formed clean-room facts prove the seal held (unverified_use: a crash before
+ * tool_finished, or a fact the ledger cannot read). A use with no facts on a run still in flight waits. Ending wins over notifying:
+ * a card conflict is an incident, never a revived grant. Idempotent: an ended row is skipped.
  */
 export function settleStandingUses(store: RunStore, run_id: string, now: string = new Date().toISOString()): number {
   const events = store.getLedgerEvents(run_id); let ended = 0;
   for (const u of events.filter((e) => e.event_type === "standing_used")) {
     const fin = events.find((e) => e.event_type === "tool_finished" && e.payload.tool_call_id === u.payload.tool_call_id)?.payload;
     const row = store.getStandingApproval(String(u.payload.standing_id));
-    if (!fin || !brokeSeal(fin) || row?.state !== "standing") continue;
-    if (!store.endStandingApproval({ standing_id: row.standing_id, reason: "tampered_use", now })) continue;
+    const reason = row?.state === "standing" ? useEndReason(fin, store.findRunState(run_id)) : null;
+    if (!row || !reason || !store.endStandingApproval({ standing_id: row.standing_id, reason, now })) continue;
     ended++;
-    if (enqueueUrgentCard(store, { chat_id: row.chat_id, key: `standing_tampered:${row.standing_id}`, text: tamperedUseText(row.label) }) === null) {
-      openAlertedIncident(store, { kind: "standing_card_failed", subject: `standing:${row.standing_id}`, detail: { card: "tampered_use" }, now });
+    const card = reason === "tampered_use" ? { key: "standing_tampered", text: tamperedUseText(row.label) } : { key: "standing_unverified", text: unverifiedUseText(row.label) };
+    if (enqueueUrgentCard(store, { chat_id: row.chat_id, key: `${card.key}:${row.standing_id}`, text: card.text }) === null) {
+      openAlertedIncident(store, { kind: "standing_card_failed", subject: `standing:${row.standing_id}`, detail: { card: reason }, now });
     }
   }
   return ended;
 }
 
-/** A sealed use's facts that break the seal; a non-boolean fact counts as broken (fail closed). */
+/** Runs that will never write the use's facts; a run the store no longer knows counts too (nothing can arrive), so it fails closed. */
+const USE_RUN_ENDED: ReadonlySet<string | undefined> = new Set(["completed", "failed", "cancelled", "expired", undefined]);
+
+function useEndReason(fin: Record<string, unknown> | undefined, run_state: string | undefined): "tampered_use" | "unverified_use" | null {
+  if (fin && brokeSeal(fin)) return "tampered_use";
+  if ((!fin || factsOf(fin) === null) && USE_RUN_ENDED.has(run_state)) return "unverified_use";
+  return null;
+}
+
+/** A use's facts that break the seal; a non-boolean fact counts as broken (fail closed). Absent facts are useEndReason's to judge. */
 function brokeSeal(fin: Record<string, unknown>): boolean {
   const c = fin.cleanroom;
   if (typeof c !== "object" || c === null) return false;
@@ -266,7 +293,7 @@ function settleQuietly(store: RunStore, run_id: string, now: string): number {
   catch (e) { openAlertedIncident(store, { kind: "standing_settle_failed", subject: `run:${run_id}`, detail: { error: errorCode(e) }, now }); return 0; }
 }
 
-/** The net under the delivery hook: each standing row's uses (at most one per fire over 30 days) are re-read every cycle, so a missed delivery hook still ends a broken grant. */
+/** The net under the delivery hook: each standing row's uses (at most one per fire over 30 days) are re-read every cycle, so a missed delivery hook still ends a broken or unverified grant. */
 function endTamperedUses(store: RunStore, now: string): number {
   const runs = new Set(store.listStandingApprovals({ state: "standing" }).flatMap((r) => store.listStandingUses(r.standing_id).map((u) => u.run_id)));
   let n = 0;
