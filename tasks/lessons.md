@@ -575,3 +575,10 @@ Rules Claude writes for itself after corrections. Review at session start.
   exec and a second `sandbox-exec` fails with `sandbox_apply: Operation not permitted`. Houge's shell wrapper uses `ps`
   and its own test suite runs sealed rooms, so the test gate can only be isolated by a different mechanism (an OS user,
   SP3). Measure the wrapped workload under a bare profile before designing the rules.
+
+## 2026-10-28 — Stage 4A standing approval
+
+- **A delivered notice proves receipt, not success.** Success and failure share `<run_id>:final_report` (§2). Any rule that reads "its report reached Paco" must also read the run's state and the call's own facts; the grant now needs ten code-owned facts, and "ran unknown" (no readable facts) ends a grant instead of being trusted.
+- **A provenance check keyed on one compiled file (`core-worker.js`) refuses a genuine previous build when the slice never touches that file.** Name the file the slice changes.
+- **A refusal code proved at the store and the gateway is not proved at intake.** A new denial code must also join the poll loop's handled-denial set, or one tap wedges the loop (the 2026-10-01 incident shape). Test new refusals through `runTelegramPollOnce`.
+- **A mutation reviewer and an implementer in the same worktree contaminate each other's runs.** Run them sequentially.
