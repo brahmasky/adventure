@@ -597,8 +597,8 @@ This file is protected (ADR 0011); this amendment is drafted for Paco's hand. Sp
   `ruby`, `script`, `screen` — the carriers of `setsid()`); the room write rule is a regex that excludes the room path, so
   an orphan cannot recreate the room after teardown. The room's clock is the host's (zoneinfo readable, root-owned).
 - **Children's TMPDIR.** agy, codex, the omp one-shots and the catalog now get `<cache>/children` as TMPDIR, a sibling of
-  the rooms; codex's workspace-write sandbox additionally excludes `$TMPDIR` (measured: default WROTE into TMPDIR; with the
-  key, denied). The one Houge child not bounded by any lock is the self-write **test gate** (`npm run` on codex-written
+  the rooms. (Codex's `exclude_tmpdir_env_var` was measured — default WROTE into TMPDIR, with the key denied — but is not
+  shipped: it also denies `mktemp` inside a self-write; the sibling placement alone keeps codex away from the rooms.) The one Houge child not bounded by any lock is the self-write **test gate** (`npm run` on codex-written
   code, unsandboxed, `src/run/test-gate.ts`): pre-existing, not worsened here, named for Paco — Stage 4A must not seal a
   run while a self-write is in flight, or that gate must be sandboxed first.
 - **The executor is a selector, not a proof.** `executor: "cleanroom"` lives on the per-call runtime context, outside the

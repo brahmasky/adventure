@@ -1773,7 +1773,7 @@ Plan reviewed by a senior that ran the plan's code (5 blockers) and codex (two r
 subagents (Sonnet ×3, Opus ×4), every task reviewed by a non-author model, codex as a second seat on the lifecycle and
 the seam (it found the two real blockers: a post-spawn throw reported as `ran:false`; the orphan scan could SIGKILL the
 daemon). Shipped: P8 block + exec allowlist + regex room write rule + zoneinfo reads in the profile; children's TMPDIR
-→ `<cache>/children` (codex also excludes `$TMPDIR`, measured both ways); wrapper clean-room branch; `runCleanroomShell`
+→ `<cache>/children` (a codex `$TMPDIR` deny was measured both ways and then dropped after a side-agent note: it breaks `mktemp` in self-writes; the sibling placement is the lock); wrapper clean-room branch; `runCleanroomShell`
 (total lifecycle, tamper checks, `lsof` orphan scan, teardown in `finally`); `executor: "cleanroom"` seam with a single
 incident emitter and seal facts on every result arm and the `tool_finished` ledger event; live gate 23/23. Final
 whole-branch review (Opus + codex) → one fix wave (cancel/timeout keep their facts; gate runs on a fresh machine; +30 s
