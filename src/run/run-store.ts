@@ -5098,6 +5098,11 @@ export class RunStore {
     return r ? { local_date: r.local_date, sent: r.sent, offered: JSON.parse(r.offered_json) as string[], created_at: r.created_at } : undefined;
   }
 
+  /** The persisted digest cutoff: the newest digest that went out. Its created_at commits with its enqueue, so it advances atomically with the message. */
+  lastSentDecisionDigestAt(): string | undefined {
+    return this.db.prepare(`SELECT MAX(created_at) AS at FROM decision_digests WHERE sent = 1`).get<{ at: string | null }>()?.at ?? undefined;
+  }
+
   /** A review tap counts only for a decision a digest offered after `sinceIso` (spec §8.1: unknown or stale ids write nothing). */
   wasDecisionOffered(decision_id: string, sinceIso: string): boolean {
     return this.db.prepare(`SELECT 1 AS hit FROM decision_digests d, json_each(d.offered_json) j WHERE j.value = ? AND d.created_at > ? LIMIT 1`)

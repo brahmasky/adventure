@@ -2,7 +2,7 @@ import { memoryUndoButton } from "../capabilities/memory-correct.js";
 import { memlaneUndoButton } from "../core/memory-lane-card.js";
 import type { NotificationButton } from "../notifications/notification-types.js";
 import type { DecisionRow, ImprovementJobRow, ImprovementProposalRow, RunStore } from "../run/run-store.js";
-import { formatInstantInZone, resolveDisplayZone } from "../run/schedule-spec.js";
+import { formatInstantInZone, resolveDisplayZone, scheduleDisplayName } from "../run/schedule-spec.js";
 import { skillButtons } from "../skills/promote.js";
 import { resolveImproveEnabled } from "../improve/flag.js";
 import { redactForImprove } from "./egress.js";
@@ -14,7 +14,7 @@ import type { AnyEntry, DecidedBy } from "./types.js";
 
 /**
  * The daily decision digest (2b-ii §6.1): Improvements today (what the ladder saved or moved, each with its Undo / Revert /
- * Revoke), Proposals waiting (at most 8, with Accept / Dismiss), Unsure (System One judgements near their bar, with the ✅ / ❌ review taps) and Watch (7-day numbers). Counts, health and trust live in
+ * Revoke), Standing approvals (trials that did not seal, grants that lapsed or were denied), Proposals waiting (at most 8, with Accept / Dismiss), Unsure (System One judgements near their bar, with the ✅ / ❌ review taps) and Watch (7-day numbers). Counts, health and trust live in
  * `/status`. One message per local date at HOUGE_DECISION_DIGEST_AT, through the outbox and the rich renderer; skipped when all
  * four sections are empty; waits for the day's improve tick (ruling 21). No enable flag (R13): the time is the only knob, and
  * `off` (Paco 2026-10-14) switches the summary off; the ledger under it is unchanged.
@@ -268,6 +268,22 @@ export function improvementsToday(store: RunStore, since: string, chatId?: strin
   return { lines, button_rows, job_ids };
 }
 
+/** An end Paco did not cause by his own tap; Revoke and a cancelled schedule are his acts, and a tampered use already sent an urgent card, so none gets a line. */
+export const STANDING_DIGEST_TEXT = {
+  sealed_trial_failed: "the sealed run did not seal; it keeps asking",
+  denied: "denied; no standing approval for these bytes for 30 days",
+  expired: "the 30 days ran out; it asks again",
+  stale: "no approval in 30 days; the streak was dropped",
+  mismatch: "the command changed under the grant; it asks again"
+} as const;
+
+/** One line per standing row ended in (since, until] for one of those reasons, in the chat's own rows only (the taps it implies are chat-bound). */
+export function standingLines(store: RunStore, since: string, until: string, chatId?: string): string[] {
+  const rows = store.listStandingApprovals({ state: "ended", ...(chatId !== undefined ? { chat_id: chatId } : {}) });
+  return rows.filter((r) => r.ended_at !== null && r.ended_at > since && r.ended_at <= until && r.ended_reason !== null && Object.hasOwn(STANDING_DIGEST_TEXT, r.ended_reason))
+    .map((r) => `· ${r.label} · ${scheduleDisplayName(store.getScheduledTask(r.schedule_id)?.goal ?? "") || r.schedule_id} — ${STANDING_DIGEST_TEXT[r.ended_reason as keyof typeof STANDING_DIGEST_TEXT]}`);
+}
+
 /**
  * The open proposals, oldest first, at most DIGEST_PROPOSALS_MAX, each with Accept / Dismiss; `ids` are the rendered ones only.
  * Taps are bound to the originating chat (ruling 19), so a row of another chat (or none) is neither shown nor offered.
@@ -334,13 +350,17 @@ export function watchLines(store: RunStore, now: string, env: NodeJS.ProcessEnv 
 
 export function buildDecisionDigest(store: RunStore, now: string, env: NodeJS.ProcessEnv = process.env, chatId?: string): Digest | null {
   const tz = resolveDisplayZone(env);
-  const today = improvementsToday(store, new Date(Date.parse(now) - DIGEST_WINDOW_MS).toISOString(), chatId);
+  const windowStart = new Date(Date.parse(now) - DIGEST_WINDOW_MS).toISOString();
+  const today = improvementsToday(store, windowStart, chatId);
+  // the persisted cutoff, not the window: the tick runs once per local date at a variable time, so a fixed 24 h would drop or repeat an end
+  const standing = standingLines(store, store.lastSentDecisionDigestAt() ?? windowStart, now, chatId);
   const waiting = proposalsWaiting(store, chatId);
   const unsure = unsureSection(store, now, chatId);
   const watch = watchLines(store, now, env);
-  if (today.lines.length + waiting.lines.length + unsure.lines.length + watch.length === 0) return null;
+  if (today.lines.length + standing.length + waiting.lines.length + unsure.lines.length + watch.length === 0) return null;
   const sections = [`🪜 **Decisions — ${formatInstantInZone(now, tz).slice(0, 10)}**`];
   if (today.lines.length > 0) sections.push(["**Improvements today**", ...today.lines].join("\n"));
+  if (standing.length > 0) sections.push(["**Standing approvals**", ...standing].join("\n"));
   if (waiting.lines.length > 0) sections.push(["**Proposals waiting**", ...waiting.lines].join("\n"));
   if (unsure.lines.length > 0) sections.push(["**Unsure** (✅ right · ❌ wrong)", ...unsure.lines].join("\n"));
   if (watch.length > 0) sections.push([`**Watch (${WATCH_WINDOW_DAYS} d)**`, ...watch].join("\n"));

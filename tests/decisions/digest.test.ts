@@ -3,7 +3,7 @@
 // skipped when empty, the message skipped when all three are; drafts redacted; offered_at set inside the latch transaction
 // only after the outbox reported queued. (Follow-up 1 brought the Unsure section back, below.) The counts, trust/noise, bar-stale and Health sections are gone.
 import { describe, expect, it } from "vitest";
-import { barOf, buildDecisionDigest, DIGEST_PROPOSALS_MAX, resolveDigestAt, runDecisionDigestTick, UNSURE_MAX } from "../../src/decisions/digest.js";
+import { barOf, buildDecisionDigest, DIGEST_PROPOSALS_MAX, resolveDigestAt, runDecisionDigestTick, standingLines, STANDING_DIGEST_TEXT, UNSURE_MAX } from "../../src/decisions/digest.js";
 import { REGISTRY } from "../../src/decisions/registry.js";
 import { buildTypedTaskEvent } from "../../src/domain/types.js";
 import { Gateway } from "../../src/gateway/gateway.js";
@@ -309,5 +309,50 @@ describe("the Watch line for a switched-off improvement tick", () => {
     expect(buildDecisionDigest(s, NOW, ENV)).toBeNull();
     const d = buildDecisionDigest(s, NOW, { ...ENV, HOUGE_IMPROVE_ENABLED: "false" })!;
     expect(d.text).toContain("**Watch (7 d)**\n· improvement tick off");
+  });
+});
+
+describe("Standing approvals in the digest (Stage 4A §8)", () => {
+  const ended = (s: RunStore, reason: string, ended_at: string, chat_id = "555", fp = `fp_${reason}_${ended_at}_${chat_id}`) =>
+    s.insertStandingApprovalForTest({ schedule_id: "sch_1", chat_id, action_fingerprint: fp, state: "ended", ended_reason: reason, ended_at, created_at: "2026-10-01T00:00:00.000Z" });
+  it("one line per sealed_trial_failed / denied / expired / stale / mismatch inside the window; revoked, schedule_ended (Paco's own acts), tampered_use (already an urgent card), older and later ends get none", () => {
+    const s = RunStore.openInMemory();
+    s.addScheduledTask({ chat_id: "555", goal: "x", spec_json: '{"kind":"daily","at":"11:00"}', tz: "Australia/Sydney", next_run_at: "2027-01-01T00:00:00.000Z" });
+    for (const r of ["sealed_trial_failed", "denied", "expired", "stale", "mismatch", "revoked", "schedule_ended", "tampered_use"]) ended(s, r, "2026-10-21T09:00:00.000Z");
+    ended(s, "denied", "2026-10-19T09:00:00.000Z"); // before the window
+    ended(s, "expired", "2026-10-21T11:00:01.000Z"); // after this digest's now: the next digest's
+    ended(s, "stale", "2026-10-21T09:00:00.000Z", "-999"); // another chat
+    const lines = standingLines(s, "2026-10-20T11:00:00.000Z", NOW, "555");
+    expect(lines).toHaveLength(5);
+    for (const r of ["sealed_trial_failed", "denied", "expired", "stale", "mismatch"] as const) expect(lines.some((l) => l.endsWith(STANDING_DIGEST_TEXT[r]))).toBe(true);
+    expect(lines.every((l) => l.startsWith("· HTTP write"))).toBe(true);
+  });
+  it("the section alone keeps the digest from being skipped (a failed sealed trial must reach Paco)", () => {
+    const s = RunStore.openInMemory();
+    ended(s, "sealed_trial_failed", "2026-10-21T09:00:00.000Z");
+    const d = buildDecisionDigest(s, NOW, ENV, "555");
+    expect(d?.text).toContain("**Standing approvals**");
+    expect(d?.text).toContain(STANDING_DIGEST_TEXT.sealed_trial_failed);
+    expect(buildDecisionDigest(RunStore.openInMemory(), NOW, ENV, "555")).toBeNull();
+  });
+  it("the window is the last sent digest's persisted cutoff: a tick delayed past 24 h (or a daemon that was down) still shows the end, and the next digest never repeats it", () => {
+    const s = RunStore.openInMemory();
+    s.recordDecisionDigest({ local_date: "2026-10-19", sent: true, offered: [], created_at: "2026-10-19T10:00:00.000Z" }); // 49 h before NOW
+    ended(s, "expired", "2026-10-19T12:00:00.000Z"); // 47 h before NOW: a fixed 24 h window would drop it
+    ended(s, "stale", "2026-10-19T09:00:00.000Z"); // before that cutoff: the 2026-10-19 digest already carried it
+    expect(runDecisionDigestTick({ store: s, chatId: "555", now: NOW, env: ENV })).toEqual({ ran: true, sent: true });
+    const text = String(drainOutbox(s).get("decision_digest:2026-10-21")?.text);
+    expect(text).toContain(STANDING_DIGEST_TEXT.expired);
+    expect(text).not.toContain(STANDING_DIGEST_TEXT.stale);
+    expect(s.lastSentDecisionDigestAt()).toBe(NOW); // advanced in the transaction that queued the message
+    const next = new Date(Date.parse(NOW) + 24 * 60 * 60 * 1000).toISOString();
+    expect(buildDecisionDigest(s, next, ENV, "555")?.text ?? "").not.toContain(STANDING_DIGEST_TEXT.expired);
+  });
+  it("a digest that was not sent (a conflict or an empty day) does not advance the cutoff", () => {
+    const s = RunStore.openInMemory();
+    s.recordDecisionDigest({ local_date: "2026-10-19", sent: true, offered: [], created_at: "2026-10-19T10:00:00.000Z" });
+    s.recordDecisionDigest({ local_date: "2026-10-20", sent: false, offered: [], created_at: "2026-10-20T10:00:00.000Z" });
+    expect(s.lastSentDecisionDigestAt()).toBe("2026-10-19T10:00:00.000Z");
+    expect(RunStore.openInMemory().lastSentDecisionDigestAt()).toBeUndefined();
   });
 });
