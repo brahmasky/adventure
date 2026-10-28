@@ -69,7 +69,7 @@ export const APPROVAL_BIND: Entry<{ ok: boolean; code?: string }, ApprovalBindVe
   id: "approval.bind", version: 1, stage: "pre_tool", input: "tool", locked: true,
   question: "Does this consume bind the approved row to this exact action, owner and requester?",
   verdicts: ["bound", "unbound"],
-  ladder: [{ kind: "rule", name: "consumeBinding", decide: rule }],   // ok → bound; else unbound + mapped code
+  ladder: [{ kind: "rule", name: "consumeBinding", decide: rule }],   // ok → bound; else unbound + the sink's code if listed
   fail: "unbound", defaultVerdict: "bound", alwaysRecord: true, outcomes: [], armed: { rule: "on" },
   effects: { bound: { kind: "none", reversible: true, announced: "none" }, unbound: { kind: "tighten", reversible: true, announced: "none" } },
   reasonCodes: ["no_sink", "unknown_approval", "not_approved", "expired", "action_mismatch", "owner_mismatch", "requester_mismatch", "lease_lost"],
@@ -184,7 +184,7 @@ No schema change: the two ids are new values in existing `decisions` columns. On
 - **R1 — raw drives, the entry records.** As Stage 3's code does: the call site branches on the sink's result / the redactor's output; `r.verdict` is never a second decision. Identical by construction while the rule is total; a thrown rule records `fail` and changes nothing.
 - **R2 — a throwing sink writes no bind row** and propagates as today.
 - `approval.bind` is `alwaysRecord`; `secret.redact` records only `masked`.
-- Reason codes are a closed snake_case union with a fixed map (tool-policy precedent), not the sinks' raw strings.
+- Reason codes are the omp sink's seven codes verbatim plus `no_sink` (a closed list); the run-level codes are not listed (senior S1).
 - `secret.redact` decides only when the firewall is armed; firewall-off stays row-free (move, don't improve; "unarmed" visibility is a follow-up).
 - The store's recorder is an injected factory (no run-time import of `record.ts` from `run-store.ts`).
 - The command/path differential base is `548cb87`, not `1451a66`, so Stage 3's wiring is compared too.
