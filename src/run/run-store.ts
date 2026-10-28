@@ -5912,14 +5912,19 @@ export class RunStore {
    * Cancel = state→'disabled' (reversible — rows are NEVER deleted). False when
    * absent/already off. 'failed' rows are cancellable too, or the ⚠ list entry could
    * never be cleared (verifier F2: no re-enable path exists, so a parked row was
-   * permanent list noise).
+   * permanent list noise). Ends the schedule's live standing rows in the same transaction.
    */
   cancelScheduledTask(schedule_id: string, now: string = new Date().toISOString()): boolean {
-    const result = this.db.prepare(`
-      UPDATE scheduled_tasks SET state = 'disabled', updated_at = ?
-      WHERE schedule_id = ? AND state IN ('enabled', 'failed')
-    `).run(now, schedule_id);
-    return result.changes === 1;
+    return this.joinTransaction(() => {
+      const result = this.db.prepare(`
+        UPDATE scheduled_tasks SET state = 'disabled', updated_at = ?
+        WHERE schedule_id = ? AND state IN ('enabled', 'failed')
+      `).run(now, schedule_id);
+      if (result.changes !== 1) return false;
+      // a schedule that can never fire again holds no standing authority, and no streak toward one
+      for (const r of this.listStandingApprovals({ schedule_id })) if (r.state !== "ended") this.endStandingTx({ standing_id: r.standing_id, reason: "schedule_ended", now });
+      return true;
+    });
   }
 
   /**

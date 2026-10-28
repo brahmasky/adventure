@@ -6,6 +6,7 @@ import { errorCode } from "../domain/error-code.js";
 import { computeNextRunAt, parseScheduleSpec } from "../run/schedule-spec.js";
 import { promote, TAP_STALE_DAYS } from "../skills/promote.js";
 import type { ImprovementJobRow, ImprovementProposalRow, RunStore } from "../run/run-store.js";
+import { standingRevokedText } from "../decisions/standing-approval.js";
 import { LadderMoveRefused } from "../run/run-store.js";
 import type { SkillStore } from "../skills/skill-store.js";
 import type { GatewayIntakeResult } from "./gateway.js";
@@ -14,7 +15,7 @@ import { oncePerTrigger, replyTo } from "./memory-commands.js";
 /**
  * Improvement taps (2b-ii §5.1, §5.2, §5.5, §5.6, §6.3). The adapter passed the sender allowlist; oncePerTrigger replays a
  * redelivered callback id. Every handled tap is one improvement_taps row; an action acts only on the state named for it,
- * on an offered subject, within TAP_STALE_DAYS; anything else answers TAP_HANDLED_TEXT and writes only the tap row.
+ * on an offered subject, within TAP_STALE_DAYS (a standing Revoke: within the grant's own 30 days); anything else answers TAP_HANDLED_TEXT and writes only the tap row.
  */
 export { TAP_STALE_DAYS };
 export const TAP_HANDLED_TEXT = "Already handled.";
@@ -26,7 +27,7 @@ export const PROMOTE_RETRY_TEXT = "That did not go through; it is retried at the
 const DAY_MS = 24 * 60 * 60 * 1000;
 const tapped = (): GatewayIntakeResult => ({ ok: true, status: "improvement_tapped", run_id: "" });
 const chatOf = (e: TypedTaskEvent): string => (e.notify.kind === "telegram" ? e.notify.chat_id : "");
-interface Tap { kind: "pr" | "sk" | "lm"; id: string; action: string; callback: string }
+interface Tap { kind: "pr" | "sk" | "lm" | "sa"; id: string; action: string; callback: string }
 
 export function handleImprovementTap(store: RunStore, skills: SkillStore, event: TypedTaskEvent, now: string = new Date().toISOString()): GatewayIntakeResult {
   return oncePerTrigger(store, event, () => {
@@ -34,12 +35,14 @@ export function handleImprovementTap(store: RunStore, skills: SkillStore, event:
     const tap: Tap = { kind: m.kind as Tap["kind"], id: String(m.id ?? ""), action: String(m.action ?? ""), callback: String(m.telegram_callback_id ?? "") };
     let text = TAP_FAILED_TEXT;
     try {
-      text = tap.kind === "pr" ? proposalTap(store, skills, tap, chatOf(event), now) : tap.kind === "sk" ? jobTap(store, skills, tap, chatOf(event), now) : moveTap(store, tap, chatOf(event), now);
+      text = tap.kind === "pr" ? proposalTap(store, skills, tap, chatOf(event), now) : tap.kind === "sk" ? jobTap(store, skills, tap, chatOf(event), now)
+        : tap.kind === "sa" ? standingTap(store, tap, chatOf(event), now) : moveTap(store, tap, chatOf(event), now);
     } catch (e) {
       console.error(`[improve] tap ${tap.kind}:${tap.action} failed: ${errorCode(e)}`);
     }
     try {
       const result = text === TAP_HANDLED_TEXT ? "handled" : text === TAP_FAILED_TEXT || text === PROMOTE_RETRY_TEXT ? "failed" : text === LESSON_CAPPED_HINT ? "capped" : "applied";
+      // improvement_taps.subject_kind is CHECK-bound to three kinds: a standing tap is a move tap whose id starts sa_
       store.insertImprovementTap({ subject_kind: tap.kind === "pr" ? "proposal" : tap.kind === "sk" ? "job" : "move", subject_id: tap.id, action: tap.action, telegram_callback_id: tap.callback, result, created_at: now });
       replyTo(store, event, "improvement_tap", text);
     } catch (e) {
@@ -187,6 +190,13 @@ function dismissJob(store: RunStore, skills: SkillStore, job: ImprovementJobRow,
   if (r.ok || r.error === "not_found") return "🗑 Draft retired.";
   console.error(`[improve] dismiss file move failed: ${r.error}`);
   return DISMISS_FILE_DEFERRED_TEXT;
+}
+
+/** Stage 4A §7: Revoke works for the grant's whole 30 days (never TAP_STALE_DAYS), only from the row's chat; the row and its move end in one transaction (endStandingApproval). */
+function standingTap(store: RunStore, tap: Tap, chat_id: string, now: string): string {
+  const row = store.getStandingApproval(tap.id);
+  if (!row || row.chat_id !== chat_id || row.state !== "standing") return TAP_HANDLED_TEXT;
+  return store.endStandingApproval({ standing_id: row.standing_id, reason: "revoked", now }) ? standingRevokedText(row.label) : TAP_HANDLED_TEXT;
 }
 
 /** Ruling 19: a move's chat is its proposal's (`evidence_json[0]` is the proposal id, Task 13 acceptLadder). */

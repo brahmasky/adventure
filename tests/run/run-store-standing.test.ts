@@ -384,3 +384,21 @@ describe("standingUse CAS (§7): every eligibility fact re-read under one transa
     expect(use(s, regrant.standing_id, scheduledRun(s, first.schedule_id))).toEqual({ ok: true, move_id });
   });
 });
+
+describe("cancelScheduledTask ends the schedule's standing rows at once (§7)", () => {
+  it("every live row of the cancelled schedule ends schedule_ended with its move; another schedule's row stands; a second cancel changes nothing", () => {
+    const s = RunStore.openInMemory();
+    const a = s.addScheduledTask({ chat_id: "555", goal: "a", spec_json: '{"kind":"daily","at":"11:00"}', tz: "Australia/Sydney", next_run_at: "2027-01-01T00:00:00.000Z" }).schedule_id;
+    const b = s.addScheduledTask({ chat_id: "555", goal: "b", spec_json: '{"kind":"daily","at":"11:00"}', tz: "Australia/Sydney", next_run_at: "2027-01-01T00:00:00.000Z" }).schedule_id;
+    const move_id = s.insertLadderMove({ entry_id: "tool.policy", scope: "x", from_rung: "paco", to_rung: "rule", evidence: [], granted_by: "auto", granted_via: "approval.standing", paco_callback_id: null, revocable: true });
+    const grant = s.insertStandingApprovalForTest({ ...KEY, schedule_id: a, state: "standing", move_id, expires_at: "2027-01-01T00:00:00.000Z" });
+    const streak = s.insertStandingApprovalForTest({ ...KEY, schedule_id: a, action_fingerprint: "fp2", state: "streak" });
+    const other = s.insertStandingApprovalForTest({ ...KEY, schedule_id: b, state: "standing", expires_at: "2027-01-01T00:00:00.000Z" });
+    expect(s.cancelScheduledTask(a, NOW)).toBe(true);
+    for (const r of [grant, streak]) expect(s.getStandingApproval(r.standing_id)).toMatchObject({ state: "ended", ended_reason: "schedule_ended" });
+    expect(s.getLadderMove(move_id)?.state).toBe("ended");
+    expect(s.getStandingApproval(other.standing_id)?.state).toBe("standing");
+    expect(s.cancelScheduledTask(a, NOW)).toBe(false);
+    expect(s.getLedgerEvents().filter((e) => e.event_type === "standing_ended")).toHaveLength(2);
+  });
+});

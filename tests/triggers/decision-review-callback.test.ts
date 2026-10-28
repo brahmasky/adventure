@@ -28,6 +28,11 @@ describe("the review tap through the adapter", () => {
   it("a tap from a user outside the allowlist is refused before parsing", () => {
     expect(tap(999, `dec:rv:${ID}:bad`)).toMatchObject({ ok: false, error: { code: "TELEGRAM_AUTH_DENIED" } });
   });
+  it("an allowlisted Revoke tap becomes an improvement_tap event carrying the standing id", () => {
+    const sa = "sa_0f8fad5b-d9cb-469f-a165-70867728950e";
+    expect(tap(111, `dec:sa:${sa}:revoke`)).toMatchObject({ ok: true, event: { type: "improvement_tap", notify: { kind: "telegram", chat_id: "222" }, metadata: { kind: "sa", id: sa, action: "revoke", telegram_callback_id: "cbq_9" } } });
+    expect(tap(999, `dec:sa:${sa}:revoke`)).toMatchObject({ ok: false, error: { code: "TELEGRAM_AUTH_DENIED" } });
+  });
 });
 
 // 2b-ii §6.3: three callback families, ids pr_/job_/lm_ + uuid, closed action words; anything else is null (never a command).
@@ -49,5 +54,10 @@ describe("parseImprovementCallback", () => {
     const r = tap(111, `dec:pr:pr_${u}:acc`);
     expect(r).toMatchObject({ ok: true, event: { type: "improvement_tap", notify: { chat_id: "222" }, metadata: { telegram_update_id: 3000, telegram_callback_id: "cbq_9", kind: "pr", id: `pr_${u}`, action: "acc" } } });
     expect(tap(999, `dec:pr:pr_${u}:acc`)).toMatchObject({ ok: false, error: { code: "TELEGRAM_AUTH_DENIED" } });
+  });
+  it("dec:sa:<sa_uuid>:revoke is the standing family; any other action, id shape or a move id under it is null", () => {
+    expect(parseImprovementCallback(`dec:sa:sa_${u}:revoke`)).toEqual({ kind: "sa", id: `sa_${u}`, action: "revoke" });
+    expect(Buffer.byteLength(`dec:sa:sa_${u}:revoke`)).toBeLessThanOrEqual(64);
+    for (const bad of [`dec:sa:sa_${u}:ok`, `dec:sa:sa_${u}:no`, `dec:sa:lm_${u}:revoke`, `dec:sa:sa_${u}:revoke:x`, `dec:sa:sa_${u.toUpperCase()}:revoke`, "dec:sa::revoke"]) expect(parseImprovementCallback(bad)).toBeNull();
   });
 });

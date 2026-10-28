@@ -3,6 +3,7 @@ import { buildTypedTaskEvent, type Identity } from "../../src/domain/types.js";
 import { Gateway } from "../../src/gateway/gateway.js";
 import { CLEANROOM_REASONS } from "../../src/omp/bridge-handler.js";
 import { PRE_SPAWN_REASONS, revokeButton, runStandingSweep, SA_PREFIX, SEALING_TTL_MS, sealVerdict, settleDeliveredReport, settleSealing, settleStandingUses, type SealInput } from "../../src/decisions/standing-approval.js";
+import { parseImprovementCallback } from "../../src/triggers/telegram-command-parser.js";
 import { RunStore } from "../../src/run/run-store.js";
 
 // Stage 4A §7 (Decision 1-A): a sealing row grants only when every code-owned fact of the ONE sealed call is true, the run
@@ -332,5 +333,41 @@ describe("settleDeliveredReport (the dispatcher's hook)", () => {
 describe("revokeButton", () => {
   it("carries dec:sa:<standing_id>:revoke", () => {
     expect(revokeButton("sa_0f8fad5b-d9cb-469f-a165-70867728950e")).toEqual({ text: "🛑 Revoke", data: `${SA_PREFIX}sa_0f8fad5b-d9cb-469f-a165-70867728950e:revoke` });
+  });
+});
+
+describe("the standing callback round trip", () => {
+  it("revokeButton data parses back to the standing family", () => {
+    expect(parseImprovementCallback(revokeButton("sa_0f8fad5b-d9cb-469f-a165-70867728950e").data)).toEqual({ kind: "sa", id: "sa_0f8fad5b-d9cb-469f-a165-70867728950e", action: "revoke" });
+  });
+});
+
+describe("runStandingSweep: expiry, schedule end, stale (§7)", () => {
+  function standingOn(s: RunStore, o: { expires_at?: string; schedule_state?: "enabled" | "disabled" | "failed" } = {}) {
+    const schedule_id = s.addScheduledTask({ chat_id: "555", goal: "post", spec_json: '{"kind":"daily","at":"11:00"}', tz: "Australia/Sydney", next_run_at: "2027-01-01T00:00:00.000Z", now: NOW }).schedule_id;
+    if (o.schedule_state === "disabled") s.cancelScheduledTask(schedule_id, NOW);
+    if (o.schedule_state === "failed") s.recordScheduleFailure(schedule_id, NOW, 1);
+    const move_id = s.insertLadderMove({ entry_id: "tool.policy", scope: "x", from_rung: "paco", to_rung: "rule", evidence: [], granted_by: "auto", granted_via: "approval.standing", paco_callback_id: null, revocable: true });
+    // inserted after the cancel, so only the sweep can end it (cancel's own end is tested in run-store-standing)
+    return s.insertStandingApprovalForTest({ schedule_id, chat_id: "555", action_fingerprint: `fp_${++k}`, state: "standing", move_id, expires_at: o.expires_at ?? "2026-11-27T10:00:00.000Z" });
+  }
+  it("a grant past expires_at ends expired with its move; a disabled schedule ends it schedule_ended; a failed schedule keeps it (the use CAS refuses it; an update re-enables)", () => {
+    const s = RunStore.openInMemory();
+    const old = standingOn(s, { expires_at: NOW }); const off = standingOn(s, { schedule_state: "disabled" }); const parked = standingOn(s, { schedule_state: "failed" }); const live = standingOn(s);
+    expect(runStandingSweep(s, NOW)).toEqual({ settled: 0, ended: 2 });
+    expect(s.getStandingApproval(old.standing_id)).toMatchObject({ state: "ended", ended_reason: "expired" });
+    expect(s.getLadderMove(old.move_id!)?.state).toBe("ended");
+    expect(s.getStandingApproval(off.standing_id)).toMatchObject({ state: "ended", ended_reason: "schedule_ended" });
+    expect(s.getStandingApproval(parked.standing_id)?.state).toBe("standing");
+    expect(s.getStandingApproval(live.standing_id)?.state).toBe("standing");
+  });
+  it("a streak or candidate idle 30 days ends stale; one idle 29 days stays; a sealing row is the settler's, never stale", () => {
+    const s = RunStore.openInMemory();
+    const day = 24 * 60 * 60 * 1000; const ago = (d: number) => new Date(Date.parse(NOW) - d * day).toISOString();
+    const st = s.insertStandingApprovalForTest({ schedule_id: "sch_s", chat_id: "555", action_fingerprint: "a", state: "streak", created_at: ago(30) });
+    const cand = s.insertStandingApprovalForTest({ schedule_id: "sch_c", chat_id: "555", action_fingerprint: "b", state: "candidate", created_at: ago(29) });
+    expect(runStandingSweep(s, NOW).ended).toBe(1);
+    expect(s.getStandingApproval(st.standing_id)).toMatchObject({ state: "ended", ended_reason: "stale" });
+    expect(s.getStandingApproval(cand.standing_id)?.state).toBe("candidate");
   });
 });

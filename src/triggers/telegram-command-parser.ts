@@ -345,13 +345,15 @@ export const PR_PREFIX = "dec:pr:";
 export const LM_PREFIX = "dec:lm:";
 const DEC_PROPOSAL = new RegExp(`^${PR_PREFIX}(pr_${LC_UUID}):(acc|dis|rev)$`);
 const DEC_SKILL = new RegExp(`^dec:sk:(job_${LC_UUID}):(accept|dismiss|replace|keep)$`);
+const DEC_STANDING = new RegExp(`^dec:sa:(sa_${LC_UUID}):(revoke)$`);
 const DEC_MOVE = new RegExp(`^${LM_PREFIX}(lm_${LC_UUID}):(revoke)$`);
 export type ImprovementTap =
   | { kind: "pr"; id: string; action: "acc" | "dis" | "rev" }
   | { kind: "sk"; id: string; action: "accept" | "dismiss" | "replace" | "keep" }
-  | { kind: "lm"; id: string; action: "revoke" };
+  | { kind: "lm"; id: string; action: "revoke" }
+  | { kind: "sa"; id: string; action: "revoke" };
 
-/** 2b-ii §6.3: the three improvement tap families; at most 64 bytes; anything else is null. */
+/** 2b-ii §6.3: the four improvement tap families (`dec:sa:` is Stage 4A's Revoke, 53 bytes); at most 64 bytes; anything else is null. */
 export function parseImprovementCallback(data: unknown): ImprovementTap | null {
   if (typeof data !== "string") return null;
   const pr = DEC_PROPOSAL.exec(data);
@@ -359,7 +361,9 @@ export function parseImprovementCallback(data: unknown): ImprovementTap | null {
   const sk = DEC_SKILL.exec(data);
   if (sk) return { kind: "sk", id: sk[1]!, action: sk[2] as "accept" | "dismiss" | "replace" | "keep" };
   const lm = DEC_MOVE.exec(data);
-  return lm ? { kind: "lm", id: lm[1]!, action: "revoke" } : null;
+  if (lm) return { kind: "lm", id: lm[1]!, action: "revoke" };
+  const sa = DEC_STANDING.exec(data);
+  return sa ? { kind: "sa", id: sa[1]!, action: "revoke" } : null;
 }
 
 const DEC_JEV_ACCEPT = /^dec:jv:([0-9a-f]{8}):(0|[1-9]\d{0,8}):acc$/;

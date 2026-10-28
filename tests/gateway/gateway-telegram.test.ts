@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { revokeButton } from "../../src/decisions/standing-approval.js";
 import { buildTypedTaskEvent } from "../../src/domain/types.js";
 import {
   formatScheduleCancelledText,
@@ -1070,5 +1071,35 @@ describe("/lessons <编号> single-lesson drill-in", () => {
     } finally {
       store.close();
     }
+  });
+});
+
+describe("/schedule 常驻批准 (Stage 4A §7)", () => {
+  const list = (s: RunStore, chat_id: string, key: string) => {
+    new Gateway(s).intake(buildTypedTaskEvent({ source: "telegram", type: "schedule_admin", program: "list", requested_by: { kind: "user", id: "paco" },
+      notify: { kind: "telegram", chat_id }, idempotency_key: key, source_reference: `telegram:update:${key}:message:1` }));
+    return s.claimNextNotification("test", 30)!.payload;
+  };
+  it("lists this chat's standing rows with one Revoke button each; another chat's grant is neither shown nor offered", () => {
+    const s = RunStore.openInMemory();
+    try {
+      const sch = s.addScheduledTask({ chat_id: "222", goal: "Alishan check-in post", spec_json: '{"kind":"daily","at":"11:00"}', tz: "Australia/Sydney", next_run_at: "2027-01-01T00:00:00.000Z" });
+      const mine = s.insertStandingApprovalForTest({ schedule_id: sch.schedule_id, chat_id: "222", action_fingerprint: "fp", state: "standing", expires_at: "2026-11-27T10:00:00.000Z" });
+      s.insertStandingApprovalForTest({ schedule_id: "sch_other", chat_id: "999", action_fingerprint: "fp", state: "standing", expires_at: "2026-11-27T10:00:00.000Z" });
+      s.insertStandingApprovalForTest({ schedule_id: sch.schedule_id, chat_id: "222", action_fingerprint: "fp2", state: "candidate" }); // not a grant: not listed
+      const p = list(s, "222", "telegram:sa-list");
+      expect(String(p.text)).toContain("常驻批准");
+      expect(String(p.text)).toMatch(/#1 HTTP write · Alishan check-in post · 到期 2026-11-2[78]/);
+      expect(String(p.text).match(/^#\d+ HTTP write/gm)).toHaveLength(1);
+      expect(p.button_rows).toEqual([[revokeButton(mine.standing_id, "🛑 Revoke #1")]]);
+    } finally { s.close(); }
+  });
+  it("with no standing row the reply carries no section and no keyboard (byte-identical to before)", () => {
+    const s = RunStore.openInMemory();
+    try {
+      const p = list(s, "222", "telegram:sa-none");
+      expect(String(p.text)).not.toContain("常驻批准");
+      expect(p).not.toHaveProperty("button_rows");
+    } finally { s.close(); }
   });
 });

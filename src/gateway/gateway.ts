@@ -51,6 +51,8 @@ import { handleJevAcceptTap } from "./jev-accept-commands.js";
 import { decisionListText, decisionStatusLines } from "../decisions/status-view.js";
 import { recordApprovalDenied, recordCorrection, recordImproveSignal, skipImproveSignal } from "../decisions/improve-signals.js";
 import type { NotificationPayload } from "../notifications/notification-types.js";
+import { standingScheduleSection } from "../decisions/standing-approval.js";
+import type { NotificationButton } from "../notifications/notification-types.js";
 import { handleForgetMemory, handleMemories, handleMemoryUndo } from "./memory-commands.js";
 import { handleModels, modelsUnavailable, type ModelsRoles } from "./models-commands.js";
 import type { IdeaRow, ShortlistRow } from "../run/run-store.js";
@@ -591,14 +593,19 @@ export class Gateway {
     const action = typeof event.program === "string" ? event.program : "list";
 
     let text: string;
+    let button_rows: NotificationButton[][] = [];
     if (action === "cancel") {
       const arg =
         typeof event.metadata?.schedule_id === "string" ? event.metadata.schedule_id : "";
       text = this.cancelSchedule(chat_id, arg, now);
     } else {
+      // Stage 4A: this chat's standing grants, each with its Revoke
+      const standing = standingScheduleSection(this.runStore, chat_id, process.env);
       text =
         formatScheduleListText(this.runStore.listScheduledTasks(chat_id)) +
-        formatSystemScheduleSection(process.env, now);
+        formatSystemScheduleSection(process.env, now) +
+        standing.text;
+      button_rows = standing.button_rows;
     }
 
     const result: GatewayIntakeResult = { ok: true, status: "schedule_admin_returned", run_id: "" };
@@ -607,7 +614,7 @@ export class Gateway {
       intent_type: "progress",
       idempotency_key: `${event.idempotency_key}:schedule`,
       correlation_id: event.source_reference,
-      payload: { text }
+      payload: { text, ...(button_rows.length > 0 ? { button_rows } : {}) }
     });
     this.runStore.recordTriggerProcessed(event, result);
     this.recordTelegramAccepted(event, now);

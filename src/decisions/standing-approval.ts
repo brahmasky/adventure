@@ -2,7 +2,7 @@ import { errorCode } from "../domain/error-code.js";
 import type { NotificationButton } from "../notifications/notification-types.js";
 import type { CleanroomFacts } from "../omp/bridge-handler.js";
 import { openAlertedIncident } from "../run/incident-alert.js";
-import { STANDING_STREAK, type NotificationRecord, type RunStore, type StandingApprovalRow, type ToolApprovalRow } from "../run/run-store.js";
+import { STANDING_STALE_MS, STANDING_STREAK, type NotificationRecord, type RunStore, type StandingEndReason, type StandingApprovalRow, type ToolApprovalRow } from "../run/run-store.js";
 import { formatInstantInZone, resolveDisplayZone, scheduleDisplayName } from "../run/schedule-spec.js";
 import { enqueueUrgentCard } from "./urgent.js";
 
@@ -219,11 +219,45 @@ function settleFailed(store: RunStore, subject: string, e: unknown, env: NodeJS.
 
 export interface StandingSweepResult { settled: number; ended: number }
 
-/** The net under the dispatcher hook: every sealing row is re-settled (the TTL ends a trial nothing else settles) and every grant's uses re-read. Expiry, schedule end and stale are not swept here yet. */
+/** The net under the dispatcher hook: every sealing row is re-settled (the TTL ends a trial nothing else settles), every grant's uses re-read, and lapsed or stale rows ended. */
 export function runStandingSweep(store: RunStore, now: string): StandingSweepResult {
   let settled = 0;
   for (const run_id of new Set(store.listStandingApprovals({ state: "sealing" }).map((r) => r.sealed_run_id ?? ""))) settled += settleQuietly(store, run_id, now);
-  return { settled, ended: endTamperedUses(store, now) };
+  return { settled, ended: endTamperedUses(store, now) + endLapsed(store, now) + endStale(store, now) };
+}
+
+/** A grant past expires_at, or whose schedule can never fire again (disabled or gone). A 'failed' schedule keeps it: the use CAS already refuses it and an update re-enables. */
+function endLapsed(store: RunStore, now: string): number {
+  let n = 0;
+  for (const r of store.listStandingApprovals({ state: "standing" })) {
+    const schedule = store.getScheduledTask(r.schedule_id);
+    const reason: StandingEndReason | null = r.expires_at === null || r.expires_at <= now ? "expired" : !schedule || schedule.state === "disabled" ? "schedule_ended" : null;
+    if (reason && store.endStandingApproval({ standing_id: r.standing_id, reason, now })) n++;
+  }
+  return n;
+}
+
+/** A streak or candidate with no new credit for 30 days (spec Decision 4). A sealing row is settled, never staled. */
+function endStale(store: RunStore, now: string): number {
+  const cutoff = new Date(Date.parse(now) - STANDING_STALE_MS).toISOString();
+  let n = 0;
+  for (const state of ["streak", "candidate"] as const) {
+    for (const r of store.listStandingApprovals({ state })) if (r.updated_at <= cutoff && store.endStandingApproval({ standing_id: r.standing_id, reason: "stale", now })) n++;
+  }
+  return n;
+}
+
+export function standingRevokedText(label: string): string {
+  return `🛑 Revoked. ${label} on this schedule asks for a tap again from the next run.`;
+}
+
+/** `/schedule`'s "常驻批准": this chat's grants, `#N label · schedule · 到期 date`, one Revoke per row; empty when there are none. */
+export function standingScheduleSection(store: RunStore, chat_id: string, env: NodeJS.ProcessEnv = process.env): { text: string; button_rows: NotificationButton[][] } {
+  const rows = store.listStandingApprovals({ state: "standing", chat_id });
+  if (rows.length === 0) return { text: "", button_rows: [] };
+  const tz = resolveDisplayZone(env);
+  const lines = rows.map((r, k) => `#${k + 1} ${r.label} · ${scheduleDisplayName(store.getScheduledTask(r.schedule_id)?.goal ?? "")} · 到期 ${r.expires_at ? formatInstantInZone(r.expires_at, tz).slice(0, 10) : "?"}`);
+  return { text: `\n\n**常驻批准**\n${lines.join("\n")}`, button_rows: rows.map((r, k) => [revokeButton(r.standing_id, `🛑 Revoke #${k + 1}`)]) };
 }
 
 /** One poisoned trial (a grant card conflict) must not stop the rest of the sweep — a tamper end or an expiry behind it: its error is that run's incident. */
