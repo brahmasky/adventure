@@ -1,3 +1,4 @@
+import { errorCode } from "../domain/error-code.js";
 import type { NotificationRecord } from "../run/run-store.js";
 import type { NotificationOutbox } from "./notification-outbox.js";
 import {
@@ -74,7 +75,7 @@ export class NotificationDispatcher {
   private afterDelivered(record: NotificationRecord): void {
     if (!this.onDelivered) return;
     try { this.onDelivered(record); }
-    catch (error) { console.error(`[notification-dispatcher] onDelivered failed for ${record.notification_id}: ${error instanceof Error ? error.message : String(error)}`); }
+    catch (error) { console.error(`[notification-dispatcher] onDelivered failed for ${record.notification_id}: ${errorCode(error)}`); } // a code: an fs message carries paths
   }
 
   private selectAdapter(record: NotificationRecord): NotificationAdapter {

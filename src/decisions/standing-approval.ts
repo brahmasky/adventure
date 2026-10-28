@@ -20,7 +20,7 @@ export const PRE_SPAWN_REASONS: ReadonlySet<string> = new Set(["cleanroom_unavai
 const UNSEALED_END: ReadonlySet<string> = new Set(["failed", "cancelled", "expired"]);
 
 export type SealVerdict = "seal" | "reset" | "end" | "wait";
-export interface SealInput { fin: Record<string, unknown> | undefined; run_state: string | undefined; outbox: string | undefined; decision_id: string | undefined; started_at: string; now: string }
+export interface SealInput { fin: Record<string, unknown> | undefined; run_state: string | undefined; outbox: string | undefined; decision_id: string | undefined; started_at: string | null; now: string }
 
 /** The sealed call's facts, or null when any is missing or malformed (a missing fact is never read as true; truncated may be null = unknown). */
 function factsOf(fin: Record<string, unknown> | undefined): CleanroomFacts | null {
@@ -43,7 +43,9 @@ function sealedCall(fin: Record<string, unknown>, f: CleanroomFacts | null): boo
 export function sealVerdict(i: SealInput): SealVerdict {
   const f = factsOf(i.fin);
   if (f && !f.ran && f.reason !== undefined && PRE_SPAWN_REASONS.has(f.reason)) return "reset";
-  if (Date.parse(i.now) - Date.parse(i.started_at) >= SEALING_TTL_MS) return "end"; // a late delivery never stands a command up
+  // a late delivery never stands a command up; a missing or garbage stamp is NaN, which no ">=" would ever catch
+  const age = Date.parse(i.now) - (i.started_at === null ? Number.NaN : Date.parse(i.started_at));
+  if (!Number.isFinite(age) || age >= SEALING_TTL_MS) return "end";
   if (i.fin && !sealedCall(i.fin, f)) return "end";
   if (i.run_state === undefined || UNSEALED_END.has(i.run_state)) return "end";
   if (i.run_state !== "completed") return "wait";
@@ -51,6 +53,7 @@ export function sealVerdict(i: SealInput): SealVerdict {
   return i.outbox === "delivered" ? "seal" : "wait";
 }
 
+/** A seal whose evidence re-read fails reports "end"; a trial replaced before its grant, reset or end landed reports "wait" (lost: nothing moved). */
 export interface SettleOutcome { standing_id: string; verdict: SealVerdict }
 
 /** Idempotent and total over the run's sealing rows: each transition is a store CAS on state = 'sealing', so a second call finds none. Throws on a grant card conflict (no grant without its Revoke card); both callers catch. */
@@ -63,16 +66,18 @@ function sealInputs(store: RunStore, row: StandingApprovalRow, now: string): Sea
   const run_id = row.sealed_run_id ?? "";
   const fin = store.getLedgerEvents(run_id).find((e) => e.event_type === "tool_finished" && e.payload.tool_call_id === row.sealed_tool_call_id)?.payload;
   const decision_id = store.listDecisionsForRun(run_id).filter((d) => d.entry_id === "tool.policy" && d.tool_call_id === row.sealed_tool_call_id).at(-1)?.decision_id;
-  return { fin, run_state: store.findRunState(run_id), outbox: store.finalReportState(run_id), decision_id, started_at: row.sealing_started_at ?? row.updated_at, now };
+  return { fin, run_state: store.findRunState(run_id), outbox: store.finalReportState(run_id), decision_id, started_at: row.sealing_started_at, now }; // no fallback: a row without its start has no TTL to keep
 }
 
 function settleRow(store: RunStore, row: StandingApprovalRow, now: string): SealVerdict {
   const input = sealInputs(store, row, now);
   const verdict = sealVerdict(input);
   if (verdict === "seal") return grantOrEnd(store, row, now);
-  if (verdict === "reset") store.resetStandingToCandidate({ standing_id: row.standing_id, now, reason: factsOf(input.fin)?.reason ?? "pre_spawn" });
-  if (verdict === "end") store.endStandingApproval({ standing_id: row.standing_id, reason: "sealed_trial_failed", now });
-  return verdict;
+  // both CAS on the trial read here: a row that became another trial meanwhile is lost, and its newer trial waits
+  const trial = { sealing_approval_id: row.sealing_approval_id, sealed_run_id: row.sealed_run_id, sealed_tool_call_id: row.sealed_tool_call_id };
+  const moved = verdict === "reset" ? store.resetStandingToCandidate({ standing_id: row.standing_id, now, reason: factsOf(input.fin)?.reason ?? "pre_spawn", trial })
+    : verdict === "end" ? store.endStandingApproval({ standing_id: row.standing_id, reason: "sealed_trial_failed", now, trial }) : true;
+  return moved ? verdict : "wait";
 }
 
 /**

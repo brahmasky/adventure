@@ -1038,6 +1038,10 @@ export type JobPatch = Partial<Pick<ImprovementJobRow, "result_code" | "gate_a" 
 export interface LadderMoveRow { move_id: string; entry_id: string; scope: string; from_rung: RungKind; to_rung: RungKind; evidence_json: string; granted_by: "paco" | "auto"; granted_via: string | null; paco_callback_id: string | null; revocable: number; state: "active" | "ended"; created_at: string; ended_at: string | null }
 /** Stage 4A (ADR 0030 §8.3): one row per (schedule, chat, fingerprint) streak. `ended` rows stay: audit, and the 30-day deny block is read over them. */
 export type StandingState = "streak" | "candidate" | "sealing" | "sealed" | "standing" | "ended";
+/** One sealing trial's identity: a settle decided on one trial must never move a row that became another trial meanwhile. */
+export type StandingTrial = Pick<StandingApprovalRow, "sealing_approval_id" | "sealed_run_id" | "sealed_tool_call_id">;
+const isTrial = (row: StandingApprovalRow, t: StandingTrial | undefined): boolean => t === undefined
+  || (row.sealing_approval_id === t.sealing_approval_id && row.sealed_run_id === t.sealed_run_id && row.sealed_tool_call_id === t.sealed_tool_call_id);
 export type StandingEndReason = "sealed_trial_failed" | "denied" | "revoked" | "expired" | "schedule_ended" | "stale" | "mismatch" | "tampered_use";
 /** Why a standing use was refused; the runner then asks Paco instead (fails closed). */
 export type StandingUseRefusal = "not_standing" | "fingerprint_mismatch" | "expired" | "move_inactive" | "schedule_not_enabled" | "schedule_mismatch" | "chat_mismatch" | "already_used" | "lost";
@@ -5629,13 +5633,13 @@ export class RunStore {
     return this.db.prepare(`SELECT state FROM notification_outbox WHERE idempotency_key = ? ORDER BY created_at ASC LIMIT 1`).get<{ state: string }>(`${run_id}:final_report`)?.state;
   }
   /** End one live row once (CAS on state <> 'ended'); its move ends with it; the ledger names the reason. Joins the caller's transaction. */
-  endStandingApproval(i: { standing_id: string; reason: StandingEndReason; now: string; denied_until?: string }): boolean {
+  endStandingApproval(i: { standing_id: string; reason: StandingEndReason; now: string; denied_until?: string; trial?: StandingTrial }): boolean {
     return this.joinTransaction(() => this.endStandingTx(i));
   }
   /** Plain statements: the deny hook runs inside processApprovalTrigger's raw BEGIN, where joinTransaction would nest a BEGIN and throw. */
-  private endStandingTx(i: { standing_id: string; reason: StandingEndReason; now: string; denied_until?: string }): boolean {
+  private endStandingTx(i: { standing_id: string; reason: StandingEndReason; now: string; denied_until?: string; trial?: StandingTrial }): boolean {
     const row = this.getStandingApproval(i.standing_id);
-    if (!row || row.state === "ended") return false;
+    if (!row || row.state === "ended" || !isTrial(row, i.trial)) return false; // read and update share the caller's transaction
     const r = this.db.prepare(`UPDATE standing_approvals SET state = 'ended', ended_reason = ?, ended_at = ?, updated_at = ?, denied_until = COALESCE(?, denied_until) WHERE standing_id = ? AND state <> 'ended'`)
       .run(i.reason, i.now, i.now, i.denied_until ?? null, i.standing_id);
     if (r.changes !== 1) return false;
@@ -7063,10 +7067,10 @@ export class RunStore {
     });
   }
   /** §6 pre-spawn: nothing ran, so the trial is void — back to candidate on the three credited approvals; the spent fourth is dropped and the next run asks again. */
-  resetStandingToCandidate(i: { standing_id: string; now: string; reason: string }): boolean {
+  resetStandingToCandidate(i: { standing_id: string; now: string; reason: string; trial?: StandingTrial }): boolean {
     return this.joinTransaction(() => {
       const row = this.getStandingApproval(i.standing_id);
-      if (!row || row.state !== "sealing") return false;
+      if (!row || row.state !== "sealing" || !isTrial(row, i.trial)) return false;
       const ids = (JSON.parse(row.approval_ids_json) as string[]).slice(0, STANDING_STREAK);
       const r = this.db.prepare(`UPDATE standing_approvals SET state = 'candidate', approval_ids_json = ?, sealing_approval_id = NULL, sealed_run_id = NULL, sealed_tool_call_id = NULL,
         sealing_started_at = NULL, updated_at = ? WHERE standing_id = ? AND state = 'sealing'`).run(JSON.stringify(ids), i.now, i.standing_id);

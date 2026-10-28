@@ -321,6 +321,15 @@ describe("the standing sweep rides the schedule tick (Stage 4A §7)", () => {
     await maybeFireScheduledTasks({ store, gateway: new Gateway(store), worker: fakeWorker([]), now: NOW, env: {} });
     expect(store.getStandingApproval(row.standing_id)).toMatchObject({ state: "ended", ended_reason: "sealed_trial_failed" });
   });
+  it("a sweep whose incident cannot be recorded either still logs, with the error code, and the tick goes on", async () => {
+    const broken = Object.create(store) as RunStore;
+    (broken as { listStandingApprovals: unknown }).listStandingApprovals = () => { throw new Error("disk I/O error"); };
+    (broken as { openIncident: unknown }).openIncident = () => { throw Object.assign(new Error("db locked"), { code: "SQLITE_BUSY" }); };
+    const logged: string[] = []; const orig = console.error; console.error = (...a: unknown[]) => { logged.push(a.map(String).join(" ")); };
+    try { await maybeFireScheduledTasks({ store: broken, gateway: new Gateway(store), worker: fakeWorker([]), now: NOW, env: {} }); }
+    finally { console.error = orig; }
+    expect(logged.some((l) => /standing sweep incident not recorded: SQLITE_BUSY/.test(l))).toBe(true);
+  });
   it("a sweep that throws opens standing_sweep_failed and the due schedule still fires", async () => {
     addWeekly();
     const broken = Object.create(store) as RunStore;

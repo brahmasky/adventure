@@ -51,6 +51,11 @@ describe("sealVerdict (the seal conjunction, §7)", () => {
     expect(sealVerdict({ ...OK, now: at(SEALING_TTL_MS) })).toBe("end");
     expect(sealVerdict({ ...OK, now: LATER })).toBe("end");
   });
+  it("a missing or unparseable trial start (or clock) ends the trial: a NaN deadline must never read as 'inside the TTL'", () => {
+    expect(sealVerdict({ ...OK, started_at: null })).toBe("end");
+    expect(sealVerdict({ ...OK, started_at: "not-a-date" })).toBe("end");
+    expect(sealVerdict({ ...OK, now: "not-a-date" })).toBe("end");
+  });
   it("a completed run whose sealed call left no facts, or no decision row, ends (never re-run, never granted with a hole in its evidence)", () => {
     expect(sealVerdict({ ...OK, fin: undefined })).toBe("end");
     expect(sealVerdict({ ...OK, decision_id: undefined })).toBe("end");
@@ -187,6 +192,32 @@ describe("settleSealing (Decision 1-A: the grant is immediate)", () => {
     expect(() => settleSealing(s, run_id, NOW)).toThrow(/grant card/);
     expect(s.getStandingApproval(row.standing_id)).toMatchObject({ state: "sealing", move_id: null, grant_notification_id: null });
     expect(moves(s)).toEqual([]); expect(events(s, "standing_granted")).toEqual([]); expect(events(s, "standing_sealed")).toEqual([]);
+  });
+  it("a sealing row with no start stamp, or a garbage one, ends sealed_trial_failed and never grants (no fallback to updated_at)", () => {
+    for (const stamp of [null, "garbage"]) {
+      const s = RunStore.openInMemory(); const { row, run_id } = sealed(s);
+      raw(s).prepare(`UPDATE standing_approvals SET sealing_started_at = ? WHERE standing_id = ?`).run(stamp, row.standing_id);
+      expect([stamp, settleSealing(s, run_id, NOW)]).toEqual([stamp, [{ standing_id: row.standing_id, verdict: "end" }]]);
+      expect([stamp, s.getStandingApproval(row.standing_id)?.ended_reason, moves(s).length]).toEqual([stamp, "sealed_trial_failed", 0]);
+    }
+  });
+  it("an end or a reset decided on an older trial never ends or resets the newer trial that replaced it meanwhile", () => {
+    // interleaved: after settleRow read the old trial's inputs, the trial is reset and a newer fourth approval seals it again
+    for (const o of [{ run: "failed" as const }, { facts: { ran: false, exit_code: null, truncated: null, reason: "cleanroom_unavailable" } }]) {
+      const s = RunStore.openInMemory(); const f = sealed(s, o);
+      const racy = Object.create(s) as RunStore; let newer = "";
+      racy.findRunState = (run_id: string) => {
+        const state = RunStore.prototype.findRunState.call(s, run_id);
+        if (newer === "") {
+          s.resetStandingToCandidate({ standing_id: f.row.standing_id, now: NOW, reason: "race" });
+          newer = scheduledRun(s, f.schedule_id); consumed(s, newer, "tc4b", { standing_id: f.row.standing_id });
+        }
+        return state;
+      };
+      expect([o, settleSealing(racy, f.run_id, NOW)]).toEqual([o, [{ standing_id: f.row.standing_id, verdict: "wait" }]]);
+      expect([o, s.getStandingApproval(f.row.standing_id)]).toMatchObject([o, { state: "sealing", sealed_run_id: newer, sealed_tool_call_id: "tc4b", ended_reason: null }]);
+      expect([o, events(s, "standing_ended")]).toEqual([o, []]);
+    }
   });
   it("a report settled at the 24 h deadline ends the trial, never grants", () => {
     const s = RunStore.openInMemory(); const { row, run_id } = sealed(s);

@@ -64,9 +64,12 @@ describe("NotificationDispatcher", () => {
       const record = outbox.enqueue({ target: { kind: "telegram", chat_id: "222" }, intent_type: "final_report", idempotency_key: "run_9:final_report", run_id: "run_9", correlation_id: "run_9", payload: { text: "200" } });
       const seen: string[] = [];
       const dispatcher = new NotificationDispatcher(outbox, { local: { send: async () => ({ provider_message_id: "local:1" }) }, telegram: { send: async () => ({ provider_message_id: "telegram:7" }) } },
-        { onDelivered: (r) => { seen.push(`${r.idempotency_key}=${String(outbox.get(r.notification_id)?.state)}`); throw new Error("settle failed"); } });
-      await expect(dispatcher.dispatchOnce("sender-1")).resolves.toEqual({ status: "delivered", notification_id: record.notification_id });
+        { onDelivered: (r) => { seen.push(`${r.idempotency_key}=${String(outbox.get(r.notification_id)?.state)}`); throw Object.assign(new Error("settle failed: /secret/path"), { code: "SQLITE_FULL" }); } });
+      const logged: string[] = []; const orig = console.error; console.error = (...a: unknown[]) => { logged.push(a.map(String).join(" ")); };
+      try { await expect(dispatcher.dispatchOnce("sender-1")).resolves.toEqual({ status: "delivered", notification_id: record.notification_id }); }
+      finally { console.error = orig; }
       expect(seen).toEqual(["run_9:final_report=delivered"]);
+      expect(logged).toEqual([`[notification-dispatcher] onDelivered failed for ${record.notification_id}: SQLITE_FULL`]); // the code, never the raw message
       expect(outbox.get(record.notification_id)?.state).toBe("delivered");
       await expect(dispatcher.dispatchOnce("sender-1")).resolves.toEqual({ status: "idle" }); // nothing requeued
     } finally {

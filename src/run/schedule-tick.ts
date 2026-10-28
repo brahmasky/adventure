@@ -62,7 +62,8 @@ function sweepStanding(store: RunStore, now: string, env: NodeJS.ProcessEnv): vo
   try { runStandingSweep(store, now); }
   catch (error) {
     console.error(`[schedule-tick] standing sweep failed: ${errorCode(error)}`);
-    try { openAlertedIncident(store, { kind: "standing_sweep_failed", subject: "daemon", detail: { error: errorCode(error) }, env, now }); } catch { /* the store itself may be the failure */ }
+    try { openAlertedIncident(store, { kind: "standing_sweep_failed", subject: "daemon", detail: { error: errorCode(error) }, env, now }); }
+    catch (inner) { console.error(`[schedule-tick] standing sweep incident not recorded: ${errorCode(inner)}`); } // the store itself may be the failure
   }
 }
 
