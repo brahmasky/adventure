@@ -1,6 +1,6 @@
 // Shared by the parity gate and the rollback check: prove --old-dist really is the previous build, not any dist/ at hand.
-// The dist's worktree (its parent directory) must sit at the expected base commit, and its core-worker.js must differ
-// from the new build's. `file` names the compiled module the slice changed (a slice that leaves core-worker.ts untouched passes another). Anything else is a setup error (the caller exits 2), never a vacuous PASS.
+// The dist's worktree (its parent directory) must sit at the expected base commit, and the named compiled file (default
+// core-worker.js) must differ from the new build's. `file` names the compiled module the slice changed (a slice that leaves core-worker.ts untouched passes another). Anything else is a setup error (the caller exits 2), never a vacuous PASS.
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";

@@ -13,7 +13,7 @@
 // digest and /schedule, runs its invariant detection, makes a scheduled bridge call on the granted bytes (it must ask; the
 // approval is resolved through its own gateway; no standing use appears), fires a schedule tick, and — with --session-dir —
 // resumes a kept transcript on the real omp. The new build reopens the copy last. Exit 0 PASS · 1 FAIL · 2 setup error ·
-// 3 INCONCLUSIVE (no --session-dir, omp unavailable, or no digest due). The temp root is deleted unless --keep. Never opens
+// 3 INCONCLUSIVE (no --session-dir, or omp unavailable). The temp root is deleted unless --keep. Never opens
 // the live DB for writing; never messages any chat (Telegram tokens deleted; nothing here constructs a Telegram client).
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
@@ -147,12 +147,14 @@ function oldReads(old, path, seed, baseline, root) {
     check("the previous build opens the copy (its migrations ran)", true);
     let list = "";
     try { list = old.decisionListText(s, process.env); check("the previous build's /status decisions renders over a standing decision", true); } catch (e) { check("the previous build's /status decisions renders over a standing decision", false, msg(e)); }
-    check("/status decisions shows the seeded tool.policy row", list.includes("tool.policy"), list.split("\n").filter((l) => l.includes("tool.policy")).length + " line(s)");
+    const short = seed.run.replace(/^run_/, "").slice(0, 8); // the old build never interprets reason codes; it must list the row, not choke on it
+    check("/status decisions LISTS the seeded row over a decisions table holding the standing reason and entry_version 3", list.split("\n").some((l) => l.includes("tool.policy") && l.includes(`run ${short}`)), `run ${short}`);
+    try { old.decisionStatusLines(s, new Date().toISOString()); check("the previous build's /status decision block builds over the seeded rows", true); } catch (e) { check("the previous build's /status decision block builds over the seeded rows", false, msg(e)); }
     try {
       // the loop-off watch line makes a digest non-empty on any copy, so the render over the seeded rows is always exercised
       const d = old.buildDecisionDigest(s, new Date().toISOString(), { ...process.env, HOUGE_IMPROVE_ENABLED: "false" });
-      if (!d) cannotRun("the previous build's digest renders over standing rows", "no digest was due on the copy"); else check("the previous build's digest renders over standing rows", d.text.length > 0, `${d.text.length} chars`);
-    } catch (e) { check("the previous build's digest renders over standing rows", false, msg(e)); }
+      check("the previous build builds its digest over a copy holding standing rows", d !== null && d.text.includes("improvement tick off"), d ? `${d.text.length} chars` : "no digest");
+    } catch (e) { check("the previous build builds its digest over a copy holding standing rows", false, msg(e)); }
     try {
       const kinds = violationKinds(old, s); const added = kinds.filter((k) => !baseline.includes(k));
       check("the previous build's invariant detection raises no violation kind the seeded rows caused", added.length === 0, `now [${kinds.join(", ") || "none"}] · baseline [${baseline.join(", ") || "none"}] · added [${added.join(", ") || "none"}]`);
@@ -217,7 +219,7 @@ async function oldTick(old, path, seed, root) {
     const r = await old.maybeFireScheduledTasks({ store: s, gateway: new old.Gateway(s, undefined, undefined, undefined, undefined, { dataDir: root }), worker, now: new Date().toISOString(),
       env: { ...process.env, HOUGE_SCHEDULER_ENABLED: "1" } });
     const mine = submitted.filter((id) => s.getRunForWorker(id)?.requested_by?.id === seed.schedule_id);
-    check("the previous build's schedule tick fires the granted schedule", mine.length === 1, `fired ${r.fired} · this schedule ${mine.length} · failures ${r.failures}`);
+    check("the previous build's schedule tick fires the granted schedule", mine.length === 1 && r.failures === 0, `fired ${r.fired} · this schedule ${mine.length} · failures ${r.failures}`);
   } finally { s.close(); }
 }
 
