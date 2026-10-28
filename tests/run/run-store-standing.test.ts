@@ -266,4 +266,46 @@ describe("tap chat binding (§7): a scheduled run's approval answers only from i
     const u = userRun(s); const p = pending(s, u);
     expect(s.processApprovalTrigger({ event: tap(p.approval_id, { kind: "local" }), decision: "approved", resolved_at: NOW })).toMatchObject({ ok: true });
   });
+  // the core-worker sink files a run-level approval (the `approvals` table) for the same scheduled run: a foreign tap must not reach it either
+  const runLevel = (s: RunStore, run_id: string) => s.createApprovalRequest({ run_id, approval_type: "capability", capability: "shell_external", action_fingerprint: FP,
+    adapter_input_hash: "ih", adapter_input_json: "{}", action_summary: "HTTP write", side_effect_level: "external_write", risk_level: "medium", affected_resources: [], requester: PACO, expires_at: FUTURE }).approval_id;
+  it("a foreign chat's approve or deny on a scheduled run resolves nothing in either approvals table and leaves the standing row untouched", () => {
+    const s = RunStore.openInMemory();
+    const row = s.insertStandingApprovalForTest({ ...KEY, state: "standing", expires_at: "2027-01-01T00:00:00.000Z" });
+    const r1 = scheduledRun(s); const tool = pending(s, r1).approval_id;
+    const r2 = scheduledRun(s); const run = runLevel(s, r2);
+    for (const id of [tool, run]) for (const decision of ["approved", "denied"] as const) {
+      expect(s.processApprovalTrigger({ event: tap(id, { kind: "telegram", chat_id: "999" }, decision === "approved" ? "approve" : "deny"), decision, resolved_at: NOW }))
+        .toMatchObject({ ok: false, error: { code: "APPROVAL_CHAT_MISMATCH" } });
+    }
+    expect(s.getToolApproval(tool)?.state).toBe("pending");
+    expect(s.getApprovalForRun(r2, "pending")?.approval_id).toBe(run);
+    expect(s.getRunState(r2)).toBe("waiting_for_approval");
+    expect(s.getStandingApproval(row.standing_id)).toMatchObject({ state: "standing", updated_at: row.updated_at });
+  });
+  it("a run-level denial from the run's chat ends the live row on (chat, fingerprint) with the 30-day block", () => {
+    const s = RunStore.openInMemory();
+    const row = s.insertStandingApprovalForTest({ ...KEY, state: "standing", expires_at: "2027-01-01T00:00:00.000Z" });
+    const r = scheduledRun(s); const id = runLevel(s, r);
+    expect(s.processApprovalTrigger({ event: tap(id, { kind: "telegram", chat_id: "555" }, "deny"), decision: "denied", resolved_at: NOW })).toMatchObject({ ok: true, run_id: r });
+    const ended = s.getStandingApproval(row.standing_id)!;
+    expect(ended).toMatchObject({ state: "ended", ended_reason: "denied", ended_at: NOW });
+    expect(Date.parse(ended.denied_until!) - Date.parse(NOW)).toBe(30 * 24 * 60 * 60 * 1000);
+  });
+  it("a run-level denial whose hook fails rolls back whole: the approval stays pending, the run still waits, the refusal is returned", () => {
+    const s = RunStore.openInMemory();
+    const r = scheduledRun(s); const id = runLevel(s, r);
+    dropStanding(s);
+    expect(s.processApprovalTrigger({ event: tap(id, { kind: "telegram", chat_id: "555" }, "deny"), decision: "denied", resolved_at: NOW })).toMatchObject({ ok: false, error: { code: "STANDING_HOOK_FAILED" } });
+    expect(s.getApprovalForRun(r, "pending")?.approval_id).toBe(id);
+    expect(s.getRunState(r)).toBe("waiting_for_approval");
+    expect(s.findOpenIncident(s.incidentFingerprint("standing_hook_failed", `approval:${id}`))).toBeDefined();
+  });
+  it("the direct run-level resolver refuses the same way instead of throwing", () => {
+    const s = RunStore.openInMemory();
+    const r = scheduledRun(s); const id = runLevel(s, r);
+    dropStanding(s);
+    expect(s.resolveApproval({ approval_id: id, decision: "denied", requester: PACO, resolved_at: NOW })).toMatchObject({ ok: false, error: { code: "STANDING_HOOK_FAILED" } });
+    expect(s.getRunState(r)).toBe("waiting_for_approval");
+  });
 });

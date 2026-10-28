@@ -6786,6 +6786,8 @@ export class RunStore {
       if (activeTransaction) {
         this.db.exec("ROLLBACK");
       }
+      // the run-level resolver now carries the deny hook: the same refusal as processApprovalTrigger, never a throw
+      if (error instanceof StandingHookError) return this.standingHookRefusal(input.approval_id, error);
       throw error;
     }
   }
@@ -6821,7 +6823,9 @@ export class RunStore {
         resolved_at: input.resolved_at
       };
       const tool = this.getToolApproval(resolveInput.approval_id);
-      const result = tool && !this.approvalChatBound(tool.run_id, input.event) ? approvalFailure("APPROVAL_CHAT_MISMATCH")
+      // both tables: the core-worker sink files a scheduled run's approval in the run-level table, so the chat check guards either resolver
+      const owner = tool?.run_id ?? this.getApprovalRow(resolveInput.approval_id)?.run_id;
+      const result = owner !== undefined && !this.approvalChatBound(owner, input.event) ? approvalFailure("APPROVAL_CHAT_MISMATCH")
         : tool ? this.resolveToolApprovalWithinTransaction(resolveInput) : this.resolveApprovalWithinTransaction(resolveInput);
 
       if (result.ok) {
@@ -7000,7 +7004,7 @@ export class RunStore {
     return true;
   }
   /** §7 deny hook, plain statements in the caller's transaction: every live row of (chat, fingerprint) ends with the 30-day block; a scheduled run with no row gets an ended row carrying it. */
-  private standingDeny(a: ToolApprovalRow, now: string): void {
+  private standingDeny(a: Pick<ToolApprovalRow, "run_id" | "capability" | "action_fingerprint" | "summary">, now: string): void {
     try {
       const run = this.getRunForWorker(a.run_id);
       if (!run || run.notify.kind !== "telegram") return;
@@ -8004,6 +8008,8 @@ export class RunStore {
       SET state = ?, state_reason = ?, updated_at = ?, worker_id = NULL, lease_expires_at = NULL
       WHERE run_id = ? AND state = 'waiting_for_approval'
     `).run(nextRunState, `approval ${input.decision}`, input.resolved_at, row.run_id);
+    // a run-level denial blocks the same (chat, fingerprint) as a tool-level one: the hook does not care which sink asked
+    if (input.decision === "denied") this.standingDeny({ run_id: row.run_id, capability: row.capability, action_fingerprint: row.action_fingerprint, summary: row.action_summary }, input.resolved_at);
 
     return {
       ok: true,
