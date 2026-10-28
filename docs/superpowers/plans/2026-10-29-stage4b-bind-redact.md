@@ -39,6 +39,8 @@
   - `npm run typecheck && npm test && npm run build`
   - single file: `npx vitest run <file>`
 - `codex`: `codex exec … < /dev/null -o <file>`.
+- Read-only inputs outside the worktree (gitignored, so absent in `.worktrees/`): transcripts `--transcripts-dir` default `/Users/xiaochuan/Projects/adventure/omp/sessions/chat-8744196214`; live DB `--live-db` default `/Users/xiaochuan/Projects/adventure/houge.sqlite`, only ever `VACUUM INTO` a temp copy, never opened for write. Never copy either into the repo.
+- Old dists (built): `.worktrees/base-548cb87/dist`, `.worktrees/base-1451a66/dist`.
 - Worktree: `.worktrees/stage4b` on branch `stage4b`. The gates need `HOUGE_ENV_FILE=/Users/xiaochuan/Projects/adventure/.env`.
 
 ## Plan-level rulings (read before Task 1)
@@ -52,6 +54,19 @@
 
 | File | Change | Task |
 |---|---|---|
+| `tests/capabilities/approval-bind-matrix.test.ts` | new: binding characterisation matrix | 1, 3 |
+| `tests/run/report-redaction-corpus.test.ts` | new: redaction characterisation classes | 1, 5 |
+| `src/decisions/entries/approval-bind.ts`, `src/decisions/entries/secret-redact.ts` | new entries | 2 |
+| `src/decisions/entry-ids.ts`, `src/decisions/registry.ts`, `scripts/live-gate-ladder-stage3-wired.mjs` | 18 → 20 | 2 |
+| `src/capabilities/capability-runner.ts` | `bindApproval` | 3 |
+| `src/run/store-options.ts`, `src/run/run-store.ts` (ctor), `src/cli.ts`, `src/capabilities/self-write-guard.ts`, 5 test callers | `StoreOptions`, injected recorder | 4 |
+| `src/run/run-store.ts` (wrappers) | `redactReport` | 5 |
+| `src/decisions/digest.ts` | scope note | 6 |
+| `scripts/stage4-diff-lib.mjs`, `scripts/check-ladder-stage4-differential.mjs`, `scripts/stage4-corpora/*.mjs` | differential | 7–10 |
+| `scripts/live-gate-ladder-stage4b.mjs` | live gate | 11 |
+| `scripts/check-ladder-stage4b-rollback.mjs` | rollback check | 12 |
+
+---|---|---|
 | `tests/capabilities/approval-bind-matrix.test.ts` | new: binding characterisation matrix | 1, 3 |
 | `tests/run/report-redaction-corpus.test.ts` | new: redaction characterisation classes | 1, 4 |
 | `src/decisions/entries/approval-bind.ts`, `src/decisions/entries/secret-redact.ts` | new entries | 2 |
@@ -79,7 +94,7 @@
 
 **Interfaces:**
 - Consumes: the existing code only.
-- Produces: two test files that later tasks extend with new-row assertions. Each file exports nothing. Put each fixture builder in its own top-level function, named below, so Tasks 3 and 4 can add `it` blocks that reuse them.
+- Produces: two test files that later tasks extend with new-row assertions. Each file exports nothing. Put each fixture builder in its own top-level function, named below, so Tasks 3 and 5 can add `it` blocks that reuse them.
 
 Read spec §2.1 (P1–P7), §2.2 (R1), §6 items 4 and 5. Existing fixtures:
 - omp sink: `src/omp/tool-approval-sink.ts`, `tests/omp/tool-approval-sink.test.ts`
@@ -126,7 +141,7 @@ Read spec §2.1 (P1–P7), §2.2 (R1), §6 items 4 and 5. Existing fixtures:
 
   Expected `error_ref` format is `"<code>: <code>"` (P5).
 
-  Add one `it` for the run-level fixture path. Drive `CoreWorker.runGatedCapability`, or the narrowest seam that reaches `consumeApprovedApproval` (`run-store.ts:7738`) with `force_gated_capability` as `eval-runner.ts:256` sets it. Cover the happy path and the eight `APPROVAL_*` / `RUN_NOT_RUNNING` codes, and pin the results. If no seam reaches it without a full eval, pin `store.consumeApprovedApproval` directly. Name the choice in the test's comment.
+  Add one `it` for the run-level fixture path, through `CoreWorker.executeRun` with `force_gated_capability`, copying the flow of `eval-runner.ts:240–290` (`runApprovalResumeCase`) and `tests/core/core-worker-approvals.test.ts`. This path reaches `runGatedCapability` (`core-worker.ts:801–809`, which passes no recorder) and `store.consumeApprovedApproval` (`run-store.ts:7738`). Cover the happy path and the eight `APPROVAL_*` / `RUN_NOT_RUNNING` codes, and pin the results. Do not substitute a direct `store.consumeApprovedApproval` call: that never goes through the runner, so Task 3's zero-row check would be vacuous. If the seam truly cannot be driven, stop and report NEEDS_CONTEXT. As a control, pin that the `decisions` table holds **zero rows of any entry** after the run-level path, which shows the recorder is genuinely absent there.
 
 - [ ] **Step 2: Redaction classes — `report-redaction-corpus.test.ts`.**
 
@@ -145,7 +160,7 @@ Read spec §2.1 (P1–P7), §2.2 (R1), §6 items 4 and 5. Existing fixtures:
 
   Pin, for each wrapper (final report, failure notice, evolution report with tool `self_write_propose`), the outbox row's `payload_json`, `payload_hash` and `state`. For the evolution wrapper, also pin the `chat_turns` text and the return value. Cover these classes:
   - **maskable**: each ≥ 6-char value planted at the start, at the end, twice, and at offset 2,000 of a 3,000-char text;
-  - **cut boundary**: a value planted so its `«redacted»` straddles char 3,900. Pin the exact bytes the current code produces, with no expectation written by hand. Compute them once with the current `truncateForChat` semantics (redact → trim → slice 3900 + `"\n\n… (truncated)"`) and assert the stored bytes equal that string;
+  - **cut boundary**: text = `"x".repeat(3895) + value + " tail"`, with no leading whitespace, so after redaction the 10-char marker starts at index 3895 and straddles 3,900. The fixture asserts its own premise: the stored text contains `"x".repeat(3895) + "«reda"` followed directly by `"\n\n… (truncated)"`. If the premise does not hold, the fixture FAILs; it never passes as an ordinary truncation. Pin the exact stored bytes against the string computed with today's semantics (redact → trim → slice 3900 + `"\n\n… (truncated)"`);
   - **short-value control**: the 5-char value appears in the stored text;
   - **firewall off**: the same maskable texts stored with their raw values;
   - **clean**: empty, whitespace-only, and 3,899 / 3,900 / 3,901-char texts;
@@ -163,7 +178,7 @@ Read spec §2.1 (P1–P7), §2.2 (R1), §6 items 4 and 5. Existing fixtures:
 
   Run: `npx vitest run tests/capabilities/approval-bind-matrix.test.ts tests/run/report-redaction-corpus.test.ts`
 
-  A FAIL here means a pin is wrong, not the code. Fix the pin to today's behaviour and note it in the report.
+  A FAIL here usually means a pin is wrong; fix the pin to today's behaviour and note it in the report. **Exception:** a hit for a maskable (≥ 6-char) value in the full-DB scan is a real leak in today's code, not a wrong pin. Stop, do not edit the assertion, and report BLOCKED with the table and column.
 
 - [ ] **Step 4: Commit.**
 
@@ -179,7 +194,7 @@ git commit -m "test(stage4b): characterise consume binding and report redaction 
 **Files:**
 - Create: `src/decisions/entries/approval-bind.ts`, `src/decisions/entries/secret-redact.ts`
 - Modify: `src/decisions/entry-ids.ts:5`, `src/decisions/registry.ts`
-- Modify: `scripts/live-gate-ladder-stage3-wired.mjs:35` (only if it asserts equality with the full list. It currently asserts "includes", so it stays correct. Check and leave alone when it does.)
+- Modify: `scripts/live-gate-ladder-stage3-wired.mjs:35`: append `"approval.bind","secret.redact"` to the `ids` list, as spec §9 names. It asserts "includes", so this only widens the check. Ruling recorded in the plan-review notes.
 - Test: `tests/decisions/approval-bind.test.ts`, `tests/decisions/secret-redact.test.ts`, `tests/decisions/registry.test.ts`
 
 **Interfaces:**
@@ -318,7 +333,7 @@ git commit -m "feat(decisions): register approval.bind and secret.redact as lock
 
   For every omp-sink case in Task 1, add the expected `approval.bind` rows, read from the `decisions` table with `entry_id = 'approval.bind'` for the run:
   - exactly one row per attempted consume;
-  - `verdict` is `bound` iff the `tool_approvals` row moved `approved → consumed`. Derive it from the state read back (step (b) of Task 1), not from the result;
+  - `verdict` is `bound` iff **that attempt** moved the row `approved → consumed`. Read the state immediately before the call and again after it: `bound` ⇔ before = `approved` ∧ after = `consumed` ∧ the sink returned ok. A second consume of an already-`consumed` row is therefore `unbound` / `not_approved`. Never derive the verdict from the final result;
   - `reason_code` is the sink code when unbound;
   - `tool_call_id` is `input.tool_call_id`, the runner's own id, not the sink's `tool_<uuid>`.
 
@@ -347,11 +362,11 @@ git commit -m "feat(decisions): register approval.bind and secret.redact as lock
    * propagates with no row (R2). Not reached by a first call or a standing use.
    */
   private bindApproval(input: CapabilityExecutionInput, approval_id: string, adapter_input_hash: string, action_fingerprint: string,
-    recorder: DecisionRecorder): { ok: true } | { ok: false; result: CapabilityResult; code: string } {
+    recorder: DecisionRecorder): { ok: true } | { ok: false; result: CapabilityResult } {
     const ctx = { run_id: input.run_id ?? null, tool_call_id: input.tool_call_id ?? null, recorder };
     if (!this.approvals) {
       decideSync(APPROVAL_BIND, { ok: false, code: "no_sink" }, ctx);
-      return { ok: false, code: "no_sink", result: { status: "failed", error_ref: "Approval sink is not available for resume" } };
+      return { ok: false, result: { status: "failed", error_ref: "Approval sink is not available for resume" } };
     }
     const consumption = this.approvals.consumeApprovedApproval({
       run_id: input.run_id ?? "",
@@ -367,7 +382,7 @@ git commit -m "feat(decisions): register approval.bind and secret.redact as lock
     });
     decideSync(APPROVAL_BIND, consumption.ok ? { ok: true } : { ok: false, code: consumption.error.code }, ctx);
     if (consumption.ok) return { ok: true };
-    return { ok: false, code: consumption.error.code, result: { status: "failed", error_ref: `${consumption.error.code}: ${consumption.error.message}` } };
+    return { ok: false, result: { status: "failed", error_ref: `${consumption.error.code}: ${consumption.error.message}` } };
   }
 ```
 
@@ -388,64 +403,48 @@ git commit -m "feat(capabilities): approval.bind records every omp-sink consume 
 
 ---
 
-### Task 4: `storeOptionsFor`, the injected recorder, and `secret.redact`
+### Task 4: `StoreOptions`, the injected recorder, `storeOptionsFor` (no `secret.redact` yet)
 
 **Files:**
 - Create: `src/run/store-options.ts`; test `tests/run/store-options.test.ts`
-- Modify: `src/run/run-store.ts`:
-  - the options type and constructor (`:1405–1421`);
-  - the three wrappers (`:7275`, `:7306`, `:7327`);
-  - a new private `redactReport`.
+- Modify: `src/run/run-store.ts` — the options type and constructor (`:1405–1421`)
 - Modify: `src/cli.ts:33–34` (`storeOptions` becomes `storeOptionsFor(broker)`)
-- Modify: `src/decisions/digest.ts` `countLines` (P-R3)
-- Modify: `src/capabilities/self-write-guard.ts` `PROTECTED_FILES` (+ `"src/run/store-options.ts"`, with a comment beside `src/cli.ts`'s line)
-- Modify: the TS callers that pass `{ redact }` to `RunStore.open*` (find them with `grep -rn "RunStore.open[A-Za-z]*([^)]*redact" tests src`): the triage harness, the 2a ladder tests, injection-judge, jev-anchor-import, improve groups/proposals, run-store-redaction. Each gains `decisionRecorder: (s) => storeRecorder(s)`, or uses `storeOptionsFor`.
-- Test: extend `tests/run/report-redaction-corpus.test.ts`; `tests/decisions/digest.test.ts` (one line); `tests/capabilities/self-write-guard*.test.ts`, if one pins the list.
+- Modify: `src/capabilities/self-write-guard.ts` `PROTECTED_FILES` (+ `"src/run/store-options.ts"`, next to `src/cli.ts`'s line). Update the guard test that pins the list, if one does (`grep -rln "PROTECTED_FILES" tests`).
+- Modify: every TS caller that passes `{ redact }` alone. `npm run typecheck` is the authority for the list. The review found five files:
+  - `tests/decisions/injection-judge.test.ts:174,288`
+  - `tests/decisions/jev-anchor-import.test.ts:180`
+  - `tests/run/run-store-ladder-2a.test.ts:72`
+  - `tests/run/run-store-redaction.test.ts:33,49,62`
+  - `tests/helpers/triage-harness.ts:108`
+
+  Each gains `decisionRecorder: () => ({ record: () => null })`, a **no-op** factory, so their decision-row counts cannot change. Only tests that assert on decisions use `storeRecorder`.
 
 **Interfaces:**
-- Consumes: `SECRET_REDACT`, `RedactSeam` (Task 2); `storeRecorder` (`src/decisions/record.ts`); `SecretBroker` (`src/config/secret-broker.ts`).
-- Produces:
+- Consumes: `storeRecorder` (`src/decisions/record.ts`); the broker type from `src/config/secret-broker.ts` (find the exported name with `grep -n "^export" src/config/secret-broker.ts`).
+- Produces, for Tasks 5, 10, 11 and 12:
 
 ```ts
-// src/run/store-options.ts
+// src/run/run-store.ts (the store owns its option type)
 export type StoreOptions =
   | { redact: (s: string) => string; decisionRecorder: (store: RunStore) => DecisionRecorder }
   | { redact?: never; decisionRecorder?: (store: RunStore) => DecisionRecorder };
+// RunStore: private readonly decisionRecorder: DecisionRecorder  (built in the constructor after migrate())
+// src/run/store-options.ts
+export type { StoreOptions } from "./run-store.js";
 export function storeOptionsFor(broker?: SecretBroker, env?: NodeJS.ProcessEnv): StoreOptions;
 ```
 
-  `RunStore.open(path, options?: StoreOptions)` and `RunStore.openInMemory(options?: StoreOptions)`. Define `StoreOptions` in `run-store.ts`, because the store owns its option type, and re-export it from `store-options.ts`. `store-options.ts` imports `RunStore` as a type only.
-
-- [ ] **Step 1: Write failing tests.**
-
-  `tests/run/store-options.test.ts`:
-  - With a broker, `storeOptionsFor(broker)` has `redact === broker.redact` and a `decisionRecorder` function. Without one, it has no `redact` and still has a `decisionRecorder`.
-  - A store opened with `storeOptionsFor(fakeBroker())` writes a `secret.redact masked` row for a masked final report. This is the boot path's wiring, pinned.
-  - Type pin:
+- [ ] **Step 1: Write failing tests.** `tests/run/store-options.test.ts`:
+  - With a broker, `storeOptionsFor(broker)` carries `redact === broker.redact` and a `decisionRecorder` function. Without one, it has no `redact` and still has a `decisionRecorder`.
+  - A store opened with `storeOptionsFor(...)` holds a recorder that writes. Prove it through the store's private `decisionRecorder`: `(store as unknown as { decisionRecorder: DecisionRecorder }).decisionRecorder.record(...)` with a minimal `decideSync` result for `APPROVAL_BIND` writes one `decisions` row. Task 5 replaces this with the real report path.
+  - Type pin, inside `if (false as boolean) { … }`:
 
 ```ts
 // @ts-expect-error — redact without a recorder must not compile (spec §5, senior B1)
 RunStore.openInMemory({ redact: (s: string) => s });
 ```
 
-  Typecheck covers the `// @ts-expect-error` line. Wrap it in `if (false as boolean) { … }` so it does not run.
-
-  Extend `report-redaction-corpus.test.ts`. The fixture now opens its stores with `storeOptionsFor(fakeBroker())`, or with `{}` for firewall-off. Add the row assertions of spec §6 item 5 per class:
-  - **maskable**: exactly one `masked` row per wrapper call, `reason_code` = the seam (`final_report` / `failure_report` / `evolution_report`), `run_id` set, `tool_call_id` null;
-  - **cut boundary**: one row;
-  - **short, firewall-off, clean**: zero rows;
-  - **duplicate**: a second row;
-  - **conflict**: a row;
-  - **insert failure**: a row, plus the same throw;
-  - **outer rollback**: no row and no outbox row.
-
-  Every Task 1 byte pin stays unchanged.
-
-  Add the recursion pin. Install a `BEFORE INSERT ON decisions` trigger that raises for `entry_id='secret.redact'`. A masked final report is then still enqueued with masked text, exactly one open `decision_record_failed` incident exists with subject `secret.redact`, and the call returns.
-
-  `tests/decisions/digest.test.ts`: `countLines` over one `secret.redact` row yields `· secret.redact 1 — <rule label> 1 (final, failure and evolution reports only)`. Read `RUNG_LABEL` for the label text.
-
-- [ ] **Step 2: Run them. Expected: FAIL (the module is missing, there are no rows, and the type pin is unused).**
+- [ ] **Step 2: Run. Expected: FAIL. The module is missing, and the type pin is unused, so typecheck reports TS2578.**
 
 - [ ] **Step 3: Implement.**
 
@@ -464,30 +463,18 @@ RunStore.openInMemory({ redact: (s: string) => s });
     this.decisionRecorder = options.decisionRecorder?.(this) ?? { record: () => null };
   }
 
-  static openInMemory(options: StoreOptions = {}): RunStore { return new RunStore(new DatabaseSync(":memory:"), options); }
-  static open(path: string, options: StoreOptions = {}): RunStore { return new RunStore(new DatabaseSync(path), options); }
+  static openInMemory(options: StoreOptions = {}): RunStore {
+    return new RunStore(new DatabaseSync(":memory:"), options);
+  }
+
+  static open(path: string, options: StoreOptions = {}): RunStore {
+    return new RunStore(new DatabaseSync(path), options);
+  }
 ```
 
-  Keep the existing multi-line formatting style of those two static methods if it differs. `DecisionRecorder` is a type-only import from `../decisions/types.js`; `types.ts` imports no runtime code. Confirm with `grep -n "^import" src/decisions/types.ts`. `SECRET_REDACT` and `decideSync` are runtime imports. Confirm that `src/decisions/entries/secret-redact.ts` and `src/decisions/decide.ts` do not import `run-store` at run time, transitively: `grep -n "^import" src/decisions/decide.ts`. If `decide.ts` pulls in a module that reaches `run-store.js`, stop and report NEEDS_CONTEXT, with the import chain.
+  `DecisionRecorder` is a type-only import from `../decisions/types.js`. This is safe: `types.ts` imports only a type.
 
-  ```ts
-  /**
-   * E8 (Stage 4B spec §5): the three report wrappers' redact-then-cut, recorded. `masked` is decided on the text before
-   * trim/cut; the stored bytes come from the same truncateForChat call as before, so payload_hash and the chat-turn copy
-   * are unchanged. A row is a masking attempt (a duplicate or failed enqueue still counted), never text. Firewall off: no
-   * decision, as before.
-   */
-  private redactReport(seam: RedactSeam, run_id: string, text: string): string {
-    if (this.redactionEnabled) {
-      decideSync(SECRET_REDACT, { masked: this.redact(text) !== text, seam }, { run_id, tool_call_id: null, recorder: this.decisionRecorder });
-    }
-    return truncateForChat(text, this.redact);
-  }
-  ```
-
-  Replace `:7275` `truncateForChat(input.text, this.redact)` → `this.redactReport("final_report", run_id, input.text)`. Replace `:7306` → `this.redactReport("failure_report", run_id, text)`. Replace `:7327` → `this.redactReport("evolution_report", run_id, input.text)`.
-
-  `store-options.ts`:
+  `src/run/store-options.ts`:
 
 ```ts
 import type { SecretBroker } from "../config/secret-broker.js";
@@ -500,221 +487,411 @@ export type { StoreOptions } from "./run-store.js";
  * the redactor and the decision recorder travel together; cli.ts, the live gate and the rollback check all call this.
  */
 export function storeOptionsFor(broker?: SecretBroker, env: NodeJS.ProcessEnv = process.env): StoreOptions {
-  const decisionRecorder = (s: RunStore) => storeRecorder(s, { env });
+  const decisionRecorder = (s: RunStore): ReturnType<typeof storeRecorder> => storeRecorder(s, { env });
   return broker ? { redact: broker.redact, decisionRecorder } : { decisionRecorder };
 }
 ```
 
-  Check the broker type's exported name: `grep -n "^export" src/config/secret-broker.ts`.
+  `cli.ts`: replace `const storeOptions = broker ? { redact: broker.redact } : {};` with `const storeOptions = storeOptionsFor(broker);`, and add the import. Update the comment above it to say that the redactor and the decision recorder travel together.
 
-  `cli.ts`: replace `const storeOptions = broker ? { redact: broker.redact } : {};` with `const storeOptions = storeOptionsFor(broker);`, and add the import. Keep the comment above it, updated to mention the recorder.
+  `self-write-guard.ts`: add `"src/run/store-options.ts", // ADR 0015 + 0030 boot wiring: the store's redactor and decision recorder travel together` next to `src/cli.ts`.
 
-  Note: the no-broker branch now carries a recorder, so the CLI's store writes `approval.bind`-style rows. The store itself writes only `secret.redact`, and only when armed, so nothing new is written with the firewall off.
+- [ ] **Step 4: Run.**
+  - `npm run typecheck` → 0 errors.
+  - `npx vitest run tests/run tests/decisions tests/core/core-worker-triage.test.ts tests/capabilities` → PASS.
 
-  `digest.ts` `countLines`: append the note only for `secret.redact`:
+- [ ] **Step 5: Commit.**
+
+```bash
+git add src/run/store-options.ts src/run/run-store.ts src/cli.ts src/capabilities/self-write-guard.ts tests/run/store-options.test.ts <the edited callers and guard test>
+git commit -m "feat(run): storeOptionsFor carries the redactor and an injected decision recorder together"
+```
+
+---
+
+### Task 5: `secret.redact` call site — `redactReport` in the store
+
+**Files:**
+- Modify: `src/run/run-store.ts` — the three wrappers (`:7275`, `:7306`, `:7327`) and a new private `redactReport`
+- Test: extend `tests/run/report-redaction-corpus.test.ts`; replace the private-recorder probe in `tests/run/store-options.test.ts` with a real masked report
+
+**Interfaces:**
+- Consumes: `SECRET_REDACT`, `RedactSeam` (Task 2); `decideSync`; `StoreOptions` / `storeOptionsFor` (Task 4).
+- Produces: a private `redactReport(seam, run_id, text): string`.
+
+- [ ] **Step 1: Add red assertions.** The Task 1 corpus fixture now opens its stores with `storeOptionsFor(fakeBroker())`, or with `{}` for firewall-off. Add the row assertions per class, read from `decisions` where `entry_id='secret.redact'`:
+  - **maskable**: exactly one `masked` row per wrapper call, with `reason_code` = the seam (`final_report` / `failure_report` / `evolution_report`), `run_id` set, and `tool_call_id` null;
+  - **cut boundary**: one row;
+  - **short control, firewall-off, clean**: zero rows;
+  - **duplicate re-enqueue**: a second row, and still one outbox row;
+  - **conflict**: one row more, and the `conflict` result unchanged;
+  - **insert failure**: one row, and the same throw;
+  - **outer rollback**: no row and no outbox row.
+
+  Every Task 1 byte pin stays unchanged.
+
+  Recursion pin: a `BEFORE INSERT ON decisions WHEN NEW.entry_id='secret.redact'` trigger that raises. A masked final report is still enqueued with the masked text; exactly one open `decision_record_failed` incident exists, with subject `secret.redact`; the call returns.
+
+  `store-options.test.ts`: a store from `storeOptionsFor(fakeBroker())` writes one `secret.redact masked` row for a masked final report. This pins the boot path's wiring.
+
+- [ ] **Step 2: Run. Expected: FAIL on the new row assertions only.**
+
+- [ ] **Step 3: Implement.**
+
+```ts
+  /**
+   * E8 (Stage 4B spec §5): the three report wrappers' redact-then-cut, recorded. `masked` is decided on the text before
+   * trim/cut; the stored bytes come from the same truncateForChat call as before, so payload_hash and the chat-turn copy
+   * are unchanged. A row is a masking attempt (a duplicate or failed enqueue still counted), never text. Firewall off: no
+   * decision, as before.
+   */
+  private redactReport(seam: RedactSeam, run_id: string, text: string): string {
+    if (this.redactionEnabled) {
+      decideSync(SECRET_REDACT, { masked: this.redact(text) !== text, seam }, { run_id, tool_call_id: null, recorder: this.decisionRecorder });
+    }
+    return truncateForChat(text, this.redact);
+  }
+```
+
+  Make three replacements:
+  - `:7275` `truncateForChat(input.text, this.redact)` → `this.redactReport("final_report", run_id, input.text)`
+  - `:7306` → `this.redactReport("failure_report", run_id, text)`
+  - `:7327` → `this.redactReport("evolution_report", run_id, input.text)`
+
+  `SECRET_REDACT` and `decideSync` become runtime imports into `run-store.ts`. This is safe: `decide.ts` imports only `./types.js`, and the entry module imports only types.
+
+- [ ] **Step 4: Run.** `npm run typecheck`, then the full `npm test`.
+
+  Expected: PASS. `tests/decisions/jev-version-job.test.ts` has a known bimodal flake (pre-existing, recorded in `tasks/todo.md`). If it fails, rerun that file alone and report both runs.
+
+- [ ] **Step 5: Commit.**
+
+```bash
+git add src/run/run-store.ts tests/run/report-redaction-corpus.test.ts tests/run/store-options.test.ts
+git commit -m "feat(run): secret.redact records each masked report in the three report wrappers (bytes unchanged)"
+```
+
+---
+
+### Task 6: The digest names `secret.redact`'s scope
+
+**Files:**
+- Modify: `src/decisions/digest.ts` `countLines` (`:91–103`)
+- Test: `tests/decisions/digest.test.ts`
+
+- [ ] **Step 1: Failing test.** `countLines` over one `secret.redact` rule row yields `` `· secret.redact 1 — ${RUNG_LABEL.rule} 1 (final, failure and evolution reports only)` ``. The same input with any other id yields no suffix.
+
+- [ ] **Step 2: Run. Expected: FAIL.**
+
+- [ ] **Step 3: Implement** (P-R3). In the `map` of `countLines`:
 
 ```ts
     return `· ${id} ${total} — ${[...known, ...other].join(" · ")}${id === "secret.redact" ? " (final, failure and evolution reports only)" : ""}`;
 ```
 
-  `self-write-guard.ts`: add `"src/run/store-options.ts", // ADR 0015 + 0030 boot wiring: the store's redactor and decision recorder travel together` next to `src/cli.ts`.
+- [ ] **Step 4: Run.** `npx vitest run tests/decisions` → PASS.
 
-- [ ] **Step 4: Run.**
-  - `npm run typecheck`, with zero errors and the `@ts-expect-error` used;
-  - `npx vitest run tests/run tests/decisions tests/capabilities tests/core/core-worker-triage.test.ts tests/improve`;
-  - then the full `npm test`.
-
-  Expected: PASS. `tests/decisions/jev-version-job.test.ts` has a known bimodal flake (pre-existing, recorded in `tasks/todo.md`). If it fails, rerun that file alone and report both runs.
-
-- [ ] **Step 5: Commit.** Split into two commits:
+- [ ] **Step 5: Commit.**
 
 ```bash
-git add src/run/store-options.ts src/run/run-store.ts src/cli.ts src/capabilities/self-write-guard.ts tests/run/store-options.test.ts tests/run/report-redaction-corpus.test.ts <the updated test callers>
-git commit -m "feat(run): secret.redact records masked reports; storeOptionsFor carries redactor + recorder together"
 git add src/decisions/digest.ts tests/decisions/digest.test.ts
 git commit -m "feat(decisions): digest names secret.redact's scope (three report wrappers only)"
 ```
 
 ---
 
-### Task 5: Differential harness — skeleton, comparator self-test, command and path corpora (base `548cb87`)
+### Task 7: Differential harness — the shared API, comparator self-test, coverage-pin machinery
 
 **Files:**
-- Create: `scripts/check-ladder-stage4-differential.mjs`
-- Create: `scripts/stage4-corpora.mjs`, the corpus loaders, so Task 6 adds to them without growing the harness past readability
+- Create: `scripts/stage4-diff-lib.mjs` (the API below)
+- Create: `scripts/check-ladder-stage4-differential.mjs` (CLI + runner)
+- Create: `scripts/stage4-corpora/stub.mjs` (one trivial registered corpus, which proves the machinery)
 
-**Interfaces:**
-- Produces:
-  - **CLI:** `node scripts/check-ladder-stage4-differential.mjs --old-dist-3 <dir@548cb87> --old-dist-4a <dir@1451a66> [--only command,path,policy,binding,redaction] [--keep]`.
-  - **Exit codes:** 0 PASS · 1 FAIL · 2 setup error.
-  - **Corpus interface:** each corpus is `{ name, base: "3"|"4a", min: { items, branches: string[] }, load(): Promise<Item[]>, project(dist, item, tmp): Promise<Projection> }`.
-  - **Comparison:** the harness compares `JSON.stringify(project(old)) === JSON.stringify(project(new))` per item, after stripping the excluded fields (ids, timestamps, `latency_ms`, the pairwise-mapped `tool_`/`op_` ids, and `decisions` rows whose `entry_id ∈ {approval.bind, secret.redact}`).
+Read spec §6 in full. Read `scripts/old-dist-provenance.mjs`, and `scripts/check-decisions-rollback.mjs` for the arg, temp and cleanup pattern.
 
-Read spec §6 (all of it), and `scripts/old-dist-provenance.mjs`, `scripts/check-decisions-rollback.mjs` for the arg, temp and cleanup pattern. For the bridge-seam drive, read `scripts/live-gate-ladder-stage3-wired.mjs` and `scripts/live-gate-ladder-2b-hooks.mjs`.
+**Interfaces — produces (exact; Tasks 8–10 depend on them):**
 
-- [ ] **Step 1: Old dists (orchestrator does this before dispatch; the implementer verifies).** Two worktrees:
-  - `.worktrees/base-548cb87`, built;
-  - `.worktrees/base-1451a66`, built.
+```js
+// scripts/stage4-diff-lib.mjs
+export const DISTS = { new: <repo>/dist, s3: <--old-dist-3>, s4a: <--old-dist-4a> };   // filled by the CLI
+export async function loadDist(dir) // → { RunStore, CapabilityRunner, decideCapability, classifyCommand, gateTargets, createToolApprovalSink,
+                                     //     storeOptionsFor: fn | null, decideSync, storeRecorder, createSecretBroker, … } — every export the corpora need,
+                                     //     each looked up by name and null when that dist lacks it (old dists have no storeOptionsFor)
+export function mkTemp(name)         // → a dir under the run's temp root (deleted on every exit path unless --keep)
+export function mkStore(d, kind, path) // kind: "bare" | "firewall"(fake broker) — new dist: storeOptionsFor(...); old dist: { redact } / {}
+export function fakeBroker(d)        // the nine fake values of spec §6.5 via d.createSecretBroker; never real env
+export function redactForPrint(s)    // fake-broker redaction + 200-char cap; transcript items print as `transcript#<n>` only
+export function strip(projection)    // removes ids, timestamps, latency_ms, decisions rows of approval.bind / secret.redact; maps tool_/op_ ids pairwise to tool#1, op#1 …
+export function compare(corpus, item, a, b) // → null | { key, diff } on JSON.stringify(strip(a)) !== JSON.stringify(strip(b))
+export function requireNew(corpus, item, name, ok, detail) // a required new-side fact (spec "required, not excluded"); false → FAIL line
+// A corpus module default-exports:
+// { name, pairs: Array<["s3"|"s4a","new"]> | ((item) => pairs), min: { items: number, branches: string[] },
+//   load(ctx): Promise<Item[]>  (Item = { key, tags: string[], ... }), project(d, item, ctx): Promise<object>, required?(d, item, proj, ctx): void }
+export const CORPORA = []            // the CLI imports scripts/stage4-corpora/*.mjs and pushes each default export
+```
 
-  Provenance: call `verifyOldDist(old, NEW_DIST, "548cb87", "decisions/registry.js")` and `verifyOldDist(old, NEW_DIST, "1451a66", "capabilities/capability-runner.js")`. A provenance failure exits 2.
+- **CLI:** `node scripts/check-ladder-stage4-differential.mjs --old-dist-3 <dir> --old-dist-4a <dir> [--transcripts-dir <dir>] [--live-db <path>] [--only a,b] [--keep]`.
+- **Exit codes:** 0 PASS · 1 FAIL · 2 setup error.
+- **Provenance:**
+  - `verifyOldDist(s3, new, "548cb87", "decisions/registry.js")`;
+  - `verifyOldDist(s4a, new, "1451a66", "capabilities/capability-runner.js")`;
+  - a provenance failure exits 2.
+- **Per corpus, in order:**
+  1. `load` runs.
+  2. The coverage pin runs. `items.length < min.items`, or a `min.branches` tag with no item, is a FAIL with the counts printed. A short extraction never passes.
+  3. Each item is projected on each pair, and `compare` runs. `required` runs on the new side.
+  4. The **self-test** runs: the first item's new-side projection is mutated by one byte (append `"!"` to its first string field), and `compare` must report exactly that one key. Otherwise the result is `FAIL comparator self-test`.
+- **Summary:** one line per corpus: items, per-tag counts, pairs, differences, required failures.
 
-- [ ] **Step 2: Comparator + self-test first.**
+- [ ] **Step 1: Write the lib and the CLI.** `stub.mjs` is a corpus of three items over `classifyCommand("ls")`-style pure calls, with `min.items: 3` and one tag.
 
-  Write `compare(name, items, oldP, newP)`, which returns a list of differing item keys. The self-test feeds a fixed item whose new-side projection is mutated by one byte. The comparator must report exactly that key, else exit 1 with `FAIL comparator self-test`. Every corpus run calls it once.
+- [ ] **Step 2: Prove the machinery.**
+  - `npm run build`, then `node scripts/check-ladder-stage4-differential.mjs --old-dist-3 … --old-dist-4a … --only stub` → exit 0.
+  - Edit `stub.mjs` to `min.items: 4` → exit 1 with the coverage FAIL. Revert.
+  - Run with a bad `--old-dist-3` path → exit 2.
 
-  Printing: an item prints only through the fake-broker redactor plus a length cap (200 chars), and transcript items print as `transcript#<n>` only.
+  Paste all three outputs into the report.
 
-- [ ] **Step 3: Coverage pins.**
-
-  After `load()`, FAIL when `items.length < min.items` or when any `min.branches` entry has no item tagged with it. A short or empty extraction is a FAIL, never a pass.
-
-  Command corpus `min`:
-  - test-table literals ≥ 100;
-  - transcript distinct = **147** (exactly: FAIL with the found count otherwise);
-  - the 7 ADR 0028 misses (each one is a separate branch tag);
-  - branches `external_write`, `destructive`, `plain`, `unseen shell script`. Confirm these label strings against `src/omp/command-matcher.ts` and adjust the tag names to the real kind/label names. Record the mapping in a comment.
-
-  Path corpus `min`: one tag per branch in spec §6 item 2(b), plus **13** transcript inputs.
-
-- [ ] **Step 4: Command corpus loader.**
-  - (a) Parse `tests/omp/command-matcher.test.ts` for string literals inside the `it.each` tables. Use a small regex over the file text that takes the first string of each table row, and assert ≥ 100.
-  - (b) Read `omp/sessions/chat-8744196214/*.jsonl` line by line, take `toolCall` objects with `name === "bash"`, and dedupe `arguments.command`. Keep them in memory only. Never write them to the repo, never print them raw. Where a debug copy is needed, write it under the temp dir, which is deleted on exit.
-  - (c) Seven literal items for ADR 0028 `docs/decisions/0028-*.md:239–241`: `dd if=/dev/zero of=x`, `unlink x`, `python3 -c 'print(1)'`, `node -e '1'`, `perl -e '1'`, `echo $'a\x27b'`, `bash file.sh`. Add the spaced-arithmetic and nested-apostrophe items as the ADR text words them. Read the lines and transcribe.
-
-  `project`: `classifyCommand(cmd)` → `{kind, label}` from each dist's `omp/command-matcher.js`. Confirm the export name.
-
-  Bridge-seam projection: drive the dist's bridge handler for a `bash` tool call the way `live-gate-ladder-stage3-wired.mjs` does, against a temp `RunStore` with a running run. Record:
-  - whether it asked: an approval prompt was created;
-  - the card's `Action:` label, from the approval prompt text;
-  - the `tool.shell_class` decision row verdict and reason.
-
-  `548cb87` has no `tool.shell_class` rows, so the row part of the projection is compared head vs `1451a66` only. Run the bridge-seam projection three-way:
-  - card and asked: old-3 vs new;
-  - row: old-4a vs new.
-
-  If driving the bridge per item is too slow for 147 + ≥100 items (more than 5 minutes total), drive it for the transcript items and the 7 misses, and keep the pure `classifyCommand` comparison for the test-table literals. Record the ruling in the report.
-
-- [ ] **Step 5: Path corpus loader.**
-  - (a) Literal paths from `tests/omp/gate-path.test.ts`.
-  - (b) One synthetic item per branch of spec §6 item 2(b). Read `src/omp/gate-path.ts:25–66` and `src/omp/protected-paths.ts`, and tag each item with its branch name. Each item is run for both `fs_read` and `fs_write`.
-  - (c) The 13 `read`/`write`/`edit` inputs from the transcripts (7 + 3 + 3). Assert the count.
-
-  `project`: the `gateTargets` output; at the bridge seam, the gate's deny code; the `tool.path` row's verdict and reason (head vs `1451a66` only, as above).
-
-- [ ] **Step 6: Run against the built branch.**
-  - `npm run build`
-  - `node scripts/check-ladder-stage4-differential.mjs --old-dist-3 … --old-dist-4a … --only command,path`
-
-  Expected: the comparator self-test passes, the coverage pins pass, 0 differences, exit 0. Paste the summary lines (counts per corpus, per branch) into the report.
-
-- [ ] **Step 7: Commit.**
+- [ ] **Step 3: Commit.**
 
 ```bash
-git add scripts/check-ladder-stage4-differential.mjs scripts/stage4-corpora.mjs
-git commit -m "test(stage4): differential harness — comparator self-test, command and path corpora vs 548cb87"
+git add scripts/stage4-diff-lib.mjs scripts/check-ladder-stage4-differential.mjs scripts/stage4-corpora/stub.mjs
+git commit -m "test(stage4): differential harness — shared API, comparator self-test, coverage pins"
 ```
 
 ---
 
-### Task 6: Differential — policy, binding and redaction corpora (base `1451a66`)
+### Task 8: Differential — command and path corpora (`548cb87` for the pure and card parts, `1451a66` for rows)
 
 **Files:**
-- Modify: `scripts/stage4-corpora.mjs`, `scripts/check-ladder-stage4-differential.mjs` (register the three corpora)
+- Create: `scripts/stage4-corpora/command.mjs`, `scripts/stage4-corpora/path.mjs`
 
-**Interfaces:**
-- Consumes: the corpus interface and comparator from Task 5; the fixtures' *behaviour* from Task 1. The harness reimplements those fixtures in plain JS against each dist; vitest files cannot be imported into `.mjs`.
-- Produces: corpora `policy`, `binding`, `redaction`.
+**Interfaces:** consumes the Task 7 API exactly as listed. Read spec §6 items 1–2.
 
-Read spec §6 items 3–5.
+- [ ] **Step 1: Command corpus.**
 
-- [ ] **Step 1: Policy matrix.**
+  `load`:
+  - **(a) Test-table literals** from `tests/omp/command-matcher.test.ts`. Extract each string literal from the `it.each` tables and **evaluate** it to its runtime value: `JSON.parse` for double-quoted literals, and a restricted unescape (`\\n`, `\\t`, `\\\\`, `\\'`, `\\"`) for single-quoted and template literals without `${`. Take the command cell of each row, which for `[cmd, kind]` rows is the first element. Pins: ≥ 100 items, and ≥ 1 evaluated item contains a real `"\n"` (a heredoc). Assert both.
+  - **(b) Transcripts.** Read `--transcripts-dir`'s `*.jsonl` line by line, take `toolCall` objects with `name === "bash"`, and dedupe `arguments.command`. Pin exactly **147** distinct items, failing with the found count otherwise. Keep the items in memory only.
+  - **(c) ADR 0028 residuals** (`docs/decisions/0028-*.md:239–241`). Pin **9 items in 7 group tags**:
 
-  Use `decideCapability` from each dist's `policy/capability-policy.js` over the cross product in spec §6 item 3. Take the capabilities from the dist's `ToolRegistry` default registration; confirm with `grep -rn "register(" src/tools | head`, or seed from `tests/policy/*.test.ts` capability shapes.
+    | Group tag | Items |
+    |---|---|
+    | `dd` | `dd if=/dev/zero of=x` |
+    | `unlink` | `unlink x` |
+    | `interp_e` | `python3 -c 'print(1)'`, `node -e '1'`, `perl -e '1'` |
+    | `ansi_c` | `echo $'a\x27b'` |
+    | `spaced_arith` | as the ADR words it; read and transcribe |
+    | `nested_apostrophe` | as the ADR words it; read and transcribe |
+    | `bash_file` | `bash file.sh`, tagged with its expected class as well (plain by design, `command-matcher.ts:203`) |
 
-  `min.branches`: every `CapabilityDecision.reason` string listed in `src/decisions/entries/tool-policy.ts` `REASON_MAP` keys.
+  `min.branches`: the 7 group tags, plus one tag per classifier kind present in `src/omp/command-matcher.ts` that maps to spec's `external_write`, `destructive`, `plain` and `unseen shell script`. Read the file for the real kind and label names, and record the mapping in a comment.
 
-  Project `{decision, reason}`, plus a `CapabilityRunner.execute` run with a stub sink: the `tool.policy` row verdict, the reason code and the row count, including the dedup. The `standing: present` half is compared old-4a vs new only. The `standing: absent` half is compared against both old dists.
+  `project` returns two parts:
+  - **Pure part:** `classifyCommand(cmd)` → `{kind, label}`.
+  - **Bridge-seam part:** drive each dist's bridge handler for a `bash` call against a temp store with a running run, the way `scripts/live-gate-ladder-stage3-wired.mjs` and `scripts/live-gate-ladder-2b-hooks.mjs` do. Read them for the exact seam. Record:
+    - `asked`: an approval prompt was created;
+    - the card's `Action:` label, from the prompt text;
+    - the `tool.shell_class` decision row's verdict and reason.
 
-- [ ] **Step 2: Binding matrix.** The Task 1 matrix rows, rebuilt in JS on a temp-file `RunStore` per item, through each dist's `CapabilityRunner` and real omp sink.
+  `pairs`:
+  - `[["s3","new"],["s4a","new"]]` for the pure part and for `asked`/label;
+  - the row part on `["s4a","new"]` only, since `548cb87` has no `tool.shell_class`.
 
-  Compared: the result (status, `error_ref`), every `tool_approvals`/`approvals` column except ids and timestamps, the `standing_*` rows, ledger event types and payloads (stripped of ids and timestamps), and incident rows.
+  Implement this as two projection keys, with `pairs` returning both and `strip` dropping the `row` key when the left side is `s3`. Add that rule to `strip` in the lib, keyed by a `projection.__s3Omit` list.
 
-  Required on the new side, asserted separately from the comparison:
-  - one `approval.bind` row per omp-sink consume;
-  - its verdict derived from the read-back `tool_approvals.state` (`consumed` ⇒ `bound`);
-  - `reason_code` = the sink code when unbound;
-  - P3 → `unbound`/`no_sink`;
-  - zero rows on P2, first calls and the run-level path.
+  Time budget: if the bridge drive takes more than 5 minutes for the full corpus, drive it for transcripts + residuals only and keep the pure part for the table literals. Record that in the report.
 
-  The old side must have zero `approval.bind` rows; that is a control.
+- [ ] **Step 2: Path corpus.**
 
-- [ ] **Step 3: Redaction corpus.**
+  `load`:
+  - (a) literal paths from `tests/omp/gate-path.test.ts`, evaluated as above;
+  - (b) one synthetic item per branch in spec §6 item 2(b), tagged with the branch name. Read `src/omp/gate-path.ts:25–66` and `src/omp/protected-paths.ts`. Each item is run for both `fs_read` and `fs_write`, and every protected path is included;
+  - (c) the transcripts' `read`/`write`/`edit` inputs, pinned at exactly **13** (7 + 3 + 3).
 
-  Make a VACUUM copy of the live DB (`VACUUM INTO` a temp path, opened read-only for the copy) and read every `notification_outbox` row with `intent_type='final_report'`, taking `json_extract(payload_json,'$.text')`. Expect **≥ 633** rows; FAIL if fewer.
+  `project`:
+  - the `gateTargets` output;
+  - the gate's deny code at the bridge seam;
+  - the `tool.path` row's verdict and reason, on `s4a` only, as above.
 
-  Run each text through each of the three wrappers on both dists. The new dist's store is opened with `storeOptionsFor(fakeBroker)` imported from the new dist's `run/store-options.js`; the old one with `{ redact: fakeBroker.redact }`. Then run the Task 1 classes: maskable, cut boundary, short control, firewall off, clean, and the enqueue outcomes.
+- [ ] **Step 3: Run.** `npm run build`, then `node scripts/check-ladder-stage4-differential.mjs --old-dist-3 … --old-dist-4a … --only command,path`.
 
-  Compared: outbox `payload_json`, `payload_hash`, `state`; the evolution `chat_turns` text; return values.
+  Expected:
+  - self-test PASS;
+  - every coverage pin PASS;
+  - 0 differences;
+  - exit 0.
 
-  Required on the new side, per class, the row counts of spec §6 item 5. Also run the full-DB TEXT scan per store: zero maskable values, and the exact expected counts for the short and firewall-off controls.
+  Paste the summary lines into the report.
 
-  The fake broker is built in the harness from fake strings. No real env value is read.
-
-- [ ] **Step 4: Run.**
-  - `npm run build`
-  - `node scripts/check-ladder-stage4-differential.mjs --old-dist-3 … --old-dist-4a …`, with all five corpora
-
-  Expected: exit 0, self-test PASS, every coverage pin PASS, 0 differences, every required count PASS. Paste the summary into the report.
-
-- [ ] **Step 5: Mutation check (report only, do not commit).**
-  - Temporarily change `redactReport` to skip `decideSync` for `failure_report`, rebuild, and rerun `--only redaction`. Expect FAIL on the required counts.
-  - Temporarily make `bindApproval` pass `tool_call_id: "tool_x"` (a fixed id), rebuild, and rerun `--only binding`. Expect FAIL.
-
-  Revert both with `git checkout -- src`, rebuild, and report the two FAIL outputs.
-
-- [ ] **Step 6: Commit.**
+- [ ] **Step 4: Commit.**
 
 ```bash
-git add scripts/stage4-corpora.mjs scripts/check-ladder-stage4-differential.mjs
-git commit -m "test(stage4): differential — policy matrix, binding matrix, seeded redaction corpus vs 1451a66"
+git add scripts/stage4-corpora/command.mjs scripts/stage4-corpora/path.mjs scripts/stage4-diff-lib.mjs
+git commit -m "test(stage4): differential — command and path corpora, bridge-seam projection"
 ```
 
 ---
 
-### Task 7: Live gate — `scripts/live-gate-ladder-stage4b.mjs`
+### Task 9: Differential — policy matrix and binding matrix
+
+**Files:**
+- Create: `scripts/stage4-corpora/policy.mjs`, `scripts/stage4-corpora/binding.mjs`
+
+**Interfaces:** consumes the Task 7 API. Uses Task 1's binding matrix as the item list: rebuild its rows in plain JS, since the vitest file cannot be imported. Read spec §6 items 3–4.
+
+- [ ] **Step 1: Policy matrix.** Run `decideCapability` over the cross product in spec §6 item 3.
+
+  Capability shapes: `ToolRegistry`'s constructor registers nothing, so take the registry the runtime builds. Find it with `grep -rn "new ToolRegistry" src`, and use the module that registers the daemon's capabilities on that dist. If none is exportable, use the capability shapes in `tests/policy/*.test.ts`, transcribed. Name the source in a comment.
+
+  `min.branches`: every key of `REASON_MAP` in `src/decisions/entries/tool-policy.ts`.
+
+  `project` returns:
+  - `{decision, reason}`;
+  - a `CapabilityRunner.execute` run with a stub sink and a recorder over a temp store, giving the `tool.policy` row's verdict, its reason code, and the row count including the dedup.
+
+  `pairs` is per item:
+  - `standing: present` → `[["s4a","new"]]`;
+  - `standing: absent` → `[["s3","new"],["s4a","new"]]`.
+
+- [ ] **Step 2: Binding matrix.** Rebuild every Task 1 binding row in JS, on a fresh temp-file `RunStore` per item, through each dist's `CapabilityRunner` and real omp sink. Also include the run-level fixture path through `CoreWorker.executeRun` with `force_gated_capability`, as in Task 1.
+
+  `pairs`: `[["s4a","new"]]`.
+
+  Compared:
+  - the result (status, `error_ref`);
+  - every `tool_approvals` and `approvals` column, except ids and timestamps;
+  - the `standing_*` rows;
+  - ledger event types and payloads, stripped;
+  - incident rows.
+
+  `required`, on the new side:
+  - exactly one `approval.bind` row per omp-sink consume;
+  - the verdict is `bound` ⇔ before = `approved` ∧ after = `consumed` for **that attempt**, read before and after the call. A second consume of a `consumed` row is therefore `unbound` / `not_approved`;
+  - `reason_code` is the sink code when unbound;
+  - P3 → `unbound` / `no_sink`;
+  - zero rows on P2, on first calls, on standing uses, and on the run-level path.
+
+  Control: the old side has zero `approval.bind` rows.
+
+- [ ] **Step 3: Run.** `npm run build`, then `--only policy,binding`. Expected: exit 0, and paste the summary.
+
+- [ ] **Step 4: Mutation check (report only; never commit it).** Make `bindApproval` pass a fixed `tool_call_id: "tool_x"` to `decideSync`'s ctx, rebuild, and run `--only binding`. Expect FAIL. Revert with `git checkout -- src`, rebuild, and paste both outputs.
+
+- [ ] **Step 5: Commit.**
+
+```bash
+git add scripts/stage4-corpora/policy.mjs scripts/stage4-corpora/binding.mjs
+git commit -m "test(stage4): differential — policy matrix and binding matrix vs 1451a66 (+548cb87 for the no-standing half)"
+```
+
+---
+
+### Task 10: Differential — seeded redaction corpus
+
+**Files:**
+- Create: `scripts/stage4-corpora/redaction.mjs`
+
+**Interfaces:** consumes the Task 7 API (`mkStore`, `fakeBroker`). Read spec §6 item 5.
+
+- [ ] **Step 1: Write the corpus.**
+
+  `load`: run `VACUUM INTO` from `--live-db` to a temp path, then read every `notification_outbox` row with `intent_type='final_report'`, taking `json_extract(payload_json,'$.text')`. Pin ≥ **633**.
+
+  Items:
+  - each live text × each of the three wrappers;
+  - the Task 1 classes, each tagged with its class name:
+    - maskable, including the offset-2,000-of-3,000 case;
+    - cut boundary, built as `"x".repeat(3895) + value + " tail"`, with the premise assertion from Task 1;
+    - short control;
+    - firewall off;
+    - clean edges;
+    - the four enqueue outcomes.
+
+  **One fresh run per (text, wrapper).** The final-report and failure wrappers share the key `${run_id}:final_report`. Then pin: outbox rows per wrapper equal the item count for that wrapper.
+
+  `pairs`: `[["s4a","new"]]`.
+
+  Compared:
+  - outbox `payload_json`, `payload_hash` and `state`;
+  - the evolution report's `chat_turns` text;
+  - the return values.
+
+  `required`, on the new side, the per-class row counts of spec §6 item 5:
+  - maskable: one `masked` row per call, `reason_code` = the seam;
+  - cut boundary: one row;
+  - short control, firewall off, clean: zero rows;
+  - duplicate: a second row;
+  - conflict: a row;
+  - insert failure: a row;
+  - outer rollback: no row.
+
+  Also run the full-DB TEXT scan per store. It must find zero maskable values, and the exact expected counts for the short and firewall-off controls.
+
+- [ ] **Step 2: Run.** `npm run build`, then `node scripts/check-ladder-stage4-differential.mjs --old-dist-3 … --old-dist-4a …` across **all** corpora (drop the stub with `--only command,path,policy,binding,redaction`). Expected: exit 0, and paste the full summary.
+
+- [ ] **Step 3: Mutation check (report only).** Make `redactReport` skip `decideSync` for `failure_report`, rebuild, and run `--only redaction`. Expect FAIL on the required counts. Revert, rebuild, and paste both outputs.
+
+- [ ] **Step 4: Commit.**
+
+```bash
+git add scripts/stage4-corpora/redaction.mjs
+git commit -m "test(stage4): differential — seeded redaction corpus over 633 live report texts vs 1451a66"
+```
+
+---
+
+### Task 11: Live gate — `scripts/live-gate-ladder-stage4b.mjs`
 
 **Files:**
 - Create: `scripts/live-gate-ladder-stage4b.mjs`
 
 **Interfaces:**
-- Consumes: the new dist (`../dist/`); old dist at `1451a66` (`--old-dist`), verified by `verifyOldDist(…, "1451a66", "capabilities/capability-runner.js")`; `storeOptionsFor` from `dist/run/store-options.js`.
+- Consumes:
+  - `../dist/`;
+  - `--old-dist` at `1451a66`, verified with `verifyOldDist(…, "1451a66", "capabilities/capability-runner.js")`;
+  - `storeOptionsFor` from `dist/run/store-options.js`;
+  - `--live-db` (VACUUM INTO a temp copy).
 - Produces: exit 0 only when all 8 lines PASS.
 
-Read spec §7 (every line) and `scripts/live-gate-ladder-2b-hooks.mjs` (the bridge drive, `resolveToolApprovalForTest` + waiter at `:220`). Read `scripts/live-gate-standing-approval.mjs` for the 4A refuse-outside-worktree guard, and copy that guard.
+Read spec §7 (every line), and `scripts/live-gate-ladder-2b-hooks.mjs`, which drives the bridge and resolves through `resolveToolApprovalForTest` + the waiter at `:220`. Copy the refuse-outside-`.worktrees/` guard from `scripts/live-gate-standing-approval.mjs`.
 
-- [ ] **Step 1: Write the gate.**
-  - Lines 1–8 exactly as spec §7, each printed `PASS`/`FAIL <name> — <detail>`.
-  - All writes go to a VACUUM copy in a temp dir, deleted on every exit path unless `--keep`.
-  - Use a synthetic broker from fake strings; never read real secret values.
+- [ ] **Step 1: Write the gate.** Lines 1–8 follow spec §7, each printed as `PASS`/`FAIL <name> — <detail>`. All writes go to the temp copy. The broker is synthetic, built from fake strings.
 
-  Specifics:
-  - **Line 2** drives a schedule-born run asking for `launchctl list` through the real bridge. It requires, for the call's `tool_call_id`:
-    - one `approval.bind bound` row;
-    - the approval `consumed`;
-    - a `tool_finished` ledger event with `status` set;
+  Exact numbers and evidence:
+  - **Line 2:** a schedule-born run asks for `launchctl list` through the real bridge. Required, for the call's `tool_call_id`:
+    - exactly one `approval.bind bound` row;
+    - the approval row `consumed`;
+    - **evidence that the adapter ran**, as distinct from a `tool_finished` that the bridge writes for a call that never reached the runner (`bridge-handler.ts:262–280`; the pre-run failure path is at `:275`). Read those lines, pick the field or event that only the adapter-execution path produces (for example the shell result's `exit_code` as a number, or an adapter-side ledger event), and name it in a comment;
     - the bridge result returned.
 
-    It prints the exit code without asserting it.
-  - **Line 6** installs `BEFORE INSERT ON decisions` triggers raising for both ids. It wraps the work in a 5 s timer that FAILs on expiry.
-  - **Line 8** spawns `node scripts/live-gate-standing-approval.mjs` and `node scripts/live-gate-cleanroom-runtime.mjs` as children and requires exit 0 from both. Read each script's header for its required args and env.
+    Print the exit code, but do not assert it.
+  - **Line 3:** the omp sink refuses `expired`, `action_mismatch` (one byte) and `lease_lost`. Each gives `unbound` with that code, and results byte-equal to the old dist on the same copy.
+  - **Line 4:** cover each of these:
+    - **Whole marker:** a seeded value at offset 2,000 of a 3,000-char text gives a whole `«redacted»`, byte-equal to the old dist, and one `masked final_report` row.
+    - **Cut boundary:** `"x".repeat(3895) + value + " tail"` gives bytes equal to the old dist, with the premise asserted (the marker is split) and `… (truncated)` intact. One row.
+    - **Other wrappers:** a failure notice and an evolution report, each likewise.
+    - **Controls:** a clean report and the 5-char control each write no row.
+  - **Line 5:** the store is built with `storeOptionsFor(broker)`. The count of `secret.redact masked` rows must equal the number of maskable report calls made, the full-copy scan must find 0 maskable seeded values, and the count of `approval.bind` rows must equal the omp-sink resumes made. Either count short → FAIL.
+  - **Line 6:** `BEFORE INSERT ON decisions` triggers raise for both ids. Then:
+    - the consume still succeeds, and the adapter still ran (the line-2 evidence);
+    - the report is still enqueued masked;
+    - exactly **one** open `decision_record_failed` incident exists with subject `approval.bind`, and exactly **one** with subject `secret.redact`;
+    - the whole line completes within **5 s**, enforced by a timer that FAILs on expiry.
+  - **Line 7:** a store opened without `redact` gives reports byte-equal to the old dist, and zero `secret.redact` rows.
+  - **Line 8:** spawn `node scripts/live-gate-standing-approval.mjs` and `node scripts/live-gate-cleanroom-runtime.mjs` (read each header for args and env) and require exit 0 from both. Note in the gate's header that these child gates open stores without `storeOptionsFor`, so line 8 proves 4A behaviour on this build, not `secret.redact` wiring. Lines 4–5 prove that wiring.
 
 - [ ] **Step 2: Run from the worktree.**
   - `npm run build`
   - `HOUGE_ENV_FILE=/Users/xiaochuan/Projects/adventure/.env node scripts/live-gate-ladder-stage4b.mjs --old-dist /Users/xiaochuan/Projects/adventure/.worktrees/base-1451a66/dist`
 
-  Expected: 8/8 PASS, exit 0. Paste the full output into the report.
+  Expected: 8/8 PASS, exit 0. Paste the full output.
 
-- [ ] **Step 3: Silent-degradation proof (report only).** Temporarily make `storeOptionsFor` return `{ redact }` with no recorder, cast to bypass the type. Rebuild and rerun; line 5 must FAIL. Revert, rebuild, and report the output.
+- [ ] **Step 3: Silent-degradation proofs (report only; never commit).** Rebuild and rerun after each mutation, then revert and rebuild.
+  - (a) `storeOptionsFor` returns `{ redact }` with no recorder (cast past the type) → line 5 must FAIL.
+  - (b) `bindApproval` skips its post-consume `decideSync` → line 5 must FAIL.
+
+  Paste both FAIL outputs.
 
 - [ ] **Step 4: Commit.**
 
@@ -725,28 +902,41 @@ git commit -m "test(stage4b): live gate — bind through the bridge, redaction, 
 
 ---
 
-### Task 8: Rollback check — `scripts/check-ladder-stage4b-rollback.mjs`
+### Task 12: Rollback check — `scripts/check-ladder-stage4b-rollback.mjs`
 
 **Files:**
 - Create: `scripts/check-ladder-stage4b-rollback.mjs`
 
 **Interfaces:**
-- Consumes: the pattern of `scripts/check-decisions-rollback.mjs` and `scripts/check-standing-rollback.mjs` (its 4A seed); `storeOptionsFor` from the new dist.
+- Consumes:
+  - the pattern of `scripts/check-decisions-rollback.mjs`;
+  - `scripts/check-standing-rollback.mjs` (its 4A seed, which includes the clean `tool_finished` for the standing use);
+  - `storeOptionsFor` from the new dist;
+  - `--old-dist` at `1451a66`;
+  - `--live-db`.
 - Produces: exit 0 PASS · 1 FAIL · 2 setup error.
 
 Read spec §8.
 
-- [ ] **Step 1: Write the check.**
-  1. Make a VACUUM copy of the live DB.
-  2. Open it with the new dist via `storeOptionsFor(fakeBroker)`. Seed one `approval.bind` row through a real resume, one `secret.redact` row through a masked final report, and one standing row (reuse the 4A seed shape).
-  3. Have the `1451a66` dist open the copy, run its migrations, and render the digest and `/status` text. Find the render functions with `grep -n "export function" src/decisions/digest.ts src/decisions/status-view.ts`. The output must include the new ids' count lines without a throw.
-  4. Still on `1451a66`: resolve an approval, run a resume (no bind row written by the old build), enqueue a masked report (no redact row written), and try a `review_ok` outcome whose value is `approval.bind` and then `secret.redact`. Both must be refused, per `outcomes.ts:37–40` against the old `ENTRY_IDS`.
-  5. Reopen with the new dist.
+- [ ] **Step 1: Write the check.** Use two VACUUM copies of the live DB: **A**, which the new build touches, and **F**, which only the old build ever opens.
+  1. Open A with the new dist via `storeOptionsFor(fakeBroker)`. Seed:
+     - one `approval.bind` row, through a real resume;
+     - one `secret.redact` row, through a masked final report;
+     - one standing row, using the 4A seed shape.
+  2. On **both** A and F, have the `1451a66` dist:
+     - open the copy and run its migrations;
+     - render the digest and `/status` text (find the renderers with `grep -n "export function" src/decisions/digest.ts src/decisions/status-view.ts`);
+     - resolve an approval;
+     - run a resume, which on the old build writes no bind row;
+     - enqueue a masked report, which writes no redact row;
+     - try a `review_ok` outcome whose value is `approval.bind`, then one whose value is `secret.redact`. Both must be refused (`outcomes.ts:37–40`, old `ENTRY_IDS`).
+  3. Reopen A with the new dist.
 
-  PASS means:
-  - no throw;
-  - the row counts of `decisions`, `tool_approvals`, `standing_approvals` and `notification_outbox` never drop;
-  - each old-build output equals what the old build gives on a copy that has never seen the new build. Run the same steps on a second fresh copy for this comparison, and exclude ids and timestamps.
+  PASS conditions:
+  - nothing throws;
+  - row counts of `decisions`, `tool_approvals`, `standing_approvals` and `notification_outbox` on A never drop between steps;
+  - **expected difference, stated:** A's digest and `/status` output contains a `· approval.bind …` line and a `· secret.redact …` line, and F's has neither. Every other line, with ids and timestamps stripped, is equal between A and F, apart from the count lines of entries whose counts the seed itself changed. Compute the expected per-entry counts from the seed, and assert them rather than excluding them;
+  - every step-2 result other than the digest and status text is equal between A and F, with ids and timestamps stripped.
 
 - [ ] **Step 2: Run.** `HOUGE_ENV_FILE=/Users/xiaochuan/Projects/adventure/.env node scripts/check-ladder-stage4b-rollback.mjs --old-dist /Users/xiaochuan/Projects/adventure/.worktrees/base-1451a66/dist`. Expected: all PASS, exit 0. Paste the output.
 
@@ -759,14 +949,15 @@ git commit -m "test(stage4b): rollback check — 1451a66 reads a 4B-written copy
 
 ---
 
-### After Task 8 (orchestrator, not a subagent task)
+### After Task 12 (orchestrator, not a subagent task)
 
 - Final whole-branch review: the most capable non-orchestrator model, plus a codex whole-diff pass, plus parallel reviewers (security / correctness / testing / adversarial).
 - Docs sync, as AGENTS.md requires:
-  - the ADR 0030 amendment draft (Stage 4B), which rewrites the Stage 4A line "`approval.bind` stays a locked id with no module", plus its README row;
-  - the `PROTECTED_FILES` addition, named in the amendment;
-  - `docs/reference/configuration.md`, only if it documents the digest lines;
-  - ROADMAP Stage 4: the gate column closed;
+  - the ADR 0030 amendment draft (Stage 4B). It rewrites the Stage 4A line "`approval.bind` stays a locked id with no module" and has a README row. It must also name:
+    - the `PROTECTED_FILES` addition;
+    - that `review_ok` outcomes may now name the two ids;
+    - the digest scope note;
+  - ROADMAP Stage 4: the gate column is closed;
   - `tasks/todo.md` state block, with these follow-ups:
     - P7's missing expiry and `changes` checks;
     - R2 object keys;
@@ -777,3 +968,24 @@ git commit -m "test(stage4b): rollback check — 1451a66 reads a 4B-written copy
   - a `sessions.md` entry.
 - Merge to `main`, push, and rebuild `dist/`.
 - Tell Paco the kickstart is owed. The 4A migration and the 4B code both land at the same kickstart.
+
+## Plan review record (2026-10-29)
+
+Senior (Sonnet, live code + tsc probe): 0 BLOCKER, 9 WARNING, 5 SUGGESTION. Codex (read-only): 3 BLOCKER, 3 WARNING. All applied in Rev 2 of this plan:
+- **Codex:**
+  - B1: the rollback check compares A against F, with the new-id lines as a stated difference (Task 12).
+  - B2: the bind oracle uses per-attempt before/after state (Tasks 3, 9).
+  - B3 (and senior W4): the run-level path goes through `CoreWorker.executeRun`, with no direct-store fallback (Task 1).
+  - W1: line 2 requires adapter-only evidence (Task 11).
+  - W2: per-item `pairs`, and the capability-shape source is named (Tasks 7, 9).
+  - W3: the Stage 3 gate list is updated, against the senior's "leave it". Ruling: the spec names it, it is harmless, and it costs nothing if wrong.
+- **Senior:**
+  - W1: read-only external inputs as flags (Global Constraints).
+  - W2: a scan hit stops the work (Task 1).
+  - W3: the cut-boundary placement and premise (Tasks 1, 10, 11).
+  - W5: Tasks 4–6 split into Tasks 4–12.
+  - W6: an exact harness API (Task 7).
+  - W7: evaluated literals (Task 8).
+  - W8: one fresh run per (text, wrapper) (Task 10).
+  - W9: the real caller list, with no-op recorders (Task 4).
+  - Suggestions: 9 items in 7 groups (Task 8); the bind mutation in the gate (Task 11); restated numbers (Task 11); the dead `code` field dropped (Task 3); the line-8 scope note (Task 11).
