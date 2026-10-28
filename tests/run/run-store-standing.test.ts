@@ -117,6 +117,23 @@ const consume = (s: RunStore, run_id: string, approval_id: string, x: { standing
 const streakEvents = (s: RunStore) => s.getLedgerEvents().filter((e) => e.event_type === "standing_streak").map((e) => e.payload.streak);
 
 describe("consume hook (§6, §7): credits by distinct scheduled run", () => {
+  it("credits nothing while the chat's transcript is hostile (no streak starts, none advances); untrusted and clean still credit", () => {
+    // an approval Paco gave while the planner's context was hostile is not evidence the command is routine
+    const s = RunStore.openInMemory();
+    s.setTranscriptTrust("555", "hostile", NOW);
+    const r1 = scheduledRun(s); const a1 = approved(s, r1);
+    expect(consume(s, r1, a1.approval_id)).toEqual({ ok: true, sealing: false });
+    expect(s.standingFor(KEY)).toBeUndefined();
+    s.setTranscriptTrust("555", "untrusted", NOW);
+    const r2 = scheduledRun(s); const a2 = approved(s, r2); consume(s, r2, a2.approval_id);
+    expect(s.standingFor(KEY)).toMatchObject({ state: "streak", credited_runs_json: JSON.stringify([r2]) });
+    s.setTranscriptTrust("555", "hostile", NOW);
+    const r3 = scheduledRun(s); const a3 = approved(s, r3); consume(s, r3, a3.approval_id);
+    expect(JSON.parse(s.standingFor(KEY)!.credited_runs_json)).toEqual([r2]);
+    s.setTranscriptTrust("555", "clean", NOW);
+    const r4 = scheduledRun(s); const a4 = approved(s, r4); consume(s, r4, a4.approval_id);
+    expect(JSON.parse(s.standingFor(KEY)!.credited_runs_json)).toEqual([r2, r4]);
+  });
   it("three distinct runs: streak 1, 2, then candidate; a second consumed approval in the same run adds nothing; the approval ids are kept in order", () => {
     const s = RunStore.openInMemory();
     const ids: string[] = [];

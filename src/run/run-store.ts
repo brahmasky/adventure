@@ -6980,6 +6980,8 @@ export class RunStore {
   private standingCredit(a: ToolApprovalRow, now: string, trial?: { standing_id: string }): boolean {
     const key = this.standingKeyOf(a.run_id, a);
     if (!key || this.standingDenied(key.chat_id, key.action_fingerprint, now)) return false;
+    // an approval given while the chat's planner context was hostile is no evidence the command is routine: no credit, no new streak
+    if (this.getTranscriptTrust(key.chat_id) === "hostile") return false;
     let live = this.standingFor(key);
     // a streak dead for 30 days is ended here, before it is credited (after downtime no sweep has run); this approval starts afresh
     if (live && (live.state === "streak" || live.state === "candidate") && live.updated_at <= new Date(Date.parse(now) - STANDING_STALE_MS).toISOString()) {
