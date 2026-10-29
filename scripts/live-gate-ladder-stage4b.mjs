@@ -14,7 +14,7 @@
 // Line 8 spawns live-gate-standing-approval.mjs and live-gate-cleanroom-runtime.mjs. Those child gates open stores WITHOUT
 // storeOptionsFor, so line 8 proves Stage 4A behaviour on this build (the consume block moved under the standing trial), not the
 // secret.redact wiring: lines 4-5 prove that. They may message Paco's own Telegram chat and POST to httpbin.org (inside the test surface).
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { mkdirSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -37,7 +37,7 @@ const PASS_JUDGE = async (i) => ({ text: i.text, verdict: "pass", withheld: 0, w
 const out = []; // the eight verdicts
 const note = (s) => console.error(`# ${s}`);
 const origDaemonTmp = process.env.HOUGE_DAEMON_TMP_DIR; // the child gates must see the caller's value, not ours
-const G = { dNew: null, dOld: null, base: null, sNew: null, sOld: null, n: 0, maskableCalls: 0, ompResumes: 0, baseline: null, stores: [] };
+const G = { dNew: null, dOld: null, base: null, sNew: null, sOld: null, n: 0, maskableCalls: 0, ompResumes: 0, pending: [], baseline: null, stores: [] };
 
 /** One printed verdict line. The detail goes through the harness redactor and a 200-char cap. */
 function verdict(n, name, ok, detail) {
@@ -101,7 +101,7 @@ async function resume(d, store, kind) {
   const rec = await attempt(f, REFUSALS[kind](f));
   if (d === G.dNew) G.ompResumes += 1;
   const view = scrubIds({ before: rec.before, after: rec.after, result: rec.result, threw: rec.threw }, [], [[f.run_id, "RUN"]]);
-  return { view, bind: rec.newBind };
+  return { view, bind: rec.newBind, returned: rec.result !== null && rec.threw === null };
 }
 
 // ---- reports ----
@@ -174,6 +174,7 @@ async function line3() {
     if (JSON.stringify(a.bind) !== JSON.stringify(want)) bad.push(`${kind}: new bind rows ${JSON.stringify(a.bind)}`);
     if (JSON.stringify(a.view) !== JSON.stringify(b.view)) bad.push(`${kind}: result differs from the old dist`);
     if (b.bind.length) bad.push(`${kind}: old dist wrote a bind row`);
+    if (!a.returned || !b.returned) bad.push(`${kind}: a resume threw or returned no result (new ${a.returned}, old ${b.returned})`);
     seen.push(code ?? "bound");
   }
   return { ok: bad.length === 0, detail: bad.length ? bad.join("; ") : `unbound ${seen.slice(0, 3).join("/")} (+ a bound control), results byte-equal to the old dist (ids scrubbed)` };
@@ -282,27 +283,37 @@ async function faultWork() {
 }
 async function line6() {
   const LIMIT = 5_000;
-  let timer; const work = faultWork();
+  let timer; const t0 = Date.now(); const work = faultWork();
   const first = await Promise.race([work, new Promise((r) => { timer = setTimeout(() => r("timeout"), LIMIT); })]);
   clearTimeout(timer);
-  if (first === "timeout") { await Promise.race([work.catch(() => null), wait(30_000)]); return { ok: false, detail: `the line did not complete within ${LIMIT} ms (timer expired)` }; }
+  if (first === "timeout") { G.pending.push(work.catch(() => null)); return { ok: false, detail: `the line did not complete within ${LIMIT} ms (timer expired, verdict at ${Date.now() - t0} ms); its work is drained after the verdict, before teardown` }; }
   const r = first;
   const ok = r.before.join() === "0,0" && r.consumed === "consumed" && r.ev.ran && r.queued === "queued" && r.masked && r.incidents.join() === "1,1" && r.binds === 0 && r.ms < LIMIT;
   return { ok, detail: `consume ${r.consumed} · adapter ran ${r.ev.ran} (exit ${r.ev.exit}) · report ${r.queued}, masked bytes ${r.masked} · open decision_record_failed approval.bind/secret.redact ${r.incidents.join("/")} (before ${r.before.join("/")}) · bind rows ${r.binds} · ${r.ms} ms of ${LIMIT}` };
 }
 
 // ---- line 8: the two Stage 4A gates, as child processes ----
+const kids = new Set(); // live child gates: killed by the signal handlers so teardown can run
+/** One child gate, asynchronously (a sync spawn would block the event loop and defer SIGINT/SIGTERM handling until the child ends). */
 function runChild(script, args) {
   const env = { ...process.env }; delete env.HOUGE_DAEMON_TMP_DIR; // ours is a private root; the child gates choose their own
   if (origDaemonTmp !== undefined) env.HOUGE_DAEMON_TMP_DIR = origDaemonTmp;
-  const r = spawnSync(process.execPath, [join(REPO, "scripts", script), ...args], { cwd: REPO, env, encoding: "utf8", timeout: 900_000, maxBuffer: 64 * 1024 * 1024 });
-  const lines = `${r.stdout ?? ""}${r.stderr ?? ""}`.split("\n");
-  const flagged = lines.filter((l) => /^(FAIL|INCONCLUSIVE|PARTIAL)/.test(l)).slice(0, 3).map((l) => redactForPrint(l));
-  const tally = `${lines.filter((l) => l.startsWith("PASS")).length} PASS/${lines.filter((l) => l.startsWith("FAIL")).length} FAIL`;
-  return { script, status: r.status, signal: r.signal, tally, flagged };
+  return new Promise((done) => {
+    const child = spawn(process.execPath, [join(REPO, "scripts", script), ...args], { cwd: REPO, env, stdio: ["ignore", "pipe", "pipe"] });
+    kids.add(child);
+    let text = "";
+    for (const stream of [child.stdout, child.stderr]) stream.on("data", (d) => { text += d.toString("utf8"); });
+    const timer = setTimeout(() => child.kill("SIGKILL"), 900_000);
+    child.on("close", (status, signal) => {
+      clearTimeout(timer); kids.delete(child);
+      const lines = text.split("\n");
+      const flagged = lines.filter((l) => /^(FAIL|INCONCLUSIVE|PARTIAL)/.test(l)).slice(0, 3).map((l) => redactForPrint(l));
+      done({ script, status, signal, tally: `${lines.filter((l) => l.startsWith("PASS")).length} PASS/${lines.filter((l) => l.startsWith("FAIL")).length} FAIL`, flagged });
+    });
+  });
 }
 async function line8(liveDb) {
-  const runs = [runChild("live-gate-standing-approval.mjs", ["--db", liveDb]), runChild("live-gate-cleanroom-runtime.mjs", [])];
+  const runs = [await runChild("live-gate-standing-approval.mjs", ["--db", liveDb]), await runChild("live-gate-cleanroom-runtime.mjs", [])];
   const ok = runs.every((r) => r.status === 0);
   return { ok, detail: runs.map((r) => `${r.script.replace(/^live-gate-|\.mjs$/g, "")} exit ${r.status ?? r.signal} (${r.tally})${r.flagged.length ? ` ${r.flagged.join(" | ")}` : ""}`).join(" · ") };
 }
@@ -330,7 +341,7 @@ async function setup() {
   return liveDb;
 }
 function closeAll() { for (const s of G.stores.splice(0)) { try { s.close(); } catch { /* a closed handle is not a finding */ } } }
-for (const sig of ["SIGINT", "SIGTERM"]) process.on(sig, () => { closeAll(); cleanupTemp(); process.exit(sig === "SIGINT" ? 130 : 143); });
+for (const sig of ["SIGINT", "SIGTERM"]) process.on(sig, () => { for (const k of kids) k.kill("SIGKILL"); closeAll(); cleanupTemp(); process.exit(sig === "SIGINT" ? 130 : 143); });
 
 try {
   const liveDb = await setup();
@@ -349,6 +360,7 @@ try {
   console.error(`setup error: ${e instanceof SetupError || (e instanceof Error && /--old-dist|provenance|not the previous/.test(e.message)) ? e.message : "withheld"}`);
   process.exitCode = 2;
 } finally {
+  await Promise.race([Promise.all(G.pending), wait(30_000)]); // line 6's late work, drained after its verdict
   closeAll();
   await runClosers();
   cleanupTemp();
