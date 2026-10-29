@@ -43,7 +43,7 @@ import { computeCostUsd, METERED_PROVIDERS } from "../llm/metered-pricing.js";
 import { blobToFloat32, cosineSimilarity, float32ToBlob } from "../llm/embeddings.js";
 import { resolveWikiDecayDays } from "../capabilities/wiki.js";
 import { DECISION_STAGES, FALLBACK_REASONS, RUNG_KINDS } from "../decisions/types.js";
-import type { DecidedBy, DecisionSignal, DecisionStage, FallbackReason, RecordedArmedMode, RungKind } from "../decisions/types.js";
+import type { DecidedBy, DecisionRecorder, DecisionSignal, DecisionStage, FallbackReason, RecordedArmedMode, RungKind } from "../decisions/types.js";
 import { checkOutcomeValue, OutcomeRejected, outcomeValueOf, PLANNER_FAILED_VALUES } from "../decisions/outcomes.js";
 import { errorCode } from "../domain/error-code.js";
 import { UNSEEN_SCRIPT_LABEL } from "../omp/command-matcher.js";
@@ -1393,6 +1393,11 @@ function oneTurn(turns: ChatTurnRow[], role: "houge" | "user"): QuoteResolution 
   return turns.length === 1 ? { ok: true, role, turn } : { ok: false, reason: "ambiguous" };
 }
 
+/** The redactor and the decision recorder travel together (Stage 4B spec §5): a redactor without a recorder does not compile. */
+export type StoreOptions =
+  | { redact: (s: string) => string; decisionRecorder: (store: RunStore) => DecisionRecorder }
+  | { redact?: never; decisionRecorder?: (store: RunStore) => DecisionRecorder };
+
 export class RunStore {
   /**
    * Secrets-firewall redactor (ADR 0015): masks known secret VALUES at RunStore's own write seams —
@@ -1405,19 +1410,24 @@ export class RunStore {
   private readonly redact: (s: string) => string;
   private readonly redactionEnabled: boolean;
 
-  private constructor(private readonly db: SqliteDatabase, redact?: (s: string) => string) {
-    this.redact = redact ?? ((s) => s);
-    this.redactionEnabled = redact !== undefined;
+  private readonly decisionRecorder: DecisionRecorder;
+
+  private constructor(private readonly db: SqliteDatabase, options: StoreOptions = {}) {
+    this.redact = options.redact ?? ((s) => s);
+    this.redactionEnabled = options.redact !== undefined;
     this.db.exec("PRAGMA busy_timeout = 5000");
     this.migrate();
+    // Injected, not imported: record.ts reaches run-store.ts at run time (incident-alert → invariant-sweep), so a store
+    // import of it would be a cycle. Absent → no row (tests and tools that open a bare store).
+    this.decisionRecorder = options.decisionRecorder?.(this) ?? { record: () => null };
   }
 
-  static openInMemory(options: { redact?: (s: string) => string } = {}): RunStore {
-    return new RunStore(new DatabaseSync(":memory:"), options.redact);
+  static openInMemory(options: StoreOptions = {}): RunStore {
+    return new RunStore(new DatabaseSync(":memory:"), options);
   }
 
-  static open(path: string, options: { redact?: (s: string) => string } = {}): RunStore {
-    return new RunStore(new DatabaseSync(path), options.redact);
+  static open(path: string, options: StoreOptions = {}): RunStore {
+    return new RunStore(new DatabaseSync(path), options);
   }
 
   close(): void {

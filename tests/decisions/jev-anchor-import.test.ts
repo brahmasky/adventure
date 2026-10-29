@@ -177,7 +177,7 @@ describe("importJevAnchor", () => {
 
   it("stores the state through the live redactor, so a secret never reaches the anchor", () => {
     vi.useFakeTimers({ toFake: ["Date"] });
-    const store = RunStore.openInMemory({ redact: (t) => t.replaceAll("hunter2-secret", "‹secret›") });
+    const store = RunStore.openInMemory({ redact: (t) => t.replaceAll("hunter2-secret", "‹secret›"), decisionRecorder: () => ({ record: () => null }) });
     const ids = Array.from({ length: 100 }, (_, i) => seedTurn(store, `以后密码是 hunter2-secret 第${i}条`, i));
     vi.useRealTimers();
     const dir = files({ A: ids.map((id) => row(store, id, "zh", "A")), B: ids.map((id) => row(store, id, "zh", "B")) });

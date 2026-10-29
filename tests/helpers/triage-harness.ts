@@ -105,7 +105,7 @@ export interface TurnOptions { signal?: AbortSignal; modality?: TurnModality; po
 export function triageHarness(fetchImpl: unknown, o: HarnessOptions = {}) {
   vi.stubEnv("HOUGE_JEV_CALIBRATION_FILE", calibrationFile()); vi.stubEnv("HOUGE_JEV_GATE", "1"); vi.stubEnv("TYPESAFE_API_KEY", "test-key");
   for (const [k, v] of Object.entries(o.env ?? ARM)) vi.stubEnv(k, v);
-  const store = o.broker ? RunStore.openInMemory({ redact: o.broker.redact }) : RunStore.openInMemory(); // boot wiring: the store and the worker share the broker's redactor
+  const store = o.broker ? RunStore.openInMemory({ redact: o.broker.redact, decisionRecorder: () => ({ record: () => null }) }) : RunStore.openInMemory(); // boot wiring: the store and the worker share the broker's redactor
   trustModel(store);
   const worker = ompWorker(store, mkdtempSync(join(tmpdir(), "hpin-")), { llm: o.llm ?? scriptedLlm(), jevFetch: fetchImpl as typeof fetch,
     ...(o.broker ? { broker: o.broker } : {}),

@@ -37,7 +37,7 @@ function fakeBroker() {
 let seq = 0;
 /** A store (firewall armed when `redact` is given) plus a Telegram-targeted run per call of `newRun`. */
 function reportFixture(redact?: (s: string) => string) {
-  const store = RunStore.openInMemory(redact ? { redact } : {});
+  const store = RunStore.openInMemory(redact ? { redact, decisionRecorder: () => ({ record: () => null }) } : {});
   const newRun = (): string => {
     const n = ++seq;
     const r = new Gateway(store).intake(buildTypedTaskEvent({ source: "telegram", type: "turn", program: "turn", goal: "hello", requested_by: { kind: "user", id: "paco" },
