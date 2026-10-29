@@ -113,6 +113,7 @@ function bindFixture(o: { source?: "user" | "schedule"; approver?: Identity; sin
   };
 }
 
+const OK: CapabilityResult = { status: "succeeded", output_ref: "inline:shell_external", output_hash: expect.any(String), output: { ran: true } };
 const refused = (code: string): CapabilityResult => ({ status: "failed", error_ref: `${code}: ${code}` });
 /** Every refusal: the result bytes are the code twice, the policy row is the only decision recorded, and the caller reads the row back itself. */
 async function expectRefused(f: ReturnType<typeof bindFixture>, id: string, code: string, rowState = "approved"): Promise<void> {
@@ -151,6 +152,7 @@ describe("approval consume binding through CapabilityRunner + the omp sink (toda
     expect(added).toEqual([]);
     expect(f.store.listStandingApprovals()).toEqual([]);
     expect(f.standingUses()).toBe(0);
+    expect(f.recorded).toEqual(POLICY_ROWS);
   });
 
   it.each<RowState>(["pending", "denied", "consumed"])("not_approved: a %s row never authorises, and its state is left as found", async (state) => {
@@ -199,7 +201,7 @@ describe("approval consume binding through CapabilityRunner + the omp sink (toda
     const id = f.approvedRow({ requester: PACO });
     expect(f.requester).toEqual({ kind: "schedule", id: "sch_1" }); // the runner's own requester is the schedule, not Paco
     const { result, added } = await f.execute(id);
-    expect(result).toEqual({ status: "succeeded", output_ref: "inline:shell_external", output_hash: expect.any(String), output: { ran: true } });
+    expect(result).toEqual(OK);
     expect(f.state(id)).toBe("consumed");
     // a schedule-born run with a key-eligible action credits its first streak: the credit rides the same consume
     expect(added).toEqual(["standing_streak"]);
@@ -234,7 +236,7 @@ describe("approval consume binding through CapabilityRunner + the omp sink (toda
     const sa = f.store.insertStandingApprovalForTest({ schedule_id: "sch_1", chat_id: CHAT, action_fingerprint: FP, state: "candidate" });
     const id = f.approvedRow({ requester: PACO });
     const { result, added } = await f.execute(id, { standing_trial: { standing_id: sa.standing_id } });
-    expect(result.status).toBe("succeeded");
+    expect(result).toEqual(OK);
     expect(f.state(id)).toBe("consumed");
     expect(f.store.getStandingApproval(sa.standing_id)).toMatchObject({ state: "sealing", sealing_approval_id: id, sealed_run_id: f.run_id });
     expect(added).toEqual(["standing_sealing"]);
@@ -246,7 +248,7 @@ describe("approval consume binding through CapabilityRunner + the omp sink (toda
     const sa = f.store.insertStandingApprovalForTest({ schedule_id: "sch_1", chat_id: CHAT, action_fingerprint: FP, state: "streak" });
     const id = f.approvedRow({ requester: PACO });
     const { result, added } = await f.execute(id, { standing_trial: { standing_id: sa.standing_id } });
-    expect(result.status).toBe("succeeded");
+    expect(result).toEqual(OK);
     expect(f.state(id)).toBe("consumed");
     expect(f.store.getStandingApproval(sa.standing_id)).toMatchObject({ state: "streak", sealing_approval_id: null, credited_runs_json: JSON.stringify([f.run_id]) });
     expect(added).toEqual(["standing_streak"]);
@@ -259,7 +261,7 @@ describe("approval consume binding through CapabilityRunner + the omp sink (toda
     const before = f.store.getStandingApproval(sa.standing_id);
     const id = f.approvedRow({ requester: PACO });
     const { result, added } = await f.execute(id, { standing_trial: { standing_id: sa.standing_id } });
-    expect(result.status).toBe("succeeded");
+    expect(result).toEqual(OK);
     expect(f.state(id)).toBe("consumed");
     expect(f.store.getStandingApproval(sa.standing_id)).toEqual(before); // no credit, no state change, no updated_at bump
     expect(f.store.listStandingApprovals()).toHaveLength(1);
@@ -272,7 +274,7 @@ describe("approval consume binding through CapabilityRunner + the omp sink (toda
     const sa = f.store.insertStandingApprovalForTest({ schedule_id: "sch_1", chat_id: CHAT, action_fingerprint: FP, state: "candidate" });
     const id = f.approvedRow();
     const { result, added } = await f.execute(id, { standing_trial: { standing_id: sa.standing_id } });
-    expect(result.status).toBe("succeeded");
+    expect(result).toEqual(OK);
     expect(f.state(id)).toBe("consumed");
     expect(f.store.getStandingApproval(sa.standing_id)).toMatchObject({ state: "candidate", sealing_approval_id: null, credited_runs_json: "[]" });
     expect(added).toEqual([]);
@@ -281,7 +283,7 @@ describe("approval consume binding through CapabilityRunner + the omp sink (toda
   it("a second consume of the same row is refused: one approval spends once", async () => {
     const f = bindFixture();
     const id = f.approvedRow();
-    expect((await f.execute(id)).result.status).toBe("succeeded");
+    expect((await f.execute(id)).result).toEqual(OK);
     await expectRefused(f, id, "not_approved", "consumed");
   });
 
@@ -301,7 +303,7 @@ describe("approval consume binding through CapabilityRunner + the omp sink (toda
     f.adapter.mode = "timeout";
     const id = f.approvedRow();
     const { result, added } = await f.execute(id);
-    expect(result).toMatchObject({ status: "timed_out", error_ref: "Tool execution timed out" });
+    expect(result).toEqual({ status: "timed_out", error_ref: "Tool execution timed out" });
     expect(f.state(id)).toBe("consumed");
     expect(added).toEqual([]);
     expect(f.store.listStandingApprovals()).toEqual([]);
@@ -393,7 +395,7 @@ describe("run-level sink through CoreWorker.executeRun (force_gated_capability) 
     const f = await runLevelFixture();
     expect(f.decisions()).toBe(0); // control: even the first (parking) call recorded nothing
     const done = await f.resume();
-    expect(done).toMatchObject({ status: "completed", run_id: f.run_id });
+    expect(done).toEqual({ status: "completed", run_id: f.run_id, report_path: join(f.root, "runs", f.run_id, "report.md"), report_hash: expect.any(String) });
     expect(f.approvalState()).toBe("consumed");
     expect(f.store.getLedgerEvents(f.run_id).map((e) => e.event_type)).toEqual([
       "run_created", "contract_attached", "worker_lease_acquired", "approval_requested", "notification_queued", "worker_lease_released", "approval_resolved", "notification_queued",
