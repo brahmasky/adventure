@@ -1,7 +1,7 @@
 // Shared machinery for the Stage 4B differential (spec 2026-10-29 §6): dist loading, temp roots, stores, the fake broker,
 // the projection stripper and comparator. Corpora (scripts/stage4-corpora/*.mjs) build on these names; the CLI is
 // scripts/check-ladder-stage4-differential.mjs. External inputs are read-only; nothing here reads real secrets or the repo .env.
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 export const DISTS = { new: null, s3: null, s4a: null }; // filled by the CLI
@@ -53,8 +53,23 @@ export async function loadDist(dir) {
 }
 
 const temp = { root: null, keep: false };
+const STALE_MS = 6 * 3_600_000;
+/** Removes hg-s4d-* roots under `base` untouched for 6 hours (a killed run's leftovers); returns the count. */
+function sweepStale(base) {
+  let n = 0;
+  for (const name of readdirSync(base)) {
+    if (!name.startsWith("hg-s4d-")) continue;
+    try {
+      const p = join(base, name);
+      if (Date.now() - statSync(p).mtimeMs <= STALE_MS) continue;
+      rmSync(p, { recursive: true, force: true }); n += 1;
+    } catch { /* gone or not ours: not a finding */ }
+  }
+  return n;
+}
 /** Opens the run's single temp root (call once, before any mkTemp). */
 export function initTemp(keep, base = "/tmp") {
+  console.error(`# swept ${sweepStale(base)} stale hg-s4d-* dir(s)`);
   temp.root = mkdtempSync(join(base, "hg-s4d-"));
   temp.keep = keep;
   return temp.root;

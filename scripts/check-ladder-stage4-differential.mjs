@@ -157,6 +157,7 @@ async function main() {
 
 process.on("SIGINT", () => { cleanupTemp(); process.exit(130); });
 process.on("SIGTERM", () => { cleanupTemp(); process.exit(143); });
+process.on("SIGHUP", () => { cleanupTemp(); process.exit(129); });
 const DEBUG = process.argv.includes("--debug");
 function report(e) {
   if (e instanceof SetupError) return `differential setup error: ${e.message}`;

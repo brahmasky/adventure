@@ -12,7 +12,7 @@
 // Usage: --old-dist <dist at 1451a66> [--live-db <path>] [--debug]. --debug prints an unexpected error's message and stack, which
 // can hold rendered or stored private text: it may print private content. Without it a run error prints a fixed label only.
 // Exit 0 PASS · 1 FAIL · 2 setup error. The live DB is read only by VACUUM INTO; every write goes to the copies, which live under
-// /tmp/hg-s4d-* and are removed on every exit path (pass, FAIL, throw, SIGINT, SIGTERM). The broker is synthetic. Rendered
+// /tmp/hg-s4d-* and are removed on every exit path (pass, FAIL, throw, SIGINT, SIGTERM, SIGHUP). The broker is synthetic. Rendered
 // text may hold Paco's data: nothing here prints it, only line names, entry ids, counts and PASS/FAIL.
 import { mkdirSync, rmSync } from "node:fs";
 import { pathToFileURL } from "node:url";
@@ -369,7 +369,7 @@ async function run(ctx, hooks = {}) {
 }
 
 function onSignal(code) { for (const h of handles.splice(0)) closeStore(h); cleanupTemp(); process.exit(code); }
-for (const [sig, code] of [["SIGINT", 130], ["SIGTERM", 143]]) process.on(sig, () => onSignal(code));
+for (const [sig, code] of [["SIGINT", 130], ["SIGTERM", 143], ["SIGHUP", 129]]) process.on(sig, () => onSignal(code));
 
 export async function main(hooks = {}) {
   try {

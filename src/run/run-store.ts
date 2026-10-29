@@ -7301,6 +7301,7 @@ export class RunStore {
    * are unchanged. A row is a masking attempt (a duplicate or failed enqueue still counted), never text. Firewall off: no
    * decision, as before.
    */
+  // `masked` and the stored bytes come from two calls of the same pure redactor.
   private redactReport(seam: RedactSeam, run_id: string, text: string): string {
     if (this.redactionEnabled) {
       decideSync(SECRET_REDACT, { masked: this.redact(text) !== text, seam }, { run_id, tool_call_id: null, recorder: this.decisionRecorder });

@@ -6,7 +6,7 @@
 // --debug prints error messages and child-gate detail: may print private content; local diagnosis only. Default prints names and codes only.
 // Eight lines on stdout, each `PASS`/`FAIL <n> <name> — <detail>`; exit 0 only when all eight PASS (1 FAIL, 2 setup error).
 // Everything else goes to stderr, prefixed `# `. No --keep: the live DB is read once, by VACUUM INTO a temp copy; every write goes
-// to copies of that copy under /tmp/hg-s4d-*, which is removed on every exit path (finally, SIGINT, SIGTERM).
+// to copies of that copy under /tmp/hg-s4d-*, which is removed on every exit path (finally, SIGINT, SIGTERM, SIGHUP).
 // The broker is synthetic (the harness's fake strings); no env file is loaded here and no env value or live text is printed.
 // Lines 2 and 6 drive the real bridge handler and the real shell adapter (sandbox on) over a copy, taps through
 // resolveToolApprovalForTest + the waiter (the seam live-gate-ladder-2b-hooks.mjs:220 uses). Lines 3, 4, 7 compare against --old-dist
@@ -348,7 +348,7 @@ async function setup() {
   return liveDb;
 }
 function closeAll() { for (const s of G.stores.splice(0)) { try { s.close(); } catch { /* a closed handle is not a finding */ } } }
-for (const [sig, code] of [["SIGINT", 130], ["SIGTERM", 143]]) process.on(sig, () => { for (const k of kids) k.kill("SIGKILL"); closeAll(); cleanupTemp(); process.exit(code); });
+for (const [sig, code] of [["SIGINT", 130], ["SIGTERM", 143], ["SIGHUP", 129]]) process.on(sig, () => { for (const k of kids) k.kill("SIGKILL"); closeAll(); cleanupTemp(); process.exit(code); });
 
 try {
   const liveDb = await setup();
