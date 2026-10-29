@@ -6,13 +6,14 @@ import { entryProblems } from "../../src/decisions/registry.js";
 import type { AnyEntry, DecisionRecorder } from "../../src/decisions/types.js";
 
 const rows: Array<{ verdict: string; reason: string | null }> = [];
-const recorder: DecisionRecorder = { record: (_e, r) => { if (shouldRecord(APPROVAL_BIND as unknown as AnyEntry, r as never)) rows.push({ verdict: r.verdict, reason: r.reason }); return "d"; } };
+const recorder: DecisionRecorder = { record: (_e, r) => { if (!shouldRecord(APPROVAL_BIND as unknown as AnyEntry, r as never)) return null; rows.push({ verdict: r.verdict, reason: r.reason }); return "d"; } };
 beforeEach(() => { rows.length = 0; });
 const run = (s: { ok: boolean; code?: string }) => decideSync(APPROVAL_BIND, s, { run_id: "r", tool_call_id: "t", recorder });
 
 describe("approval.bind — a spent Paco tap always leaves a row naming why it bound or not", () => {
   it("is locked, rule-only, always recorded, sound", () => {
     expect(APPROVAL_BIND.locked).toBe(true);
+    expect(APPROVAL_BIND.reasonCodes).toEqual(["no_sink","unknown_approval","not_approved","expired","action_mismatch","owner_mismatch","requester_mismatch","lease_lost"]); // the store nulls any reason not listed here
     expect(APPROVAL_BIND.alwaysRecord).toBe(true);
     expect(APPROVAL_BIND.ladder.map((r) => r.kind)).toEqual(["rule"]);
     expect(entryProblems(APPROVAL_BIND as unknown as AnyEntry)).toEqual([]);
