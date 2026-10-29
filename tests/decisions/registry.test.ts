@@ -120,4 +120,15 @@ describe("entryProblems (R12 and R13 as data)", () => {
     const bad: AnyEntry = { ...ok, effects: { nothing: fx("none", true, "none"), lesson: fx("effect") } };
     expect(entryProblems(bad).some((p) => p.startsWith("provisional bar"))).toBe(true);
   });
+  it("approval.bind and secret.redact are registered as locked, rule-only entries (Stage 4B)", () => {
+    for (const id of ["approval.bind", "secret.redact"] as const) {
+      const e = entryById(id) as AnyEntry;
+      expect(e).toBeDefined();
+      expect(e.locked).toBe(true);
+      expect(e.ladder).toHaveLength(1);
+      expect(e.ladder[0]?.kind).toBe("rule");
+      expect(LOCKED_ENTRY_IDS).toContain(id);
+    }
+    expect(ENTRY_IDS).toHaveLength(20);
+  });
 });

@@ -19,14 +19,15 @@ function rig(use?: (i: StandingUseInput) => ReturnType<NonNullable<ApprovalReque
   registry.register({ name: "shell_external", category: "tool", ...META, timeout_ms: 1_000, output_limit_bytes: 1_000, execute: async () => { ran++; return { ok: true, output: { exit_code: 0 } }; } });
   const requested: string[] = []; const used: StandingUseInput[] = []; const consumed: Array<Record<string, unknown>> = [];
   const decisions: Array<{ verdict: string; reason: string | null }> = [];
-  const recorder: DecisionRecorder = { record: (entry, r) => { if (entry.id === "tool.policy") decisions.push({ verdict: r.verdict, reason: r.reason }); return null; } };
+  const binds: string[] = [];
+  const recorder: DecisionRecorder = { record: (entry, r) => { if (entry.id === "tool.policy") decisions.push({ verdict: r.verdict, reason: r.reason }); if (entry.id === "approval.bind") binds.push(r.verdict); return null; } };
   const sink: ApprovalRequestSink = {
     requestApproval: (i) => { requested.push(i.action_fingerprint); return { approval_id: "appr_1" }; },
     consumeApprovedApproval: (i) => { consumed.push(i as unknown as Record<string, unknown>); return { ok: true, approval_id: i.approval_id, state: "consumed", sealing: true }; },
     ...(use ? { standingUse: (i) => { used.push(i); return use(i); } } : {})
   };
   const exec = (extra: Record<string, unknown> = {}, ctx: SsrfContext | null = ROOM) => new CapabilityRunner(registry, sink).execute({ run_id: "run_5", tool_call_id: "tc_5", contract, capability: "shell_external", input: INPUT, budget: new BudgetLedger(contract.budget), recorder, ...extra }, ctx ?? undefined);
-  return { exec, requested, used, consumed, decisions, ran: () => ran };
+  return { exec, requested, used, consumed, decisions, binds, ran: () => ran };
 }
 
 describe("actionFingerprint", () => {
@@ -48,6 +49,7 @@ describe("CapabilityRunner standing", () => {
     expect(r.requested).toEqual([]); expect(r.ran()).toBe(1);
     expect(r.used).toEqual([{ standing_id: "sa_1", action_fingerprint: actionFingerprint("shell_external", META, INPUT), run_id: "run_5", tool_call_id: "tc_5" }]);
     expect(r.decisions).toEqual([{ verdict: "allowed", reason: "standing" }]);
+    expect(r.binds).toEqual([]); // a standing use never consumes an approval row, so approval.bind stays silent
   });
   it("a lost CAS asks with reason standing_mismatch; a sink without standingUse asks the same way (fail closed)", async () => {
     const lost = rig(() => ({ ok: false, code: "already_used" }));

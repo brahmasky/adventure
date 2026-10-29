@@ -585,3 +585,11 @@ Rules Claude writes for itself after corrections. Review at session start.
 
 ## 2026-10-29 — A rebuild of main's dist without a kickstart is not a resting state
 The clean-room merge rebuilt `dist/` (new `omp/shell-wrapper.sh`) and the kickstart was left "owed". The running daemon (started 10-26) checked the new wrapper against its in-memory hash; the 08:00 AI 日报 schedule failed closed (`wrapper_mismatch`, run `run_236e6d77…`). Rule: after a green merge + rebuild, kickstart in the same breath (Paco authorised it, AGENTS.md §Autonomy Tier A), after checking parked/kill and in-flight runs; verify pid and boot migrations.
+
+## 2026-10-29 — Stage 4B bind + redact (differential gate)
+
+- **"No row" is not evidence that the code ran.** A recorder that skips default verdicts makes every plain or allowed item pass on absence; an early return would pass too. Every gate line that relies on an absent row needs positive per-call evidence that the path executed (a counted probe, an adapter-only field), and a planted early return that proves it.
+- **A copy of the live DB is private data with a lifecycle.** Every script that VACUUMs Paco's DB deletes the copy in a `finally` on every exit path, `--keep` included, handles SIGINT/SIGTERM/SIGHUP, and sweeps stale roots at start. Prints carry counts and labels, never content; detail only behind `--debug`.
+- **Implementers' sandboxes and a loaded machine produce false signals.** Socket EPERM inside a reviewer's sandbox and vitest timeouts under an external runner's load both looked like defects. The orchestrator reruns gates and the suite outside the sandbox before ruling, and checks `uptime` / `ps` before blaming the diff.
+- **A plan's own test code can carry the defect the rubric names.** Task 2's plan text collected recorder rows and never asserted them; follow the spec's intent over the plan's literal code, and ledger the ruling.
+

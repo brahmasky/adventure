@@ -171,7 +171,7 @@ describe("tool.injection judge", () => {
   });
   it("a broker value straddling a hard cut never reaches Jev in pieces (senior B1, codex B1: mask first, then split)", async () => {
     const token = "1234567890:AAHk2Lm9Np4Qr6St8Uv0Wx2Yz4Ab6Cd8E";
-    const store = RunStore.openInMemory({ redact: (t) => t.split(token).join("«redacted»") }); const client = judging(screen);
+    const store = RunStore.openInMemory({ redact: (t) => t.split(token).join("«redacted»"), decisionRecorder: () => ({ record: () => null }) }); const client = judging(screen);
     for (const off of [860, 880, 890, 899]) {
       await createInjectionJudge({ store, client, home: "/h" })(input(`${"a".repeat(off)}bot${token}/send${"x".repeat(300)}`, { source: "shell", outside: false }));
     }
@@ -285,7 +285,7 @@ describe("tool.injection judge", () => {
       expect(localOutcome({ store, home: "/h" }, input("DB=1", { source: "shell", outside: false, paths: ["/h/Projects/x/.env.bak"] }))).toMatchObject({ verdict: "frame", blocked: "credential_path" });
     });
     it("a failed broker alignment blocks every passage (fail closed)", () => {
-      const odd = RunStore.openInMemory({ redact: () => "not the text" });
+      const odd = RunStore.openInMemory({ redact: () => "not the text", decisionRecorder: () => ({ record: () => null }) });
       expect(localOutcome({ store: odd, home: "/h" }, input(CLEAN))).toMatchObject({ verdict: "withhold", withheldUnjudged: 1, blocked: "unaligned" });
     });
   });

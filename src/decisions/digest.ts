@@ -99,7 +99,7 @@ export function countLines(rows: readonly DecisionRow[]): string[] {
     const total = [...m.values()].reduce((a, b) => a + b, 0);
     const known = RUNG_ORDER.filter((k) => m.has(k)).map((k) => `${RUNG_LABEL[k]} ${m.get(k)}`);
     const other = [...m.keys()].filter((k) => !(RUNG_ORDER as readonly string[]).includes(k)).sort().map((k) => `${k} ${m.get(k)}`);
-    return `· ${id} ${total} — ${[...known, ...other].join(" · ")}`;
+    return `· ${id} ${total} — ${[...known, ...other].join(" · ")}${id === "secret.redact" ? " (final, failure and evolution reports only)" : ""}`;
   });
 }
 

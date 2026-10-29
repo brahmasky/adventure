@@ -32,7 +32,7 @@ try {
   const mStore = await import(join(DIST, "run/run-store.js"));
   const store = mStore.RunStore.open(db);
   const installed = mEnt.ENTRY_IDS;
-  const ids = ["turn.handler","turn.gear","tool.injection","tool.shell_netread","turn.trust","memory.kind","turn.settle","improve.route","tool.shell_class","tool.path","tool.policy","tool.budget","tool.manifest","tool.wall","reader.family","selfwrite.guard","fetch.ssrf","posture.kill"];
+  const ids = ["turn.handler","turn.gear","tool.injection","tool.shell_netread","turn.trust","memory.kind","turn.settle","improve.route","tool.shell_class","tool.path","tool.policy","tool.budget","tool.manifest","tool.wall","reader.family","selfwrite.guard","fetch.ssrf","posture.kill","approval.bind","secret.redact"];
   check("registry includes all stage-3 entries", ids.every((id) => (mEnt.ENTRY_IDS ?? []).includes(id)), `found ${ids.filter((i)=>!(mEnt.ENTRY_IDS??[]).includes(i)).join(",")||"all"}`);
   const problems = ids.map((id) => ({ id, problems: mReg.entryProblems(mReg.entryById(id)) }));
   check("entryProblems empty for all stage-3 entries", problems.every((p)=>p.problems.length===0), problems.filter((p)=>p.problems.length).map((p)=>p.id).join(",")||"all clean");

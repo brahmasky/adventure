@@ -30,7 +30,7 @@ function makeRun(store: RunStore, key: string): string {
 
 describe("RunStore redaction seams (ADR 0015) — firewall ON masks secret VALUES on egress", () => {
   it("masks a secret value in an outbound REPLY (final report notification)", () => {
-    const store = RunStore.openInMemory({ redact: redactor() });
+    const store = RunStore.openInMemory({ redact: redactor(), decisionRecorder: () => ({ record: () => null }) });
     try {
       const run_id = makeRun(store, "t:reply");
       store.enqueueFinalReportNotification(run_id, {
@@ -46,7 +46,7 @@ describe("RunStore redaction seams (ADR 0015) — firewall ON masks secret VALUE
   });
 
   it("masks a secret value in an ERROR reply (failure notification)", () => {
-    const store = RunStore.openInMemory({ redact: redactor() });
+    const store = RunStore.openInMemory({ redact: redactor(), decisionRecorder: () => ({ record: () => null }) });
     try {
       const run_id = makeRun(store, "t:error");
       store.enqueueFailureNotification(run_id, `I hit an error on that one: boom with ${SECRET}`);
@@ -59,7 +59,7 @@ describe("RunStore redaction seams (ADR 0015) — firewall ON masks secret VALUE
   });
 
   it("masks a secret value in a LEDGER payload free-text field (the single append seam)", () => {
-    const store = RunStore.openInMemory({ redact: redactor() });
+    const store = RunStore.openInMemory({ redact: redactor(), decisionRecorder: () => ({ record: () => null }) });
     try {
       const run_id = makeRun(store, "t:ledger");
       store.appendLedgerEvent(

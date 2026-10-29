@@ -1795,3 +1795,19 @@ kill switch included — fixed with poll-loop tests. Evidence on `6be9529`: 404 
 pre-existing Jev-job flake); live gate 15/15 with the silent-degradation line; clean-room gate; rollback PASS against the
 previous build. Fable hit its usage limit mid-plan; Opus finished it and the orchestrator moved to Opus. Open for Paco:
 two ADR signatures and a kickstart. Taps this slice: one ("A" — approved the spec and chose the grant rule).
+
+## 2026-10-29 — Decision ladder Stage 4B, `approval.bind` + `secret.redact` (ADR 0030): SHIPPED
+Paco approved the spec ("approved, A A A"): bind records the consume only, never the resolve side or the standing case;
+redaction counts only the three report wrappers. Plan Rev 3 after a Sonnet senior review and three codex rounds. Built by
+subagents in 12 tasks: characterisation pins first, then the two entries, the runner and store call sites, the injected
+recorder (`storeOptionsFor`, protected), the `/status` scope note, then a differential harness and five corpora (command,
+path, policy, binding, live-report redaction) against two old builds, a live gate and a rollback check. Codex reviewed
+every task; its rounds mattered most on the harness (a required-fact failure that never reached the exit code, transcript
+text in mismatch prints, a self-test that a real difference could satisfy) and on the corpora (positive evidence that
+the bridge ran, edit inputs through the real extension hook, a fixed hash the strip hid). Final review: whole-branch on
+Sonnet (Fable hit its usage limit), codex whole-diff, security, correctness, testing and adversarial — no Critical or
+Important code defect; one fix batch for script privacy, temp hygiene and a recorder-fault test. Mid-session: the 08:00
+AI 日报 failed `wrapper_mismatch` because the 10-28 rebuild was left without a kickstart; Paco made the post-merge kickstart
+Tier A. Also read RSI-Anything (arXiv 2610.13912) for self-evolution; Paco clarified that self-evolution means proactive
+review of what works and what to improve. Open for Paco: three ADR 0030 signatures (clean room, 4A, 4B). Taps: one.
+

@@ -69,7 +69,7 @@ describe("golden-set latch, redactor seam, card reason", () => {
     s.close();
   });
   it("redactSecretValues is the broker's redactor (identity without one)", () => {
-    const masked = RunStore.openInMemory({ redact: (t) => t.replaceAll("hunter2-secret", "‹secret›") });
+    const masked = RunStore.openInMemory({ redact: (t) => t.replaceAll("hunter2-secret", "‹secret›"), decisionRecorder: () => ({ record: () => null }) });
     expect(masked.redactSecretValues("pw hunter2-secret")).toBe("pw ‹secret›");
     expect(RunStore.openInMemory().redactSecretValues("pw hunter2-secret")).toBe("pw hunter2-secret");
   });

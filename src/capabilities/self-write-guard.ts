@@ -87,6 +87,7 @@ export const PROTECTED_FILES: readonly string[] = [
   "src/core/quarantine.ts", // dual-LLM wall, pure half (ADR 0014): reader schema/parse/digest — Paco's hand only. The wall's WIRING (core-worker/inner-loop call sites, READER_DISCIPLINE) stays self-writable, backstopped by the check stack + human merge.
   "src/config/secret-broker.ts", // secrets firewall (ADR 0015) — a self-write can't re-route secrets or disable the strip
   "src/cli.ts", // secrets firewall boot wiring (ADR 0015 §7) — protect the strip call + broker construction
+  "src/run/store-options.ts", // ADR 0015 + 0030 boot wiring: the store's redactor and decision recorder travel together
   "src/llm/registry.ts", // secrets firewall (ADR 0015 §7) — single-source-of-truth key resolution; no re-introducing a process.env fallback
   "src/web/registry.ts", // secrets firewall (ADR 0015 §7) — single-source-of-truth key resolution
   "src/run/test-gate.ts", // new Phase-3 module (checker 2)

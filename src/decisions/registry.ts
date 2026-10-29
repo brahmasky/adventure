@@ -1,5 +1,7 @@
 import { IMPROVE_ROUTE } from "./entries/improve-route.js";
+import { APPROVAL_BIND } from "./entries/approval-bind.js";
 import { POSTURE_KILL } from "./entries/posture-kill.js";
+import { SECRET_REDACT } from "./entries/secret-redact.js";
 import { READER_FAMILY } from "./entries/reader-family.js";
 import { SELF_WRITE_GUARD } from "./entries/selfwrite-guard.js";
 import { FETCH_SSRF } from "./entries/fetch-ssrf.js";
@@ -24,7 +26,8 @@ export const REGISTRY: readonly AnyEntry[] = [TURN_HANDLER as unknown as AnyEntr
   TOOL_SHELL_NETREAD as unknown as AnyEntry, TURN_TRUST as unknown as AnyEntry, MEMORY_KIND as unknown as AnyEntry,
   TURN_SETTLE as unknown as AnyEntry, IMPROVE_ROUTE as unknown as AnyEntry, TOOL_SHELL_CLASS as unknown as AnyEntry, TOOL_PATH as unknown as AnyEntry,
   SELF_WRITE_GUARD as unknown as AnyEntry, FETCH_SSRF as unknown as AnyEntry, TOOL_POLICY as unknown as AnyEntry, TOOL_MANIFEST as unknown as AnyEntry,
-  TOOL_BUDGET as unknown as AnyEntry, TOOL_WALL as unknown as AnyEntry, READER_FAMILY as unknown as AnyEntry, POSTURE_KILL as unknown as AnyEntry];
+  TOOL_BUDGET as unknown as AnyEntry, TOOL_WALL as unknown as AnyEntry, READER_FAMILY as unknown as AnyEntry, POSTURE_KILL as unknown as AnyEntry,
+  APPROVAL_BIND as unknown as AnyEntry, SECRET_REDACT as unknown as AnyEntry];
 /** Effects a judge may choose over any input (R12): nothing, a tightening, or a proposal for Paco's tap. */
 const PASSIVE: ReadonlySet<EffectKind> = new Set(["none", "tighten", "proposal"]);
 /** How a judge's effect over Paco's message must be announced (Paco 2026-10-12): an allowlist, so a missing or unknown value fails. */

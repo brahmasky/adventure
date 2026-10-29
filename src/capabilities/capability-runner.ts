@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { decideSync } from "../decisions/decide.js";
+import { APPROVAL_BIND } from "../decisions/entries/approval-bind.js";
 import { TOOL_BUDGET } from "../decisions/entries/tool-budget.js";
 import { TOOL_POLICY } from "../decisions/entries/tool-policy.js";
 import type { DecisionRecorder } from "../decisions/types.js";
@@ -117,7 +118,7 @@ export class CapabilityRunner {
     }
 
     const reservation = input.budget_reserved && input.approved_approval_id ? { ok: true as const } : input.budget.reserveToolCall();
-    const recorder = input.recorder ?? { record: () => null };
+    const recorder: DecisionRecorder = input.recorder ?? { record: () => null };
     decideSync(TOOL_BUDGET, { ok: reservation.ok }, { run_id: input.run_id ?? null, tool_call_id: input.tool_call_id ?? null, recorder });
     if (!reservation.ok) {
       return {
@@ -190,35 +191,40 @@ export class CapabilityRunner {
 
     // Decision is allow, or requires_approval with an approved_approval_id present.
     if (input.approved_approval_id) {
-      if (!this.approvals) {
-        return {
-          status: "failed",
-          error_ref: "Approval sink is not available for resume"
-        };
-      }
-
-      const consumption = this.approvals.consumeApprovedApproval({
-        run_id: input.run_id ?? "",
-        approval_id: input.approved_approval_id,
-        requester: input.requester ?? { kind: "system", id: "core" },
-        capability: input.capability,
-        adapter_input_hash,
-        action_fingerprint,
-        tool_call_id: `tool_${randomUUID()}`,
-        operation_id: `op_${randomUUID()}`,
-        consumed_at: new Date().toISOString(),
-        ...(input.standing_trial ? { standing_trial: input.standing_trial } : {})
-      });
-
-      if (!consumption.ok) {
-        return {
-          status: "failed",
-          error_ref: `${consumption.error.code}: ${consumption.error.message}`
-        };
-      }
+      const bound = this.bindApproval(input, input.approved_approval_id, adapter_input_hash, action_fingerprint, recorder);
+      if (!bound.ok) return bound.result;
     }
 
     return this.executeAdapter(metadata, input, signal ?? input.signal, ctx);
+  }
+
+  /**
+   * P3+P4 (Stage 4B spec §5): the consume, moved unchanged — same argument object, same random ids, same failure results.
+   * approval.bind records the sink's answer before anything branches on it; the raw answer drives (R1). A throwing sink
+   * propagates with no row (R2). Not reached by a first call or a standing use.
+   */
+  private bindApproval(input: CapabilityExecutionInput, approval_id: string, adapter_input_hash: string, action_fingerprint: string,
+    recorder: DecisionRecorder): { ok: true } | { ok: false; result: CapabilityResult } {
+    const ctx = { run_id: input.run_id ?? null, tool_call_id: input.tool_call_id ?? null, recorder };
+    if (!this.approvals) {
+      decideSync(APPROVAL_BIND, { ok: false, code: "no_sink" }, ctx);
+      return { ok: false, result: { status: "failed", error_ref: "Approval sink is not available for resume" } };
+    }
+    const consumption = this.approvals.consumeApprovedApproval({
+      run_id: input.run_id ?? "",
+      approval_id,
+      requester: input.requester ?? { kind: "system", id: "core" },
+      capability: input.capability,
+      adapter_input_hash,
+      action_fingerprint,
+      tool_call_id: `tool_${randomUUID()}`,
+      operation_id: `op_${randomUUID()}`,
+      consumed_at: new Date().toISOString(),
+      ...(input.standing_trial ? { standing_trial: input.standing_trial } : {})
+    });
+    decideSync(APPROVAL_BIND, consumption.ok ? { ok: true } : { ok: false, code: consumption.error.code }, ctx);
+    if (consumption.ok) return { ok: true };
+    return { ok: false, result: { status: "failed", error_ref: `${consumption.error.code}: ${consumption.error.message}` } };
   }
 
   /**

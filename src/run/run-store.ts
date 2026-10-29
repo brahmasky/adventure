@@ -43,10 +43,12 @@ import { computeCostUsd, METERED_PROVIDERS } from "../llm/metered-pricing.js";
 import { blobToFloat32, cosineSimilarity, float32ToBlob } from "../llm/embeddings.js";
 import { resolveWikiDecayDays } from "../capabilities/wiki.js";
 import { DECISION_STAGES, FALLBACK_REASONS, RUNG_KINDS } from "../decisions/types.js";
-import type { DecidedBy, DecisionSignal, DecisionStage, FallbackReason, RecordedArmedMode, RungKind } from "../decisions/types.js";
+import type { DecidedBy, DecisionRecorder, DecisionSignal, DecisionStage, FallbackReason, RecordedArmedMode, RungKind } from "../decisions/types.js";
 import { checkOutcomeValue, OutcomeRejected, outcomeValueOf, PLANNER_FAILED_VALUES } from "../decisions/outcomes.js";
 import { errorCode } from "../domain/error-code.js";
 import { UNSEEN_SCRIPT_LABEL } from "../omp/command-matcher.js";
+import { decideSync } from "../decisions/decide.js";
+import { SECRET_REDACT, type RedactSeam } from "../decisions/entries/secret-redact.js";
 import { LOCKED_ENTRY_IDS } from "../decisions/entry-ids.js";
 import type { SkipReason } from "../jev/decide.js";
 import type { Category } from "../jev/questions/tree.js";
@@ -1393,6 +1395,11 @@ function oneTurn(turns: ChatTurnRow[], role: "houge" | "user"): QuoteResolution 
   return turns.length === 1 ? { ok: true, role, turn } : { ok: false, reason: "ambiguous" };
 }
 
+/** The redactor and the decision recorder travel together (Stage 4B spec §5): a redactor without a recorder does not compile. */
+export type StoreOptions =
+  | { redact: (s: string) => string; decisionRecorder: (store: RunStore) => DecisionRecorder }
+  | { redact?: never; decisionRecorder?: (store: RunStore) => DecisionRecorder };
+
 export class RunStore {
   /**
    * Secrets-firewall redactor (ADR 0015): masks known secret VALUES at RunStore's own write seams —
@@ -1405,19 +1412,24 @@ export class RunStore {
   private readonly redact: (s: string) => string;
   private readonly redactionEnabled: boolean;
 
-  private constructor(private readonly db: SqliteDatabase, redact?: (s: string) => string) {
-    this.redact = redact ?? ((s) => s);
-    this.redactionEnabled = redact !== undefined;
+  private readonly decisionRecorder: DecisionRecorder;
+
+  private constructor(private readonly db: SqliteDatabase, options: StoreOptions = {}) {
+    this.redact = options.redact ?? ((s) => s);
+    this.redactionEnabled = options.redact !== undefined;
     this.db.exec("PRAGMA busy_timeout = 5000");
     this.migrate();
+    // Injected, not imported: record.ts reaches run-store.ts at run time (incident-alert → invariant-sweep), so a store
+    // import of it would be a cycle. Absent → no row (tests and tools that open a bare store).
+    this.decisionRecorder = options.decisionRecorder?.(this) ?? { record: () => null };
   }
 
-  static openInMemory(options: { redact?: (s: string) => string } = {}): RunStore {
-    return new RunStore(new DatabaseSync(":memory:"), options.redact);
+  static openInMemory(options: StoreOptions = {}): RunStore {
+    return new RunStore(new DatabaseSync(":memory:"), options);
   }
 
-  static open(path: string, options: { redact?: (s: string) => string } = {}): RunStore {
-    return new RunStore(new DatabaseSync(path), options.redact);
+  static open(path: string, options: StoreOptions = {}): RunStore {
+    return new RunStore(new DatabaseSync(path), options);
   }
 
   close(): void {
@@ -7272,7 +7284,7 @@ export class RunStore {
       payload: {
         // The user-facing message IS the answer/report body (no server path).
         // Bounded to a Telegram-safe length; report_path stays for audit only.
-        text: truncateForChat(input.text, this.redact),
+        text: this.redactReport("final_report", run_id, input.text),
         report_path: input.report_path,
         // Phase 3.3: inline buttons (the self-write merge controls) ride only when supplied;
         // every other final report omits them and stays byte-identical to before.
@@ -7281,6 +7293,20 @@ export class RunStore {
         ...(input.attachments && input.attachments.length > 0 ? { attachments: input.attachments } : {})
       }
     });
+  }
+
+  /**
+   * E8 (Stage 4B spec §5): the three report wrappers' redact-then-cut, recorded. `masked` is decided on the text before
+   * trim/cut; the stored bytes come from the same truncateForChat call as before, so payload_hash and the chat-turn copy
+   * are unchanged. A row is a masking attempt (a duplicate or failed enqueue still counted), never text. Firewall off: no
+   * decision, as before.
+   */
+  // `masked` and the stored bytes come from two calls of the same pure redactor.
+  private redactReport(seam: RedactSeam, run_id: string, text: string): string {
+    if (this.redactionEnabled) {
+      decideSync(SECRET_REDACT, { masked: this.redact(text) !== text, seam }, { run_id, tool_call_id: null, recorder: this.decisionRecorder });
+    }
+    return truncateForChat(text, this.redact);
   }
 
   /**
@@ -7303,7 +7329,7 @@ export class RunStore {
       run_id,
       correlation_id: run_id,
       payload: {
-        text: truncateForChat(text, this.redact),
+        text: this.redactReport("failure_report", run_id, text),
         ...(report_path ? { report_path } : {})
       }
     });
@@ -7324,7 +7350,7 @@ export class RunStore {
     input: { text: string; buttons?: NotificationButton[] }
   ): NotificationQueueResult {
     const target = this.getRunNotifyTarget(run_id);
-    const text = truncateForChat(input.text, this.redact);
+    const text = this.redactReport("evolution_report", run_id, input.text);
     const result = this.enqueueNotification({
       target,
       intent_type: "final_report",

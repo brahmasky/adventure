@@ -11,6 +11,7 @@ import { Gateway } from "./gateway/gateway.js";
 import { runEvalSuite } from "./eval/eval-runner.js";
 import { getHougeVersion } from "./index.js";
 import { RunStore } from "./run/run-store.js";
+import { storeOptionsFor } from "./run/store-options.js";
 import {
   formatTombstoneParkedMessage,
   readTombstone,
@@ -30,8 +31,9 @@ const broker = resolveSecretsFirewallEnabled(process.env)
   ? createSecretBroker(process.env)
   : undefined;
 if (broker) stripSecretsFromEnv(process.env);
-// The store redactor masks secret VALUES at every write seam; omitted (no-op) when the firewall is OFF.
-const storeOptions = broker ? { redact: broker.redact } : {};
+// The store redactor masks secret VALUES at every write seam; omitted (no-op) when the firewall is OFF. The redactor and
+// the decision recorder travel together (Stage 4B spec §5), so the store can record what it redacted.
+const storeOptions = storeOptionsFor(broker);
 const brokerOption = broker ? { broker } : {};
 
 const [, , command, ...rest] = process.argv;
