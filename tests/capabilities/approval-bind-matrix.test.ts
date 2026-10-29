@@ -117,6 +117,13 @@ function bindFixture(o: { source?: "user" | "schedule"; approver?: Identity; sin
       expect(newRows).toEqual([bound ? { verdict: "bound", reason_code: null, tool_call_id: "tc_run" } : { verdict: "unbound", reason_code: code, tool_call_id: "tc_run" }]);
       if (!bound) expect(code).not.toBeNull();
     }
+    // Whole-table check, no entry filter: the run's decisions are exactly the one tool.policy row plus the bind rows asserted above, so a stray row from any entry fails here.
+    const policy = o.forbid ? { entry_id: "tool.policy", verdict: "denied", reason_code: "forbidden" } : { entry_id: "tool.policy", verdict: "requires_approval", reason_code: "gated_side_effect" };
+    const key = (r: { entry_id: string; verdict: string; reason_code: string | null }): string => `${r.entry_id}|${r.verdict}|${r.reason_code}`;
+    const actual = store.listDecisionsForRun(run_id).map(key).sort();
+    const expected = [key(policy), // the store keeps one tool.policy row per (run, tool_call_id), so a repeat call on tc_run adds none
+       ...bindRows().map((b) => key({ entry_id: "approval.bind", ...b }))].sort();
+    expect(actual).toEqual(expected);
     return { result, added: eventTypes().slice(before) };
   }
   return {
