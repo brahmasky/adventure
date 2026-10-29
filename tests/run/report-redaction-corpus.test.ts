@@ -60,11 +60,18 @@ const send = (f: Fixture, w: Wrapper, text: string, run_id = f.run_id) =>
 /** What the wrapper puts into the outbox payload for a given stored text (the payload shapes of enqueue*Notification). */
 const payloadFor = (w: Wrapper, text: string): Record<string, unknown> => w === "final" ? { text, report_path: "/tmp/r.md" } : { text };
 
-/** Today's semantics, written out: redact, THEN trim, THEN cut at 3,900 with the truncation tail. */
-const todays = (text: string, redact: (s: string) => string): string => {
-  const t = redact(text).trim();
-  return t.length <= MAX ? t : `${t.slice(0, MAX)}${TAIL}`;
-};
+/** Wrapper results with the unstable parts normalised (ids, run id, timestamps), so the whole NotificationQueueResult can be pinned. */
+const norm = (v: unknown, run_id: string): unknown =>
+  JSON.parse(JSON.stringify(v).split(run_id).join("RUN").replace(/notif_[0-9a-f-]+/g, "NID").replace(/\d{4}-\d\d-\d\dT[\d:.]+Z/g, "T"));
+const expectedResult = (w: Wrapper, status: "queued" | "duplicate", stored: string): unknown => ({
+  status,
+  record: {
+    notification_id: "NID", target: { kind: "telegram", chat_id: "555" }, target_key: "telegram:555", intent_type: "final_report",
+    idempotency_key: w === "evolution" ? "RUN:evolution_report:self_write_propose" : "RUN:final_report", state: "queued", attempt_count: 0, next_attempt_at: "T",
+    lease_owner: null, lease_expires_at: null, provider_message_id: null, run_id: "RUN", approval_id: null, correlation_id: "RUN",
+    payload: payloadFor(w, stored), payload_hash: stableHash(payloadFor(w, stored)), created_at: "T", updated_at: "T"
+  }
+});
 
 interface OutboxRow { payload_json: string; payload_hash: string; state: string }
 const outbox = (f: Fixture, run_id = f.run_id): OutboxRow[] =>
@@ -72,15 +79,18 @@ const outbox = (f: Fixture, run_id = f.run_id): OutboxRow[] =>
 const chatTurns = (f: Fixture, run_id = f.run_id): string[] =>
   (db(f.store).prepare(`SELECT text FROM chat_turns WHERE run_id = ? AND role = 'assistant'`).all(run_id) as unknown as Array<{ text: string }>).map((r) => r.text);
 
-/** Pins the outbox row (json, hash, state) of one wrapper call against the bytes today's code stores; returns the stored text. */
-function pinRow(f: Fixture, w: Wrapper, input: string, redact: (s: string) => string): string {
-  const expected = todays(input, redact);
+/**
+ * Pins one wrapper call against bytes the TEST wrote by hand (never derived from the redactor under test): the outbox row (json, hash,
+ * state), the full return value (ids normalised) and, for the evolution wrapper, the assistant chat turn.
+ */
+function pinRow(f: Fixture, w: Wrapper, result: unknown, expected: string): void {
   const rows = outbox(f);
   expect(rows).toHaveLength(1);
   expect(rows[0]!.payload_json).toBe(JSON.stringify(payloadFor(w, expected)));
   expect(rows[0]!.payload_hash).toBe(stableHash(payloadFor(w, expected))); // the idempotency hash is over the REDACTED bytes
   expect(rows[0]!.state).toBe("queued");
-  return expected;
+  expect(norm(result, f.run_id)).toEqual(expectedResult(w, "queued", expected));
+  expect(chatTurns(f)).toEqual(w === "evolution" ? [expected] : []);
 }
 
 /** Counts, over every TEXT column of every table, the rows that contain `needle`; keyed "table.column". */
@@ -102,25 +112,25 @@ function scan(store: RunStore, values: readonly string[]): Record<string, number
 }
 
 const pad = (n: number, ch = "x"): string => ch.repeat(n);
-/** each maskable value planted: at the start, at the end, twice, and at offset 2,000 of a 3,000-char text */
-const plant = (v: string): Array<[string, string]> => [
-  ["start", `${v} then some ordinary prose`], ["end", `ordinary prose then ${v}`], ["twice", `first ${v} middle ${v} last`],
-  ["offset 2000 of 3000", pad(2000) + v + pad(3000 - 2000 - v.length)]
-];
+/** each maskable value planted: at the start, at the end, twice, and at offset 2,000 of a 3,000-char text; the expected bytes are written out by hand */
+const plant = (v: string): Array<[string, string, string]> => {
+  const rest = pad(3000 - 2000 - v.length);
+  return [
+    ["start", `${v} then some ordinary prose`, `${MARK} then some ordinary prose`],
+    ["end", `ordinary prose then ${v}`, `ordinary prose then ${MARK}`],
+    ["twice", `first ${v} middle ${v} last`, `first ${MARK} middle ${MARK} last`],
+    ["offset 2000 of 3000", pad(2000) + v + rest, pad(2000) + MARK + rest]
+  ];
+};
 
 describe.each(WRAPPERS)("%s report — maskable class (firewall armed)", (w) => {
   const redact = fakeBroker().redact;
-  it.each(MASKABLE.flatMap((v) => plant(v).map(([where, text]) => [v.slice(0, 8).replace(/\n/g, "\\n"), where, text] as const)))(
+  it.each(MASKABLE.flatMap((v) => plant(v).map(([where, text, expected]) => [v.slice(0, 8).replace(/\n/g, "\\n"), where, text, expected] as const)))(
     "value %s planted at %s: the stored text holds the whole marker and none of the value",
-    (_v, _where, text) => {
+    (_v, _where, text, expected) => {
       const f = reportFixture(redact);
-      const result = send(f, w, text);
-      expect(result.status).toBe("queued");
-      const stored = pinRow(f, w, text, redact);
-      expect(stored).toContain(MARK);
-      for (const secret of MASKABLE) expect(stored).not.toContain(secret);
-      if (w === "evolution") expect(chatTurns(f)).toEqual([stored]); // the redacted text is what the assistant turn keeps too
-      else expect(chatTurns(f)).toEqual([]);
+      pinRow(f, w, send(f, w, text), expected);
+      expect(expected).toContain(MARK);
       // a hit here is a real leak in today's code, not a wrong pin: STOP and report the table.column
       expect(scan(f.store, MASKABLE)).toEqual({});
     }
@@ -137,10 +147,10 @@ describe.each(WRAPPERS)("%s report — cut boundary (marker straddles char 3,900
     expect(MARK).toHaveLength(10);
     expect(redacted.trim()).toBe(redacted);
     const f = reportFixture(redact);
-    send(f, w, text);
-    const stored = pinRow(f, w, text, redact);
+    const stored = pad(3895) + "«reda" + TAIL; // written by hand: redact -> trim -> cut at 3,900
+    pinRow(f, w, send(f, w, text), stored);
     // the premise on the STORED bytes: x*3895 + "«reda" is followed directly by the truncation tail. Anything else is plain truncation and FAILS here.
-    expect(stored).toBe(pad(3895) + "«reda" + TAIL);
+    expect(outbox(f).map((r) => (JSON.parse(r.payload_json) as { text: string }).text)).toEqual([stored]);
     expect(stored.startsWith(pad(3895) + "«reda" + "\n\n… (truncated)")).toBe(true);
     expect(stored).not.toContain(MARK); // the whole marker is NOT present: the truncation tore it
     for (const secret of MASKABLE) expect(stored).not.toContain(secret);
@@ -153,10 +163,7 @@ describe.each(WRAPPERS)("%s report — short-value control", (w) => {
     const redact = fakeBroker().redact;
     const text = `the short ${SHORT} value, twice ${SHORT}`;
     const f = reportFixture(redact);
-    send(f, w, text);
-    const stored = pinRow(f, w, text, redact);
-    expect(stored).toBe(text);
-    expect(stored).not.toContain(MARK);
+    pinRow(f, w, send(f, w, text), text);
     const hits = scan(f.store, [SHORT]);
     expect(hits).toEqual({ "notification_outbox.payload_json": 1, ...(w === "evolution" ? { "chat_turns.text": 1 } : {}) });
   });
@@ -166,11 +173,7 @@ describe.each(WRAPPERS)("%s report — firewall off", (w) => {
   it.each(MASKABLE.map((v) => [v.slice(0, 8).replace(/\n/g, "\\n"), v] as const))("value %s is stored raw (no redactor injected: byte-identical to the input)", (_n, v) => {
     const text = `before ${v} after`;
     const f = reportFixture();
-    send(f, w, text);
-    const stored = pinRow(f, w, text, (s) => s);
-    expect(stored).toBe(text);
-    expect(stored).not.toContain(MARK);
-    if (w === "evolution") expect(chatTurns(f)).toEqual([text]);
+    pinRow(f, w, send(f, w, text), text);
   });
   it("the scan sees the planted values (a scan that finds nothing proves nothing): exactly the outbox payload, plus the chat turn on the evolution wrapper", () => {
     const text = `leak ${V.kimi} and ${V.telegram}`;
@@ -185,15 +188,11 @@ describe.each(WRAPPERS)("%s report — firewall off", (w) => {
 describe.each(WRAPPERS)("%s report — clean texts", (w) => {
   const redact = fakeBroker().redact;
   it.each([
-    ["empty", ""], ["whitespace only", " \n\t  "], ["3,899 chars", pad(3899)], ["3,900 chars", pad(3900)], ["3,901 chars", pad(3901)]
-  ])("%s: stored exactly as today (trim, then cut past 3,900), no marker", (_n, text) => {
+    ["empty", "", ""], ["whitespace only", " \n\t  ", ""], ["3,899 chars", pad(3899), pad(3899)], ["3,900 chars", pad(3900), pad(3900)],
+    ["3,901 chars", pad(3901), pad(3900) + TAIL]
+  ])("%s: stored exactly as written by hand (trim, then cut past 3,900), no marker", (_n, text, expected) => {
     const f = reportFixture(redact);
-    send(f, w, text);
-    const stored = pinRow(f, w, text, redact);
-    expect(stored).not.toContain(MARK);
-    if (text.length === 3901) expect(stored).toBe(pad(3900) + TAIL);
-    if (text.length === 3900) expect(stored).toBe(text); // the boundary: exactly 3,900 is NOT cut
-    if (text.trim() === "") expect(stored).toBe("");
+    pinRow(f, w, send(f, w, text), expected);
   });
 });
 
@@ -202,9 +201,9 @@ describe("enqueue outcomes — the return value and the rows around the redacted
   it.each(WRAPPERS)("%s: a duplicate re-enqueue of the same masked text returns `duplicate` and leaves one outbox row (and one chat turn)", (w) => {
     const f = reportFixture(redact);
     const text = `answer with ${V.kimi} inside`;
-    expect(send(f, w, text).status).toBe("queued");
-    const again = send(f, w, text);
-    expect(again.status).toBe("duplicate");
+    const expected = `answer with ${MARK} inside`;
+    pinRow(f, w, send(f, w, text), expected);
+    expect(norm(send(f, w, text), f.run_id)).toEqual(expectedResult(w, "duplicate", expected));
     expect(outbox(f)).toHaveLength(1);
     expect(chatTurns(f)).toHaveLength(w === "evolution" ? 1 : 0);
   });

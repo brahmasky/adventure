@@ -115,9 +115,13 @@ function bindFixture(o: { source?: "user" | "schedule"; approver?: Identity; sin
 
 const refused = (code: string): CapabilityResult => ({ status: "failed", error_ref: `${code}: ${code}` });
 /** Every refusal: the result bytes are the code twice, the policy row is the only decision recorded, and the caller reads the row back itself. */
-async function expectRefused(f: ReturnType<typeof bindFixture>, id: string, code: string): Promise<void> {
-  const { result } = await f.execute(id);
+async function expectRefused(f: ReturnType<typeof bindFixture>, id: string, code: string, rowState = "approved"): Promise<void> {
+  const { result, added } = await f.execute(id);
   expect(result).toEqual(refused(code));
+  expect(f.state(id)).toBe(rowState); // a refusal never moves the approval row
+  expect(added).toEqual([]); // nothing reached the run's ledger
+  expect(f.store.listStandingApprovals()).toEqual([]); // no standing row created or touched
+  expect(f.standingUses()).toBe(0);
   expect(f.recorded).toEqual(POLICY_ROWS);
 }
 const POLICY_ROWS = [{ entry_id: "tool.policy", verdict: "requires_approval", reason_code: "gated_side_effect" }];
@@ -145,13 +149,14 @@ describe("approval consume binding through CapabilityRunner + the omp sink (toda
     const { result, added } = await f.execute("appr_does_not_exist");
     expect(result).toEqual(refused("unknown_approval"));
     expect(added).toEqual([]);
+    expect(f.store.listStandingApprovals()).toEqual([]);
+    expect(f.standingUses()).toBe(0);
   });
 
   it.each<RowState>(["pending", "denied", "consumed"])("not_approved: a %s row never authorises, and its state is left as found", async (state) => {
     const f = bindFixture();
     const id = f.approvedRow({ state });
-    await expectRefused(f, id, "not_approved");
-    expect(f.state(id)).toBe(state);
+    await expectRefused(f, id, "not_approved", state);
   });
 
   it("expired: expires_at 1 ms in the past refuses, and the row stays approved (nothing consumed)", async () => {
@@ -193,9 +198,12 @@ describe("approval consume binding through CapabilityRunner + the omp sink (toda
     const f = bindFixture({ source: "schedule", approver: PACO });
     const id = f.approvedRow({ requester: PACO });
     expect(f.requester).toEqual({ kind: "schedule", id: "sch_1" }); // the runner's own requester is the schedule, not Paco
-    const { result } = await f.execute(id);
-    expect(result.status).toBe("succeeded");
+    const { result, added } = await f.execute(id);
+    expect(result).toEqual({ status: "succeeded", output_ref: "inline:shell_external", output_hash: expect.any(String), output: { ran: true } });
     expect(f.state(id)).toBe("consumed");
+    // a schedule-born run with a key-eligible action credits its first streak: the credit rides the same consume
+    expect(added).toEqual(["standing_streak"]);
+    expect(f.store.listStandingApprovals().map((r) => [r.state, r.credited_runs_json])).toEqual([["streak", JSON.stringify([f.run_id])]]);
   });
 
   it("P5 control: the same schedule-born run WITHOUT the swap is a requester_mismatch (the swap is what makes the operator's tap count)", async () => {
@@ -244,6 +252,21 @@ describe("approval consume binding through CapabilityRunner + the omp sink (toda
     expect(added).toEqual(["standing_streak"]);
   });
 
+  it.each(["sealing", "standing"] as const)("standing_trial on a %s row (non-candidate, never credited again): the consume succeeds, the standing row is byte-for-byte unchanged, no event", async (state) => {
+    const f = bindFixture({ source: "schedule", approver: PACO });
+    const move_id = f.store.insertLadderMove({ entry_id: "tool.policy", scope: "sa_x", from_rung: "paco", to_rung: "rule", evidence: [], granted_by: "auto", granted_via: "approval.standing", paco_callback_id: null, revocable: true });
+    const sa = f.store.insertStandingApprovalForTest({ schedule_id: "sch_1", chat_id: CHAT, action_fingerprint: FP, state, move_id, expires_at: new Date(Date.now() + 86_400_000).toISOString() });
+    const before = f.store.getStandingApproval(sa.standing_id);
+    const id = f.approvedRow({ requester: PACO });
+    const { result, added } = await f.execute(id, { standing_trial: { standing_id: sa.standing_id } });
+    expect(result.status).toBe("succeeded");
+    expect(f.state(id)).toBe("consumed");
+    expect(f.store.getStandingApproval(sa.standing_id)).toEqual(before); // no credit, no state change, no updated_at bump
+    expect(f.store.listStandingApprovals()).toHaveLength(1);
+    expect(added).toEqual([]);
+    expect(f.standingUses()).toBe(0);
+  });
+
   it("standing_trial on an ineligible (user-born) run: the consume succeeds and earns NO credit, no sealing, no standing event", async () => {
     const f = bindFixture();
     const sa = f.store.insertStandingApprovalForTest({ schedule_id: "sch_1", chat_id: CHAT, action_fingerprint: FP, state: "candidate" });
@@ -259,25 +282,29 @@ describe("approval consume binding through CapabilityRunner + the omp sink (toda
     const f = bindFixture();
     const id = f.approvedRow();
     expect((await f.execute(id)).result.status).toBe("succeeded");
-    await expectRefused(f, id, "not_approved");
-    expect(f.state(id)).toBe("consumed");
+    await expectRefused(f, id, "not_approved", "consumed");
   });
 
   it("consume ok then the adapter fails: the row IS consumed (the approval is spent) and the result is the adapter's failure", async () => {
     const f = bindFixture();
     f.adapter.mode = "fail";
     const id = f.approvedRow();
-    expect((await f.execute(id)).result).toEqual({ status: "failed", error_ref: "adapter boom" });
+    const { result, added } = await f.execute(id);
+    expect(result).toEqual({ status: "failed", error_ref: "adapter boom" });
     expect(f.state(id)).toBe("consumed");
+    expect(added).toEqual([]);
+    expect(f.store.listStandingApprovals()).toEqual([]);
   });
 
   it("consume ok then the adapter times out: the row IS consumed and the result is the timeout", async () => {
     const f = bindFixture();
     f.adapter.mode = "timeout";
     const id = f.approvedRow();
-    const { result } = await f.execute(id);
+    const { result, added } = await f.execute(id);
     expect(result).toMatchObject({ status: "timed_out", error_ref: "Tool execution timed out" });
     expect(f.state(id)).toBe("consumed");
+    expect(added).toEqual([]);
+    expect(f.store.listStandingApprovals()).toEqual([]);
   });
 
   describe("multi-fault: which code wins is the check order unknown -> not_approved -> expired -> action -> owner -> requester -> lease", () => {
@@ -294,24 +321,30 @@ describe("approval consume binding through CapabilityRunner + the omp sink (toda
     it("not approved + expired -> not_approved", async () => {
       const f = bindFixture();
       const id = f.approvedRow({ state: "pending", expires_in_ms: -1 });
-      await expectRefused(f, id, "not_approved");
+      await expectRefused(f, id, "not_approved", "pending");
     });
   });
 
   it("P2: a contract that now denies -> denied_on_revalidation BEFORE any consume; the row stays approved and unspent", async () => {
     const f = bindFixture({ forbid: true });
     const id = f.approvedRow();
-    const { result } = await f.execute(id);
+    const { result, added } = await f.execute(id);
     expect(result).toEqual({ status: "denied_on_revalidation", reason: "Capability forbidden by task contract", recovery_hint: "Report the blocked action to the user" });
     expect(f.state(id)).toBe("approved");
+    expect(added).toEqual([]);
+    expect(f.store.listStandingApprovals()).toEqual([]);
     expect(f.recorded).toEqual([{ entry_id: "tool.policy", verdict: "denied", reason_code: "forbidden" }]);
   });
 
   it("P3: a runner with no sink fails a resume with the fixed text and spends nothing", async () => {
     const f = bindFixture({ sink: false });
     const id = f.approvedRow();
-    expect((await f.execute(id)).result).toEqual({ status: "failed", error_ref: "Approval sink is not available for resume" });
+    const { result, added } = await f.execute(id);
+    expect(result).toEqual({ status: "failed", error_ref: "Approval sink is not available for resume" });
     expect(f.state(id)).toBe("approved");
+    expect(added).toEqual([]);
+    expect(f.store.listStandingApprovals()).toEqual([]);
+    expect(f.recorded).toEqual(POLICY_ROWS);
   });
 });
 
@@ -362,26 +395,32 @@ describe("run-level sink through CoreWorker.executeRun (force_gated_capability) 
     const done = await f.resume();
     expect(done).toMatchObject({ status: "completed", run_id: f.run_id });
     expect(f.approvalState()).toBe("consumed");
-    expect(f.store.getLedgerEvents(f.run_id).map((e) => e.event_type)).toContain("tool_finished");
+    expect(f.store.getLedgerEvents(f.run_id).map((e) => e.event_type)).toEqual([
+      "run_created", "contract_attached", "worker_lease_acquired", "approval_requested", "notification_queued", "worker_lease_released", "approval_resolved", "notification_queued",
+      "worker_lease_acquired", "tool_started", "tool_finished", "report_written", "worker_lease_released", "run_completed", "notification_queued"]);
+    expect(f.store.listStandingApprovals()).toEqual([]);
     expect(f.decisions()).toBe(0);
   });
 
-  const CODES: Array<{ code: string; setup: (f: Awaited<ReturnType<typeof runLevelFixture>>) => void }> = [
-    { code: "APPROVAL_NOT_FOUND", setup: (f) => { f.feed({ ...f.real, approval_id: "appr_missing" }); } },
-    { code: "APPROVAL_NOT_APPROVED", setup: (f) => { f.poke(`UPDATE approvals SET state = 'pending' WHERE approval_id = ?`, f.approval_id); f.feed(f.real); } },
-    { code: "APPROVAL_REQUESTER_MISMATCH", setup: (f) => { f.poke(`UPDATE approvals SET requester_json = ? WHERE approval_id = ?`, JSON.stringify(OTHER), f.approval_id); f.feed(f.real); } },
-    { code: "APPROVAL_RUN_MISMATCH", setup: (f) => { f.poke(`UPDATE approvals SET run_id = 'run_other' WHERE approval_id = ?`, f.approval_id); f.feed(f.real); } },
-    { code: "APPROVAL_CAPABILITY_MISMATCH", setup: (f) => { f.poke(`UPDATE approvals SET capability = 'other_cap' WHERE approval_id = ?`, f.approval_id); f.feed(f.real); } },
-    { code: "APPROVAL_INPUT_MISMATCH", setup: (f) => { f.poke(`UPDATE approvals SET adapter_input_hash = 'deadbeef' WHERE approval_id = ?`, f.approval_id); f.feed(f.real); } },
-    { code: "APPROVAL_ACTION_MISMATCH", setup: (f) => { f.poke(`UPDATE approvals SET action_fingerprint = 'deadbeef' WHERE approval_id = ?`, f.approval_id); f.feed(f.real); } }
+  const PARKED = ["run_created", "contract_attached", "worker_lease_acquired", "approval_requested", "notification_queued", "worker_lease_released", "approval_resolved", "notification_queued", "worker_lease_acquired", "tool_started"];
+  const REFUSED_LEDGER = [...PARKED, "report_written", "worker_lease_released", "run_failed", "notification_queued"]; // consume refused: no tool_finished
+  const CODES: Array<{ code: string; error: string; state: string; setup: (f: Awaited<ReturnType<typeof runLevelFixture>>) => void }> = [
+    { code: "APPROVAL_NOT_FOUND", error: "APPROVAL_NOT_FOUND: Approval not found", state: "approved", setup: (f) => { f.feed({ ...f.real, approval_id: "appr_missing" }); } },
+    { code: "APPROVAL_NOT_APPROVED", error: "APPROVAL_NOT_APPROVED: Approval is not approved", state: "pending", setup: (f) => { f.poke(`UPDATE approvals SET state = 'pending' WHERE approval_id = ?`, f.approval_id); f.feed(f.real); } },
+    { code: "APPROVAL_REQUESTER_MISMATCH", error: "APPROVAL_REQUESTER_MISMATCH: Approval requester does not match", state: "approved", setup: (f) => { f.poke(`UPDATE approvals SET requester_json = ? WHERE approval_id = ?`, JSON.stringify(OTHER), f.approval_id); f.feed(f.real); } },
+    { code: "APPROVAL_RUN_MISMATCH", error: "APPROVAL_RUN_MISMATCH: Approval run does not match", state: "approved", setup: (f) => { f.poke(`UPDATE approvals SET run_id = 'run_other' WHERE approval_id = ?`, f.approval_id); f.feed(f.real); } },
+    { code: "APPROVAL_CAPABILITY_MISMATCH", error: "APPROVAL_CAPABILITY_MISMATCH: Approval capability does not match", state: "approved", setup: (f) => { f.poke(`UPDATE approvals SET capability = 'other_cap' WHERE approval_id = ?`, f.approval_id); f.feed(f.real); } },
+    { code: "APPROVAL_INPUT_MISMATCH", error: "APPROVAL_INPUT_MISMATCH: Approval adapter input hash does not match", state: "approved", setup: (f) => { f.poke(`UPDATE approvals SET adapter_input_hash = 'deadbeef' WHERE approval_id = ?`, f.approval_id); f.feed(f.real); } },
+    { code: "APPROVAL_ACTION_MISMATCH", error: "APPROVAL_ACTION_MISMATCH: Approval action fingerprint does not match", state: "approved", setup: (f) => { f.poke(`UPDATE approvals SET action_fingerprint = 'deadbeef' WHERE approval_id = ?`, f.approval_id); f.feed(f.real); } }
   ];
-  it.each(CODES)("$code: the run fails with the store's code, nothing is consumed, and still no decisions row", async ({ code, setup }) => {
+  it.each(CODES)("$code: the run fails with the store's exact error, the approvals row is left as found, the ledger shows no tool_finished, and still no decisions row", async ({ error, state, setup }) => {
     const f = await runLevelFixture();
     setup(f);
     const done = await f.resume();
-    expect(done).toMatchObject({ status: "failed", run_id: f.run_id });
-    expect((done as { error: string }).error).toMatch(new RegExp(`^${code}: `));
-    expect(f.approvalState()).not.toBe("consumed");
+    expect(done).toEqual({ status: "failed", run_id: f.run_id, error });
+    expect(f.approvalState()).toBe(state);
+    expect(f.store.getLedgerEvents(f.run_id).map((e) => e.event_type)).toEqual(REFUSED_LEDGER);
+    expect(f.store.listStandingApprovals()).toEqual([]);
     expect(f.decisions()).toBe(0);
   });
 
@@ -391,9 +430,12 @@ describe("run-level sink through CoreWorker.executeRun (force_gated_capability) 
       f.poke(`UPDATE runs SET state = 'cancelled' WHERE run_id = ?`, f.run_id);
       return f.real;
     });
-    const done = await f.resume().catch((e: unknown) => ({ status: "threw", error: e instanceof Error ? e.message : String(e) }));
-    expect((done as { error?: string }).error ?? "").toMatch(/RUN_NOT_RUNNING/);
+    const done = await f.resume();
+    expect(done).toEqual({ status: "failed", run_id: f.run_id, error: "RUN_NOT_RUNNING: Run is not running" });
     expect(f.approvalState()).toBe("approved");
+    // the run was flipped out from under the worker, so its own terminal events never land: the ledger stops after the report
+    expect(f.store.getLedgerEvents(f.run_id).map((e) => e.event_type)).toEqual([...PARKED, "report_written", "notification_queued"]);
+    expect(f.store.listStandingApprovals()).toEqual([]);
     expect(f.decisions()).toBe(0);
   });
 });
