@@ -91,6 +91,13 @@ function bindFixture(o: { source?: "user" | "schedule"; approver?: Identity; sin
     return row.approval_id;
   }
   const eventTypes = (): string[] => store.getLedgerEvents(run_id).map((e) => e.event_type);
+  type Row = { verdict: string; reason_code: string | null; tool_call_id: string | null };
+  /** Whole-table check, no entry filter: the run's decisions are exactly the expected tool.policy row plus the expected bind rows, so a stray or misattributed row fails. */
+  function assertWholeTable(policy: Row, binds: Row[]): void {
+    const key = (entry_id: string, r: Row): string => `${entry_id}|${r.verdict}|${r.reason_code}|${r.tool_call_id}`;
+    const actual = store.listDecisionsForRun(run_id).map((d) => key(d.entry_id, d)).sort();
+    expect(actual).toEqual([key("tool.policy", policy), ...binds.map((b) => key("approval.bind", b))].sort());
+  }
   const bindRows = (): Array<{ verdict: string; reason_code: string | null; tool_call_id: string | null }> =>
     store.listDecisionsForRun(run_id).filter((d) => d.entry_id === "approval.bind").map((d) => ({ verdict: d.verdict, reason_code: d.reason_code, tool_call_id: d.tool_call_id }));
   /**
@@ -117,17 +124,12 @@ function bindFixture(o: { source?: "user" | "schedule"; approver?: Identity; sin
       expect(newRows).toEqual([bound ? { verdict: "bound", reason_code: null, tool_call_id: "tc_run" } : { verdict: "unbound", reason_code: code, tool_call_id: "tc_run" }]);
       if (!bound) expect(code).not.toBeNull();
     }
-    // Whole-table check, no entry filter: the run's decisions are exactly the one tool.policy row plus the bind rows asserted above, so a stray row from any entry fails here.
-    const policy = o.forbid ? { entry_id: "tool.policy", verdict: "denied", reason_code: "forbidden" } : { entry_id: "tool.policy", verdict: "requires_approval", reason_code: "gated_side_effect" };
-    const key = (r: { entry_id: string; verdict: string; reason_code: string | null }): string => `${r.entry_id}|${r.verdict}|${r.reason_code}`;
-    const actual = store.listDecisionsForRun(run_id).map(key).sort();
-    const expected = [key(policy), // the store keeps one tool.policy row per (run, tool_call_id), so a repeat call on tc_run adds none
-       ...bindRows().map((b) => key({ entry_id: "approval.bind", ...b }))].sort();
-    expect(actual).toEqual(expected);
+    const policy = o.forbid ? { verdict: "denied", reason_code: "forbidden", tool_call_id: "tc_run" } : { verdict: "requires_approval", reason_code: "gated_side_effect", tool_call_id: "tc_run" };
+    assertWholeTable(policy, bindRows()); // the recorder skips a repeat policy verdict for the same (run, tool_call_id, entry), so a second call adds no policy row
     return { result, added: eventTypes().slice(before) };
   }
   return {
-    store, run_id, adapter, approvedRow, execute, requester, sink, runner, bindRows,
+    store, run_id, adapter, approvedRow, execute, requester, sink, runner, bindRows, assertWholeTable,
     /** the decisions rows the runner's recorder wrote for this run — what the matrix must keep identical when the consume moves */
     get recorded(): Array<{ entry_id: string; verdict: string; reason_code: string | null }> {
       return store.listDecisionsForRun(run_id).filter((d) => d.entry_id !== "approval.bind").map((d) => ({ entry_id: d.entry_id, verdict: d.verdict, reason_code: d.reason_code }));
@@ -374,6 +376,7 @@ describe("approval consume binding through CapabilityRunner + the omp sink (toda
       budget: new BudgetLedger(contract().budget), budget_reserved: true, recorder: storeRecorder(f.store), tool_call_id: "tc_run", action_summary: "HTTP write"
     })).rejects.toBe(boom);
     expect(f.bindRows()).toEqual([]);
+    f.assertWholeTable({ verdict: "requires_approval", reason_code: "gated_side_effect", tool_call_id: "tc_run" }, []);
     expect(f.state(id)).toBe("approved");
   });
 
@@ -385,6 +388,7 @@ describe("approval consume binding through CapabilityRunner + the omp sink (toda
     });
     expect(result.status).toBe("requires_approval");
     expect(f.bindRows()).toEqual([]);
+    f.assertWholeTable({ verdict: "requires_approval", reason_code: "gated_side_effect", tool_call_id: "tc_first" }, []);
   });
 
   it("a second consume of a consumed row records its own row: unbound / not_approved, after the first attempt's bound row", async () => {
