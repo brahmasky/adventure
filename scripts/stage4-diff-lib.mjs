@@ -13,7 +13,14 @@ const EXPORTS = {
   RunStore: "run/run-store.js", CapabilityRunner: "capabilities/capability-runner.js", decideCapability: "policy/capability-policy.js",
   classifyCommand: "omp/command-matcher.js", gateTargets: "omp/gate-path.js", createToolApprovalSink: "omp/tool-approval-sink.js",
   storeOptionsFor: "run/store-options.js", decideSync: "decisions/decide.js", storeRecorder: "decisions/record.js",
-  createSecretBroker: "config/secret-broker.js"
+  createSecretBroker: "config/secret-broker.js",
+  // the bridge seam (scripts/stage4-bridge-seam.mjs): a real bridge handler over a temp store
+  Gateway: "gateway/gateway.js", buildTypedTaskEvent: "domain/types.js", BudgetLedger: "budget/budget-ledger.js", ToolRegistry: "tools/tool-registry.js",
+  createBridgeHandler: "omp/bridge-handler.js", resolveOmpConfig: "omp/omp-config.js", loadToolDeclarations: "omp/tool-decls.js",
+  TOOL_DECLS_DIR: "omp/tool-decls.js", toolApprovalWaiters: "omp/tool-approval-sink.js",
+  // the path corpus's protected-path inventory
+  secretPaths: "omp/protected-paths.js", protectedRepoPaths: "omp/protected-paths.js", operationalWriteDeny: "omp/protected-paths.js",
+  writeRoots: "omp/protected-paths.js"
 };
 const distCache = new Map();
 
