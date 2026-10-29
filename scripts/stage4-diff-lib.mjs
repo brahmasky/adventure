@@ -27,7 +27,12 @@ const EXPORTS = {
   secretPaths: "omp/protected-paths.js", protectedRepoPaths: "omp/protected-paths.js", operationalWriteDeny: "omp/protected-paths.js",
   writeRoots: "omp/protected-paths.js",
   // the real policy hook, driven over a real bridge socket (edit/patch targets are derived inside it)
-  BridgeServer: "omp/bridge-server.js", hougePolicy: "omp/extension/houge-policy.js"
+  BridgeServer: "omp/bridge-server.js", hougePolicy: "omp/extension/houge-policy.js",
+  // the policy and binding matrices: real capability shapes, the runner's fingerprint, and the run-level worker
+  OMP_SHELL_META: "core/omp-turn-wiring.js", OMP_BUILTIN_META: "core/omp-turn-wiring.js", OMP_LOOP_TOOL_META: "core/omp-turn-wiring.js",
+  CoreWorker: "core/core-worker.js", actionFingerprint: "capabilities/capability-runner.js", stableHash: "domain/canonical.js",
+  TOOL_POLICY: "decisions/entries/tool-policy.js", STANDING_REASON: "policy/capability-policy.js", STANDING_MISMATCH_REASON: "policy/capability-policy.js",
+  TRUST_ASK_REASON: "policy/capability-policy.js"
 };
 const distCache = new Map();
 
