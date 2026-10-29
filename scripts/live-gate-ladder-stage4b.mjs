@@ -314,8 +314,9 @@ function runChild(script, args) {
     child.on("close", (status, signal) => {
       clearTimeout(timer); kids.delete(child);
       const lines = text.split("\n");
-      const flagged = lines.filter((l) => /^(FAIL|INCONCLUSIVE|PARTIAL)/.test(l)).slice(0, 3).map((l) => DEBUG ? redactForPrint(l) : l.split(" — ")[0].split(":")[0].slice(0, 60));
-      done({ script, status, signal, tally: `${lines.filter((l) => l.startsWith("PASS")).length} PASS/${lines.filter((l) => l.startsWith("FAIL")).length} FAIL`, flagged });
+      const all = lines.filter((l) => /^(FAIL|INCONCLUSIVE|PARTIAL)/.test(l));
+      const flagged = DEBUG ? all.slice(0, 3).map((l) => redactForPrint(l)) : []; // no child text without --debug: the count only
+      done({ script, status, signal, tally: `${lines.filter((l) => l.startsWith("PASS")).length} PASS/${lines.filter((l) => l.startsWith("FAIL")).length} FAIL, ${all.length} flagged`, flagged });
     });
   });
 }
