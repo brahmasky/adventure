@@ -83,3 +83,57 @@ exit 0
  M scripts/check-ladder-stage4-differential.mjs
  M scripts/stage4-diff-lib.mjs
 ```
+
+## Fix round 2
+Applied: private paths masked (<kN>, per item, identifier/index segments only) incl. requireNew name; SetupError + withheld unexpected errors, --debug prints stack; ids labelled in sorted-key walk order; self-test now new-side raw vs itself (null) and vs mutated (exactly one path); STRIP_KEYS without bare id plus standing_id, incident_id, move_id, correlation_id, occurred_at, resolved_at, used_at, next_attempt_at, lease_expires_at; per-projection __strip (union of both sides, any pair) documented on strip with __s3Omit.
+typecheck clean. npm test full run: 14 timeouts in 3 unrelated files (jev-version-job, providers/omp, planner-supervisor; 'Test timed out in 10000ms' under load); the same 3 files re-run alone: 240/240 passed. Remaining 406 files passed.
+
+### Verbatim proof output (probe 5 = key-reorder with two tool_ ids; 'planted' = proof 4)
+```
+=== 1 stub exit 0
+s3  old build: worktree HEAD 548cb87b18d0, registry.js a655b40789a7 (new ddc53eaa67c1)
+s4a old build: worktree HEAD 1451a6611538, capability-runner.js f32eee96c108 (new 6d5daed74f91)
+PASS stub: 3 items (plain=3); pairs 6; differences 0; required failures 0; self-test ok
+
+STAGE 4 DIFFERENTIAL: PASS
+exit 0
+== private item, transcript-derived keys
+<k1>, <k2>
+FAIL required [p] transcript#4 — <k3>
+== reordered keys with two tool_ ids
+null
+== __strip
+without: noisy: 5 != 6
+with __strip on one side: null
+bare id now compared: id: 1 != 2
+=== 4 planted real old/new difference
+s3  old build: worktree HEAD 548cb87b18d0, registry.js a655b40789a7 (new ddc53eaa67c1)
+s4a old build: worktree HEAD 1451a6611538, capability-runner.js f32eee96c108 (new 6d5daed74f91)
+FAIL [stub] stub#1 s3→new — command: "lsX" != "ls"
+FAIL [stub] stub#2 s3→new — command: "cat README.mdX" != "cat README.md"
+FAIL [stub] stub#3 s3→new — command: "pwdX" != "pwd"
+FAIL stub: 3 items (plain=3); pairs 6; differences 3; required failures 0; self-test ok
+
+STAGE 4 DIFFERENTIAL: FAIL
+exit 1
+=== 6a non-SetupError throw
+s3  old build: worktree HEAD 548cb87b18d0, registry.js a655b40789a7 (new ddc53eaa67c1)
+s4a old build: worktree HEAD 1451a6611538, capability-runner.js f32eee96c108 (new 6d5daed74f91)
+unexpected error in stub (load) (detail withheld; rerun with --debug)
+exit 2
+=== 6b same with --debug
+s3  old build: worktree HEAD 548cb87b18d0, registry.js a655b40789a7 (new ddc53eaa67c1)
+s4a old build: worktree HEAD 1451a6611538, capability-runner.js f32eee96c108 (new 6d5daed74f91)
+differential unexpected error: Error: rm -rf /secret/transcript-text
+exit 2
+=== 7 reverted
+s3  old build: worktree HEAD 548cb87b18d0, registry.js a655b40789a7 (new ddc53eaa67c1)
+s4a old build: worktree HEAD 1451a6611538, capability-runner.js f32eee96c108 (new 6d5daed74f91)
+PASS stub: 3 items (plain=3); pairs 6; differences 0; required failures 0; self-test ok
+
+STAGE 4 DIFFERENTIAL: PASS
+exit 0
+ M scripts/check-ladder-stage4-differential.mjs
+ M scripts/stage4-diff-lib.mjs
+```
+Note: the first run of this proof exposed a missing ownOmit import in the runner (unexpected-error path withheld it, exit 2); fixed before the output above.

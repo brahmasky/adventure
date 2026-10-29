@@ -96,9 +96,12 @@ const BIND_REDACT = new Set(["approval.bind", "secret.redact"]);
 const ID_RE = /\b(tool|op)_[0-9A-Za-z][0-9A-Za-z-]{5,}/g;
 /** Spec §6 metadata exclusions, by exact key name: row ids, timestamps, latency_ms. Nothing else is stripped; extend here, by name. */
 export const STRIP_KEYS = new Set([
-  "id", "run_id", "decision_id", "notification_id", "outbox_id", "event_id", "approval_id", "tool_approval_id",
-  "created_at", "updated_at", "consumed_at", "decided_at", "expires_at", "requested_at", "ts", "timestamp", "latency_ms"
+  "run_id", "decision_id", "notification_id", "outbox_id", "event_id", "approval_id", "tool_approval_id", "standing_id", "incident_id",
+  "move_id", "correlation_id", "created_at", "updated_at", "consumed_at", "decided_at", "expires_at", "requested_at", "occurred_at",
+  "resolved_at", "used_at", "next_attempt_at", "lease_expires_at", "ts", "timestamp", "latency_ms"
 ]);
+/** Thrown by the harness itself (args, provenance, temp): its message is safe to print. Anything else is withheld. */
+export class SetupError extends Error {}
 
 const isBindRow = (x) => x && typeof x === "object" && BIND_REDACT.has(x.entry_id);
 function stripNode(v, map, omit) {
@@ -109,21 +112,27 @@ function stripNode(v, map, omit) {
   if (Array.isArray(v)) return v.filter((x) => !isBindRow(x)).map((x) => stripNode(x, map, omit));
   if (v && typeof v === "object") {
     const out = {};
-    for (const [k, x] of Object.entries(v)) if (k !== "__s3Omit" && !STRIP_KEYS.has(k) && !omit.has(k)) out[k] = stripNode(x, map, omit);
+    for (const k of Object.keys(v).sort()) { // sorted-key walk, the order canon() uses: id labels do not depend on key order
+      if (k !== "__s3Omit" && k !== "__strip" && !STRIP_KEYS.has(k) && !omit.has(k)) out[k] = stripNode(v[k], map, omit);
+    }
     return out;
   }
   return v;
 }
 
+/** The keys one projection asks to drop: __strip (every pair) plus __s3Omit (pair[0] === "s3" only). */
+export const ownOmit = (projection, pair) => [...(projection?.__strip ?? []), ...(pair[0] === "s3" ? projection?.__s3Omit ?? [] : [])];
+const omitUnion = (a, b, pair) => [...new Set([...ownOmit(a, pair), ...ownOmit(b, pair)])];
+
 /**
- * Spec §6 exclusions: STRIP_KEYS, approval.bind / secret.redact decision rows, and (pair[0] === "s3") the keys in __s3Omit.
- * tool_/op_ ids are renamed tool#1, op#1 ... by order of first appearance, per side: ownership is NOT compared. A corpus whose
- * result depends on which call owns which id must project that ownership explicitly (e.g. {call: "first", tool: "tool#1"}).
- * `omit` overrides the projection's own __s3Omit list (compare passes the union of both sides').
+ * Spec §6 exclusions: STRIP_KEYS (exact names), approval.bind / secret.redact decision rows, and the keys a projection lists in
+ * `__strip: string[]` (any pair) or `__s3Omit: string[]` (pair[0] === "s3" only). compare() takes the union of both sides' lists
+ * and deletes those keys from both sides; both marker keys are dropped. tool_/op_ ids are renamed tool#1, op#1 ... in sorted-key
+ * walk order, per side: ownership is NOT compared. A corpus whose result depends on which call owns which id must project that
+ * ownership explicitly (e.g. {call: "first", tool: "tool#1"}). `omit` overrides the projection's own lists.
  */
 export function strip(projection, pair, omit) {
-  const own = pair[0] === "s3" && Array.isArray(projection?.__s3Omit) ? projection.__s3Omit : [];
-  return stripNode(projection, new Map(), new Set(omit ?? own));
+  return stripNode(projection, new Map(), new Set(omit ?? ownOmit(projection, pair)));
 }
 
 /** JSON with object keys sorted recursively; arrays keep their order. */
@@ -133,41 +142,55 @@ export function canon(v) {
   return JSON.stringify(v) ?? "undefined";
 }
 
-/** Every differing key path between two stripped values (leaf level; a missing side counts as a difference). */
-export function diffPaths(a, b, path = "") {
+/** Every differing key path (as segment arrays) between two stripped values; a missing side counts as a difference. */
+export function diffPaths(a, b, path = []) {
   if (canon(a) === canon(b)) return [];
   const obj = (x) => x && typeof x === "object";
   if (obj(a) && obj(b) && Array.isArray(a) === Array.isArray(b)) {
-    return [...new Set([...Object.keys(a), ...Object.keys(b)])].sort().flatMap((k) => diffPaths(a[k], b[k], `${path}.${k}`));
+    return [...new Set([...Object.keys(a), ...Object.keys(b)])].sort().flatMap((k) => diffPaths(a[k], b[k], [...path, k]));
   }
-  return [path || "."];
+  return [path];
 }
 
-const walkPath = (v, path) => path.split(".").filter(Boolean).reduce((x, k) => x?.[k], v);
-/** Transcript-derived (or corpus-marked private) items never print values: only `transcript#<n>`, the pair and key paths. */
+const walkPath = (v, segs) => segs.reduce((x, k) => x?.[k], v);
+/** Transcript-derived (or corpus-marked private) items never print values: only `transcript#<n>`, the pair and masked key paths. */
 export const isPrivate = (item) => item.private === true || (item.tags ?? []).includes("transcript");
 export function itemLabel(item) {
   if (!isPrivate(item)) return redactForPrint(item.key);
   return /^transcript#\d+$/.test(String(item.key)) ? item.key : `transcript#${item.n ?? "?"}`;
 }
 
-/** null when the stripped projections are equal (key order ignored); else { key, pair, diff, paths } (diff is values for ordinary items, paths only for private ones). */
+const masks = new WeakMap();
+/** A path segment is printed only if identifier-shaped or an array index; any other becomes <k1>, <k2> ... numbered per item. */
+export function maskSeg(item, seg) {
+  if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(seg) || /^\d+$/.test(seg)) return seg;
+  if (!masks.has(item)) masks.set(item, new Map());
+  const m = masks.get(item);
+  if (!m.has(seg)) m.set(seg, `<k${m.size + 1}>`);
+  return m.get(seg);
+}
+const maskPath = (item, segs) => segs.map((g) => maskSeg(item, String(g))).join(".") || ".";
+
+/** null when the stripped projections are equal (key order ignored); else { key, pair, diff, paths } (diff: values for ordinary items, masked paths for private ones; paths are raw, internal). */
 export function compare(corpus, item, a, b, pair) {
-  const omit = pair[0] === "s3" ? [...new Set([...(a?.__s3Omit ?? []), ...(b?.__s3Omit ?? [])])] : [];
+  const omit = omitUnion(a, b, pair);
   const [sa, sb] = [strip(a, pair, omit), strip(b, pair, omit)];
-  const paths = diffPaths(sa, sb);
-  if (paths.length === 0) return null;
-  const diff = isPrivate(item) ? paths.join(", ")
-    : paths.slice(0, 3).map((p) => `${p}: ${redactForPrint(canon(walkPath(sa, p)))} != ${redactForPrint(canon(walkPath(sb, p)))}`).join("; ");
-  return { key: item.key, pair, diff, paths };
+  const segs = diffPaths(sa, sb);
+  if (segs.length === 0) return null;
+  const show = (x, g) => redactForPrint(canon(walkPath(x, g)));
+  const diff = isPrivate(item) ? segs.map((g) => maskPath(item, g)).join(", ")
+    : segs.slice(0, 3).map((g) => `${g.join(".") || "."}: ${show(sa, g)} != ${show(sb, g)}`).join("; ");
+  return { key: item.key, pair, diff, paths: segs.map((g) => g.join(".")) };
 }
 
 /** A required new-side fact (spec: "required, not excluded"). False prints a FAIL line and counts toward the exit code via state.requiredFailures. */
 export function requireNew(corpus, item, name, ok, detail = "") {
   if (!ok) {
-    const tail = detail && !isPrivate(item) ? `: ${redactForPrint(detail)}` : "";
-    console.log(`FAIL required [${corpus.name}] ${itemLabel(item)} — ${name}${tail}`);
-    state.requiredFailures.push(`${corpus.name}/${itemLabel(item)}/${name}`);
+    const priv = isPrivate(item);
+    const shown = priv ? name.split(".").map((g) => maskSeg(item, g)).join(".") : name;
+    const tail = detail && !priv ? `: ${redactForPrint(detail)}` : "";
+    console.log(`FAIL required [${corpus.name}] ${itemLabel(item)} — ${shown}${tail}`);
+    state.requiredFailures.push(`${corpus.name}/${itemLabel(item)}/${shown}`);
   }
   return ok;
 }
