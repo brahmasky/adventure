@@ -582,3 +582,6 @@ Rules Claude writes for itself after corrections. Review at session start.
 - **A provenance check keyed on one compiled file (`core-worker.js`) refuses a genuine previous build when the slice never touches that file.** Name the file the slice changes.
 - **A refusal code proved at the store and the gateway is not proved at intake.** A new denial code must also join the poll loop's handled-denial set, or one tap wedges the loop (the 2026-10-01 incident shape). Test new refusals through `runTelegramPollOnce`.
 - **A mutation reviewer and an implementer in the same worktree contaminate each other's runs.** Run them sequentially.
+
+## 2026-10-29 — A rebuild of main's dist without a kickstart is not a resting state
+The clean-room merge rebuilt `dist/` (new `omp/shell-wrapper.sh`) and the kickstart was left "owed". The running daemon (started 10-26) checked the new wrapper against its in-memory hash; the 08:00 AI 日报 schedule failed closed (`wrapper_mismatch`, run `run_236e6d77…`). Rule: after a green merge + rebuild, kickstart in the same breath (Paco authorised it, AGENTS.md §Autonomy Tier A), after checking parked/kill and in-flight runs; verify pid and boot migrations.
