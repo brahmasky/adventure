@@ -6,7 +6,7 @@ import { join } from "node:path";
 
 export const DISTS = { new: null, s3: null, s4a: null }; // filled by the CLI
 export const CORPORA = [];                               // filled by the CLI from scripts/stage4-corpora/*.mjs
-export const state = { requiredFailures: [], seq: 0 };
+export const state = { requiredFailures: [], seq: 0, debug: false };
 
 // export name -> compiled module (relative to a dist). A dist that lacks the module or the export yields null.
 const EXPORTS = {
@@ -155,10 +155,18 @@ export function diffPaths(a, b, path = []) {
 const walkPath = (v, segs) => segs.reduce((x, k) => x?.[k], v);
 /** Transcript-derived (or corpus-marked private) items never print values: only `transcript#<n>`, the pair and masked key paths. */
 export const isPrivate = (item) => item.private === true || (item.tags ?? []).includes("transcript");
-export function itemLabel(item) {
-  if (!isPrivate(item)) return redactForPrint(item.key);
-  return /^transcript#\d+$/.test(String(item.key)) ? item.key : `transcript#${item.n ?? "?"}`;
+const indexes = new WeakMap();
+const TAG_RE = /^[a-z][a-z0-9_-]*$/;
+/** Gives each item its 1-based index within the corpus (the only name a private item ever prints) and checks every tag is safe to print. */
+export function indexItems(corpus, items) {
+  items.forEach((item, i) => {
+    indexes.set(item, i + 1);
+    (item.tags ?? []).forEach((t, j) => {
+      if (typeof t !== "string" || !TAG_RE.test(t)) throw new SetupError(`corpus ${corpus.name}: item ${i + 1} tag ${j + 1} is not /^[a-z][a-z0-9_-]*$/`);
+    });
+  });
 }
+export const itemLabel = (item) => (isPrivate(item) ? `transcript#${indexes.get(item) ?? "?"}` : redactForPrint(item.key));
 
 const masks = new WeakMap();
 /** A path segment is printed only if identifier-shaped or an array index; any other becomes <k1>, <k2> ... numbered per item. */
@@ -178,19 +186,21 @@ export function compare(corpus, item, a, b, pair) {
   const segs = diffPaths(sa, sb);
   if (segs.length === 0) return null;
   const show = (x, g) => redactForPrint(canon(walkPath(x, g)));
-  const diff = isPrivate(item) ? segs.map((g) => maskPath(item, g)).join(", ")
+  const priv = isPrivate(item);
+  const diff = priv ? (state.debug ? segs.map((g) => maskPath(item, g)).join(", ") : `${segs.length} differing path(s)`)
     : segs.slice(0, 3).map((g) => `${g.join(".") || "."}: ${show(sa, g)} != ${show(sb, g)}`).join("; ");
   return { key: item.key, pair, diff, paths: segs.map((g) => g.join(".")) };
 }
 
 /** A required new-side fact (spec: "required, not excluded"). False prints a FAIL line and counts toward the exit code via state.requiredFailures. */
 export function requireNew(corpus, item, name, ok, detail = "") {
-  if (!ok) {
-    const priv = isPrivate(item);
-    const shown = priv ? name.split(".").map((g) => maskSeg(item, g)).join(".") : name;
-    const tail = detail && !priv ? `: ${redactForPrint(detail)}` : "";
-    console.log(`FAIL required [${corpus.name}] ${itemLabel(item)} — ${shown}${tail}`);
-    state.requiredFailures.push(`${corpus.name}/${itemLabel(item)}/${shown}`);
-  }
+  if (ok) return ok;
+  const priv = isPrivate(item);
+  const k = (ordinals.get(item) ?? 0) + 1;
+  ordinals.set(item, k);
+  const what = priv ? `required fact #${k} failed${state.debug ? ` (${name.split(".").map((g) => maskSeg(item, g)).join(".")})` : ""}` : `${name}${detail ? `: ${redactForPrint(detail)}` : ""}`;
+  console.log(`FAIL required [${corpus.name}] ${itemLabel(item)}${priv ? ":" : " —"} ${what}`);
+  state.requiredFailures.push(`${corpus.name}/${itemLabel(item)}/${priv ? k : name}`);
   return ok;
 }
+const ordinals = new WeakMap();

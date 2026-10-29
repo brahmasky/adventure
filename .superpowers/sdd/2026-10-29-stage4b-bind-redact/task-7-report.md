@@ -137,3 +137,44 @@ exit 0
  M scripts/stage4-diff-lib.mjs
 ```
 Note: the first run of this proof exposed a missing ownOmit import in the runner (unexpected-error path withheld it, exit 2); fixed before the output above.
+
+## Fix round 3
+Applied: private/transcript items print no data-derived text (mismatch: 'transcript#<i> <pair>: N differing path(s)', i = harness index from indexItems; requireNew: 'required fact #k failed', never the name; masked detail only under --debug); tags validated at load (SetupError names corpus, item and tag position only); self-test skips any path with a key starting '__'. maskSeg is kept: --debug still uses it.
+typecheck clean; npm test: 409 files, 5788 tests passed (single run, no timeouts).
+
+### Verbatim proof output
+```
+=== 1 stub exit 0
+s3  old build: worktree HEAD 548cb87b18d0, registry.js a655b40789a7 (new ddc53eaa67c1)
+s4a old build: worktree HEAD 1451a6611538, capability-runner.js f32eee96c108 (new 6d5daed74f91)
+PASS stub: 3 items (plain=3); pairs 6; differences 0; required failures 0; self-test ok
+
+STAGE 4 DIFFERENTIAL: PASS
+exit 0
+=== 2 private item: mismatch + requireNew with identifier-shaped SENSITIVE_TRANSCRIPT_TEXT key/name
+s3  old build: worktree HEAD 548cb87b18d0, registry.js a655b40789a7 (new ddc53eaa67c1)
+s4a old build: worktree HEAD 1451a6611538, capability-runner.js f32eee96c108 (new 6d5daed74f91)
+FAIL [zprobe] transcript#1 s4a→new — 1 differing path(s)
+FAIL required [zprobe] transcript#1: required fact #1 failed
+FAIL zprobe: 1 items (transcript=1); pairs 1; differences 1; required failures 1; self-test ok
+
+STAGE 4 DIFFERENTIAL: FAIL
+exit 1
+occurrences of SENSITIVE in output: 0
+=== 3 bad tag
+s3  old build: worktree HEAD 548cb87b18d0, registry.js a655b40789a7 (new ddc53eaa67c1)
+s4a old build: worktree HEAD 1451a6611538, capability-runner.js f32eee96c108 (new 6d5daed74f91)
+differential setup error: corpus zprobe: item 1 tag 1 is not /^[a-z][a-z0-9_-]*$/
+exit 2
+occurrences of SENSITIVE in output: 0
+=== 4 first string leaf under __strip
+s3  old build: worktree HEAD 548cb87b18d0, registry.js a655b40789a7 (new ddc53eaa67c1)
+s4a old build: worktree HEAD 1451a6611538, capability-runner.js f32eee96c108 (new 6d5daed74f91)
+PASS zprobe: 1 items (plain=1); pairs 1; differences 0; required failures 0; self-test ok
+
+STAGE 4 DIFFERENTIAL: PASS
+exit 0
+stub.mjs
+ M scripts/check-ladder-stage4-differential.mjs
+ M scripts/stage4-diff-lib.mjs
+```

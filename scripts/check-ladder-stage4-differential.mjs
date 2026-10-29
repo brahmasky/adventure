@@ -9,7 +9,7 @@ import { existsSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 import { verifyOldDist } from "./old-dist-provenance.mjs";
-import { CORPORA, SetupError, DISTS, STRIP_KEYS, cleanupTemp, compare, initTemp, itemLabel, isPrivate, loadDist, mkTemp, ownOmit, redactForPrint, state } from "./stage4-diff-lib.mjs";
+import { CORPORA, SetupError, DISTS, STRIP_KEYS, cleanupTemp, compare, indexItems, initTemp, itemLabel, isPrivate, loadDist, mkTemp, ownOmit, redactForPrint, state } from "./stage4-diff-lib.mjs";
 
 const NEW_DIST = resolve(new URL("../dist", import.meta.url).pathname);
 const CORPORA_DIR = resolve(new URL("./stage4-corpora", import.meta.url).pathname);
@@ -63,7 +63,7 @@ function coverage(corpus, items, counts) {
 }
 
 /** True when no key on the path is a stripped one (so a change there must reach compare). */
-const survives = (path) => !path.some((k) => STRIP_KEYS.has(k) || k === "__s3Omit");
+const survives = (path) => !path.some((k) => STRIP_KEYS.has(k) || k.startsWith("__"));
 
 /** First string leaf of the RAW projection whose path survives strip (ids are skipped: they are renamed, not compared). */
 function firstSurvivingString(v, path = [], omit = []) {
@@ -122,6 +122,7 @@ async function runCorpus(corpus, ctx) {
   const reqBefore = state.requiredFailures.length;
   const res = { diffs: 0, compared: 0, selfTest: true, coverage: [] };
   const items = await corpus.load(ctx);
+  indexItems(corpus, items);
   const counts = tagCounts(items);
   res.coverage = coverage(corpus, items, counts);
   if (res.coverage.length) console.log(`FAIL coverage [${corpus.name}]: ${res.coverage.join("; ")}`);
@@ -139,6 +140,7 @@ async function runCorpus(corpus, ctx) {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
+  state.debug = args.debug;
   verifyProvenance(args);
   Object.assign(DISTS, { new: NEW_DIST, s3: args.old3, s4a: args.old4a });
   const corpora = await loadCorpora(args.only);
