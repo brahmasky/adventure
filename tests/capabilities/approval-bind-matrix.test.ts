@@ -113,7 +113,8 @@ function bindFixture(o: { source?: "user" | "schedule"; approver?: Identity; sin
   };
 }
 
-const OK: CapabilityResult = { status: "succeeded", output_ref: "inline:shell_external", output_hash: expect.any(String), output: { ran: true } };
+// output_hash is sha256 of the canonical adapter output {"ran":true}, a literal (checked with `printf '{"ran":true}' | shasum -a 256`), not computed here
+const OK: CapabilityResult = { status: "succeeded", output_ref: "inline:shell_external", output_hash: "f9065a2a435e2e3efc39980ff31f9ea29ba970e700e9ecf6a0645f82a18f7bda", output: { ran: true } };
 const refused = (code: string): CapabilityResult => ({ status: "failed", error_ref: `${code}: ${code}` });
 /** Every refusal: the result bytes are the code twice, the policy row is the only decision recorded, and the caller reads the row back itself. */
 async function expectRefused(f: ReturnType<typeof bindFixture>, id: string, code: string, rowState = "approved"): Promise<void> {
@@ -132,7 +133,7 @@ describe("approval consume binding through CapabilityRunner + the omp sink (toda
     const f = bindFixture();
     const id = f.approvedRow();
     const { result, added } = await f.execute(id);
-    expect(result).toEqual({ status: "succeeded", output_ref: "inline:shell_external", output_hash: expect.any(String), output: { ran: true } });
+    expect(result).toEqual(OK);
     expect(f.state(id)).toBe("consumed");
     expect(added).toEqual([]);
     expect(f.recorded).toEqual(POLICY_ROWS);
@@ -395,7 +396,7 @@ describe("run-level sink through CoreWorker.executeRun (force_gated_capability) 
     const f = await runLevelFixture();
     expect(f.decisions()).toBe(0); // control: even the first (parking) call recorded nothing
     const done = await f.resume();
-    expect(done).toEqual({ status: "completed", run_id: f.run_id, report_path: join(f.root, "runs", f.run_id, "report.md"), report_hash: expect.any(String) });
+    expect(done).toEqual({ status: "completed", run_id: f.run_id, report_path: join(f.root, "runs", f.run_id, "report.md"), report_hash: expect.stringMatching(/^[0-9a-f]{64}$/) }); // the report body embeds the random run id, so its hash is not a fixed literal
     expect(f.approvalState()).toBe("consumed");
     expect(f.store.getLedgerEvents(f.run_id).map((e) => e.event_type)).toEqual([
       "run_created", "contract_attached", "worker_lease_acquired", "approval_requested", "notification_queued", "worker_lease_released", "approval_resolved", "notification_queued",
