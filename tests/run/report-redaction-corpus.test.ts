@@ -1,9 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createSecretBroker, REDACTED_PLACEHOLDER } from "../../src/config/secret-broker.js";
 import { stableHash } from "../../src/domain/canonical.js";
 import { buildTypedTaskEvent } from "../../src/domain/types.js";
 import { Gateway } from "../../src/gateway/gateway.js";
 import { RunStore } from "../../src/run/run-store.js";
+import { storeOptionsFor } from "../../src/run/store-options.js";
 
 // Stage 4B Task 1: the report redaction classes, pinned BEFORE redact-then-truncate moves behind `secret.redact` (spec §2.2 R1, §6 item 5).
 // The live corpus has zero `«redacted»` rows, so it cannot tell a working redactor from a no-op: these are seeded, with fake values.
@@ -37,7 +38,7 @@ function fakeBroker() {
 let seq = 0;
 /** A store (firewall armed when `redact` is given) plus a Telegram-targeted run per call of `newRun`. */
 function reportFixture(redact?: (s: string) => string) {
-  const store = RunStore.openInMemory(redact ? { redact, decisionRecorder: () => ({ record: () => null }) } : {});
+  const store = RunStore.openInMemory(redact ? storeOptionsFor(fakeBroker(), {}) : {}); // armed = the boot wiring: redactor + real recorder
   const newRun = (): string => {
     const n = ++seq;
     const r = new Gateway(store).intake(buildTypedTaskEvent({ source: "telegram", type: "turn", program: "turn", goal: "hello", requested_by: { kind: "user", id: "paco" },
@@ -234,5 +235,81 @@ describe("enqueue outcomes — the return value and the rows around the redacted
     db(f.store).exec("ROLLBACK");
     expect(outbox(f)).toEqual([]);
     expect(chatTurns(f)).toEqual([]);
+  });
+});
+
+// Stage 4B Task 5: each masking attempt is one secret.redact row; the stored bytes above did not move.
+interface RedactRow { verdict: string; reason_code: string | null; run_id: string | null; tool_call_id: string | null; rung: string; armed_mode: string }
+const rows = (f: Fixture): RedactRow[] =>
+  db(f.store).prepare(`SELECT verdict, reason_code, run_id, tool_call_id, rung, armed_mode FROM decisions WHERE entry_id = 'secret.redact' ORDER BY created_at, decision_id`).all() as unknown as RedactRow[];
+const SEAM: Record<Wrapper, string> = { final: "final_report", failure: "failure_report", evolution: "evolution_report" };
+const masked = (w: Wrapper, run_id: string): RedactRow => ({ verdict: "masked", reason_code: SEAM[w], run_id, tool_call_id: null, rung: "rule", armed_mode: "on" });
+
+describe.each(WRAPPERS)("%s report — secret.redact decision rows", (w) => {
+  const redact = fakeBroker().redact;
+  it("a masked report writes exactly one `masked` row: reason = the seam, run_id set, tool_call_id null, and no text", () => {
+    const f = reportFixture(redact);
+    send(f, w, `answer ${V.kimi} end`);
+    expect(rows(f)).toEqual([masked(w, f.run_id)]);
+    expect(scan(f.store, MASKABLE)).toEqual({});
+  });
+  it("a secret masked at the cut boundary still counts: one row", () => {
+    const f = reportFixture(redact);
+    send(f, w, pad(3895) + V.kimi + " tail");
+    expect(rows(f)).toEqual([masked(w, f.run_id)]);
+  });
+  it("clean text, a below-minimum value and an over-long clean report write no row (clean is the default verdict)", () => {
+    const f = reportFixture(redact);
+    send(f, w, `the short ${SHORT} value`);
+    const g = reportFixture(redact);
+    send(g, w, pad(3901));
+    expect(rows(f)).toEqual([]);
+    expect(rows(g)).toEqual([]);
+  });
+  it("firewall off: no redactor, no decision, same stored bytes", () => {
+    const f = reportFixture();
+    send(f, w, `leak ${V.kimi}`);
+    expect(rows(f)).toEqual([]);
+  });
+  it("a duplicate re-enqueue is a second attempt: a second row, still one outbox row", () => {
+    const f = reportFixture(redact);
+    const text = `answer ${V.kimi}`;
+    send(f, w, text);
+    expect(send(f, w, text).status).toBe("duplicate");
+    expect(rows(f)).toEqual([masked(w, f.run_id), masked(w, f.run_id)]);
+    expect(outbox(f)).toHaveLength(1);
+  });
+  it("a conflict adds a row for its masked text and returns the same conflict", () => {
+    const f = reportFixture(redact);
+    send(f, w, `first ${V.kimi}`);
+    expect(send(f, w, `second ${V.gemini}`)).toEqual({ status: "conflict", error: "NOTIFICATION_IDEMPOTENCY_CONFLICT" });
+    expect(rows(f)).toHaveLength(2);
+  });
+  it("an insert failure keeps the attempt's row and throws the same error", () => {
+    const f = reportFixture(redact);
+    db(f.store).exec(`CREATE TRIGGER t BEFORE INSERT ON notification_outbox BEGIN SELECT RAISE(ABORT,'boom'); END`);
+    expect(() => send(f, w, `report ${V.kimi}`)).toThrow(/boom/);
+    expect(rows(f)).toEqual([masked(w, f.run_id)]);
+    expect(outbox(f)).toEqual([]);
+  });
+  it("inside a caller's transaction a ROLLBACK removes the decision row with the outbox row", () => {
+    const f = reportFixture(redact);
+    db(f.store).exec("BEGIN");
+    send(f, w, `report ${V.kimi}`);
+    db(f.store).exec("ROLLBACK");
+    expect(rows(f)).toEqual([]);
+    expect(outbox(f)).toEqual([]);
+  });
+  it("recursion pin: a recorder that cannot insert opens one decision_record_failed incident and the masked report is still enqueued", () => {
+    const f = reportFixture(redact);
+    db(f.store).exec(`CREATE TRIGGER r BEFORE INSERT ON decisions WHEN NEW.entry_id = 'secret.redact' BEGIN SELECT RAISE(ABORT,'nope'); END`);
+    const err = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const expected = `answer ${MARK} end`;
+      pinRow(f, w, send(f, w, `answer ${V.kimi} end`), expected);
+      const open = f.store.listOpenIncidents().filter((i) => i.kind === "decision_record_failed");
+      expect(open.map((i) => i.subject)).toEqual(["secret.redact"]);
+      expect(rows(f)).toEqual([]);
+    } finally { err.mockRestore(); }
   });
 });

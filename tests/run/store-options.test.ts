@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createSecretBroker } from "../../src/config/secret-broker.js";
+import { buildTypedTaskEvent } from "../../src/domain/types.js";
+import { Gateway } from "../../src/gateway/gateway.js";
 import { decideSync } from "../../src/decisions/decide.js";
 import { APPROVAL_BIND } from "../../src/decisions/entries/approval-bind.js";
 import type { DecisionRecorder } from "../../src/decisions/types.js";
@@ -22,13 +24,15 @@ describe("storeOptionsFor", () => {
     expect(typeof o.decisionRecorder).toBe("function");
   });
 
-  it("a store opened with it holds a recorder that writes a decisions row", () => {
-    const store = RunStore.openInMemory(storeOptionsFor(undefined, {}));
-    const recorder = (store as unknown as { decisionRecorder: DecisionRecorder }).decisionRecorder;
-    const result = decideSync(APPROVAL_BIND, { ok: true }, { run_id: null, recorder, tool_call_id: "tc_store_options" });
-    expect(result.decisionId).not.toBeNull();
-    const db = (store as unknown as { db: { prepare(q: string): { get(): { n: number } } } }).db;
-    expect(db.prepare(`SELECT COUNT(*) AS n FROM decisions WHERE entry_id = 'approval.bind'`).get().n).toBe(1);
+  it("a store opened with it writes one secret.redact masked row for a masked final report (the boot path's wiring)", () => {
+    const secret = "sk-kimiFAKEvalue0123456789abcdefABCDEF";
+    const store = RunStore.openInMemory(storeOptionsFor(createSecretBroker({ KIMI_API_KEY: secret } as NodeJS.ProcessEnv), {}));
+    const r = new Gateway(store).intake(buildTypedTaskEvent({ source: "telegram", type: "turn", program: "turn", goal: "hello", requested_by: { kind: "user", id: "paco" },
+      notify: { kind: "telegram", chat_id: "555" }, idempotency_key: "so:1", source_reference: "telegram:update:1:message:1" }));
+    if (!r.ok) throw new Error(JSON.stringify(r));
+    store.enqueueFinalReportNotification(r.run_id, { text: `key ${secret}`, report_path: "/tmp/r.md" });
+    const db = (store as unknown as { db: { prepare(q: string): { all(): Array<{ verdict: string; reason_code: string }> } } }).db;
+    expect(db.prepare(`SELECT verdict, reason_code FROM decisions WHERE entry_id = 'secret.redact'`).all()).toEqual([{ verdict: "masked", reason_code: "final_report" }]);
     store.close();
   });
 
