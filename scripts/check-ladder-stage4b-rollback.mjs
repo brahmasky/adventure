@@ -9,6 +9,8 @@
 // row), refuse review_ok outcomes naming the two new ids. PASS = nothing throws, no row count drops, and A and F differ only in the
 // stated way: A's /status carries `· approval.bind` and `· secret.redact` count lines (F's carry neither), and every other count line
 // equals F's plus the seed's own per-entry delta (computed from the rows the seed wrote, asserted, never excluded).
+// Usage: --old-dist <dist at 1451a66> [--live-db <path>] [--debug]. --debug prints an unexpected error's message and stack, which
+// can hold rendered or stored private text: it may print private content. Without it a run error prints a fixed label only.
 // Exit 0 PASS · 1 FAIL · 2 setup error. The live DB is read only by VACUUM INTO; every write goes to the copies, which live under
 // /tmp/hg-s4d-* and are removed on every exit path (pass, FAIL, throw, SIGINT, SIGTERM). The broker is synthetic. Rendered
 // text may hold Paco's data: nothing here prints it, only line names, entry ids, counts and PASS/FAIL.
@@ -23,7 +25,8 @@ import { verifyOldDist } from "./old-dist-provenance.mjs";
 const DIST = resolve(new URL("../dist", import.meta.url).pathname);
 const argv = process.argv.slice(2);
 const arg = (k) => { const i = argv.indexOf(k); return i >= 0 ? argv[i + 1] : undefined; };
-if (!DIST.includes("/.worktrees/")) throw new Error(`run from the worktree (this dist is ${DIST}); never build in the main checkout`);
+const DEBUG = argv.includes("--debug");
+let phase = "setup";
 
 const CHAT = "-4310"; // not Paco's chat; nothing here sends
 const NEW_IDS = ["approval.bind", "secret.redact"];
@@ -32,6 +35,7 @@ const COUNT_RE = /^· ([a-z_]+(?:\.[a-z_]+)+) (\d+) — /;
 const STAMP = Date.now() * 1000;
 const failures = [];
 const msg = (e) => (e instanceof Error ? e.message.split("\n")[0] : String(e));
+const keyOf = (...v) => v.join("|");
 const check = (name, ok, detail = "") => { console.log(`${ok ? "PASS" : "FAIL"} ${name}${detail ? ` — ${detail}` : ""}`); if (!ok) failures.push(name); };
 const nextN = (() => { let n = 0; return () => STAMP + ++n; })();
 const sleepSync = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
@@ -96,11 +100,18 @@ function maskedReport(d, store) {
   return { status: res.status, payload: row ? JSON.parse(row.payload_json) : null, state: row?.state ?? null, chat, redactRows };
 }
 
-// ---- the 4A seed shape (copied from check-standing-rollback.mjs seedRows, minus the tick probe) ----
+// ---- the 4A seed shape (copied from check-standing-rollback.mjs seedRows + quietOtherSchedules: importing that script runs its main) ----
 const CMD = "curl -s -m 10 -c cj.txt -b cj.txt -o /dev/null -w '%{http_code}' -X POST -d a=1 https://httpbin.org/post";
+const SCHEDULE_SPEC = { chat_id: CHAT, goal: "rollback 4B: standing seed", spec_json: '{"kind":"daily","at":"11:00"}', tz: "Australia/Sydney" };
+/** The old tick takes at most three due schedules and the live copy holds older ones: on the COPY only, every other enabled schedule is disabled. */
+function quietOtherSchedules(store, schedule_id) {
+  store.db.prepare(`UPDATE scheduled_tasks SET state = 'disabled' WHERE state = 'enabled' AND schedule_id <> ?`).run(schedule_id);
+}
+const dueSchedule = (store) => store.addScheduledTask({ ...SCHEDULE_SPEC, next_run_at: new Date(Date.now() - 60_000).toISOString(), now: new Date().toISOString() }).schedule_id;
 function seedStanding(d, s, root) {
   const now = new Date().toISOString();
-  const schedule_id = s.addScheduledTask({ chat_id: CHAT, goal: "rollback 4B: standing seed", spec_json: '{"kind":"daily","at":"11:00"}', tz: "Australia/Sydney", next_run_at: "2099-01-01T00:00:00.000Z", now }).schedule_id;
+  const schedule_id = dueSchedule(s); // due: the old build's tick must fire it
+  quietOtherSchedules(s, schedule_id);
   const r = new d.Gateway(s, undefined, undefined, undefined, undefined, { dataDir: root }).intake(d.buildTypedTaskEvent({ source: "schedule", type: "turn", program: "turn", goal: "rollback 4B check-in",
     requested_by: { kind: "schedule", id: schedule_id }, notify: { kind: "telegram", chat_id: CHAT }, idempotency_key: `schedule:${schedule_id}:rb4b:${nextN()}`, source_reference: `scheduled_tasks.${schedule_id}` }));
   if (!r.ok || !r.run_id) throw new Error("standing seed intake failed");
@@ -112,7 +123,7 @@ function seedStanding(d, s, root) {
     const row = s.insertStandingApprovalForTest({ schedule_id, chat_id: CHAT, action_fingerprint: fp, state: "standing", move_id, credited_runs_json: '["rb-r1","rb-r2","rb-r3"]',
       approval_ids_json: '["rb-a1","rb-a2","rb-a3","rb-a4"]', expires_at: new Date(Date.now() + 30 * 86_400_000).toISOString(), created_at: now });
     for (const [type, payload] of [["standing_streak", { run_id: run, approval_id: "rb-a1", streak: 1 }], ["standing_sealing", { run_id: run, tool_call_id: "rb-tc4", approval_id: "rb-a4" }],
-      ["standing_sealed", { run_id: run, tool_call_id: "rb-tc4", exit_code: 0 }], ["standing_granted", { move_id }]]) s.appendStandingLedgerEvent(type, { standing_id: row.standing_id, ...payload }, run);
+      ["standing_sealed", { run_id: run, tool_call_id: "rb-tc4", exit_code: 0 }], ["standing_granted", { move_id }], ["standing_ended", { reason: "stale" }]]) s.appendStandingLedgerEvent(type, { standing_id: row.standing_id, ...payload }, run);
     s.insertDecision({ entry_id: "tool.policy", entry_version: 3, run_id: run, tool_call_id: "rb-tc5", stage: "pre_tool", rung: "rule", verdict: "allowed", p: null, reason_code: "standing", fallback_reason: null, fallback_rung: null, armed_mode: "on", latency_ms: 0 });
     return { standing_id: row.standing_id };
   });
@@ -123,7 +134,7 @@ function seedStanding(d, s, root) {
   if (!s.finishRun({ run_id: run, expected_worker_id: "rollback-4b", next: "completed", report_ref: "runs/rollback-check-4b.md", duration_ms: 1, tool_calls: 1 })) throw new Error("the standing seed run did not complete");
 }
 
-/** Step 1, this build on A: one bind row (a real resume), one redact row (a masked report), the 4A standing rows. Returns the seed's own per-entry delta. */
+/** Step 1, this build on A: one bind row (a real resume), one redact row (a masked report), the 4A standing rows. Returns the seed's own per-entry and per-decider delta. */
 async function seedA(dNew, path, root) {
   const s = openStore(dNew, path);
   const t0 = new Date().toISOString();
@@ -132,13 +143,34 @@ async function seedA(dNew, path, root) {
   const rep = maskedReport(dNew, s);
   await yieldLoop();
   seedStanding(dNew, s, root);
-  const rows = s.db.prepare(`SELECT entry_id, COUNT(*) AS n FROM decisions WHERE created_at >= ? GROUP BY entry_id`).all(t0);
+  const rows = s.db.prepare(`SELECT decision_id, entry_id, rung FROM decisions WHERE created_at >= ?`).all(t0);
+  const ids = new Set(rows.map((r) => r.decision_id));
+  const seedRows = s.listRecentDecisions(500).filter((r) => ids.has(r.decision_id)); // newest first, as the list renders them
   closeStore(s);
-  return { delta: Object.fromEntries(rows.map((r) => [r.entry_id, r.n])), bindRows: bind.bind.length, redactRows: rep.redactRows, standing: counts(path).standing_approvals };
+  const delta = {}; const rungs = {};
+  for (const r of rows) { delta[r.entry_id] = (delta[r.entry_id] ?? 0) + 1; ((rungs[r.entry_id] ??= {})[r.rung] = (rungs[r.entry_id][r.rung] ?? 0) + 1); }
+  return { delta, rungs, seedRows, seedKeys: rows.map((r) => keyOf(r.decision_id)), bindRows: bind.bind.length, redactRows: rep.redactRows, standing: counts(path).standing_approvals };
+}
+
+// ---- primary-key identity of the tracked tables ----
+function keysOfFull(path) {
+  const db = new DatabaseSync(path, { readOnly: true });
+  try {
+    return Object.fromEntries(TABLES.map((t) => {
+      const pk = db.prepare(`PRAGMA table_info(${t})`).all().filter((c) => c.pk > 0).sort((a, b) => a.pk - b.pk).map((c) => c.name);
+      const cols = pk.length ? pk : ["rowid"];
+      return [t, new Set(db.prepare(`SELECT ${cols.map((c) => `"${c}"`).join(", ")} FROM ${t}`).all().map((r) => cols.map((c) => String(r[c])).join("|")))];
+    }));
+  } finally { db.close(); }
+}
+const lost = (before, after) => Object.fromEntries(TABLES.map((t) => [t, [...before[t]].filter((k) => !after[t].has(k)).length]));
+function identity(name, before, after) {
+  const l = lost(before, after);
+  check(`row identity: every key of ${name} still present`, TABLES.every((t) => l[t] === 0), TABLES.map((t) => `${t} ${before[t].size} keys, ${l[t]} lost`).join(" · "));
 }
 
 // ---- rendering and comparison ----
-const norm = (l) => l.replace(/\b[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\b/g, "<id>").replace(/\b(run|tool|op|dec)_[0-9A-Za-z-]+/g, "<id>").replace(/ run [0-9a-f]{8}\b/g, " run <id>")
+const norm = (l) => l.replace(/\b\d\d-\d\d \d\d:\d\d\b/g, "<ts>").replace(/\b[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\b/g, "<id>").replace(/\b(run|tool|op|dec)_[0-9A-Za-z-]+/g, "<id>").replace(/ run [0-9a-f]{8}\b/g, " run <id>")
   .replace(/\d{4}-\d\d-\d\d(?:T[\d:.]+Z?)?/g, "<ts>").replace(/\b\d\d:\d\d\b/g, "<ts>");
 /** The three renderers 1451a66 and this build share: the /status block, the digest, /status decisions. `now` is shared by A and F. */
 function render(m, store, now) {
@@ -146,36 +178,61 @@ function render(m, store, now) {
   const dg = m.buildDecisionDigest(store, now, { ...process.env, HOUGE_IMPROVE_ENABLED: "false" });
   return { status: m.decisionStatusLines(store, now), digest: dg ? dg.text.split("\n") : [], list: m.decisionListText(store, process.env).split("\n") };
 }
-const countMap = (lines) => new Map(lines.flatMap((l) => { const m = COUNT_RE.exec(l); return m ? [[m[1], Number(m[2])]] : []; }));
-/** A's /status against F's: the two new-id lines are the stated difference; every other count line is F's plus the seed's delta; the rest equal. */
-function cmpStatus(a, f, delta) {
+const RUNGS = ["rule", "system_one", "model", "paco", "fail"];
+const SUFFIX = " (final, failure and evolution reports only)";
+/** One count line as countLines (digest.ts) prints it, from a rung -> n map. 1451a66 prints no suffix; this build adds one to secret.redact (suffix = true). */
+function fmtCount(id, m, label, suffix = false) {
+  const known = RUNGS.filter((k) => m.has(k)).map((k) => `${label(k)} ${m.get(k)}`);
+  const other = [...m.keys()].filter((k) => !RUNGS.includes(k)).sort().map((k) => `${k} ${m.get(k)}`);
+  return `· ${id} ${[...m.values()].reduce((a, b) => a + b, 0)} — ${[...known, ...other].join(" · ")}${suffix && id === "secret.redact" ? SUFFIX : ""}`;
+}
+/** A count line parsed back to id -> (rung -> n). */
+function parseCount(line, label) {
+  const m = /^· (\S+) \d+ — (.*?)(?: \(final, failure and evolution reports only\))?$/.exec(line);
+  const byLabel = new Map(RUNGS.map((k) => [label(k), k]));
+  return [m[1], new Map(m[2].split(" · ").map((part) => { const [lab, n] = [part.slice(0, part.lastIndexOf(" ")), Number(part.slice(part.lastIndexOf(" ") + 1))]; return [byLabel.get(lab) ?? lab, n]; }))];
+}
+const countLinesOf = (lines) => lines.filter((l) => COUNT_RE.test(l));
+/** A's /status against F's. Non-count lines equal; each count line is built from F's line plus the seed's per-decider delta and compared whole (breakdown, suffix and all). */
+function cmpStatus(a, f, rungs, label) {
   const bad = [];
-  const [ca, cf] = [countMap(a), countMap(f)];
   const [oa, of] = [a.filter((l) => !COUNT_RE.test(l)).map(norm), f.filter((l) => !COUNT_RE.test(l)).map(norm)];
   if (JSON.stringify(oa) !== JSON.stringify(of)) bad.push(`non-count lines differ (A ${oa.length}, F ${of.length})`);
-  for (const id of NEW_IDS) {
-    if (ca.get(id) !== delta[id] || cf.has(id)) bad.push(`${id}: A ${ca.get(id) ?? "absent"} (expected ${delta[id] ?? 0}), F ${cf.get(id) ?? "absent"} (expected absent)`);
+  const base = new Map(countLinesOf(f).map((l) => parseCount(l, label)));
+  for (const id of NEW_IDS) if (base.has(id)) bad.push(`${id}: F carries a line`);
+  for (const [id, byRung] of Object.entries(rungs)) {
+    const m = base.get(id) ?? new Map();
+    for (const [k, n] of Object.entries(byRung)) m.set(k, (m.get(k) ?? 0) + n);
+    base.set(id, m);
   }
-  for (const id of new Set([...ca.keys(), ...cf.keys()])) {
-    if (NEW_IDS.includes(id)) continue;
-    const want = (cf.get(id) ?? 0) + (delta[id] ?? 0);
-    if ((ca.get(id) ?? 0) !== want) bad.push(`${id}: A ${ca.get(id) ?? 0}, expected ${want} (F ${cf.get(id) ?? 0} + seed ${delta[id] ?? 0})`);
+  const want = [...base.entries()].sort(([x], [y]) => x.localeCompare(y)).map(([id, m]) => fmtCount(id, m, label));
+  const got = countLinesOf(a);
+  const [gm, wm] = [new Map(got.map((l) => [COUNT_RE.exec(l)[1], l])), new Map(want.map((l) => [COUNT_RE.exec(l)[1], l]))];
+  for (const id of new Set([...gm.keys(), ...wm.keys()])) {
+    if (gm.get(id) !== wm.get(id)) bad.push(`${id}: A total ${COUNT_RE.exec(gm.get(id) ?? "")?.[2] ?? "absent"}, expected ${COUNT_RE.exec(wm.get(id) ?? "")?.[2] ?? "absent"}${gm.has(id) && wm.has(id) ? " (breakdown or suffix differs)" : ""}`);
   }
+  if (JSON.stringify(got.map((l) => COUNT_RE.exec(l)[1])) !== JSON.stringify(want.map((l) => COUNT_RE.exec(l)[1]))) bad.push("count line order differs");
   return bad;
 }
 function cmpDigest(a, f) { const [x, y] = [a.map(norm), f.map(norm)]; return JSON.stringify(x) === JSON.stringify(y) ? [] : [`digest lines differ (A ${x.length}, F ${y.length})`]; }
-/** The recent-decisions list holds the newest 10 rows: the seed's rows displace F's older ones, so entries the seed touched are dropped from both, and A's rest must open F's. */
-function cmpList(a, f, delta) {
-  const touched = new Set([...Object.keys(delta), ...NEW_IDS]);
-  const keep = (l) => ![...touched].some((id) => l.includes(` · ${id} · `));
-  const [x, y] = [a.filter(keep).map(norm), f.filter(keep).map(norm)];
-  return x.length > 0 && JSON.stringify(x) === JSON.stringify(y.slice(0, x.length)) ? [] : [`recent-decisions list: A's ${x.length} untouched lines do not open F's ${y.length}`];
+/** The line the list prints for a row, in normalised form (status-view.ts recentLine). */
+const listLine = (r, label) => `<ts> · ${r.entry_id} · ${label(r.rung)} → ${r.verdict} · p ${r.p === null ? "–" : r.p.toFixed(2)} · run ${r.run_id ? "<id>" : "–"}`;
+/** The newest-10 list, whole: the old build's own rows (newest), then the seed's rows, then F's older rows, cut at 10. A dropped, reordered or changed row differs. */
+function cmpList(a, f, seedRows, oldRows, label) {
+  const [head, ...frows] = f.map(norm);
+  const mine = oldRows.map((r) => listLine(r, label));
+  const want = [head, ...mine, ...seedRows.map((r) => listLine(r, label)), ...frows.slice(mine.length)].slice(0, 1 + 10);
+  const got = a.map(norm);
+  if (JSON.stringify(frows.slice(0, mine.length)) !== JSON.stringify(mine)) return ["recent-decisions list: F's newest rows are not the old build's own rows"];
+  const at = got.findIndex((l, i) => l !== want[i]);
+  return got.length === want.length && at < 0 ? [] : [`recent-decisions list: A has ${got.length - 1} rows, expected ${want.length - 1}; first difference at row ${at < 0 ? "end" : at}`];
 }
-function cmpRenders(tag, ra, rf, delta) {
-  const bad = [...cmpStatus(ra.status, rf.status, delta), ...cmpDigest(ra.digest, rf.digest), ...cmpList(ra.list, rf.list, delta)];
+function cmpRenders(tag, ra, rf, seed, oldRows, label) {
+  const bad = [...cmpStatus(ra.status, rf.status, seed.rungs, label), ...cmpDigest(ra.digest, rf.digest), ...cmpList(ra.list, rf.list, seed.seedRows, oldRows, label)];
   const seen = NEW_IDS.map((id) => `${id} ${countMap(ra.status).get(id) ?? 0}`).join(" · ");
-  check(`A vs F at ${tag}: the new-id lines are the only difference, other count lines = F + seed delta`, bad.length === 0, bad.length ? bad.join("; ") : `A carries [${seen}], F carries none; ${countMap(ra.status).size} count lines compared; digest ${ra.digest.length} lines equal`);
+  check(`A vs F at ${tag}: full /status count lines = F + seed delta per decider, digest equal, recent list = expected newest 10`, bad.length === 0, bad.length ? bad.join("; ") : `A carries [${seen}], F carries none; ${countLinesOf(ra.status).length} count lines compared whole; digest ${ra.digest.length} lines equal; list ${ra.list.length - 1} rows`);
 }
+const countMap = (lines) => new Map(lines.flatMap((l) => { const m = COUNT_RE.exec(l); return m ? [[m[1], Number(m[2])]] : []; }));
 
 // ---- step 2: the previous build (1451a66) on one copy ----
 function resolveApproval(d, store) {
@@ -192,12 +249,21 @@ function resolveApproval(d, store) {
 function outcomeProbes(d, store) {
   const decision_id = store.db.prepare(`SELECT decision_id FROM decisions WHERE entry_id NOT IN ('approval.bind','secret.redact') ORDER BY rowid LIMIT 1`).get()?.decision_id;
   if (!decision_id) throw new Error("the copy holds no decision row to attach an outcome to");
-  const probe = (value) => { try { return `inserted:${store.insertDecisionOutcome({ decision_id, signal: "review_ok", value, source: "code" }).inserted}`; } catch (e) { return `${e?.constructor?.name}:${msg(e)}`; } };
+  const probe = (value) => { try { return `inserted:${store.insertDecisionOutcome({ decision_id, signal: "review_ok", value, source: "code" }).inserted}`; } catch (e) { return e?.constructor?.name === "OutcomeRejected" ? `OutcomeRejected:${msg(e)}` : "error"; } };
   return Object.fromEntries([...NEW_IDS, "tool.policy"].map((v) => [v, probe(v)]));
 }
-async function oldSteps(dOld, mOld, path, label, now, hook) {
+/** The 4A tick probe: the old build's schedule tick fires the due schedule (stub worker: nothing runs). */
+async function tickProbe(d, sched, store, root) {
+  const submitted = [];
+  const worker = { executeRun: async () => ({}), submitTurn: (run_id) => { submitted.push(run_id); return true; } };
+  const r = await sched.maybeFireScheduledTasks({ store, gateway: new d.Gateway(store, undefined, undefined, undefined, undefined, { dataDir: root }), worker, now: new Date().toISOString(), env: { ...process.env, HOUGE_SCHEDULER_ENABLED: "1" } });
+  return { fired: r.fired, failures: r.failures, submitted: submitted.length };
+}
+async function oldSteps(ctx, path, label, now, tOld, hooks) {
+  const { dOld, mOld } = ctx;
   const s = openStore(dOld, path); // 1: the old build opens the copy; its migrations ran
   const r = { before: render(mOld, s, now) };
+  if (label === "F") quietOtherSchedules(s, dueSchedule(s)); // F gets the same due schedule A's seed made, so the tick sees the same thing on both
   r.resolve = resolveApproval(dOld, s);
   await yieldLoop();
   const res = await resume(dOld, s);
@@ -205,19 +271,23 @@ async function oldSteps(dOld, mOld, path, label, now, hook) {
   r.report = maskedReport(dOld, s);
   await yieldLoop();
   r.outcomes = outcomeProbes(dOld, s);
-  if (hook) hook(s, label);
+  r.tick = await tickProbe(dOld, ctx.sched, s, ctx.root);
+  hooks.onF && label === "F" && hooks.onF(s);
   r.after = render(mOld, s, now);
+  r.oldRows = s.listRecentDecisions(10).filter((x) => x.created_at >= tOld);
+  hooks.tamper?.(r.after, label);
   closeStore(s);
   return r;
 }
 /** Every step-2 result other than the rendered text, ids and timestamps stripped, must be equal on A and F, and the old build must have written no new-id row. */
 function cmpSteps(a, f) {
-  const view = (r) => JSON.stringify(scrubIds({ resolve: { status: r.resolve.status, ok: r.resolve.ok, state: r.resolve.state }, resume: r.resume, report: r.report, outcomes: r.outcomes }));
+  const view = (r) => JSON.stringify(scrubIds({ resolve: { status: r.resolve.status, ok: r.resolve.ok, state: r.resolve.state }, resume: r.resume, report: r.report, outcomes: r.outcomes, tick: r.tick }));
   const refused = (r) => NEW_IDS.every((id) => /^OutcomeRejected:value not allowed for review_ok$/.test(r.outcomes[id])) && r.outcomes["tool.policy"] === "inserted:true";
   const quiet = (r) => r.resume.newBind === 0 && r.report.redactRows === 0 && r.report.payload?.text?.includes("«redacted»") === true;
-  check("1451a66 step results equal on A and F (resolve, resume, masked report, outcome refusals)", view(a) === view(f), `resolve ${a.resolve.status} · resume bind rows ${a.resume.newBind}/${f.resume.newBind} · redact rows ${a.report.redactRows}/${f.report.redactRows}`);
+  check("1451a66 step results equal on A and F (resolve, resume, masked report, outcome refusals, schedule tick)", view(a) === view(f), `resolve ${a.resolve.status} · resume bind rows ${a.resume.newBind}/${f.resume.newBind} · redact rows ${a.report.redactRows}/${f.report.redactRows} · tick fired ${a.tick.fired}/${f.tick.fired}`);
   check("1451a66 refuses review_ok naming approval.bind and secret.redact (and accepts a valid id) on both copies", refused(a) && refused(f), `A ${JSON.stringify(a.outcomes)} · F ${JSON.stringify(f.outcomes)}`.replace(/"/g, ""));
   check("1451a66 writes no bind row on a resume and no redact row on a masked report (A and F)", quiet(a) && quiet(f));
+  check("1451a66's schedule tick fires the due schedule on A (standing row present) and on F", a.tick.fired === 1 && f.tick.fired === 1 && a.tick.failures === 0 && f.tick.failures === 0);
 }
 const noDrop = (name, before, after) => {
   const dropped = TABLES.filter((t) => after[t] < before[t]);
@@ -225,8 +295,9 @@ const noDrop = (name, before, after) => {
 };
 
 async function setup() {
-  const oldDist = resolve(arg("--old-dist") ?? "");
-  if (!arg("--old-dist")) throw new SetupError("--old-dist is required");
+  if (!DIST.includes("/.worktrees/")) throw new SetupError(`run from the worktree (this dist is ${DIST}); never build in the main checkout`);
+  if (!arg("--old-dist")) throw new SetupError("usage: --old-dist <dist at 1451a66> [--live-db <path>] [--debug] (--debug may print private content)");
+  const oldDist = resolve(arg("--old-dist"));
   const liveDb = resolve(arg("--live-db") ?? join(dirname(resolve(process.env.HOUGE_ENV_FILE ?? join(process.cwd(), ".env"))), "houge.sqlite"));
   const prov = verifyOldDist(oldDist, DIST, "1451a66", "capabilities/capability-runner.js");
   console.log(`old build: worktree HEAD ${prov.head.slice(0, 7)}, capability-runner.js ${prov.oldHash} (new ${prov.newHash})`);
@@ -240,44 +311,60 @@ async function setup() {
   for (const k of ["RunStore", "CapabilityRunner", "Gateway", "createToolApprovalSink"]) if (!dOld[k]) throw new SetupError(`${k} missing from the old dist`);
   const mods = async (dist) => ({ ...(await import(join(dist, "decisions/digest.js"))), ...(await import(join(dist, "decisions/status-view.js"))) });
   const [mNew, mOld] = [await mods(DIST), await mods(oldDist)];
+  const sched = await import(join(oldDist, "run/schedule-tick.js"));
   const A = join(mkTemp("copy-A"), "houge.sqlite"); const F = join(mkTemp("copy-F"), "houge.sqlite");
   vacuumInto(liveDb, A);
   vacuumInto(A, F); // F is cut from the untouched A, so a daemon write between two live reads cannot separate them
-  return { dNew, dOld, mNew, mOld, A, F, root };
+  return { dNew, dOld, mNew, mOld, sched, A, F, root };
 }
 
-/** The whole run after setup. `hooks.afterOld(path, label)` is the seam the self-test plants use; production passes none. */
+/** Stage-boundary checks after the old build: counts, growth, identity, and the A-vs-F renders. */
+function afterOldChecks(ctx, seed, snap, a, f) {
+  const { A, F } = ctx;
+  const [a2, f1] = [counts(A), counts(F)];
+  noDrop("A, seed -> after 1451a66", snap.a1, a2);
+  noDrop("F, before -> after 1451a66", snap.f0, f1);
+  const grew = (x, y) => TABLES.map((t) => y[t] - x[t]);
+  check("1451a66 added exactly the same rows to A and F (per table growth equal)", JSON.stringify(grew(snap.a1, a2)) === JSON.stringify(grew(snap.f0, f1)),
+    `growth ${TABLES.map((t, i) => `${t} ${grew(snap.a1, a2)[i]}/${grew(snap.f0, f1)[i]}`).join(" · ")} (A/F)`);
+  const [ka2, kf1] = [keysOfFull(A), keysOfFull(F)];
+  identity("A at the seed boundary after 1451a66", snap.ka1, ka2);
+  identity("F at its start after 1451a66", snap.kf0, kf1);
+  const label = ctx.mNew.deciderLabel;
+  cmpRenders("start of the 1451a66 steps", a.before, f.before, seed, [], label);
+  cmpRenders("end of the 1451a66 steps", a.after, f.after, seed, f.oldRows, label);
+  cmpSteps(a, f);
+  return { a2, ka2 };
+}
+
+/** The whole run after setup. `hooks` are the seams the self-test plants use (afterOld, onF, tamper); production passes none. */
 async function run(ctx, hooks = {}) {
-  const { dNew, dOld, mOld, mNew, A, F, root } = ctx;
-  const f0 = counts(F);
-  const seed = await seedA(dNew, A, root);
-  await yieldLoop();
-  const a1 = counts(A);
+  const { dNew, A, F, root } = ctx;
+  phase = "snapshot F"; const snap = { f0: counts(F), kf0: keysOfFull(F) };
+  phase = "seed A"; const seed = await seedA(dNew, A, root);
+  Object.assign(snap, { a1: counts(A), ka1: keysOfFull(A) });
   check("this build seeded A: one approval.bind row (real resume), one secret.redact row (masked report), the 4A standing rows",
     seed.bindRows === 1 && seed.redactRows === 1 && seed.delta["approval.bind"] === 1 && seed.delta["secret.redact"] === 1 && seed.standing >= 1 && entryCount(F, "approval.bind") === 0,
-    `seed delta by entry ${JSON.stringify(seed.delta).replace(/"/g, "")} · standing_approvals ${seed.standing}`);
-  // one `now` for every render on both copies, ahead of every row this run writes (a window ending at the start would never see the old build's own rows)
-  const now = new Date(Date.now() + 10 * 60_000).toISOString();
-  const a = await oldSteps(dOld, mOld, A, "A", now, null);
+    `seed delta by entry ${JSON.stringify(seed.delta).replace(/"/g, "")} · by decider ${JSON.stringify(seed.rungs).replace(/"/g, "")} · standing_approvals ${seed.standing}`);
   await yieldLoop();
-  const f = await oldSteps(dOld, mOld, F, "F", now, hooks.onF);
+  const now = new Date(Date.now() + 10 * 60_000).toISOString(); // ahead of every row this run writes
+  const tOld = new Date().toISOString();
+  phase = "1451a66 on A"; const a = await oldSteps(ctx, A, "A", now, tOld, hooks);
+  await yieldLoop();
+  phase = "1451a66 on F"; const f = await oldSteps(ctx, F, "F", now, tOld, hooks);
   check("1451a66 opened both copies (migrations ran) and every step completed without throwing", true);
   hooks.afterOld?.(A);
-  const [a2, f1] = [counts(A), counts(F)];
-  noDrop("A, seed -> after 1451a66", a1, a2);
-  noDrop("F, before -> after 1451a66", f0, f1);
-  const grew = (x, y) => TABLES.map((t) => y[t] - x[t]);
-  check("1451a66 added exactly the same rows to A and F (per table growth equal, so no row was removed or added behind a step)", JSON.stringify(grew(a1, a2)) === JSON.stringify(grew(f0, f1)),
-    `growth ${TABLES.map((t, i) => `${t} ${grew(a1, a2)[i]}/${grew(f0, f1)[i]}`).join(" · ")} (A/F)`);
-  cmpRenders("start of the 1451a66 steps", a.before, f.before, seed.delta);
-  cmpRenders("end of the 1451a66 steps", a.after, f.after, seed.delta);
-  cmpSteps(a, f);
-  const s = openStore(dNew, A);
-  const re = render(mNew, s, now);
+  phase = "compare"; const { a2, ka2 } = afterOldChecks(ctx, seed, snap, a, f);
+  phase = "reopen A"; const s = openStore(dNew, A);
+  const re = ctx.mNew.decisionStatusLines(s, now);
   closeStore(s);
-  const a3 = counts(A);
-  noDrop("A, after 1451a66 -> reopened by this build", a2, a3);
-  check("this build reopens A: both new ids still counted, rows intact", countMap(re.status).get("approval.bind") === 1 && countMap(re.status).get("secret.redact") === 1
+  noDrop("A, after 1451a66 -> reopened by this build", a2, counts(A));
+  const ka3 = keysOfFull(A);
+  identity("A after 1451a66 (to the reopen by this build)", ka2, ka3);
+  const survived = seed.seedKeys.every((k) => ka3.decisions.has(k)) && [...snap.ka1.standing_approvals].length >= 1 && [...snap.ka1.standing_approvals].every((k) => ka3.standing_approvals.has(k));
+  check("the seeded rows (bind, redact, tool.policy decisions and the standing row) survive to the final reopen", survived, `${seed.seedKeys.length} seeded decisions, ${snap.ka1.standing_approvals.size} standing row(s)`);
+  const exact = NEW_IDS.every((id) => re.includes(fmtCount(id, new Map(Object.entries(seed.rungs[id])), ctx.mNew.deciderLabel, true)));
+  check("this build reopens A: both new-id /status lines are exact (decider breakdown, secret.redact suffix), rows intact", exact
     && entryCount(A, "approval.bind") === 1 && entryCount(A, "secret.redact") === 1, `bind ${entryCount(A, "approval.bind")} · redact ${entryCount(A, "secret.redact")}`);
 }
 
@@ -287,11 +374,15 @@ for (const [sig, code] of [["SIGINT", 130], ["SIGTERM", 143]]) process.on(sig, (
 export async function main(hooks = {}) {
   try {
     const ctx = await setup();
-    try { await run(ctx, hooks); } catch (e) { check("the rollback run completed without throwing", false, msg(e)); }
+    try { await run(ctx, hooks); } catch (e) {
+      check(`run — unexpected error at ${phase} (detail withheld; rerun with --debug)`, false);
+      if (DEBUG) console.error(e instanceof Error ? e.stack ?? e.message : String(e));
+    }
     console.log(failures.length === 0 ? "\nROLLBACK CHECK: PASS" : `\nROLLBACK CHECK: FAIL\n  - ${failures.join("\n  - ")}`);
     process.exitCode = failures.length === 0 ? 0 : 1;
   } catch (e) {
-    console.error(`setup error: ${e instanceof SetupError || /--old-dist|provenance|not the previous/.test(msg(e)) ? msg(e) : "withheld"}`);
+    console.error(`setup error: ${e instanceof SetupError || /--old-dist|provenance|not the previous/.test(msg(e)) ? msg(e) : "withheld (rerun with --debug)"}`);
+    if (DEBUG) console.error(e instanceof Error ? e.stack ?? e.message : String(e));
     process.exitCode = 2;
   } finally {
     for (const h of handles.splice(0)) closeStore(h);
