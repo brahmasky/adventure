@@ -380,6 +380,25 @@ describe("approval consume binding through CapabilityRunner + the omp sink (toda
     expect(f.state(id)).toBe("approved");
   });
 
+  it("recorder fault: a bind row that cannot insert opens one decision_record_failed incident, and the consume still succeeds with an identical result", async () => {
+    const f = bindFixture();
+    const id = f.approvedRow();
+    rawDb(f.store).exec(`CREATE TRIGGER b BEFORE INSERT ON decisions WHEN NEW.entry_id = 'approval.bind' BEGIN SELECT RAISE(ABORT,'nope'); END`);
+    const err = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const result = await f.runner.execute({
+        run_id: f.run_id, requester: f.requester, approved_approval_id: id, contract: contract(), capability: "shell_external", input: INPUT,
+        budget: new BudgetLedger(contract().budget), budget_reserved: true, recorder: storeRecorder(f.store), tool_call_id: "tc_run", action_summary: "HTTP write"
+      });
+      expect(result).toEqual(OK);
+      expect(f.state(id)).toBe("consumed");
+      expect(f.bindRows()).toEqual([]);
+      f.assertWholeTable({ verdict: "requires_approval", reason_code: "gated_side_effect", tool_call_id: "tc_run" }, []);
+      const open = f.store.listOpenIncidents().filter((i) => i.kind === "decision_record_failed");
+      expect(open.map((i) => i.subject)).toEqual(["approval.bind"]);
+    } finally { err.mockRestore(); }
+  });
+
   it("a first call that asks (no approved_approval_id) never reaches the consume: zero bind rows", async () => {
     const f = bindFixture();
     const result = await f.runner.execute({
