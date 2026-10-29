@@ -34,6 +34,22 @@ function buildTurn(d, store, run_id, claim) {
     setAwaitingApproval: () => undefined, postureOk: () => null, judge: PASS_JUDGE };
 }
 
+/**
+ * Positive evidence that the bridge ran its decision path on a call whose default verdict leaves no row. The bridge builds its own
+ * storeRecorder(deps.store) inline (no factory to wrap), and the recorder's only store read before its default-verdict filter is
+ * latestDecisionVerdict for tool.policy: so a spy on the store the bridge holds sees every call that reached the runner's (command)
+ * or the gate's (path) tool.policy decision, i.e. had already passed summaryFor's classification / the tool.path decision.
+ */
+function probed(store, seam) {
+  return new Proxy(store, { get(t, k) {
+    const v = Reflect.get(t, k, t);
+    if (k !== "latestDecisionVerdict") return typeof v === "function" ? v.bind(t) : v;
+    return (run, call, entry) => { if (call) seam.reached.set(call, new Set([...(seam.reached.get(call) ?? []), entry])); return v.call(t, run, call, entry); };
+  } });
+}
+/** True when the call reached the entry's recorder stage (see probed). */
+export const reachedPolicy = (seam, toolCallId) => seam.reached.get(toolCallId)?.has("tool.policy") === true;
+
 /** One seam per dist object (reused across items and corpora; ids never repeat), built on first use. */
 export function seamFor(d, name) {
   if (seams.has(d)) return seams.get(d);
@@ -46,8 +62,9 @@ export function seamFor(d, name) {
   const turn = buildTurn(d, store, intake.run_id, claim);
   const decls = d.loadToolDeclarations(d.TOOL_DECLS_DIR);
   if (!decls.ok) throw new Error(`seam tool declarations: ${decls.error}`);
-  const handle = d.createBridgeHandler({ store, cfg: d.resolveOmpConfig({}), ctx: { ...ROOTS }, decls: decls.decls, env: {}, turnEnvelopeActions: ENVELOPE, activeTurn: () => turn });
-  const seam = { d, store, handle, run_id: intake.run_id, n: 0 };
+  const seam = { d, store, run_id: intake.run_id, n: 0, reached: new Map(), hook: null };
+  const handle = d.createBridgeHandler({ store: probed(store, seam), cfg: d.resolveOmpConfig({}), ctx: { ...ROOTS }, decls: decls.decls, env: {}, turnEnvelopeActions: ENVELOPE, activeTurn: () => turn });
+  seam.handle = handle;
   seams.set(d, seam);
   return seam;
 }
@@ -83,7 +100,7 @@ export async function bashCall(d, name, command) {
   if (approvalId) { seam.store.resolveToolApprovalForTest(approvalId, "denied"); d.toolApprovalWaiters.resolve(approvalId, "denied"); }
   const out = await done;
   return { asked: approvalId !== null, label, outcome: out.e ? "threw" : out.r.isError ? "error" : "ok", result: out.e ? null : out.r.isError ? out.r.content : "ok",
-    row: rowsFor(seam, "tool.shell_class", id) };
+    row: rowsFor(seam, "tool.shell_class", id), reached: reachedPolicy(seam, id) };
 }
 
 /** A built-in read/write gate through the bridge: the handler's answer (decision + reason) and the tool.path rows. */
@@ -91,5 +108,32 @@ export async function gateCall(d, name, tool, input) {
   const seam = seamFor(d, name);
   const id = `s4d-${++seam.n}`;
   const answer = await seam.handle({ id: `r${seam.n}`, kind: "gate", tool, input, toolCallId: id });
-  return { answer, row: rowsFor(seam, "tool.path", id) };
+  return { answer, row: rowsFor(seam, "tool.path", id), reached: reachedPolicy(seam, id) };
+}
+
+/** Starts (once per dist) a real bridge socket on the seam's handler and installs the dist's real policy hook on a fake pi. */
+async function hookFor(seam, name) {
+  if (seam.hook) return seam.hook;
+  const d = seam.d;
+  const sock = join(mkTemp(`sock-${name}`), "b.sock");
+  const token = `s4d-${name}`;
+  const hook = { sock, token, sent: null, handlers: new Map() };
+  await d.BridgeServer.listen(sock, token, (req) => { if (req.kind === "gate") hook.sent = req.input; return seam.handle(req); });
+  await d.hougePolicy({ on: (ev, fn) => hook.handlers.set(ev, fn) });
+  seam.hook = hook;
+  return hook;
+}
+
+/**
+ * A built-in tool call through the dist's REAL policy hook (extension houge-policy: pathsRefusal, gateInput, editTargets), over a
+ * real bridge socket into the real handler. Returns what the hook sent to the bridge (the derived targets), the hook's verdict, and the rows.
+ */
+export async function hookCall(d, name, tool, input) {
+  const seam = seamFor(d, name);
+  const hook = await hookFor(seam, name);
+  Object.assign(process.env, { HOUGE_BRIDGE_SOCK: hook.sock, HOUGE_BRIDGE_TOKEN: hook.token });
+  const id = `s4d-${++seam.n}`;
+  hook.sent = null;
+  const verdict = await hook.handlers.get("tool_call")({ toolName: tool, toolCallId: id, input });
+  return { sent: hook.sent, verdict: verdict ?? { allow: true }, row: rowsFor(seam, "tool.path", id), reached: reachedPolicy(seam, id) };
 }

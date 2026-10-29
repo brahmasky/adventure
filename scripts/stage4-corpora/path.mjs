@@ -3,9 +3,9 @@
 // tool.path decision row. Bases: s3 = 548cb87 (targets, answers), s4a = 1451a66 (rows). All paths resolve against fixed synthetic roots
 // (ROOTS in scripts/stage4-bridge-seam.mjs), so absolute targets compare byte for byte across dists.
 // Item sources: table (tests/omp/gate-path.test.ts), one synthetic item per gateTargets branch (gate-path.ts:25-66; tags below),
-// protected (every path src/omp/protected-paths.ts names, plus a child of each), transcript (live omp read/write/edit inputs, private).
+// protected (every path src/omp/protected-paths.ts names, plus a child of each), transcript (live omp read/write/edit calls, private; also driven through the dist's real policy hook, scripts/stage4-bridge-seam.mjs hookCall).
 import { join } from "node:path";
-import { ROOTS, gateCall } from "../stage4-bridge-seam.mjs";
+import { ROOTS, gateCall, hookCall } from "../stage4-bridge-seam.mjs";
 import { SetupError } from "../stage4-diff-lib.mjs";
 import { REPO_ROOT, testLiterals, transcriptCalls } from "../stage4-sources.mjs";
 
@@ -49,7 +49,7 @@ function transcriptItems(dir) {
   const seen = new Map();
   for (const c of transcriptCalls(dir, ["read", "write", "edit"])) seen.set(`${c.name}:${JSON.stringify(c.arguments)}`, c);
   if (seen.size !== TRANSCRIPT_INPUTS) throw new SetupError(`transcript read/write/edit inputs: found ${seen.size} distinct, pinned at exactly ${TRANSCRIPT_INPUTS}`);
-  return [...seen.values()].map((c, i) => ({ key: `transcript#${i + 1}`, private: true, tags: ["transcript", `tool_${c.name}`], input: gateInput(c.arguments) }));
+  return [...seen.values()].map((c, i) => ({ key: `transcript#${i + 1}`, private: true, tags: ["transcript", `tool_${c.name}`], input: gateInput(c.arguments), tool: c.name, args: c.arguments }));
 }
 
 const gateInput = (a) => Object.fromEntries(["path", "file_path", "paths"].filter((k) => a[k] !== undefined).map((k) => [k, a[k]]));
@@ -73,7 +73,8 @@ export default {
     const name = distName(d);
     const targets = rawsOf(item.input).map((raw) => d.gateTargets(raw, ROOTS.home, ROOTS.cwd));
     // row: tool.path verdict/reason; 548cb87 records none, so it is omitted on the s3 pair (compared on s4a -> new only)
-    return { targets, read: await gateCall(d, name, "read", item.input), write: await gateCall(d, name, "write", item.input), __s3Omit: ["row"] };
+    const hook = item.tool ? await hookCall(d, name, item.tool, item.args) : null; // transcript items: the dist's real policy hook (edit/patch targets derived there)
+    return { targets, read: await gateCall(d, name, "read", item.input), write: await gateCall(d, name, "write", item.input), hook, __s3Omit: ["row"], __strip: ["reached"] };
   },
   required(d, item, proj) {
     const bad = [];
@@ -82,7 +83,13 @@ export default {
       // a row only for a non-default verdict (record.ts:28; default "allowed"): present iff the gate denied, with that code (a protected_path, or the gate's refusal)
       const denied = proj[side]?.answer?.decision === "deny";
       const row = proj[side]?.row;
+      if (!denied && proj[side]?.reached !== true) bad.push(`${side} allowed gate never reached tool.policy`); // positive evidence: an allowed path leaves no row
       if (denied !== (row !== null) || (denied && (row.length !== 1 || row[0].verdict !== "blocked"))) bad.push(`${side} tool.path row wrong or missing`);
+    }
+    if (item.tool) { // the hook either refused before the bridge, or the bridge left a row / reached tool.policy
+      const h = proj.hook;
+      if (!h || !(h.row !== null || h.reached === true || (h.verdict?.block === true && h.sent === null))) bad.push("hook call left no evidence");
+      if (item.tool === "edit" && h.sent === null && h.verdict?.block !== true) bad.push("edit hook sent nothing");
     }
     if (rawsOf(item.input).length !== proj.targets.length) bad.push("targets missing");
     if (bad.length) throw new Error(bad.join("; "));

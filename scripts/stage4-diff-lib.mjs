@@ -20,7 +20,9 @@ const EXPORTS = {
   TOOL_DECLS_DIR: "omp/tool-decls.js", toolApprovalWaiters: "omp/tool-approval-sink.js",
   // the path corpus's protected-path inventory
   secretPaths: "omp/protected-paths.js", protectedRepoPaths: "omp/protected-paths.js", operationalWriteDeny: "omp/protected-paths.js",
-  writeRoots: "omp/protected-paths.js"
+  writeRoots: "omp/protected-paths.js",
+  // the real policy hook, driven over a real bridge socket (edit/patch targets are derived inside it)
+  BridgeServer: "omp/bridge-server.js", hougePolicy: "omp/extension/houge-policy.js"
 };
 const distCache = new Map();
 

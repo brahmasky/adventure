@@ -66,8 +66,8 @@ export default {
   async project(d, item) {
     if (!d.classifyCommand) throw new Error(`${d.dir} has no classifyCommand`);
     const seam = await bashCall(d, distName(d), item.command);
-    // row: tool.shell_class verdict/reason; 548cb87 records none, so it is omitted on the s3 pair (compared on s4a -> new only)
-    return { pure: d.classifyCommand(item.command), asked: seam.asked, label: seam.label, outcome: seam.outcome, result: seam.result, row: seam.row, __s3Omit: ["row"] };
+    // reached: strip-excluded (an old build need not probe the same stage), asserted on the new side by required; row: tool.shell_class verdict/reason; 548cb87 records none, so it is omitted on the s3 pair (compared on s4a -> new only)
+    return { pure: d.classifyCommand(item.command), asked: seam.asked, label: seam.label, outcome: seam.outcome, result: seam.result, row: seam.row, reached: seam.reached, __s3Omit: ["row"], __strip: ["reached"] };
   },
   required(d, item, proj) {
     const want = d.classifyCommand(item.command);
@@ -77,6 +77,8 @@ export default {
     // the recorder keeps a row only for a non-default verdict (record.ts:28; default "plain"): a plain command leaves none; the label is not a reason code (reasonCodes: []), so the row carries the verdict only
     const row = Array.isArray(proj.row) ? proj.row : [];
     if (want.kind === "plain" ? proj.row !== null : row.length !== 1 || row[0].verdict !== want.kind) bad.push("tool.shell_class row wrong or missing");
+    // positive evidence the decision path ran (a plain command leaves no row): the call reached the runner's tool.policy stage, after summaryFor's classification
+    if (proj.reached !== true) bad.push("call never reached the decision path (no tool.policy probe)");
     if (proj.asked !== (want.kind !== "plain")) bad.push("asked disagrees with the classifier");
     if (proj.asked && proj.label !== want.label) bad.push("card label differs from the classifier label");
     if (bad.length) throw new Error(bad.join("; "));
