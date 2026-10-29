@@ -9,7 +9,7 @@ import { existsSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 import { verifyOldDist } from "./old-dist-provenance.mjs";
-import { CORPORA, DISTS, cleanupTemp, compare, initTemp, loadDist, mkTemp, redactForPrint, state, strip } from "./stage4-diff-lib.mjs";
+import { CORPORA, DISTS, STRIP_KEYS, cleanupTemp, compare, initTemp, itemLabel, isPrivate, loadDist, mkTemp, redactForPrint, state } from "./stage4-diff-lib.mjs";
 
 const NEW_DIST = resolve(new URL("../dist", import.meta.url).pathname);
 const CORPORA_DIR = resolve(new URL("./stage4-corpora", import.meta.url).pathname);
@@ -58,58 +58,71 @@ function coverage(corpus, items, counts) {
   return problems;
 }
 
-/** The planted divergence: one byte appended to the first string field that survives strip; compare must report exactly that item. */
-function selfTest(corpus, item, proj, pair) {
-  const base = strip(proj, pair);
-  const mutated = structuredClone(base);
-  let done = false;
-  const walk = (v) => {
-    for (const k of Object.keys(v)) {
-      if (done) return;
-      if (typeof v[k] === "string") { v[k] += "!"; done = true; } else if (v[k] && typeof v[k] === "object") walk(v[k]);
-    }
-  };
-  walk(mutated);
-  if (!done) return false;
-  const hit = compare(corpus, item, base, mutated, pair);
-  return hit !== null && hit.key === item.key && compare(corpus, item, base, structuredClone(base), pair) === null;
+/** True when no key on the path is a stripped one (so a change there must reach compare). */
+const survives = (path) => !path.some((k) => STRIP_KEYS.has(k) || k === "__s3Omit");
+
+/** First string leaf of the RAW projection whose path survives strip (ids are skipped: they are renamed, not compared). */
+function firstSurvivingString(v, path = [], omit = []) {
+  if (typeof v === "string") return survives(path) && !/\b(tool|op)_[0-9A-Za-z]/.test(v) ? path : null;
+  if (!v || typeof v !== "object" || (!Array.isArray(v) && v.entry_id && ["approval.bind", "secret.redact"].includes(v.entry_id))) return null;
+  for (const k of Object.keys(v)) {
+    if (omit.includes(k) || !survives([k])) continue;
+    const r = firstSurvivingString(v[k], [...path, k], omit);
+    if (r) return r;
+  }
+  return null;
+}
+
+/** The planted divergence: one byte on the RAW new-side projection (before strip); compare must report exactly that key path. */
+function selfTest(corpus, item, rawOld, rawNew, pair) {
+  const path = firstSurvivingString(rawNew, [], rawNew.__s3Omit ?? []);
+  if (!path) return false;
+  const mutated = structuredClone(rawNew);
+  const parent = path.slice(0, -1).reduce((x, k) => x[k], mutated);
+  parent[path.at(-1)] += "!";
+  const hit = compare(corpus, item, rawOld, mutated, pair);
+  return hit !== null && hit.paths.length === 1 && hit.key === item.key;
 }
 
 async function runItem(corpus, item, ctx, res) {
-  let firstNew = null;
+  let first = null;
   for (const pair of pairsOf(corpus, item)) {
     try {
       const [a, b] = [await corpus.project(ctx.dists[pair[0]], item, ctx), await corpus.project(ctx.dists.new, item, ctx)];
-      firstNew ??= { b, a, pair };
+      first ??= { a, b, pair };
       const diff = compare(corpus, item, a, b, pair);
-      if (diff) { res.diffs += 1; console.log(`FAIL [${corpus.name}] ${redactForPrint(diff.key)} ${diff.pair.join("→")} — ${diff.diff}`); }
+      if (diff) { res.diffs += 1; console.log(`FAIL [${corpus.name}] ${itemLabel(item)} ${diff.pair.join("→")} — ${diff.diff}`); }
     } catch (e) {
       res.diffs += 1;
-      console.log(`FAIL [${corpus.name}] ${redactForPrint(item.key)} ${pair.join("→")} — projection threw: ${redactForPrint(e instanceof Error ? e.message : String(e))}`);
+      const why = isPrivate(item) ? "" : `: ${redactForPrint(e instanceof Error ? e.message : String(e))}`;
+      console.log(`FAIL [${corpus.name}] ${itemLabel(item)} ${pair.join("→")} — projection threw${why}`);
     }
     res.compared += 1;
   }
-  if (firstNew && corpus.required) {
-    try { corpus.required(ctx.dists.new, item, firstNew.b, ctx); } catch (e) {
-      res.required += 1; state.requiredFailures.push(`${corpus.name}/${item.key}`);
-      console.log(`FAIL required [${corpus.name}] ${redactForPrint(item.key)} — ${redactForPrint(e instanceof Error ? e.message : String(e))}`);
+  if (first && corpus.required) {
+    try { corpus.required(ctx.dists.new, item, first.b, ctx); } catch (e) {
+      const why = isPrivate(item) ? "" : `: ${redactForPrint(e instanceof Error ? e.message : String(e))}`;
+      state.requiredFailures.push(`${corpus.name}/${itemLabel(item)}`);
+      console.log(`FAIL required [${corpus.name}] ${itemLabel(item)} — required() threw${why}`);
     }
   }
-  return firstNew;
+  return first;
 }
 
 async function runCorpus(corpus, ctx) {
-  const res = { diffs: 0, required: 0, compared: 0, selfTest: true, coverage: [] };
+  const reqBefore = state.requiredFailures.length;
+  const res = { diffs: 0, compared: 0, selfTest: true, coverage: [] };
   const items = await corpus.load(ctx);
   const counts = tagCounts(items);
   res.coverage = coverage(corpus, items, counts);
   if (res.coverage.length) console.log(`FAIL coverage [${corpus.name}]: ${res.coverage.join("; ")}`);
   let first = null;
   for (const item of items) { const r = await runItem(corpus, item, ctx, res); if (r && !first) first = { item, ...r }; }
-  if (first) res.selfTest = selfTest(corpus, first.item, first.b, first.pair);
+  if (first) res.selfTest = selfTest(corpus, first.item, first.a, first.b, first.pair);
   else res.selfTest = false;
   if (!res.selfTest) console.log(`FAIL comparator self-test [${corpus.name}]: a planted one-byte divergence was not reported as exactly its own key`);
-  const ok = !res.coverage.length && !res.diffs && !res.required && res.selfTest;
+  res.required = state.requiredFailures.length - reqBefore;
+  const ok = !res.coverage.length && !res.diffs && res.required === 0 && res.selfTest;
   console.log(`${ok ? "PASS" : "FAIL"} ${corpus.name}: ${items.length} items (${Object.entries(counts).map(([t, n]) => `${t}=${n}`).join(", ")}); pairs ${res.compared}; ` +
     `differences ${res.diffs}; required failures ${res.required}; self-test ${res.selfTest ? "ok" : "FAILED"}`);
   return ok;
@@ -130,5 +143,6 @@ async function main() {
 }
 
 process.on("SIGINT", () => { cleanupTemp(); process.exit(130); });
+process.on("SIGTERM", () => { cleanupTemp(); process.exit(143); });
 main().then((c) => { cleanupTemp(); process.exit(c); },
   (e) => { console.error(`differential setup error: ${e instanceof Error ? e.stack ?? e.message : String(e)}`); cleanupTemp(); process.exit(2); });
