@@ -128,6 +128,7 @@ async function runCorpus(corpus, ctx) {
   if (res.coverage.length) console.log(`FAIL coverage [${corpus.name}]: ${res.coverage.join("; ")}`);
   let first = null;
   for (const item of items) { const r = await runItem(corpus, item, ctx, res); if (r && !first) first = { item, ...r }; }
+  if (corpus.finish) await corpus.finish(ctx, items); // an optional corpus-wide pin; it reports through requireNew
   if (first) res.selfTest = selfTest(corpus, first.item, first.b, first.pair);
   else res.selfTest = false;
   if (!res.selfTest) console.log(`FAIL comparator self-test [${corpus.name}]: a planted one-byte divergence was not reported as exactly its own key`);
