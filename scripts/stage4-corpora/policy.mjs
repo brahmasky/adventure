@@ -8,8 +8,9 @@
 // registry cannot be exported (buildOmpTools is a CoreWorker method needing a claimed run), hence the metas.
 //
 // Dimensions: capability x contract list {allowed, forbidden, neither} x approval_gates {empty, [its level]} x trust_ask {absent, true} x
-// standing {absent, present-but-not-won, present-and-won}. The spec's "coding_agent delegation {allowed, not}" is the list dimension on the
-// coding_agent_cli capability (allowed_actions contains it or not); no other capability has that category.
+// standing {absent, present-but-not-won, present-and-won} x coding_agent delegation {allowed, not}, an independent axis: "allowed" adds
+// `coding_agent_cli` to allowed_actions whatever the capability (as the self-diagnose contract does), "not" leaves it out. For the
+// coding_agent_cli capability itself, list=neither with delegation allowed is therefore an allowed cell (the cross product keeps it).
 // Pairs: standing absent -> s3 and s4a vs new (548cb87's runner has no recorder and no standing, so only the decision and result are compared there:
 // the row keys are __s3Omit); standing present -> s4a only (548cb87 predates standing).
 import { readFileSync } from "node:fs";
@@ -29,7 +30,7 @@ function capabilities(d) {
 
 /** The decision input for one cell. `forbidden` also lists the capability as allowed, the harshest contract shape (forbidden must win). */
 export function inputFor(cap, cell) {
-  const allowed = cell.list === "neither" ? ["other_capability"] : [cap.name];
+  const allowed = [...(cell.list === "neither" ? ["other_capability"] : [cap.name]), ...(cell.deleg ? ["coding_agent_cli"] : [])];
   return { capability: cap.name, category: cap.category, side_effect_level: cap.side_effect_level, risk_level: cap.risk_level,
     allowed_actions: allowed, forbidden_actions: cell.list === "forbidden" ? [cap.name] : [], approval_gates: cell.gate ? [cap.side_effect_level] : [],
     ...(cell.trust ? { trust_ask: true } : {}), ...(cell.standing !== "absent" ? { standing: { standing_id: "sa_matrix" } } : {}) };
@@ -59,19 +60,19 @@ function loadReasonCodes(d) {
   return codes;
 }
 
-const cells = () => LISTS.flatMap((list) => [false, true].flatMap((gate) => [false, true].flatMap((trust) => STANDING.map((standing) => ({ list, gate, trust, standing })))));
-const cellName = (c) => `${c.list}|gate_${c.gate ? "on" : "off"}|trust_${c.trust ? "on" : "off"}|st_${c.standing}`;
+const cells = () => LISTS.flatMap((list) => [false, true].flatMap((gate) => [false, true].flatMap((trust) => [false, true].flatMap((deleg) => STANDING.map((standing) => ({ list, gate, trust, deleg, standing }))))));
+const cellName = (c) => `${c.list}|gate_${c.gate ? "on" : "off"}|trust_${c.trust ? "on" : "off"}|deleg_${c.deleg ? "on" : "off"}|st_${c.standing}`;
 
 export default {
   name: "policy",
   pairs: (item) => (item.cell.standing === "absent" ? [["s3", "new"], ["s4a", "new"]] : [["s4a", "new"]]),
-  min: { items: 21 * 36, branches: [] },
+  min: { items: 21 * 72, branches: [] },
   async load(ctx) {
     const d = ctx.dists.new;
     const codes = loadReasonCodes(d);
-    this.min.branches = [...codes, "list_allowed", "list_forbidden", "list_neither", "st_absent", "st_mismatch", "st_won", "gate_on", "gate_off", "trust_on", "trust_off", "cat_tool", "cat_coding_agent_cli"];
+    this.min.branches = [...codes, "list_allowed", "list_forbidden", "list_neither", "st_absent", "st_mismatch", "st_won", "gate_on", "gate_off", "trust_on", "trust_off", "cat_tool", "cat_coding_agent_cli", "deleg_on", "deleg_off"];
     return capabilities(d).flatMap((cap) => cells().map((cell) => ({ key: `${cap.name}|${cellName(cell)}`, cap, cell,
-      tags: [expectedRow(d, cap, cell).reason_code, `list_${cell.list}`, `st_${cell.standing}`, `gate_${cell.gate ? "on" : "off"}`, `trust_${cell.trust ? "on" : "off"}`, `cat_${cap.category}`] })));
+      tags: [expectedRow(d, cap, cell).reason_code, `list_${cell.list}`, `st_${cell.standing}`, `gate_${cell.gate ? "on" : "off"}`, `trust_${cell.trust ? "on" : "off"}`, `deleg_${cell.deleg ? "on" : "off"}`, `cat_${cap.category}`] })));
   },
   async project(d, item) {
     const input = inputFor(item.cap, item.cell);

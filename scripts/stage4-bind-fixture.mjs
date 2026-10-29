@@ -43,9 +43,9 @@ const DECISION_COLS = "entry_id, tool_call_id, stage, rung, verdict, reason_code
 const UUID_ID = /\b([a-z]+)_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/g;
 
 /** Random uuid ids -> `kind#n` in order of first appearance; the same id gets the same label everywhere, so ownership survives. */
-export function scrubIds(value, roots = []) {
+export function scrubIds(value, roots = [], labels = []) {
   const seen = new Map();
-  const text = roots.reduce((t, r) => t.split(r).join("<root>"), JSON.stringify(value)).replace(UUID_ID, (m, kind) => {
+  const text = [...roots.map((r) => [r, "<root>"]), ...labels].reduce((t, [from, to]) => t.split(from).join(to), JSON.stringify(value)).replace(UUID_ID, (m, kind) => {
     if (!seen.has(m)) seen.set(m, `${kind}#${[...seen.values()].filter((x) => x.startsWith(`${kind}#`)).length + 1}`);
     return seen.get(m);
   });

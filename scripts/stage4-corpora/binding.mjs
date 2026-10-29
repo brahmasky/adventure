@@ -12,9 +12,12 @@ import { INPUT_ONE_BYTE, OTHER, PACO, approvedRow, attempt, bindFixture, dump, o
 import { RUN_LEVEL_CASES, runLevelFixture } from "../stage4-runlevel-fixture.mjs";
 
 const STRIP_HERE = ["sealing_started_at", "denied_until", "ended_at", "first_seen_at", "last_seen_at", "report_hash", "grant_notification_id", "duration_ms"];
-// Run-level only: the fixture's adapter input embeds the random run id and the per-dist temp root, so every hash over it differs per run
-// (the consume outcome is still compared: result, error, approval state). The omp items' hashes are deterministic and stay compared.
-const RUN_LEVEL_HASHES = ["action_fingerprint", "adapter_input_hash", "input_hash", "output_hash"];
+// Run-level hashes. The fixture's adapter input embeds the random run id and the per-dist temp root, so the ORIGINAL action_fingerprint and
+// adapter_input_hash (f.real) differ per run and dist: projectRunLevel relabels exactly those two values wherever they appear, which keeps
+// WHERE they appear compared, while the fixed `deadbeef` values the mismatch cases plant stay compared byte for byte (no key is stripped for them).
+// What remains varying is stripped per item through __strip (RUN_LEVEL_STRIP below), never globally:
+//   output_hash (happy only): the sha256 of the tool output, which carries the report path and run id.
+const RUN_LEVEL_STRIP = { happy: ["output_hash"] };
 const FUTURE = () => new Date(Date.now() + 86_400_000).toISOString();
 const MOVE = { entry_id: "tool.policy", scope: "sa_x", from_rung: "paco", to_rung: "rule", evidence: [], granted_by: "auto", granted_via: "approval.standing", paco_callback_id: null, revocable: true };
 const SCHED = { source: "schedule", approver: PACO };
@@ -108,8 +111,9 @@ async function projectRunLevel(d, item) {
     item.setup(f);
     const done = await f.resume();
     const all = dump(f);
-    const view = scrubIds({ kind: "runlevel", done, approvalState: f.approvalState(), dump: all }, [f.root]);
-    return { ...view, bindTotal: all.decisions.filter((r) => r.entry_id === "approval.bind").length, decisionRows: all.decisions.length, __strip: [...STRIP_HERE, ...RUN_LEVEL_HASHES, "bindTotal"] };
+    const labels = [[f.real.action_fingerprint, "<run-varying fingerprint>"], [f.real.adapter_input_hash, "<run-varying input hash>"]];
+    const view = scrubIds({ kind: "runlevel", done, approvalState: f.approvalState(), dump: all }, [f.root], labels);
+    return { ...view, bindTotal: all.decisions.filter((r) => r.entry_id === "approval.bind").length, decisionRows: all.decisions.length, __strip: [...STRIP_HERE, ...(RUN_LEVEL_STRIP[item.name] ?? []), "bindTotal"] };
   } finally { f.close(); }
 }
 
