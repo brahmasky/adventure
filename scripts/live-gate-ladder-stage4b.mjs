@@ -2,7 +2,8 @@
 // Live gate — decision ladder Stage 4B, approval.bind + secret.redact (spec 2026-10-29 §7; plan Task 11).
 //   From the worktree after `npm run build` THERE (never in the main checkout: the daemon runs its dist/):
 //   HOUGE_ENV_FILE=/Users/xiaochuan/Projects/adventure/.env node scripts/live-gate-ladder-stage4b.mjs \
-//     --old-dist /Users/xiaochuan/Projects/adventure/.worktrees/base-1451a66/dist [--live-db <path>]
+//     --old-dist /Users/xiaochuan/Projects/adventure/.worktrees/base-1451a66/dist [--live-db <path>] [--debug]
+// --debug prints error messages and child-gate detail: may print private content; local diagnosis only. Default prints names and codes only.
 // Eight lines on stdout, each `PASS`/`FAIL <n> <name> — <detail>`; exit 0 only when all eight PASS (1 FAIL, 2 setup error).
 // Everything else goes to stderr, prefixed `# `. No --keep: the live DB is read once, by VACUUM INTO a temp copy; every write goes
 // to copies of that copy under /tmp/hg-s4d-*, which is removed on every exit path (finally, SIGINT, SIGTERM).
@@ -27,6 +28,7 @@ import { verifyOldDist } from "./old-dist-provenance.mjs";
 const DIST = resolve(new URL("../dist", import.meta.url).pathname);
 const REPO = resolve(new URL("..", import.meta.url).pathname);
 const argv = process.argv.slice(2);
+const DEBUG = argv.includes("--debug"); // may print private content; local diagnosis only
 const arg = (k) => { const i = argv.indexOf(k); return i >= 0 ? argv[i + 1] : undefined; };
 if (!DIST.includes("/.worktrees/")) throw new Error(`run from the worktree (this dist is ${DIST}); never build in the main checkout`);
 
@@ -44,9 +46,14 @@ function verdict(n, name, ok, detail) {
   out.push(ok);
   console.log(`${ok ? "PASS" : "FAIL"} ${n} ${name} — ${redactForPrint(detail)}`);
 }
+/** The error's class name plus its code when it has a short one (e.g. `SqliteError ERR_SQLITE_ERROR`); never the message. */
+function errCode(e) {
+  const code = typeof e?.code === "string" && /^[A-Z0-9_]{1,40}$/.test(e.code) ? ` ${e.code}` : "";
+  return `${e instanceof Error ? e.constructor.name : "non-Error"}${code}`;
+}
 /** A line body that returns { ok, detail }; a throw is that line's FAIL (a later line still runs). */
 async function runLine(n, name, fn) {
-  try { const r = await fn(); verdict(n, name, r.ok, r.detail); } catch (e) { verdict(n, name, false, `threw: ${e instanceof Error ? e.message.split("\n")[0] : String(e)}`); }
+  try { const r = await fn(); verdict(n, name, r.ok, r.detail); } catch (e) { verdict(n, name, false, `threw: ${errCode(e)}${DEBUG ? ` — ${e instanceof Error ? e.message.split("\n")[0] : String(e)}` : ""}`); }
 }
 
 // ---- the live-DB copy and the stores opened on copies of it ----
@@ -307,7 +314,7 @@ function runChild(script, args) {
     child.on("close", (status, signal) => {
       clearTimeout(timer); kids.delete(child);
       const lines = text.split("\n");
-      const flagged = lines.filter((l) => /^(FAIL|INCONCLUSIVE|PARTIAL)/.test(l)).slice(0, 3).map((l) => redactForPrint(l));
+      const flagged = lines.filter((l) => /^(FAIL|INCONCLUSIVE|PARTIAL)/.test(l)).slice(0, 3).map((l) => DEBUG ? redactForPrint(l) : l.split(" — ")[0].split(":")[0].slice(0, 60));
       done({ script, status, signal, tally: `${lines.filter((l) => l.startsWith("PASS")).length} PASS/${lines.filter((l) => l.startsWith("FAIL")).length} FAIL`, flagged });
     });
   });
@@ -321,7 +328,7 @@ async function line8(liveDb) {
 // ---- main ----
 async function setup() {
   const oldDist = resolve(arg("--old-dist") ?? "");
-  if (!arg("--old-dist")) throw new SetupError("--old-dist is required");
+  if (!arg("--old-dist")) throw new SetupError("usage: --old-dist <dist at 1451a66> [--live-db <path>] [--debug] (--debug may print private content; local diagnosis only)");
   const liveDb = resolve(arg("--live-db") ?? join(dirname(resolve(process.env.HOUGE_ENV_FILE ?? join(process.cwd(), ".env"))), "houge.sqlite"));
   const prov = verifyOldDist(oldDist, DIST, "1451a66", "capabilities/capability-runner.js");
   note(`old dist ${prov.head.slice(0, 7)} capability-runner.js ${prov.oldHash} != ${prov.newHash}`);
@@ -341,7 +348,7 @@ async function setup() {
   return liveDb;
 }
 function closeAll() { for (const s of G.stores.splice(0)) { try { s.close(); } catch { /* a closed handle is not a finding */ } } }
-for (const sig of ["SIGINT", "SIGTERM"]) process.on(sig, () => { for (const k of kids) k.kill("SIGKILL"); closeAll(); cleanupTemp(); process.exit(sig === "SIGINT" ? 130 : 143); });
+for (const [sig, code] of [["SIGINT", 130], ["SIGTERM", 143]]) process.on(sig, () => { for (const k of kids) k.kill("SIGKILL"); closeAll(); cleanupTemp(); process.exit(code); });
 
 try {
   const liveDb = await setup();
