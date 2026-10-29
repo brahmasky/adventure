@@ -66,8 +66,8 @@ export default {
   async project(d, item) {
     if (!d.classifyCommand) throw new Error(`${d.dir} has no classifyCommand`);
     const seam = await bashCall(d, distName(d), item.command);
-    // reached: strip-excluded (an old build need not probe the same stage), asserted on the new side by required; row: tool.shell_class verdict/reason; 548cb87 records none, so it is omitted on the s3 pair (compared on s4a -> new only)
-    return { pure: d.classifyCommand(item.command), asked: seam.asked, label: seam.label, outcome: seam.outcome, result: seam.result, row: seam.row, reached: seam.reached, __s3Omit: ["row"], __strip: ["reached"] };
+    // reached: omitted on the s3 pair (548cb87 does not probe the same stage), compared on s4a -> new, asserted on the new side by required; row: tool.shell_class verdict/reason; 548cb87 records none, so it is omitted on the s3 pair (compared on s4a -> new only)
+    return { pure: d.classifyCommand(item.command), asked: seam.asked, label: seam.label, outcome: seam.outcome, result: seam.result, row: seam.row, reached: seam.reached, __s3Omit: ["row", "reached"] };
   },
   required(d, item, proj) {
     const want = d.classifyCommand(item.command);

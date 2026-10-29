@@ -6,6 +6,11 @@ import { join } from "node:path";
 
 export const DISTS = { new: null, s3: null, s4a: null }; // filled by the CLI
 export const CORPORA = [];                               // filled by the CLI from scripts/stage4-corpora/*.mjs
+/** Async teardown callbacks (a corpus's open sockets); the CLI runs them in a finally, on success and on error alike. */
+export const closers = [];
+export async function runClosers() {
+  for (const fn of closers.splice(0)) { try { await fn(); } catch (e) { console.error(`teardown failed: ${e instanceof Error ? e.message : String(e)}`); } }
+}
 export const state = { requiredFailures: [], seq: 0, debug: false };
 
 // export name -> compiled module (relative to a dist). A dist that lacks the module or the export yields null.

@@ -74,7 +74,7 @@ export default {
     const targets = rawsOf(item.input).map((raw) => d.gateTargets(raw, ROOTS.home, ROOTS.cwd));
     // row: tool.path verdict/reason; 548cb87 records none, so it is omitted on the s3 pair (compared on s4a -> new only)
     const hook = item.tool ? await hookCall(d, name, item.tool, item.args) : null; // transcript items: the dist's real policy hook (edit/patch targets derived there)
-    return { targets, read: await gateCall(d, name, "read", item.input), write: await gateCall(d, name, "write", item.input), hook, __s3Omit: ["row"], __strip: ["reached"] };
+    return { targets, read: await gateCall(d, name, "read", item.input), write: await gateCall(d, name, "write", item.input), hook, __s3Omit: ["row", "reached"] };
   },
   required(d, item, proj) {
     const bad = [];

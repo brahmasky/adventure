@@ -9,7 +9,7 @@ import { existsSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 import { verifyOldDist } from "./old-dist-provenance.mjs";
-import { CORPORA, SetupError, DISTS, STRIP_KEYS, cleanupTemp, compare, indexItems, initTemp, itemLabel, isPrivate, loadDist, mkTemp, ownOmit, redactForPrint, state } from "./stage4-diff-lib.mjs";
+import { CORPORA, SetupError, DISTS, STRIP_KEYS, cleanupTemp, compare, runClosers, indexItems, initTemp, itemLabel, isPrivate, loadDist, mkTemp, ownOmit, redactForPrint, state } from "./stage4-diff-lib.mjs";
 
 const NEW_DIST = resolve(new URL("../dist", import.meta.url).pathname);
 const CORPORA_DIR = resolve(new URL("./stage4-corpora", import.meta.url).pathname);
@@ -148,7 +148,7 @@ async function main() {
   const ctx = { dists: { new: await loadDist(NEW_DIST), s3: await loadDist(args.old3), s4a: await loadDist(args.old4a) },
     transcriptsDir: args.transcriptsDir, liveDb: args.liveDb, mkTemp };
   let allOk = true;
-  for (const corpus of corpora) allOk = (await runCorpus(corpus, ctx)) && allOk;
+  try { for (const corpus of corpora) allOk = (await runCorpus(corpus, ctx)) && allOk; } finally { await runClosers(); }
   console.log(allOk ? "\nSTAGE 4 DIFFERENTIAL: PASS" : "\nSTAGE 4 DIFFERENTIAL: FAIL");
   return allOk ? 0 : 1;
 }

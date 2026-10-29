@@ -2,7 +2,7 @@
 // store with one running run, driven the way tests/omp/bridge-handler.test.ts drives it. Not a corpus (the CLI loads scripts/stage4-corpora/*.mjs only).
 // Nothing here executes a command: the shell capabilities are stubs; an approval card is created by the real runner and denied at once.
 import { join } from "node:path";
-import { mkStore, mkTemp } from "./stage4-diff-lib.mjs";
+import { closers, mkStore, mkTemp } from "./stage4-diff-lib.mjs";
 
 // Fixed synthetic roots: the same strings on every dist, so gateTargets output and protected-path answers compare byte for byte.
 export const ROOTS = { home: "/houge-s4d/home", repo: "/houge-s4d/repo", data: "/houge-s4d/data", cwd: "/houge-s4d/home/work" };
@@ -118,7 +118,8 @@ async function hookFor(seam, name) {
   const sock = join(mkTemp(`sock-${name}`), "b.sock");
   const token = `s4d-${name}`;
   const hook = { sock, token, sent: null, handlers: new Map() };
-  await d.BridgeServer.listen(sock, token, (req) => { if (req.kind === "gate") hook.sent = req.input; return seam.handle(req); });
+  const server = await d.BridgeServer.listen(sock, token, (req) => { if (req.kind === "gate") hook.sent = req.input; return seam.handle(req); });
+  closers.push(() => server.close()); // closed by the CLI's finally (runClosers), not by process.exit
   await d.hougePolicy({ on: (ev, fn) => hook.handlers.set(ev, fn) });
   seam.hook = hook;
   return hook;
