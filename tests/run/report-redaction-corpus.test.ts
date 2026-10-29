@@ -36,9 +36,9 @@ function fakeBroker() {
 }
 
 let seq = 0;
-/** A store (firewall armed when `redact` is given) plus a Telegram-targeted run per call of `newRun`. */
-function reportFixture(redact?: (s: string) => string) {
-  const store = RunStore.openInMemory(redact ? storeOptionsFor(fakeBroker(), {}) : {}); // armed = the boot wiring: redactor + real recorder
+/** A store (firewall armed when `armed`) plus a Telegram-targeted run per call of `newRun`. */
+function reportFixture(armed = false) {
+  const store = RunStore.openInMemory(armed ? storeOptionsFor(fakeBroker(), {}) : {}); // armed = the boot wiring: redactor + real recorder
   const newRun = (): string => {
     const n = ++seq;
     const r = new Gateway(store).intake(buildTypedTaskEvent({ source: "telegram", type: "turn", program: "turn", goal: "hello", requested_by: { kind: "user", id: "paco" },
@@ -129,7 +129,7 @@ describe.each(WRAPPERS)("%s report — maskable class (firewall armed)", (w) => 
   it.each(MASKABLE.flatMap((v) => plant(v).map(([where, text, expected]) => [v.slice(0, 8).replace(/\n/g, "\\n"), where, text, expected] as const)))(
     "value %s planted at %s: the stored text holds the whole marker and none of the value",
     (_v, _where, text, expected) => {
-      const f = reportFixture(redact);
+      const f = reportFixture(true);
       pinRow(f, w, send(f, w, text), expected);
       expect(expected).toContain(MARK);
       // a hit here is a real leak in today's code, not a wrong pin: STOP and report the table.column
@@ -147,7 +147,7 @@ describe.each(WRAPPERS)("%s report — cut boundary (marker straddles char 3,900
     expect(redacted.indexOf(MARK)).toBe(3895);
     expect(MARK).toHaveLength(10);
     expect(redacted.trim()).toBe(redacted);
-    const f = reportFixture(redact);
+    const f = reportFixture(true);
     const stored = pad(3895) + "«reda" + TAIL; // written by hand: redact -> trim -> cut at 3,900
     pinRow(f, w, send(f, w, text), stored);
     // the premise on the STORED bytes: x*3895 + "«reda" is followed directly by the truncation tail. Anything else is plain truncation and FAILS here.
@@ -163,7 +163,7 @@ describe.each(WRAPPERS)("%s report — short-value control", (w) => {
   it("a 5-char value is below MIN_REDACTABLE_SECRET_LENGTH: it is NOT masked and is present in the stored text and nowhere else", () => {
     const redact = fakeBroker().redact;
     const text = `the short ${SHORT} value, twice ${SHORT}`;
-    const f = reportFixture(redact);
+    const f = reportFixture(true);
     pinRow(f, w, send(f, w, text), text);
     const hits = scan(f.store, [SHORT]);
     expect(hits).toEqual({ "notification_outbox.payload_json": 1, ...(w === "evolution" ? { "chat_turns.text": 1 } : {}) });
@@ -192,7 +192,7 @@ describe.each(WRAPPERS)("%s report — clean texts", (w) => {
     ["empty", "", ""], ["whitespace only", " \n\t  ", ""], ["3,899 chars", pad(3899), pad(3899)], ["3,900 chars", pad(3900), pad(3900)],
     ["3,901 chars", pad(3901), pad(3900) + TAIL]
   ])("%s: stored exactly as written by hand (trim, then cut past 3,900), no marker", (_n, text, expected) => {
-    const f = reportFixture(redact);
+    const f = reportFixture(true);
     pinRow(f, w, send(f, w, text), expected);
   });
 });
@@ -200,7 +200,7 @@ describe.each(WRAPPERS)("%s report — clean texts", (w) => {
 describe("enqueue outcomes — the return value and the rows around the redacted text", () => {
   const redact = fakeBroker().redact;
   it.each(WRAPPERS)("%s: a duplicate re-enqueue of the same masked text returns `duplicate` and leaves one outbox row (and one chat turn)", (w) => {
-    const f = reportFixture(redact);
+    const f = reportFixture(true);
     const text = `answer with ${V.kimi} inside`;
     const expected = `answer with ${MARK} inside`;
     pinRow(f, w, send(f, w, text), expected);
@@ -209,27 +209,27 @@ describe("enqueue outcomes — the return value and the rows around the redacted
     expect(chatTurns(f)).toHaveLength(w === "evolution" ? 1 : 0);
   });
   it.each(WRAPPERS)("%s: the same key with different text is a `conflict`, and the first row is untouched", (w) => {
-    const f = reportFixture(redact);
+    const f = reportFixture(true);
     expect(send(f, w, `first ${V.kimi}`).status).toBe("queued");
     const before = outbox(f);
     expect(send(f, w, "a different report")).toEqual({ status: "conflict", error: "NOTIFICATION_IDEMPOTENCY_CONFLICT" });
     expect(outbox(f)).toEqual(before);
   });
   it("the masked retry is `duplicate`, not `conflict`: the idempotency hash is over the redacted bytes, so a retry of the same raw text matches", () => {
-    const f = reportFixture(redact);
+    const f = reportFixture(true);
     const text = `value ${V.gemini} here`;
     send(f, "final", text);
     expect(send(f, "final", text).status).toBe("duplicate");
   });
   it.each(WRAPPERS)("%s: an insert failure throws the store's error and writes no outbox row", (w) => {
-    const f = reportFixture(redact);
+    const f = reportFixture(true);
     db(f.store).exec(`CREATE TRIGGER t BEFORE INSERT ON notification_outbox BEGIN SELECT RAISE(ABORT,'boom'); END`);
     expect(() => send(f, w, `report ${V.kimi}`)).toThrow(/boom/);
     expect(outbox(f)).toEqual([]);
     expect(chatTurns(f)).toEqual([]);
   });
   it.each(WRAPPERS)("%s: inside a caller's transaction a ROLLBACK removes the outbox row (the wrapper opens no transaction of its own)", (w) => {
-    const f = reportFixture(redact);
+    const f = reportFixture(true);
     db(f.store).exec("BEGIN");
     expect(send(f, w, `report ${V.kimi}`).status).toBe("queued");
     db(f.store).exec("ROLLBACK");
@@ -248,20 +248,20 @@ const masked = (w: Wrapper, run_id: string): RedactRow => ({ verdict: "masked", 
 describe.each(WRAPPERS)("%s report — secret.redact decision rows", (w) => {
   const redact = fakeBroker().redact;
   it("a masked report writes exactly one `masked` row: reason = the seam, run_id set, tool_call_id null, and no text", () => {
-    const f = reportFixture(redact);
+    const f = reportFixture(true);
     send(f, w, `answer ${V.kimi} end`);
     expect(rows(f)).toEqual([masked(w, f.run_id)]);
     expect(scan(f.store, MASKABLE)).toEqual({});
   });
   it("a secret masked at the cut boundary still counts: one row", () => {
-    const f = reportFixture(redact);
+    const f = reportFixture(true);
     send(f, w, pad(3895) + V.kimi + " tail");
     expect(rows(f)).toEqual([masked(w, f.run_id)]);
   });
   it("clean text, a below-minimum value and an over-long clean report write no row (clean is the default verdict)", () => {
-    const f = reportFixture(redact);
+    const f = reportFixture(true);
     send(f, w, `the short ${SHORT} value`);
-    const g = reportFixture(redact);
+    const g = reportFixture(true);
     send(g, w, pad(3901));
     expect(rows(f)).toEqual([]);
     expect(rows(g)).toEqual([]);
@@ -272,7 +272,7 @@ describe.each(WRAPPERS)("%s report — secret.redact decision rows", (w) => {
     expect(rows(f)).toEqual([]);
   });
   it("a duplicate re-enqueue is a second attempt: a second row, still one outbox row", () => {
-    const f = reportFixture(redact);
+    const f = reportFixture(true);
     const text = `answer ${V.kimi}`;
     send(f, w, text);
     expect(send(f, w, text).status).toBe("duplicate");
@@ -280,20 +280,20 @@ describe.each(WRAPPERS)("%s report — secret.redact decision rows", (w) => {
     expect(outbox(f)).toHaveLength(1);
   });
   it("a conflict adds a row for its masked text and returns the same conflict", () => {
-    const f = reportFixture(redact);
+    const f = reportFixture(true);
     send(f, w, `first ${V.kimi}`);
     expect(send(f, w, `second ${V.gemini}`)).toEqual({ status: "conflict", error: "NOTIFICATION_IDEMPOTENCY_CONFLICT" });
     expect(rows(f)).toHaveLength(2);
   });
   it("an insert failure keeps the attempt's row and throws the same error", () => {
-    const f = reportFixture(redact);
+    const f = reportFixture(true);
     db(f.store).exec(`CREATE TRIGGER t BEFORE INSERT ON notification_outbox BEGIN SELECT RAISE(ABORT,'boom'); END`);
     expect(() => send(f, w, `report ${V.kimi}`)).toThrow(/boom/);
     expect(rows(f)).toEqual([masked(w, f.run_id)]);
     expect(outbox(f)).toEqual([]);
   });
   it("inside a caller's transaction a ROLLBACK removes the decision row with the outbox row", () => {
-    const f = reportFixture(redact);
+    const f = reportFixture(true);
     db(f.store).exec("BEGIN");
     send(f, w, `report ${V.kimi}`);
     db(f.store).exec("ROLLBACK");
@@ -301,7 +301,7 @@ describe.each(WRAPPERS)("%s report — secret.redact decision rows", (w) => {
     expect(outbox(f)).toEqual([]);
   });
   it("recursion pin: a recorder that cannot insert opens one decision_record_failed incident and the masked report is still enqueued", () => {
-    const f = reportFixture(redact);
+    const f = reportFixture(true);
     db(f.store).exec(`CREATE TRIGGER r BEFORE INSERT ON decisions WHEN NEW.entry_id = 'secret.redact' BEGIN SELECT RAISE(ABORT,'nope'); END`);
     const err = vi.spyOn(console, "error").mockImplementation(() => undefined);
     try {
