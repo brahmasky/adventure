@@ -3,11 +3,11 @@
 // skipped when empty, the message skipped when all three are; drafts redacted; offered_at set inside the latch transaction
 // only after the outbox reported queued. (Follow-up 1 brought the Unsure section back, below.) The counts, trust/noise, bar-stale and Health sections are gone.
 import { describe, expect, it } from "vitest";
-import { barOf, buildDecisionDigest, DIGEST_PROPOSALS_MAX, resolveDigestAt, runDecisionDigestTick, standingLines, STANDING_DIGEST_TEXT, UNSURE_MAX } from "../../src/decisions/digest.js";
+import { barOf, buildDecisionDigest, countLines, DIGEST_PROPOSALS_MAX, resolveDigestAt, runDecisionDigestTick, standingLines, STANDING_DIGEST_TEXT, UNSURE_MAX } from "../../src/decisions/digest.js";
 import { REGISTRY } from "../../src/decisions/registry.js";
 import { buildTypedTaskEvent } from "../../src/domain/types.js";
 import { Gateway } from "../../src/gateway/gateway.js";
-import { RunStore, type DecisionInsert } from "../../src/run/run-store.js";
+import { RunStore, type DecisionInsert, type DecisionRow } from "../../src/run/run-store.js";
 import { createTelegramTurn } from "../helpers/runs.js";
 import { drainOutbox } from "../helpers/omp-worker.js";
 import { parseDecisionReviewCallback, parseImprovementCallback } from "../../src/triggers/telegram-command-parser.js";
@@ -382,5 +382,17 @@ describe("Standing approvals in the digest (Stage 4A §8)", () => {
     s.recordDecisionDigest({ local_date: "2026-10-20", sent: false, offered: [], created_at: "2026-10-20T10:00:00.000Z" });
     expect(s.lastSentDecisionDigestAt()).toBe("2026-10-19T10:00:00.000Z");
     expect(RunStore.openInMemory().lastSentDecisionDigestAt()).toBeUndefined();
+  });
+});
+
+describe("countLines names secret.redact's scope (Stage 4B)", () => {
+  const row = (entry_id: string, rung: DecisionRow["rung"]): DecisionRow => ({ ...D, decision_id: `d-${entry_id}`, entry_id, rung, p_index: null, reask: null, p_first: null, created_at: NOW });
+
+  it("suffixes the secret.redact line with its three-wrapper scope", () => {
+    expect(countLines([row("secret.redact", "rule")])).toEqual(["· secret.redact 1 — code 1 (final, failure and evolution reports only)"]);
+  });
+
+  it("leaves every other entry's line unsuffixed", () => {
+    expect(countLines([row("improve.route", "rule")])).toEqual(["· improve.route 1 — code 1"]);
   });
 });
