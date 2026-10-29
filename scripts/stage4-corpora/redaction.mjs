@@ -8,14 +8,13 @@
 // the only run-varying value, the run id, is replaced by RUN inside the projection.
 // Required (new side), besides the per-class row counts: the stored bytes equal an oracle written independently of the redactor.
 import { SetupError, fakeBroker, requireNew } from "../stage4-diff-lib.mjs";
-import { CHAT_MAX, MARK, MASKABLE, SHORT, TAIL, WRAPPERS, checkItem, oracleStored, pad, projectItem, readLiveTexts, tally } from "../stage4-redact-fixture.mjs";
+import { CHAT_MAX, MARK, MASKABLE, SHORT, TAIL, WRAPPERS, checkItem, expectedHits, oracleStored, pad, projectItem, readLiveTexts, tally } from "../stage4-redact-fixture.mjs";
 
 const MIN_LIVE = 633;
 const DEFAULT_LIVE_DB = new URL("../../../../houge.sqlite", import.meta.url).pathname; // the main checkout's DB (this file lives in .worktrees/<name>/scripts/stage4-corpora)
 const TAGS = ["live", "maskable", "cut_boundary", "short_control", "firewall_off", "clean", "duplicate", "conflict", "insert_failure", "outer_rollback", "transcript"];
 
 const mk = (key, w, cls, extra) => ({ key: `${cls}:${key}:${w}`, wrapper: w, scenario: "single", firewall: true, tags: [cls, `wrap_${w}`], ...extra });
-const onlyPayload = (w) => ({ "notification_outbox.payload_json": 1, ...(w === "evolution" ? { "chat_turns.text": 1 } : {}) });
 
 /** each maskable value planted at the start, the end, twice, and at offset 2,000 of a 3,000-char text; the expected bytes are written out by hand */
 function plants(v) {
@@ -29,12 +28,12 @@ function seeded(w) {
   MASKABLE.forEach((v, i) => plants(v).forEach(([where, text, expected]) => items.push(mk(`${i}-${where}`, w, "maskable", { text, expected }))));
   const cutText = pad(3895) + MASKABLE[1] + " tail"; // no leading whitespace: trim() cannot shift the index
   items.push(mk("straddle", w, "cut_boundary", { text: cutText, expected: pad(3895) + "«reda" + TAIL }));
-  items.push(mk("short", w, "short_control", { text: `the short ${SHORT} value, twice ${SHORT}`, needles: [SHORT], expectHits: onlyPayload(w) }));
-  MASKABLE.forEach((v, i) => items.push(mk(`${i}`, w, "firewall_off", { firewall: false, text: `before ${v} after`, expected: `before ${v} after`, expectHits: onlyPayload(w) })));
+  items.push(mk("short", w, "short_control", { text: `the short ${SHORT} value, twice ${SHORT}`, needles: [SHORT], expectHits: expectedHits(w, `the short ${SHORT} value, twice ${SHORT}`, [SHORT]) }));
+  MASKABLE.forEach((v, i) => items.push(mk(`${i}`, w, "firewall_off", { firewall: false, text: `before ${v} after`, expected: `before ${v} after`, expectHits: expectedHits(w, `before ${v} after`, MASKABLE) })));
   [["empty", ""], ["whitespace", " \n\t  "], ["3899", pad(3899)], ["3900", pad(3900)], ["3901", pad(3901)]].forEach(([n, text]) => items.push(mk(n, w, "clean", { text })));
   const masked = `answer with ${MASKABLE[0]} inside`;
   items.push(mk("same-text", w, "duplicate", { scenario: "duplicate", text: masked }));
-  items.push(mk("other-text", w, "conflict", { scenario: "conflict", text: `first ${MASKABLE[1]}`, secondText: "a different report" }));
+  items.push(mk("other-text", w, "conflict", { scenario: "conflict", text: `first ${MASKABLE[1]}`, secondText: `second ${MASKABLE[2]}` }));
   items.push(mk("trigger", w, "insert_failure", { scenario: "insert_failure", text: `report ${MASKABLE[0]}` }));
   items.push(mk("begin-rollback", w, "outer_rollback", { scenario: "outer_rollback", text: `report ${MASKABLE[0]}` }));
   return items;

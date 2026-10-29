@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 // Stage 4B differential harness (spec 2026-10-29 §6). From the feature worktree, after `npm run build`:
 //   node scripts/check-ladder-stage4-differential.mjs --old-dist-3 <548cb87 worktree>/dist --old-dist-4a <1451a66 worktree>/dist \
-//     [--transcripts-dir <dir>] [--live-db <path>] [--only a,b] [--keep]
+//     [--transcripts-dir <dir>] [--live-db <path>] [--only a,b] [--keep] [--debug: may print private corpus content; local diagnosis only, never paste its output]
 // Runs each corpus's items through the old builds and this one and proves nothing but the two new decision rows changed.
 // Exit: 0 PASS · 1 FAIL · 2 setup error. --transcripts-dir and --live-db are read-only inputs (the live DB only via a VACUUM copy).
-// The temp root is deleted on every exit path unless --keep.
+// The temp root is deleted on every exit path unless --keep (never the copy of the live DB: that is always deleted).
+// --debug may print private corpus content; local diagnosis only, never paste its output.
 import { existsSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 

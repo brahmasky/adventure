@@ -27,15 +27,21 @@ export function oracleStored(text, armed) {
 /** True when a known value (>= 6 chars) is in the text, i.e. when a masking attempt must leave a `masked` row. */
 export const hasSecret = (text) => MASKABLE.some((v) => text.includes(v));
 
-/** Every non-empty string `text` of a final_report outbox row, read from a VACUUM copy of the live DB (never the live file itself). */
+/** Every string `text` of a final_report outbox row, read from a VACUUM copy of the live DB (never the live file itself). The copy is deleted on every exit path, --keep included. */
 export function readLiveTexts(liveDb, copyPath) {
-  const src = new DatabaseSync(liveDb, { readOnly: true });
-  try { src.exec(`VACUUM INTO '${copyPath.replace(/'/g, "''")}'`); } catch { throw new SetupError("VACUUM INTO the live DB failed (detail withheld)"); } finally { src.close(); }
-  const db = new DatabaseSync(copyPath, { readOnly: true });
+  let src = null;
+  let db = null;
   try {
+    src = new DatabaseSync(liveDb, { readOnly: true });
+    try { src.exec(`VACUUM INTO '${copyPath.replace(/'/g, "''")}'`); } catch { throw new SetupError("VACUUM INTO the live DB failed (detail withheld)"); }
+    src.close(); src = null;
+    db = new DatabaseSync(copyPath, { readOnly: true });
     const rows = db.prepare(`SELECT json_extract(payload_json, '$.text') AS t FROM notification_outbox WHERE intent_type = 'final_report' ORDER BY created_at, notification_id`).all();
     return rows.map((r) => r.t).filter((t) => typeof t === "string");
-  } finally { db.close(); rmSync(copyPath, { force: true }); }
+  } finally {
+    for (const h of [src, db]) { try { h?.close(); } catch { /* the copy is removed next regardless */ } }
+    for (const suffix of ["", "-journal", "-wal", "-shm"]) rmSync(copyPath + suffix, { force: true });
+  }
 }
 
 const send = (store, w, run_id, text) => w === "final" ? store.enqueueFinalReportNotification(run_id, { text, report_path: "/tmp/r.md" })
@@ -52,15 +58,23 @@ function textColumns(d, db) {
   colCache.set(d.dir, out);
   return out;
 }
-/** Rows containing any needle (also its JSON-escaped spelling, which payload_json stores), over every TEXT column of every table; keyed "table.column". */
+const spellings = (values) => [...new Set(values.flatMap((v) => [v, JSON.stringify(v).slice(1, -1)]))]; // payload_json stores a value JSON-escaped
+/** Per needle (also its JSON-escaped spelling), the rows containing it over every TEXT column of every table, summed per "table.column" (as the vitest scan does). */
 export function scan(d, db, values) {
-  const needles = [...new Set(values.flatMap((v) => [v, JSON.stringify(v).slice(1, -1)]))];
-  const where = needles.map(() => "instr(CAST(\"@C\" AS TEXT), ?) > 0").join(" OR ");
   const hits = {};
   for (const [table, col] of textColumns(d, db)) {
-    const n = db.prepare(`SELECT COUNT(*) AS n FROM "${table}" WHERE ${where.split("@C").join(col)}`).get(...needles).n;
-    if (n > 0) hits[`${table}.${col}`] = n;
+    for (const needle of spellings(values)) {
+      const n = db.prepare(`SELECT COUNT(*) AS n FROM "${table}" WHERE instr(CAST("${col}" AS TEXT), ?) > 0`).get(needle).n;
+      if (n > 0) hits[`${table}.${col}`] = (hits[`${table}.${col}`] ?? 0) + n;
+    }
   }
+  return hits;
+}
+/** The scan an item must produce when its stored text is `stored`, computed by plain includes over the stored payload and (evolution) chat turn. */
+export function expectedHits(w, stored, values) {
+  const hits = {};
+  const cells = [["notification_outbox.payload_json", JSON.stringify(payloadFor(w, stored))], ...(w === "evolution" ? [["chat_turns.text", stored]] : [])];
+  for (const [key, cell] of cells) for (const n of spellings(values)) if (cell.includes(n)) hits[key] = (hits[key] ?? 0) + 1;
   return hits;
 }
 
