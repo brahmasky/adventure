@@ -582,3 +582,11 @@ Rules Claude writes for itself after corrections. Review at session start.
 - **A provenance check keyed on one compiled file (`core-worker.js`) refuses a genuine previous build when the slice never touches that file.** Name the file the slice changes.
 - **A refusal code proved at the store and the gateway is not proved at intake.** A new denial code must also join the poll loop's handled-denial set, or one tap wedges the loop (the 2026-10-01 incident shape). Test new refusals through `runTelegramPollOnce`.
 - **A mutation reviewer and an implementer in the same worktree contaminate each other's runs.** Run them sequentially.
+
+## 2026-10-29 — Stage 4B bind + redact (differential gate)
+
+- **"No row" is not evidence that the code ran.** A recorder that skips default verdicts makes every plain or allowed item pass on absence; an early return would pass too. Every gate line that relies on an absent row needs positive per-call evidence that the path executed (a counted probe, an adapter-only field), and a planted early return that proves it.
+- **A copy of the live DB is private data with a lifecycle.** Every script that VACUUMs Paco's DB deletes the copy in a `finally` on every exit path, `--keep` included, handles SIGINT/SIGTERM/SIGHUP, and sweeps stale roots at start. Prints carry counts and labels, never content; detail only behind `--debug`.
+- **Implementers' sandboxes and a loaded machine produce false signals.** Socket EPERM inside a reviewer's sandbox and vitest timeouts under an external runner's load both looked like defects. The orchestrator reruns gates and the suite outside the sandbox before ruling, and checks `uptime` / `ps` before blaming the diff.
+- **A plan's own test code can carry the defect the rubric names.** Task 2's plan text collected recorder rows and never asserted them; follow the spec's intent over the plan's literal code, and ledger the ruling.
+
