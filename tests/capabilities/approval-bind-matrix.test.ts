@@ -91,21 +91,39 @@ function bindFixture(o: { source?: "user" | "schedule"; approver?: Identity; sin
     return row.approval_id;
   }
   const eventTypes = (): string[] => store.getLedgerEvents(run_id).map((e) => e.event_type);
-  /** Runs one resume and returns the result with the ledger events it added to this run. */
+  const bindRows = (): Array<{ verdict: string; reason_code: string | null; tool_call_id: string | null }> =>
+    store.listDecisionsForRun(run_id).filter((d) => d.entry_id === "approval.bind").map((d) => ({ verdict: d.verdict, reason_code: d.reason_code, tool_call_id: d.tool_call_id }));
+  /**
+   * Runs one resume and returns the result with the ledger events it added to this run. Every omp-sink consume also asserts its own
+   * approval.bind row: the oracle is THIS attempt's row state read before and after the call (bound <=> approved -> consumed), never the
+   * final result, and the unbound code is the sink's own code read off the refusal text.
+   */
   async function execute(approved_approval_id: string, x: { standing_trial?: { standing_id: string }; requester?: Identity } = {}): Promise<{ result: CapabilityResult; added: string[] }> {
     const before = eventTypes().length;
+    const stateBefore = store.getToolApproval(approved_approval_id)?.state;
+    const rowsBefore = bindRows().length;
     const result = await runner.execute({
       run_id, requester: x.requester ?? requester, approved_approval_id, contract: contract(o.forbid ? ["shell_external"] : []), capability: "shell_external", input: INPUT,
       budget: new BudgetLedger(contract().budget), budget_reserved: true, recorder, tool_call_id: "tc_run", action_summary: "HTTP write",
       ...(x.standing_trial ? { standing_trial: x.standing_trial } : {})
     });
+    const reached = !o.forbid; // P2 refuses before the consume
+    const newRows = bindRows().slice(rowsBefore);
+    if (!reached) expect(newRows).toEqual([]);
+    else if (o.sink === false) expect(newRows).toEqual([{ verdict: "unbound", reason_code: "no_sink", tool_call_id: "tc_run" }]);
+    else {
+      const bound = stateBefore === "approved" && store.getToolApproval(approved_approval_id)?.state === "consumed";
+      const code = result.status === "failed" ? /^([a-z_]+): /.exec(result.error_ref ?? "")?.[1] ?? null : null;
+      expect(newRows).toEqual([bound ? { verdict: "bound", reason_code: null, tool_call_id: "tc_run" } : { verdict: "unbound", reason_code: code, tool_call_id: "tc_run" }]);
+      if (!bound) expect(code).not.toBeNull();
+    }
     return { result, added: eventTypes().slice(before) };
   }
   return {
-    store, run_id, adapter, approvedRow, execute, requester,
+    store, run_id, adapter, approvedRow, execute, requester, sink, runner, bindRows,
     /** the decisions rows the runner's recorder wrote for this run — what the matrix must keep identical when the consume moves */
     get recorded(): Array<{ entry_id: string; verdict: string; reason_code: string | null }> {
-      return store.listDecisionsForRun(run_id).map((d) => ({ entry_id: d.entry_id, verdict: d.verdict, reason_code: d.reason_code }));
+      return store.listDecisionsForRun(run_id).filter((d) => d.entry_id !== "approval.bind").map((d) => ({ entry_id: d.entry_id, verdict: d.verdict, reason_code: d.reason_code }));
     },
     state: (id: string): string | undefined => store.getToolApproval(id)?.state,
     standingUses: (): number => (rawDb(store).prepare(`SELECT COUNT(*) AS n FROM standing_uses`).get() as { n: number }).n,
@@ -337,6 +355,40 @@ describe("approval consume binding through CapabilityRunner + the omp sink (toda
     expect(added).toEqual([]);
     expect(f.store.listStandingApprovals()).toEqual([]);
     expect(f.recorded).toEqual([{ entry_id: "tool.policy", verdict: "denied", reason_code: "forbidden" }]);
+  });
+
+  it("a throwing sink: execute rejects with the same error and writes zero bind rows (an outage is not a verdict)", async () => {
+    const f = bindFixture();
+    const id = f.approvedRow();
+    const boom = new Error("sink exploded");
+    vi.spyOn(f.sink, "consumeApprovedApproval").mockImplementation(() => { throw boom; });
+    await expect(f.runner.execute({
+      run_id: f.run_id, requester: f.requester, approved_approval_id: id, contract: contract(), capability: "shell_external", input: INPUT,
+      budget: new BudgetLedger(contract().budget), budget_reserved: true, recorder: storeRecorder(f.store), tool_call_id: "tc_run", action_summary: "HTTP write"
+    })).rejects.toBe(boom);
+    expect(f.bindRows()).toEqual([]);
+    expect(f.state(id)).toBe("approved");
+  });
+
+  it("a first call that asks (no approved_approval_id) never reaches the consume: zero bind rows", async () => {
+    const f = bindFixture();
+    const result = await f.runner.execute({
+      run_id: f.run_id, requester: f.requester, contract: contract(), capability: "shell_external", input: INPUT,
+      budget: new BudgetLedger(contract().budget), recorder: storeRecorder(f.store), tool_call_id: "tc_first", action_summary: "HTTP write"
+    });
+    expect(result.status).toBe("requires_approval");
+    expect(f.bindRows()).toEqual([]);
+  });
+
+  it("a second consume of a consumed row records its own row: unbound / not_approved, after the first attempt's bound row", async () => {
+    const f = bindFixture();
+    const id = f.approvedRow();
+    await f.execute(id);
+    await f.execute(id);
+    expect(f.bindRows()).toEqual([
+      { verdict: "bound", reason_code: null, tool_call_id: "tc_run" },
+      { verdict: "unbound", reason_code: "not_approved", tool_call_id: "tc_run" }
+    ]);
   });
 
   it("P3: a runner with no sink fails a resume with the fixed text and spends nothing", async () => {
