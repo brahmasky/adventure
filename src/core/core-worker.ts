@@ -158,6 +158,7 @@ import {
   type RouteReason
 } from "../jev/tree-policy.js";
 import { decide as decideLadder, decideSync } from "../decisions/decide.js";
+import { SCHEDULE_ADMIT, type ScheduleAdmitReason, type ScheduleAdmitVerb, type ScheduleAdmitVerdict } from "../decisions/entries/schedule-admit.js";
 import { NOT_ARMED, treeArmingFor } from "../decisions/jev-version-check.js";
 import { INJECTION_TOTAL_MS } from "../decisions/entries/tool-injection.js";
 import { createInjectionJudge, type InjectionJudge } from "../decisions/injection-judge.js";
@@ -3737,6 +3738,11 @@ export class CoreWorker {
     return /^sch_[0-9a-fA-F-]{8,}$/.test(trimmed) ? trimmed : undefined;
   }
 
+  /** schedule.admit (spec 2026-10-30 §4.2): one row per schedule_task call that reached an admit decision; the raw branch drives. */
+  private admitSchedule(run_id: string, verb: ScheduleAdmitVerb, outcome: ScheduleAdmitVerdict, code?: ScheduleAdmitReason): void {
+    decideSync(SCHEDULE_ADMIT, { verb, outcome, ...(code !== undefined ? { code } : {}) }, { run_id, tool_call_id: null, recorder: this.decisionRecorder });
+  }
+
   /**
    * The schedule_task adapter (B10b, ADR 0017). Everything untrusted is validated or
    * neutralized in code: the spec parses tolerantly, the tz must resolve (defaulting to
@@ -3748,6 +3754,7 @@ export class CoreWorker {
   private executeScheduleTask(claim: ClaimedRun, input: Record<string, unknown>): ToolAdapterResult {
     const target = this.runStore.getRunNotifyTarget(claim.run_id);
     if (target.kind !== "telegram") {
+      this.admitSchedule(claim.run_id, "none", "refuse", "no_chat");
       return { ok: false, error: SCHEDULE_TASK_NO_CHAT_ERROR };
     }
     const chat_id = target.chat_id;
@@ -3768,12 +3775,15 @@ export class CoreWorker {
       const schedule_id = this.resolveScheduleId(chat_id, input.cancel);
       // Shape-check before any lookup so a hostile id is never echoed into a digest.
       if (!schedule_id) {
+        this.admitSchedule(claim.run_id, "cancel", "refuse", "not_found");
         return { ok: false, error: SCHEDULE_TASK_CANCEL_NOT_FOUND_ERROR };
       }
       const row = this.runStore.getScheduledTask(schedule_id);
       if (!row || row.chat_id !== chat_id || !this.runStore.cancelScheduledTask(schedule_id)) {
+        this.admitSchedule(claim.run_id, "cancel", "refuse", "not_found");
         return { ok: false, error: SCHEDULE_TASK_CANCEL_NOT_FOUND_ERROR };
       }
+      this.admitSchedule(claim.run_id, "cancel", "admit");
       return { ok: true, output: { answer: buildScheduleCancelledDigest(schedule_id) } };
     }
 
@@ -3785,10 +3795,12 @@ export class CoreWorker {
     if (typeof input.update === "string" && input.update.trim().length > 0) {
       const schedule_id = this.resolveScheduleId(chat_id, input.update);
       if (!schedule_id) {
+        this.admitSchedule(claim.run_id, "update", "refuse", "not_found");
         return { ok: false, error: SCHEDULE_TASK_UPDATE_NOT_FOUND_ERROR };
       }
       const row = this.runStore.getScheduledTask(schedule_id);
       if (!row || row.chat_id !== chat_id || row.state === "disabled") {
+        this.admitSchedule(claim.run_id, "update", "refuse", "not_found");
         return { ok: false, error: SCHEDULE_TASK_UPDATE_NOT_FOUND_ERROR };
       }
       const hasGoal = typeof input.goal === "string" && input.goal.trim().length > 0;
@@ -3833,8 +3845,10 @@ export class CoreWorker {
       // The store can still say no (state changed under us) — a digest must never
       // claim a write that didn't land.
       if (!updated) {
+        this.admitSchedule(claim.run_id, "update", "refuse", "not_found");
         return { ok: false, error: SCHEDULE_TASK_UPDATE_NOT_FOUND_ERROR };
       }
+      this.admitSchedule(claim.run_id, "update", "admit");
       return {
         ok: true,
         output: { answer: buildScheduleUpdatedDigest(schedule_id, spec, tz, next_run_at) }
@@ -3869,6 +3883,7 @@ export class CoreWorker {
       .listScheduledTasks(chat_id)
       .find((r) => r.state === "enabled" && r.spec_json === spec_json && r.tz === tz && r.goal === goal);
     if (duplicate) {
+      this.admitSchedule(claim.run_id, "create", "exists");
       return {
         ok: true,
         output: {
@@ -3878,6 +3893,7 @@ export class CoreWorker {
     }
     const cap = resolveSchedulerMaxPerChat(process.env);
     if (this.runStore.countActiveSchedules(chat_id) >= cap) {
+      this.admitSchedule(claim.run_id, "create", "refuse", "cap");
       return { ok: false, error: buildScheduleCapError(cap) };
     }
     const now = new Date().toISOString();
@@ -3894,6 +3910,7 @@ export class CoreWorker {
       created_by: `run:${claim.run_id}`,
       now
     });
+    this.admitSchedule(claim.run_id, "create", "admit");
     return {
       ok: true,
       output: { answer: buildScheduleCreatedDigest(row.schedule_id, spec, tz, next_run_at) }
