@@ -23,6 +23,7 @@ describe("schedule.admit — every schedule_task change the model makes leaves a
   });
   it("a duplicate create → exists/create", () => {
     expect(run({ verb: "create", outcome: "exists" })).toMatchObject({ verdict: "exists", reason: "create" });
+    expect(rows).toEqual([{ verdict: "exists", reason: "create" }]); // alwaysRecord: a duplicate still leaves its audit row
   });
   it.each([["none", "no_chat"], ["cancel", "not_found"], ["update", "not_found"], ["create", "cap"]] as const)("refuse %s/%s → refuse with the code", (verb, code) => {
     expect(run({ verb, outcome: "refuse", code })).toMatchObject({ verdict: "refuse", reason: code });
