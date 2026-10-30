@@ -11,12 +11,15 @@
 // The digest's chat-bound review omits null-run rows by design (spec §5): "all rows present" is checked on the decisions table itself (count,
 // key identity, byte-identical seeded rows), and the old build's /status count line per new id must equal the SQL count over its window.
 // Provenance: verifyStampedDist is given gateway/gateway.js (the compiled module this slice changed), not the 4C default core-worker.js.
-// Dropped from the 4C check, and why: the A/F two-copy comparison (A vs F render equality, F-only baseline) — R1's old-build behaviour
-// on rows of ids it does not know is already pinned by the SQL-count line and the row-identity lines, and F would only re-prove 4C's
-// delta bookkeeping; the per-decider rung breakdown of the count line (the R1 rows are single-rung rule rows, the total is compared);
-// the memory.lesson_admit/schedule.admit/memory.correct_preflight call-site seeds (worker, bridge, scheduler fixtures — R1 seeds through
-// Gateway.intake only); the recent-list expected-newest-10 splice (it modelled the 4C seed's mixed runs; here the list is checked by reading
-// every row); the "c558413 added the same rows to A and F" growth line (no F). insertLadderMove is not probed (not id-validated, 4C plan P2).
+// Two VACUUM copies, as in 4C: A (never touched by this build) and F (cut from A, then seeded by this build); the old build opens both and
+// everything it renders is compared A against F. Per spec §5 the digest prints no per-entry count lines, so F's digest must EQUAL A's
+// except the Watch line "· unattached: rating N" (+1: the seed's captured rating is a rating row, not a decision row), and carry no count line or id of the new entries; /status differs only in the three new-id count lines; the recent list is
+// A's list with the three seeded rows spliced in at the top, in the expected order. Every decisions row is compared whole (canonical JSON
+// of SELECT * by SQL before the old build opens, as the old build reads it, after it, and after this build reopens).
+// Dropped from the 4C check, and why: the per-decider rung breakdown of the count line (the R1 rows are single-rung rule rows; the total is
+// compared against SQL); the memory.lesson_admit/schedule.admit/memory.correct_preflight call-site seeds (worker, bridge, scheduler
+// fixtures: R1 seeds through Gateway.intake only); the newest-10 splice over mixed old-build rows (the old build writes no decision row here,
+// so the splice is the seeded rows alone). insertLadderMove is not probed (not id-validated, 4C plan P2).
 // Exit 0 PASS · 1 FAIL · 2 setup error. There is no debug flag. The live DB is read only by VACUUM INTO; every write goes to the copy, which
 // lives under /tmp/hg-s4d-* and is removed on every exit path (pass, FAIL, throw, SIGINT, SIGTERM, SIGHUP). Safety pins set before any store
 // opens and restored on exit: HOUGE_TOMBSTONE_PATH / HOUGE_DISARM_PATH under the temp root, HOUGE_TELEGRAM_CHAT_ID = a stub. Every chat and
@@ -88,6 +91,9 @@ const schemaOf = (path) => ro(path, (db) => ({
 }));
 /** The seeded decision rows, whole, as one hash: a changed or rewritten row differs. */
 const rowsHash = (path, ids) => ro(path, (db) => createHash("sha256").update(J(ids.map((id) => db.prepare("SELECT * FROM decisions WHERE decision_id = ?").get(id) ?? null))).digest("hex").slice(0, 12));
+/** Every decisions row, whole, as canonical JSON, ordered by rowid. */
+const contentOf = (path) => ro(path, (db) => db.prepare("SELECT * FROM decisions ORDER BY rowid").all().map((r) => J(Object.fromEntries(Object.keys(r).sort().map((k) => [k, r[k]])))));
+const canonRow = (r) => J(Object.fromEntries(Object.keys(r).sort().map((k) => [k, r[k]])));
 /** Primary keys of the tracked tables: a lost row is a missing key. */
 function keysOf(path) {
   return ro(path, (db) => Object.fromEntries(TABLES.map((t) => {
@@ -103,7 +109,10 @@ function windowCounts(path, now) {
   return ro(path, (db) => Object.fromEntries(NEW_IDS.map((id) => [id, db.prepare("SELECT COUNT(*) AS n FROM decisions WHERE entry_id = ? AND created_at > ? AND created_at <= ?").get(id, since, now).n])));
 }
 const lineTotals = (lines) => Object.fromEntries(NEW_IDS.map((id) => [id, lines.filter((l) => COUNT_RE.exec(l)?.[1] === id).map((l) => Number(COUNT_RE.exec(l)[2]))]));
-const totalsMatch = (lines, want) => { const got = lineTotals(lines); return NEW_IDS.every((id) => got[id].length === 1 && got[id][0] === want[id]); };
+const totalsMatch = (lines, want) => { const got = lineTotals(lines); return NEW_IDS.every((id) => (want[id] === 0 ? got[id].length === 0 : got[id].length === 1 && got[id][0] === want[id])); };
+/** The literal rows the seed must write, in order. */
+const EXPECTED = [["intake.rate_limit", "limit", "command_window"], ["intake.rating_reply", "consume", "bare_digit"], ["intake.budget_fuse", "refuse", "runs"]];
+const norm = (l) => l.replace(/\b\d\d-\d\d \d\d:\d\d\b/g, "<ts>");
 
 // ---- step 1: this build writes one row of each new id through Gateway.intake ----
 const gateway = (d, store, caps = {}) => new d.Gateway(store, { ...d.DEFAULT_GLOBAL_BUDGET_CAPS, runs: BIG, tool_calls: BIG, gated_attempts: BIG, ...caps });
@@ -122,7 +131,7 @@ async function seedA(dNew, path) {
   const s = openStore(dNew, path);
   const mark = s.db.prepare("SELECT COALESCE(MAX(rowid), 0) AS m FROM decisions").get().m;
   const results = seedRows(dNew, s);
-  const rows = s.db.prepare("SELECT decision_id, entry_id, verdict, reason_code, run_id, tool_call_id FROM decisions WHERE rowid > ? ORDER BY rowid").all(mark).map((r) => ({ ...r }));
+  const rows = s.db.prepare("SELECT * FROM decisions WHERE rowid > ? ORDER BY rowid").all(mark).map((r) => ({ ...r }));
   closeStore(s);
   return { results, rows };
 }
@@ -145,10 +154,12 @@ async function oldSteps(ctx, path, now) {
   await yieldLoop();
   r.status = mOld.decisionStatusLines(s, now);
   const dg = mOld.buildDecisionDigest(s, now, { ...process.env, HOUGE_IMPROVE_ENABLED: "false" });
-  r.digestLines = dg && dg.text ? dg.text.split("\n").length : 0;
-  r.list = mOld.decisionListText(s, process.env).split("\n").length - 1;
-  r.listedAll = s.listRecentDecisions(100_000).length;
-  r.listedNew = s.listRecentDecisions(100_000).filter((x) => NEW_IDS.includes(x.entry_id)).length;
+  r.digest = dg && dg.text ? dg.text.split("\n") : null;
+  r.listText = mOld.decisionListText(s, process.env).split("\n");
+  const all = s.listRecentDecisions(100_000);
+  r.listedAll = all.length;
+  r.listedNew = all.filter((x) => NEW_IDS.includes(x.entry_id)).length;
+  r.read = all.map(canonRow).sort();
   r.outcomes = outcomeProbes(s);
   closeStore(s);
   return r;
@@ -176,52 +187,85 @@ async function setup() {
   if (!dOld.RunStore) throw new SetupError("RunStore missing from the old dist");
   const mods = async (dist) => ({ ...(await import(join(dist, "decisions/digest.js"))), ...(await import(join(dist, "decisions/status-view.js"))) });
   const [mNew, mOld] = [await mods(DIST), await mods(oldDist)];
-  const A = join(mkTemp("copy-A"), "houge.sqlite");
+  const A = join(mkTemp("copy-A"), "houge.sqlite"); const F = join(mkTemp("copy-F"), "houge.sqlite");
   vacuumInto(liveDb, A);
-  return { dNew, dOld, mNew, mOld, A, root };
+  vacuumInto(A, F); // F is cut from the untouched A, so a daemon write between two live reads cannot separate them
+  return { dNew, dOld, mNew, mOld, A, F, root };
 }
 
+/** F's seeded rows, newest first as the old build's list orders them (created_at DESC, rowid DESC). */
+const listLine = (r, label) => `<ts> · ${r.entry_id} · ${label(r.rung)} → ${r.verdict} · p ${r.p === null ? "–" : r.p.toFixed(2)} · run –`;
+/** The one line the seed adds to the digest is not a decision row: the captured rating (a bare digit with no run) raises Watch's "unattached: rating N" by exactly 1. Everything else equal. */
+const UNATT = /^· unattached: rating (\d+)$/;
+function digestBad(a, f) {
+  const [na, nf] = [a.find((l) => UNATT.test(l)), f.find((l) => UNATT.test(l))];
+  const [ca, cf] = [na ? Number(UNATT.exec(na)[1]) : 0, nf ? Number(UNATT.exec(nf)[1]) : 0];
+  const bad = [];
+  if (!same(a.filter((l) => !UNATT.test(l)).map(norm), f.filter((l) => !UNATT.test(l)).map(norm))) bad.push(`digest differs beyond the unattached-rating line (A ${a.length}, F ${f.length})`);
+  if (cf !== ca + 1) bad.push(`unattached rating ${ca} -> ${cf}, expected +1`);
+  return bad;
+}
+function renderBad(a, f, seedRows, label) {
+  const bad = [];
+  if (!a.digest || !f.digest) bad.push("digest did not render");
+  else bad.push(...digestBad(a.digest, f.digest));
+  if (f.digest?.some((l) => COUNT_RE.test(l) || NEW_IDS.some((id) => l.includes(id)))) bad.push("digest carries a per-entry line or new id");
+  const isNew = (l) => NEW_IDS.includes(COUNT_RE.exec(l)?.[1]);
+  const [sa, sf] = [a.status.filter((l) => !isNew(l)).map(norm), f.status.filter((l) => !isNew(l)).map(norm)];
+  if (!same(sa, sf)) bad.push(`/status other lines differ (A ${sa.length}, F ${sf.length})`);
+  const [head, ...rows] = a.listText.map(norm);
+  const want = [head, ...[...seedRows].reverse().map((r) => listLine(r, label)), ...rows].slice(0, 11);
+  if (!same(f.listText.map(norm), want)) bad.push(`recent list differs from A's with the seeded rows on top (F ${f.listText.length - 1} rows)`);
+  return bad;
+}
+const OUT_REJ = "OutcomeRejected:value not allowed for review_ok";
 async function run(ctx) {
-  const { dNew, A, mNew } = ctx;
-  phase = "snapshot"; const before = { n: NEW_IDS.map((id) => entryCount(A, id)), schema: schemaOf(A) };
-  phase = "seed A"; const seed = await seedA(dNew, A);
+  const { dNew, A, F, mNew, mOld } = ctx;
+  phase = "snapshot"; const before = { n: NEW_IDS.map((id) => entryCount(F, id)), schema: schemaOf(F) };
+  phase = "seed F"; const seed = await seedA(dNew, F);
   const seedIds = seed.rows.map((r) => r.decision_id);
-  const snap = { counts: counts(A), keys: keysOf(A), schema: schemaOf(A), hash: rowsHash(A, seedIds) };
-  const per = NEW_IDS.map((id) => seed.rows.filter((r) => r.entry_id === id));
-  check("this build wrote one row of each new id through Gateway.intake: the expected verdicts, run_id and tool_call_id null, nothing else added",
-    per.every((r) => r.length >= 1) && seed.rows.length === per.reduce((a, r) => a + r.length, 0) && seed.rows.every((r) => r.run_id === null && r.tool_call_id === null)
-    && per.every((r, i) => entryCount(A, NEW_IDS[i]) === before.n[i] + r.length) && seed.results.limited === "TELEGRAM_RATE_LIMITED" && seed.results.rated === "rating_captured" && seed.results.fused === "GLOBAL_BUDGET_FUSE",
-    `rows per id ${per.map((r) => r.length).join("/")} (want >=1 each) · pairs ${seed.rows.map((r) => `${r.verdict}/${r.reason_code}`).join(",")} · results ${J(seed.results).replace(/"/g, "")}`);
+  const snapF = { counts: counts(F), keys: keysOf(F), schema: schemaOf(F), hash: rowsHash(F, seedIds), content: contentOf(F) };
+  const snapA = { counts: counts(A), keys: keysOf(A), schema: schemaOf(A), content: contentOf(A) };
+  const got = seed.rows.map((r) => [r.entry_id, r.verdict, r.reason_code]);
+  check("this build wrote exactly the three expected rows through Gateway.intake: intake.rate_limit limit/command_window, intake.rating_reply consume/bare_digit, intake.budget_fuse refuse/runs, each with run_id and tool_call_id null, and nothing else",
+    same(got, EXPECTED) && seed.rows.every((r) => r.run_id === null && r.tool_call_id === null) && NEW_IDS.every((id, i) => entryCount(F, id) === before.n[i] + 1)
+    && snapF.counts.decisions === snapA.counts.decisions + 3 && seed.results.limited === "TELEGRAM_RATE_LIMITED" && seed.results.rated === "rating_captured" && seed.results.fused === "GLOBAL_BUDGET_FUSE",
+    `rows ${got.map((r) => r.join("/")).join(" ")} · results ${J(seed.results).replace(/"/g, "")} · decisions A ${snapA.counts.decisions} F ${snapF.counts.decisions}`);
   await yieldLoop();
   const now = new Date(Date.now() + 60_000).toISOString();
-  phase = "old build on A"; const old = await oldSteps(ctx, A, now);
-  check("aec1d4f opened the copy and every step (/status, digest, /status decisions, list, review_ok) completed without throwing", true);
+  phase = "old build on A"; const oa = await oldSteps(ctx, A, now);
+  await yieldLoop();
+  phase = "old build on F"; const of = await oldSteps(ctx, F, now);
+  check("aec1d4f opened both copies and every step (/status, digest, /status decisions, list, review_ok) completed without throwing", true);
   phase = "compare";
-  const after = counts(A); const schemaAfter = schemaOf(A);
-  check("aec1d4f ran no migration: the schema (every object's sql and user_version) is identical before and after its open",
-    same(snap.schema, old.schemaAfterOpen) && same(snap.schema, schemaAfter) && same(before.schema, snap.schema), `${snap.schema.hash} uv ${snap.schema.uv} -> ${schemaAfter.hash} uv ${schemaAfter.uv}`);
-  const keysAfter = keysOf(A); const gone = lost(snap.keys, keysAfter);
-  const hashAfter = rowsHash(A, seedIds);
-  check("every stored decision row is present after aec1d4f: count unchanged, no key lost, the seeded rows byte-identical, and its list reads every row (the digest omits null-run rows by design)",
-    after.decisions === snap.counts.decisions && old.decisionsOnOpen === snap.counts.decisions && gone.every((n) => n === 0) && hashAfter === snap.hash && seedIds.every((k) => keysAfter.decisions.has(k))
-    && old.listedAll === after.decisions && old.listedNew === seed.rows.length + before.n.reduce((a, b) => a + b, 0),
-    `decisions ${snap.counts.decisions} -> ${after.decisions} · keys lost ${gone.join("/")} (${TABLES.join("/")}) · seeded hash ${snap.hash} -> ${hashAfter} · list reads ${old.listedAll}/${after.decisions}, of which new ids ${old.listedNew}`);
-  const win = windowCounts(A, now);
-  check("aec1d4f's /status carries exactly one count line per new id, each total equal to the SQL count over its window; its digest and list render",
-    totalsMatch(old.status, win) && old.digestLines > 0 && old.list >= 1, `lines ${J(lineTotals(old.status)).replace(/"/g, "")} vs SQL ${J(win).replace(/"/g, "")} · digest ${old.digestLines} lines · list ${old.list} rows`);
-  const refused = NEW_IDS.every((id) => old.outcomes[id] === "OutcomeRejected:value not allowed for review_ok") && old.outcomes["tool.policy"] === "inserted:true";
-  check("aec1d4f refuses review_ok naming intake.rate_limit, intake.rating_reply and intake.budget_fuse (normal OutcomeRejected, no crash; a valid id is accepted)", refused, J(old.outcomes).replace(/"/g, ""));
-  const grown = TABLES.filter((t) => t !== "decision_outcomes").filter((t) => after[t] !== snap.counts[t]);
-  check("aec1d4f wrote nothing else: no table but decision_outcomes (its one valid-id probe) changed its count, and that grew by exactly 1",
-    grown.length === 0 && after.decision_outcomes - snap.counts.decision_outcomes === 1, `${TABLES.map((t) => `${t} ${snap.counts[t]}->${after[t]}`).join(" · ")}`);
-  phase = "reopen A"; const s = openStore(dNew, A);
+  const [aA, aF, schA, schF] = [counts(A), counts(F), schemaOf(A), schemaOf(F)];
+  check("aec1d4f ran no migration: the schema (every object's sql and user_version) is identical before and after its open, on A and F, and A equals F",
+    same(snapA.schema, oa.schemaAfterOpen) && same(snapF.schema, of.schemaAfterOpen) && same(snapA.schema, schA) && same(snapF.schema, schF) && same(snapA.schema, snapF.schema) && same(before.schema, snapF.schema),
+    `${snapF.schema.hash} uv ${snapF.schema.uv} -> A ${schA.hash} / F ${schF.hash}`);
+  const keysF = keysOf(F); const gone = lost(snapF.keys, keysF); const goneA = lost(snapA.keys, keysOf(A));
+  const hashAfter = rowsHash(F, seedIds); const contentF = contentOf(F); const contentA = contentOf(A);
+  check("every decisions row is intact after aec1d4f, on A and F: count unchanged, no key lost, every row's full content equal to SQL before it opened (as SQL after, and as the old build read it), and its list reads every row (the digest omits null-run rows by design)",
+    aF.decisions === snapF.counts.decisions && aA.decisions === snapA.counts.decisions && [...gone, ...goneA].every((n) => n === 0) && hashAfter === snapF.hash
+    && same(contentF, snapF.content) && same(contentA, snapA.content) && same(of.read, [...snapF.content].sort()) && same(oa.read, [...snapA.content].sort())
+    && of.listedAll === aF.decisions && oa.listedAll === aA.decisions && of.listedNew === seed.rows.length + before.n.reduce((a, b) => a + b, 0),
+    `decisions A ${snapA.counts.decisions} -> ${aA.decisions}, F ${snapF.counts.decisions} -> ${aF.decisions} · keys lost ${[...gone, ...goneA].reduce((a, b) => a + b, 0)} · rows compared whole ${snapF.content.length + snapA.content.length} · old build read ${of.read.length}/${oa.read.length} · new ids listed ${of.listedNew} on F`);
+  const bad = renderBad(oa, of, seed.rows, mOld.deciderLabel);
+  const [winA, winF] = [windowCounts(A, now), windowCounts(F, now)];
+  check("A vs F as rendered by aec1d4f: digest equal except the captured rating's own Watch line (+1 unattached rating; it prints no per-entry lines, spec §5), /status differs only in the three new-id count lines (each total = SQL window count), recent list = A's with the three seeded rows on top",
+    bad.length === 0 && totalsMatch(oa.status, winA) && totalsMatch(of.status, winF) && NEW_IDS.every((id) => winF[id] === winA[id] + 1),
+    bad.length ? bad.join("; ") : `F lines ${J(lineTotals(of.status)).replace(/"/g, "")} vs SQL ${J(winF).replace(/"/g, "")} · A lines ${J(lineTotals(oa.status)).replace(/"/g, "")} · digest ${of.digest.length} lines (A ${oa.digest.length}) equal but the unattached-rating line · list ${of.listText.length - 1} rows`);
+  check("aec1d4f refuses review_ok naming intake.rate_limit, intake.rating_reply and intake.budget_fuse (normal OutcomeRejected, no crash; a valid id is accepted) on A and F",
+    [oa, of].every((x) => NEW_IDS.every((id) => x.outcomes[id] === OUT_REJ) && x.outcomes["tool.policy"] === "inserted:true") && same(oa.outcomes, of.outcomes), `A ${J(oa.outcomes)} · F ${J(of.outcomes)}`.replace(/"/g, ""));
+  const grew = (x, y) => TABLES.map((t) => y[t] - x[t]);
+  check("aec1d4f wrote the same rows to A and F: only decision_outcomes grew, by exactly 1 (its valid-id probe)",
+    same(grew(snapA.counts, aA), grew(snapF.counts, aF)) && TABLES.every((t) => grew(snapF.counts, aF)[t === "x" ? 0 : TABLES.indexOf(t)] === (t === "decision_outcomes" ? 1 : 0)), `growth ${TABLES.map((t, i) => `${t} ${grew(snapA.counts, aA)[i]}/${grew(snapF.counts, aF)[i]}`).join(" · ")} (A/F)`);
+  phase = "reopen F"; const s = openStore(dNew, F);
   const re = mNew.decisionStatusLines(s, now);
-  const reRows = s.listRecentDecisions(100_000).length;
+  const reRows = s.listRecentDecisions(100_000).map(canonRow).sort();
   closeStore(s);
-  const keys3 = keysOf(A);
-  check("this build reopens the copy: the seeded rows are intact, every decision row is listed, nothing lost, and the three new-id /status lines equal the SQL counts",
-    rowsHash(A, seedIds) === snap.hash && reRows === after.decisions && lost(keysAfter, keys3).every((n) => n === 0) && totalsMatch(re, windowCounts(A, now)),
-    `rows listed ${reRows}/${after.decisions} · lines ${J(lineTotals(re)).replace(/"/g, "")}`);
+  check("this build reopens F: every decisions row's full content is unchanged, nothing lost, and the three new-id /status lines equal the SQL counts",
+    same(contentOf(F), snapF.content) && same(reRows, [...snapF.content].sort()) && lost(keysF, keysOf(F)).every((n) => n === 0) && totalsMatch(re, windowCounts(F, now)),
+    `rows read ${reRows.length}/${snapF.content.length} · lines ${J(lineTotals(re)).replace(/"/g, "")}`);
 }
 
 function restoreEnv() { for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; } }
