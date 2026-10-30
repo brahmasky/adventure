@@ -79,6 +79,12 @@ describe("memory.lesson_admit: the backstop seam", () => {
     expect(h.rows).toEqual([["memory.lesson_admit", "refuse", "lesson_backstop"], ["memory.lesson_admit", "refuse", "fact_backstop"]]);
     expect(h.saves).toEqual([]);
   });
+  it("a kind rule distill whose lesson the backstop rejects, with no fact, records one lesson_backstop row and saves nothing", async () => {
+    const h = harness({ distill: JSON.stringify({ kind: "rule", lesson: REFUSED_LESSON }), prior: REFUSED_LESSON });
+    await h.run();
+    expect(h.rows).toEqual([["memory.lesson_admit", "refuse", "lesson_backstop"]]);
+    expect(h.saves).toEqual([]);
+  });
   it("a clean save makes no record call at all", async () => {
     let calls = 0;
     const h = harness({ record: { record: () => { calls += 1; return null; } } });
