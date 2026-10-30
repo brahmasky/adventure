@@ -2724,7 +2724,9 @@ export class CoreWorker {
       outcome.result = { ok: true, output: { saved: false, kinds: [], items: [], reason: "save_failed" } };
     } finally {
       // memory.kind's row, once, when the save transaction did not carry it, and memory.lesson_admit's rows; a lost turn writes no decisions row (ruling 14)
-      if (!o.signal?.aborted && this.ompTurns.get(claim.run_id) === state) { held.write(); admit.write(); }
+      if (!o.signal?.aborted && this.ompTurns.get(claim.run_id) === state) {
+        try { held.write(); } finally { admit.write(); }
+      }
     }
     this.recordNotSaved(claim.run_id, outcome, o.source);
     return outcome;

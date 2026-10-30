@@ -107,6 +107,19 @@ describe("runMemoryWrite: memory.lesson_admit and the lost-turn rule", () => {
     h.store.close();
   });
 
+  it("memory.kind's held write throwing past the recorder still writes the admit row on a live turn", async () => {
+    // Why it matters: the two flushes are independent; one lost row must not take the other with it.
+    const h = setup(REFUSED_LESSON_WITH_FACT);
+    const { run_id, claim } = liveTurn(h);
+    const recorder = (h.worker as unknown as { decisionRecorder: { record: (entry: { id: string }, ...rest: unknown[]) => unknown } }).decisionRecorder;
+    const real = recorder.record.bind(recorder);
+    vi.spyOn(recorder, "record").mockImplementation((entry, ...rest) => { if (entry.id === "memory.kind") throw new Error("kind write failed"); return real(entry, ...rest); });
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    await h.worker.runMemoryWrite(claim, CHAT, {}, { source: "loop" }).catch(() => undefined);
+    expect(admitRows(h.store, run_id)).toEqual([["refuse", "lesson_backstop"]]);
+    h.store.close();
+  });
+
   it("a store insert fault opens decision_record_failed and leaves the result unchanged", async () => {
     const base = setup(REFUSED_LESSON_WITH_FACT);
     const b = scheduleRun(base.store);
