@@ -7,7 +7,7 @@
 // must hold none (checked in project). No Date override here: wall-clock columns are compared by presence only.
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { DISTS, mkStore, mkTemp, requireNew } from "../stage4-diff-lib.mjs";
+import { DISTS, mkStore, mkTemp, relabelClocks, requireNew } from "../stage4-diff-lib.mjs";
 import { scrubIds } from "../stage4-bind-fixture.mjs";
 import { adminWorker } from "../stage4-admit-fixture.mjs";
 
@@ -64,7 +64,7 @@ const ITEMS_WORKER_BASE = [
   { name: "backstop", tags: ["backstop"], distill: LESSON_REFUSED_FACT_OK, expect: [A("lesson_backstop")] },
   { name: "abort", tags: ["abort"], distill: LESSON_REFUSED_FACT_OK, hook: "abort", expect: [] },
   { name: "replaced", tags: ["replaced"], distill: LESSON_REFUSED_FACT_OK, hook: "replace", expect: [] },
-  { name: "race", tags: ["race"], distill: LESSON_REFUSED_FACT_OK, hook: "race", expect: [A("lesson_backstop")] }
+  { name: "race", tags: ["race"], distill: LESSON_REFUSED_FACT_OK, hook: "race", reason: "already_saved_this_turn", expect: [A("lesson_backstop")] }
 ];
 const ITEMS_WORKER = ITEMS_WORKER_BASE.flatMap((b) => ["loop", "lane"].map((source) => (
   { ...b, key: `w:${b.name}:${source}`, tags: ["worker", source, ...b.tags], source })));
@@ -73,14 +73,8 @@ const BRANCHES = ["adapter", "worker", "loop", "lane", "scheduled", "saved", "ow
 
 const rows = (store, sql) => store.db.prepare(sql).all();
 const CLOCK = /(_at|^valid_from|^valid_until|^last_seen)$/;
-/** Wall-clock instants vary per run: only whether each is set is compared. */
-const clockPresence = (r) => Object.fromEntries(Object.entries(r).map(([k, v]) => [k, CLOCK.test(k) ? (v == null ? null : "<set>") : parseJson(k, v)]));
-/** A *_json column is parsed so a wall-clock key inside it (a lease expiry) is compared by presence too. */
-function parseJson(k, v) {
-  if (!k.endsWith("_json") || typeof v !== "string") return v;
-  try { return deepPresence(JSON.parse(v)); } catch { return v; }
-}
-const deepPresence = (v) => (Array.isArray(v) ? v.map(deepPresence) : v && typeof v === "object" ? clockPresence(v) : v);
+/** Wall-clock instants vary per run: relabelClocks keeps their order and equality (t#1, t#2, ...), not the values (see its doc). */
+const isClock = (k) => /(_at|^valid_from|^valid_until|^last_seen)$/.test(k);
 const DEC_SQL = "SELECT entry_id, tool_call_id, stage, rung, verdict, reason_code, armed_mode, fallback_reason FROM decisions ORDER BY rowid";
 
 // ---- adapter level ----
@@ -150,7 +144,7 @@ async function projectWorker(d, item) {
   const store = mkStore(d, "bare", join(root, "memadmit.sqlite"));
   try {
     if (item.plant) { mkdirSync(join(root, "project", "src"), { recursive: true }); writeFileSync(join(root, "project", "src", "x.ts"), `export const LABEL = "Zebra Quartz Label";\n`); }
-    const hooks = { fire: () => undefined };
+    const hooks = { n: 0, fire: () => undefined };
     const worker = adminWorker(d, root, store, { llm: seat(item.distill), embed: async () => { hooks.fire(); return new Float32Array([0.1, 0.2]); } });
     const run_id = seedRuns(d, store, item);
     const claim = store.claimRun(run_id, "w", 120);
@@ -159,19 +153,18 @@ async function projectWorker(d, item) {
     const turns = worker.ompTurns;
     const ac = new AbortController();
     if (item.hook === "prior_save") turns.get(run_id).memorySavedThisTurn = { lesson: { id: 5 } };
-    if (item.hook === "abort") hooks.fire = () => ac.abort();
-    if (item.hook === "replace") hooks.fire = () => turns.set(run_id, { ...turns.get(run_id) });
-    if (item.hook === "race") hooks.fire = () => { turns.get(run_id).memorySavedThisTurn = { fact: { id: 99 } }; };
+    if (item.hook === "abort") hooks.fire = () => { hooks.n += 1; ac.abort(); };
+    if (item.hook === "replace") hooks.fire = () => { hooks.n += 1; turns.set(run_id, { ...turns.get(run_id) }); };
+    if (item.hook === "race") hooks.fire = () => { hooks.n += 1; turns.get(run_id).memorySavedThisTurn = { fact: { id: 99 } }; };
     const out = await worker.runMemoryWrite(claim, CHAT, {}, { source: item.source, signal: ac.signal });
-    if (item.hook === "abort" && !ac.signal.aborted) throw new Error("hook did not fire inside the save");
     const decisions = rows(store, DEC_SQL);
     if (d.dir !== DISTS.new && decisions.some((r) => r.entry_id === "memory.lesson_admit")) throw new Error("control failed: the old build wrote memory.lesson_admit rows");
     const view = { result: out.result, committed: out.committed, saved: out.saved ?? null,
-      ledger: rows(store, "SELECT event_type, actor, sequence, payload_json FROM ledger_events ORDER BY rowid").map(clockPresence),
-      lessons: rows(store, "SELECT * FROM lessons ORDER BY rowid").map(clockPresence),
-      episodic_facts: rows(store, "SELECT * FROM episodic_facts ORDER BY id").map(clockPresence),
-      memory_changes: rows(store, "SELECT * FROM memory_changes ORDER BY rowid").map(clockPresence), decisions };
-    return scrubIds(view, [root]);
+      ledger: rows(store, "SELECT event_type, actor, sequence, payload_json FROM ledger_events ORDER BY rowid"),
+      lessons: rows(store, "SELECT * FROM lessons ORDER BY rowid"),
+      episodic_facts: rows(store, "SELECT * FROM episodic_facts ORDER BY id"),
+      memory_changes: rows(store, "SELECT * FROM memory_changes ORDER BY rowid"), decisions, hook_fired: hooks.n };
+    return scrubIds(relabelClocks(view, isClock), [root]);
   } finally { try { store.close(); } catch { /* closed */ } }
 }
 
@@ -181,6 +174,8 @@ function required(d, item, proj) {
   const got = proj.decisions.filter((r) => r.entry_id === "memory.lesson_admit").map((r) => [r.verdict, r.reason_code]);
   requireNew(corpus, item, "memory.lesson_admit rows", JSON.stringify(got) === JSON.stringify(item.expect), `got ${JSON.stringify(got)}, want ${JSON.stringify(item.expect)}`);
   if (item.level === "adapter") return;
+  if (["abort", "replace", "race"].includes(item.hook)) requireNew(corpus, item, "the hook fired inside the save", proj.hook_fired > 0, `fired ${proj.hook_fired}`);
+  if (item.reason) requireNew(corpus, item, "result reason", proj.result?.output?.reason === item.reason, `got ${proj.result?.output?.reason}`);
   const other = proj.decisions.filter((r) => r.entry_id !== "memory.lesson_admit" && r.entry_id !== "memory.kind");
   requireNew(corpus, item, "no other decision rows", other.length === 0, [...new Set(other.map((r) => r.entry_id))].join(","));
 }

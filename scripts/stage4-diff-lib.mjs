@@ -255,3 +255,36 @@ export function requireNew(corpus, item, name, ok, detail = "") {
   return ok;
 }
 const ordinals = new WeakMap();
+
+/**
+ * Ordered relabelling of wall-clock values (replaces "set / not set" reduction). Walks the whole projection; every string value under a key
+ * `isClockKey(key)` accepts is collected, the distinct values are sorted ascending and each is renamed `t#1`, `t#2`, ... (equal values share
+ * a label, order is kept; null/undefined stay as they are). A `*_json` string is parsed first, so keys embedded in it (a lease expiry) are
+ * relabelled too. Call it BEFORE the harness strips by key name: a stripped created_at still occupies a rank, so what is compared is the
+ * ORDER and EQUALITY of the kept clocks among all clocks (e.g. valid_from == the fact's created_at shows as the same rank), never the
+ * absolute instants or the gaps between them. Returns a new value; the input is untouched.
+ */
+export function relabelClocks(projection, isClockKey) {
+  const prep = (v) => {
+    if (Array.isArray(v)) return v.map(prep);
+    if (!v || typeof v !== "object") return v;
+    return Object.fromEntries(Object.entries(v).map(([k, x]) => {
+      if (k.endsWith("_json") && typeof x === "string") { try { return [k, prep(JSON.parse(x))]; } catch { return [k, x]; } }
+      return [k, prep(x)];
+    }));
+  };
+  const tree = prep(projection);
+  const seen = new Set();
+  const collect = (v) => {
+    if (Array.isArray(v)) v.forEach(collect);
+    else if (v && typeof v === "object") for (const [k, x] of Object.entries(v)) { if (isClockKey(k) && typeof x === "string") seen.add(x); else collect(x); }
+  };
+  collect(tree);
+  const label = new Map([...seen].sort().map((t, i) => [t, `t#${i + 1}`]));
+  const apply = (v) => {
+    if (Array.isArray(v)) return v.map(apply);
+    if (!v || typeof v !== "object") return v;
+    return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, isClockKey(k) && typeof x === "string" ? label.get(x) : apply(x)]));
+  };
+  return apply(tree);
+}

@@ -3,7 +3,7 @@
 // Compared: each step's result, episodic_facts, memory_changes, ledger events and decisions. memory.correct_preflight rows are filtered by the
 // harness (NEW_ROW_IDS.s4b) and REQUIRED on the new side, read through the dist's real storeRecorder (the default `allow` is not stored).
 import { join } from "node:path";
-import { DISTS, mkStore, mkTemp, requireNew } from "../stage4-diff-lib.mjs";
+import { DISTS, mkStore, mkTemp, relabelClocks, requireNew } from "../stage4-diff-lib.mjs";
 import { scrubIds, makeRun } from "../stage4-bind-fixture.mjs";
 
 const CHAT = "555";
@@ -35,8 +35,8 @@ const BRANCHES = ["not_operator_turn", "tainted_turn", "too_many_ids", "too_many
 // Full rows (SELECT *): created_at/updated_at-style columns are dropped by the harness's STRIP_KEYS; an embedding blob, if a row ever carries one,
 // would need a per-item __strip (none is written here: embed returns null, so the column stays NULL). Ids are relabelled by scrubIds.
 const rows = (store, sql) => store.db.prepare(sql).all();
-/** valid_from / valid_until are wall-clock instants a retire or correct stamps: the value varies per run, so only whether each is set is compared. */
-const clockPresence = (r) => ({ ...r, valid_from: r.valid_from == null ? null : "<set>", valid_until: r.valid_until == null ? null : "<set>" });
+/** valid_from / valid_until / created_at-style instants vary per run: relabelClocks keeps their order and equality (t#1, t#2, ...), not the values. */
+const isClock = (k) => /(_at|^valid_from|^valid_until|^last_seen)$/.test(k);
 
 async function runSteps(d, store, item, run_id) {
   const state = { offered: { fact: new Set(item.offered), wiki: new Set() }, changed: item.changed ?? 0 };
@@ -60,8 +60,8 @@ async function project(d, item) {
     const steps = await runSteps(d, store, item, run_id);
     const decisions = rows(store, `SELECT entry_id, tool_call_id, stage, rung, verdict, reason_code, armed_mode, fallback_reason FROM decisions ORDER BY rowid`);
     if (d.dir !== DISTS.new && decisions.some((r) => r.entry_id === "memory.correct_preflight")) throw new Error("control failed: the old build wrote memory.correct_preflight rows");
-    return { ...scrubIds({ steps, episodic_facts: rows(store, `SELECT * FROM episodic_facts ORDER BY id`).map(clockPresence),
-      memory_changes: rows(store, `SELECT * FROM memory_changes ORDER BY rowid`), ledger: rows(store, `SELECT event_type, actor, sequence, payload_json FROM ledger_events ORDER BY rowid`), decisions }),
+    return { ...scrubIds(relabelClocks({ steps, episodic_facts: rows(store, `SELECT * FROM episodic_facts ORDER BY id`),
+      memory_changes: rows(store, `SELECT * FROM memory_changes ORDER BY rowid`), ledger: rows(store, `SELECT event_type, actor, sequence, payload_json FROM ledger_events ORDER BY rowid`), decisions }, isClock)),
     };
   } finally { try { store.close(); } catch { /* closed */ } }
 }
