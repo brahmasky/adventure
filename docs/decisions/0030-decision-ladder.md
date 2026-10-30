@@ -1,6 +1,6 @@
 # ADR 0030: Decision ladder — every decision on one list, a ladder of deciders, improved from outcomes
 
-- **Status:** accepted 2026-10-12 (design approved by Paco section by section, 2026-10-12; rulings R12 (what Jev may cause depends on what it read) and R13 (no off switch, no designed shadow) the same day; the numbered rulings are in spec §2); amended 2026-10-13 (stage 2a), 2026-10-17 (memory.kind), 2026-10-20/2026-10-21 (stage 2b-i), 2026-10-22 (stage 2b-ii), and 2026-10-23 (Jev version check: a model/version move is now judged by the protected version check instead of paging `decision_bar_stale`; `decision_bar_stale` is retired, left only to resolve incidents older builds opened)
+- **Status:** accepted 2026-10-12 (design approved by Paco section by section, 2026-10-12; rulings R12 (what Jev may cause depends on what it read) and R13 (no off switch, no designed shadow) the same day; the numbered rulings are in spec §2); amended 2026-10-13 (stage 2a), 2026-10-17 (memory.kind), 2026-10-20/2026-10-21 (stage 2b-i), 2026-10-22 (stage 2b-ii), and 2026-10-23 (Jev version check: a model/version move is now judged by the protected version check instead of paging `decision_bar_stale`; `decision_bar_stale` is retired, left only to resolve incidents older builds opened); 2026-10-28 (clean-room runtime, P8 closed; Stage 4A standing approval) and 2026-10-29 (Stage 4B: `approval.bind`, `secret.redact`), all three signed off by Paco 2026-10-30
 - **Date:** 2026-10-12
 - **Deciders:** Paco
 - **Amends:** [0029](0029-jev-system-one.md) (the front door becomes the `turn.handler` entry; decision 2 applications;
@@ -572,7 +572,7 @@ plan: [2026-10-21-ladder-2b-ii-improve-route.md](../superpowers/plans/2026-10-21
   (2026-10-22): `src/skills/promote.ts` (nothing reaches the active skills tree without Paco's tap) and
   `src/gateway/improvement-commands.ts` (taps are chat-bound and state-fenced) joined `PROTECTED_FILES`; the rest of `src/gateway/` is not protected.
 
-## Amendment (2026-10-28): clean-room runtime landed; P8 closed (drafted under the approved Slice 1 spec — awaiting Paco's signature)
+## Amendment (2026-10-28): clean-room runtime landed; P8 closed (signed off by Paco 2026-10-30)
 
 This file is protected (ADR 0011); this amendment is drafted for Paco's hand. Spec:
 `docs/superpowers/specs/2026-10-28-ladder-cleanroom-runtime-slice1-design.md` (Rev 5, approved 2026-10-28, reading A of
@@ -614,7 +614,7 @@ This file is protected (ADR 0011); this amendment is drafted for Paco's hand. Sp
   `src/capabilities/coding-agent.ts`, this ADR and its index row, `AGENTS.md` (one Commands line).
 
 
-## Amendment (2026-10-28): Stage 4A, standing approval for a scheduled command (drafted under the approved spec — awaiting Paco's signature)
+## Amendment (2026-10-28): Stage 4A, standing approval for a scheduled command (signed off by Paco 2026-10-30)
 
 This file is protected (ADR 0011); this amendment is drafted for Paco's hand. Spec: `docs/superpowers/specs/2026-10-28-ladder-stage4a-standing-approval-design.md` (Rev 4, approved 2026-10-28, Decision 1-A).
 
@@ -631,7 +631,7 @@ This file is protected (ADR 0011); this amendment is drafted for Paco's hand. Sp
 - **Open window (from the spec §9):** until SP3 moves the self-write test gate to its own macOS user, a concurrent test gate can write into `<cache>/cleanroom/` as Paco; the post-run tamper check catches a plant that persists.
 - **Rollback:** revert + rebuild; the previous build never reads the tables and asks again (`scripts/check-standing-rollback.mjs`). Note for a roll-forward after a rollback: a denial made while the previous build ran does not end a row (that build has no deny hook) — revoke such a row by hand from `/schedule`.
 
-## Amendment (2026-10-29): Stage 4B, `approval.bind` and `secret.redact` on the ladder (drafted under the approved spec — awaiting Paco's signature)
+## Amendment (2026-10-29): Stage 4B, `approval.bind` and `secret.redact` on the ladder (signed off by Paco 2026-10-30)
 
 This file is protected (ADR 0011); this amendment is drafted for Paco's hand. Spec: `docs/superpowers/specs/2026-10-29-ladder-stage4b-bind-redact-design.md` (Rev 2, approved 2026-10-29, Decisions 1-A, 2-A, 3-A). Plan: `docs/superpowers/plans/2026-10-29-stage4b-bind-redact.md`.
 
