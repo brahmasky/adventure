@@ -331,7 +331,7 @@ async function run(ctx) {
   Object.assign(snap, { a1: counts(A), ka1: keysOfFull(A), schemaA1: schemaOf(A), hashA1: rowsHash(A, seed.seedKeys) });
   const r = seed.results;
   const oneEach = NEW_IDS.every((id) => seed.delta[id] === 1 && entryCount(A, id) === snap.newF0[NEW_IDS.indexOf(id)] + 1);
-  check("this build seeded A through its own call sites: one row of each new id with the expected verdict, the F copy holds none",
+  check("this build seeded A through its own call sites: one row of each new id with the expected verdict, added to whatever the F copy already held",
     oneEach && r.lesson.ok && r.sched.ok && r.pre.ok && same(r.lesson.rows, [["refuse", "scheduled_run"]]) && same(r.sched.rows, [["admit", "create"]]) && same(r.pre.rows, [["refuse", "not_offered"]])
     && snap.a1.decisions - snap.f0.decisions === Object.values(seed.delta).reduce((a, b) => a + b, 0),
     `seed delta by entry ${J(seed.delta).replace(/"/g, "")} · by decider ${J(seed.rungs).replace(/"/g, "")} · F rows of new ids ${snap.newF0.join("/")} (want 0/0/0 or the copy's own)`);

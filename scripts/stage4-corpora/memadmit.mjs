@@ -165,7 +165,7 @@ async function projectWorker(d, item) {
       episodic_facts: rows(store, "SELECT * FROM episodic_facts ORDER BY id"),
       memory_changes: rows(store, "SELECT * FROM memory_changes ORDER BY rowid"), decisions, hook_fired: hooks.n };
     // per-side check for required(): every new row sits on this item's own run (outside the compared view, listed in __strip)
-    return { ...scrubIds(relabelClocks(view, isClock), [root]), run_ok: store.db.prepare("SELECT run_id FROM decisions WHERE entry_id = ?").all("memory.lesson_admit").every((r) => r.run_id === run_id), __strip: ["run_ok"] };
+    return { ...scrubIds(relabelClocks(view, isClock), [root]), run_ok: store.db.prepare("SELECT run_id, tool_call_id FROM decisions WHERE entry_id = ?").all("memory.lesson_admit").every((r) => r.run_id === run_id && r.tool_call_id === null), __strip: ["run_ok"] };
   } finally { try { store.close(); } catch { /* closed */ } }
 }
 
@@ -175,7 +175,7 @@ function required(d, item, proj) {
   const got = proj.decisions.filter((r) => r.entry_id === "memory.lesson_admit").map((r) => [r.verdict, r.reason_code]);
   requireNew(corpus, item, "memory.lesson_admit rows", JSON.stringify(got) === JSON.stringify(item.expect), `got ${JSON.stringify(got)}, want ${JSON.stringify(item.expect)}`);
   if (item.level === "adapter") return;
-  requireNew(corpus, item, "memory.lesson_admit rows attached to the item's own run", proj.run_ok === true);
+  requireNew(corpus, item, "memory.lesson_admit rows attached to the item's own run with no tool call id", proj.run_ok === true);
   if (["abort", "replace", "race"].includes(item.hook)) requireNew(corpus, item, "the hook fired inside the save", proj.hook_fired > 0, `fired ${proj.hook_fired}`);
   if (item.reason) requireNew(corpus, item, "result reason", proj.result?.output?.reason === item.reason, `got ${proj.result?.output?.reason}`);
   const other = proj.decisions.filter((r) => r.entry_id !== "memory.lesson_admit" && r.entry_id !== "memory.kind");

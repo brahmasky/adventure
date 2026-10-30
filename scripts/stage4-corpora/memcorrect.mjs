@@ -62,14 +62,14 @@ async function project(d, item) {
     if (d.dir !== DISTS.new && decisions.some((r) => r.entry_id === "memory.correct_preflight")) throw new Error("control failed: the old build wrote memory.correct_preflight rows");
     return { ...scrubIds(relabelClocks({ steps, episodic_facts: rows(store, `SELECT * FROM episodic_facts ORDER BY id`),
       memory_changes: rows(store, `SELECT * FROM memory_changes ORDER BY rowid`), ledger: rows(store, `SELECT event_type, actor, sequence, payload_json FROM ledger_events ORDER BY rowid`), decisions }, isClock)),
-      run_ok: store.db.prepare("SELECT run_id FROM decisions WHERE entry_id = ?").all("memory.correct_preflight").every((r) => r.run_id === run_id), __strip: ["run_ok"] }; // per-side check for required(): every new row sits on this item's own run
+      run_ok: store.db.prepare("SELECT run_id, tool_call_id FROM decisions WHERE entry_id = ?").all("memory.correct_preflight").every((r) => r.run_id === run_id && r.tool_call_id === null), __strip: ["run_ok"] }; // per-side check for required(): every new row sits on this item's own run
   } finally { try { store.close(); } catch { /* closed */ } }
 }
 
 function required(d, item, proj) {
   const got = proj.decisions.filter((r) => r.entry_id === "memory.correct_preflight").map((r) => [r.verdict, r.reason_code]);
   requireNew(corpus, item, "memory.correct_preflight rows", JSON.stringify(got) === JSON.stringify(item.expect), `got ${JSON.stringify(got)}, want ${JSON.stringify(item.expect)}`);
-  requireNew(corpus, item, "memory.correct_preflight rows attached to the item's own run", proj.run_ok === true);
+  requireNew(corpus, item, "memory.correct_preflight rows attached to the item's own run with no tool call id", proj.run_ok === true);
   const other = proj.decisions.filter((r) => r.entry_id !== "memory.correct_preflight");
   requireNew(corpus, item, "no other decision rows", other.length === 0, [...new Set(other.map((r) => r.entry_id))].join(","));
 }
