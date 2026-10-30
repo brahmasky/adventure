@@ -32,6 +32,8 @@ const ITEMS = [
 ];
 const BRANCHES = ["not_operator_turn", "tainted_turn", "too_many_ids", "too_many_changes", "not_offered", "pass", "search", "bad_input", "pre", "write", "cleared"];
 
+// Full rows (SELECT *): created_at/updated_at-style columns are dropped by the harness's STRIP_KEYS; an embedding blob, if a row ever carries one,
+// would need a per-item __strip (none is written here: embed returns null, so the column stays NULL). Ids are relabelled by scrubIds.
 const rows = (store, sql) => store.db.prepare(sql).all();
 
 async function runSteps(d, store, item, run_id) {
@@ -56,8 +58,10 @@ async function project(d, item) {
     const steps = await runSteps(d, store, item, run_id);
     const decisions = rows(store, `SELECT entry_id, tool_call_id, stage, rung, verdict, reason_code, armed_mode, fallback_reason FROM decisions ORDER BY rowid`);
     if (d.dir !== DISTS.new && decisions.some((r) => r.entry_id === "memory.correct_preflight")) throw new Error("control failed: the old build wrote memory.correct_preflight rows");
-    return scrubIds({ steps, episodic_facts: rows(store, `SELECT id, fact, status, supersedes, superseded_by, corrected_count FROM episodic_facts ORDER BY id`),
-      memory_changes: rows(store, `SELECT * FROM memory_changes ORDER BY rowid`), ledger: rows(store, `SELECT event_type, actor, sequence, payload_json FROM ledger_events ORDER BY rowid`), decisions });
+    return { ...scrubIds({ steps, episodic_facts: rows(store, `SELECT * FROM episodic_facts ORDER BY id`),
+      memory_changes: rows(store, `SELECT * FROM memory_changes ORDER BY rowid`), ledger: rows(store, `SELECT event_type, actor, sequence, payload_json FROM ledger_events ORDER BY rowid`), decisions }),
+      // valid_until / valid_from: wall-clock instants a retire/correct stamps on the superseded and the new fact; they vary per run and carry no behaviour
+      __strip: ["valid_until", "valid_from"] };
   } finally { try { store.close(); } catch { /* closed */ } }
 }
 
@@ -68,5 +72,5 @@ function required(d, item, proj) {
   requireNew(corpus, item, "no other decision rows", other.length === 0, [...new Set(other.map((r) => r.entry_id))].join(","));
 }
 
-const corpus = { name: "memcorrect", pairs: [["s4b", "new"]], min: { items: ITEMS.length, branches: BRANCHES }, async load() { return ITEMS; }, project, required };
+const corpus = { name: "memcorrect", pairs: [["s4b", "new"]], min: { items: 19, branches: BRANCHES }, async load() { return ITEMS; }, project, required };
 export default corpus;

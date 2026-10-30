@@ -83,5 +83,5 @@ function required(d, item, proj) {
   requireNew(corpus, item, "no other decision rows", other.length === 0, [...new Set(other.map((r) => r.entry_id))].join(","));
 }
 
-const corpus = { name: "schedule", pairs: [["s4b", "new"]], min: { items: ITEMS.length, branches: BRANCHES }, async load() { return ITEMS; }, project, required };
+const corpus = { name: "schedule", pairs: [["s4b", "new"]], min: { items: 34, branches: BRANCHES }, async load() { return ITEMS; }, project, required };
 export default corpus;
