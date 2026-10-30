@@ -2701,11 +2701,12 @@ export class CoreWorker {
     if (!state) return { result: { ok: false, error: "no turn state for this run" }, committed: false };
     const outcome: MemoryWriteOutcome = { result: { ok: false, error: "memory write did not run" }, committed: false };
     const held = heldRecorder(this.decisionRecorder);
+    const admit = heldList(this.decisionRecorder);
     const sources = this.memorySourcesFor(claim, chatId, state);
     const adapter = createMemoryWriteAdapter({
       sources, allowedScopes: ["ask", "research"], defaultScope: state.anchor.defaultScope,
       llm: (i) => this.llmAdapterFor(claim.run_id, LESSON_WRITE_ROLES.distill)(i),
-      ...(o.askJev ? { askJev: o.askJev } : {}), escapes: o.escapes ?? false, recorder: held.recorder, run_id: claim.run_id, runSource: (r) => this.runStore.runSource(r),
+      ...(o.askJev ? { askJev: o.askJev } : {}), escapes: o.escapes ?? false, recorder: held.recorder, admitRecorder: admit.recorder, run_id: claim.run_id, runSource: (r) => this.runStore.runSource(r),
       // A scheduled run's objective is the stored schedule goal, not Paco: refused in code.
       scheduledRun: this.runStore.runSource(claim.run_id) === "schedule",
       // Layer routing (⓪·3 S1c): an instruction quoting a code-owned literal (verbatim in src/*.ts) is refused with a digest.
@@ -2721,8 +2722,8 @@ export class CoreWorker {
       console.error(`memory write: adapter threw: ${safeReason(error)}`);
       outcome.result = { ok: true, output: { saved: false, kinds: [], items: [], reason: "save_failed" } };
     } finally {
-      // memory.kind's row, once, when the save transaction did not carry it; a lost turn writes no decisions row (ruling 14)
-      if (!o.signal?.aborted && this.ompTurns.get(claim.run_id) === state) held.write();
+      // memory.kind's row, once, when the save transaction did not carry it, and memory.lesson_admit's rows; a lost turn writes no decisions row (ruling 14)
+      if (!o.signal?.aborted && this.ompTurns.get(claim.run_id) === state) { held.write(); admit.write(); }
     }
     this.recordNotSaved(claim.run_id, outcome, o.source);
     return outcome;
@@ -4581,6 +4582,19 @@ function heldRecorder(inner: DecisionRecorder): HeldRecorder {
     recorder: { record: (entry, r, ctx) => { row = [entry, r, ctx]; return null; } },
     write: () => { if (row && !done) inner.record(...row); },
     committed: () => { done = true; }
+  };
+}
+
+/** memory.lesson_admit's rows for one save (spec 2026-10-30 §4.1): kept in order, written once by runMemoryWrite's finally on a live turn. */
+function heldList(inner: DecisionRecorder): { recorder: DecisionRecorder; write: () => void } {
+  const rows: Array<Parameters<DecisionRecorder["record"]>> = [];
+  return {
+    recorder: { record: (entry, r, ctx) => { rows.push([entry, r, ctx]); return null; } },
+    write: () => {
+      for (const row of rows.splice(0)) {
+        try { inner.record(...row); } catch (e) { console.error(`decisions: ${row[0].id} record threw past the recorder: ${safeReason(e)}`); }
+      }
+    }
   };
 }
 

@@ -5,11 +5,12 @@ import { buildMemoryDistillQuestion, LESSON_AVOID_MAX_CHARS, LESSON_MAX_CHARS, M
   type MemoryKindChoice } from "./distill.js";
 import { safeReason } from "../domain/error-code.js";
 import { RATING_ACK_COMMENT_TEXT, RATING_ACK_TEXT, RATING_ASK_TEXT } from "./session-rating.js";
-import { decide } from "../decisions/decide.js";
+import { decide, decideSync } from "../decisions/decide.js";
+import { MEMORY_LESSON_ADMIT, type MemoryAdmitReason } from "../decisions/entries/memory-lesson-admit.js";
 import { MEMORY_KIND, memoryKindJevRung, type MemoryKindDetail, type MemoryKindVerdict } from "../decisions/entries/memory-kind.js";
 import type { DecisionRecorder, RungResult } from "../decisions/types.js";
 import type { MemoryKindAsk } from "../jev/memory-kind-ask.js";
-import { checkFactSide, checkLessonSide } from "./memory-backstops.js";
+import { checkFactSide, checkLessonSide, type FactSide, type LessonSide } from "./memory-backstops.js";
 import { evidenceLines, pacoTextOf, type MemorySources } from "./memory-sources.js";
 
 /**
@@ -158,6 +159,8 @@ export interface MemoryWriteAdapterConfig {
   escapes?: boolean;
   /** memory.kind's recorder (the worker holds the row for its save transaction) and the run it belongs to. */
   recorder: DecisionRecorder;
+  /** memory.lesson_admit's recorder (spec 2026-10-30 §4.1): a held list the worker flushes under the lost-turn rule; absent = no rows. */
+  admitRecorder?: DecisionRecorder;
   run_id: string;
   runSource: (run_id: string) => string | undefined;
   save: (plan: MemoryPlan, now: string) => Promise<MemorySaveResult>;
@@ -178,15 +181,16 @@ export interface MemoryWriteAdapterConfig {
 export function createMemoryWriteAdapter(c: MemoryWriteAdapterConfig): (input: Record<string, unknown>) => Promise<ToolAdapterResult> {
   return async (input) => {
     const early = memoryPreChecks(c);
-    if (early) return early;
+    if (early) { recordAdmit(c, "pre", preReasonOf(early)); return early; }
     const { scope, note } = clampScope(c, input);
     const owned = codeOwnedRefusal(c.sources.instruction.text, c, note);
-    if (owned) return owned;
+    if (owned) { recordAdmit(c, "pre", preReasonOf(owned)); return owned; }
     if (c.aborted?.()) return memoryResult({ items: [], reason: "turn_ended" }, scope, note);
     const kind = await decideMemoryKind(c, scope);
     if (c.aborted?.()) return memoryResult({ items: [], reason: "turn_ended" }, scope, note);
     if ("refused" in kind) return memoryResult({ items: [], reason: kind.refused }, scope, note);
     const { plan, items } = planOf(c, kind.distill, scope);
+    for (const i of items) recordAdmit(c, "backstop", i.reason !== undefined ? (SIDE_ADMIT as Readonly<Record<string, MemoryAdmitReason>>)[`${i.kind}:${i.reason}`] : undefined);
     if (!plan.lesson && !plan.fact) return memoryResult({ items }, scope, note);
     const now = (c.now?.() ?? new Date()).toISOString();
     try {
@@ -211,6 +215,21 @@ function memoryPreChecks(c: MemoryWriteAdapterConfig): ToolAdapterResult | null 
   if (c.sources.instruction.text.trim().length === 0) return { ok: false, error: "anchored instruction must be a non-empty string" };
   return null;
 }
+
+/** Today's early-return strings → memory.lesson_admit codes; the tool result keeps the strings. */
+/** Exported for the drift test (plan P5): its key set must equal the three early-return reason strings. */
+export const PRE_ADMIT: Readonly<Record<string, MemoryAdmitReason>> = { "scheduled-run": "scheduled_run", [ALREADY_SAVED_REASON]: "already_saved", "code-owned": "code_owned" };
+type SideKey = `rule:${Extract<LessonSide, { ok: false }>["reason"]}` | `fact:${Extract<FactSide, { ok: false }>["reason"]}`;
+/** Exhaustive by type: a new LessonSide/FactSide refusal reason fails typecheck here until it is mapped (plan P5). */
+export const SIDE_ADMIT: Readonly<Record<SideKey, MemoryAdmitReason>> = { "rule:rejected_by_backstop": "lesson_backstop", "fact:rejected_by_backstop": "fact_backstop", "fact:no_evidence": "fact_no_evidence" };
+
+/** Records one admit refusal (raw answer drives; the result is discarded, Stage 4B R1). */
+function recordAdmit(c: Pick<MemoryWriteAdapterConfig, "admitRecorder" | "run_id">, seam: "pre" | "backstop", refused: MemoryAdmitReason | undefined): void {
+  if (!c.admitRecorder || refused === undefined) return;
+  decideSync(MEMORY_LESSON_ADMIT, { seam, refused }, { run_id: c.run_id, tool_call_id: null, recorder: c.admitRecorder });
+}
+const preReasonOf = (r: ToolAdapterResult): MemoryAdmitReason | undefined =>
+  r.ok && typeof r.output.reason === "string" ? PRE_ADMIT[r.output.reason] : undefined;
 
 /** Scope is the ONLY model-controlled field: whitelist + clamp, never error. */
 function clampScope(c: { allowedScopes: readonly string[]; defaultScope: string }, input: Record<string, unknown>): { scope: string; note?: string } {
