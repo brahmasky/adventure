@@ -1,6 +1,6 @@
 # Decision ladder, stage 4 slice C — `memory.lesson_admit`, `schedule.admit` and `memory.correct_preflight` on the ladder (Rev 2.1)
 
-**Status:** Rev 2 — after the senior review (Sonnet; Fable rate-limited; probed live code + DB: 1 blocker, 6 warnings, 3 suggestions) and the codex review (4 blockers, 3 warnings, 1 suggestion); every finding applied (§Rev 2 changes); codex scoped re-review of Rev 2: 7 closed, 3 open → applied in Rev 2.1. Awaiting Paco's tap (Decisions 1, 2).
+**Status:** Rev 2 — after the senior review (Sonnet; Fable rate-limited; probed live code + DB: 1 blocker, 6 warnings, 3 suggestions) and the codex review (4 blockers, 3 warnings, 1 suggestion); every finding applied (§Rev 2 changes); codex scoped re-review of Rev 2: 7 closed, 3 open → applied in Rev 2.1. **APPROVED by Paco 2026-10-30: Decisions 1-A, 2-A.**
 **Date:** 2026-10-30
 **Amends:** `docs/ROADMAP.md` (the Stage 4 line); ADR 0030 gets an amendment row (drafted under the approved spec, awaiting Paco's signature).
 **Depends on:** ADR 0030 §4.1 (entry), §6.1 (inventory rows B9, B23), §6.2 (move, don't improve); ladder design `docs/superpowers/specs/2026-10-12-decision-ladder-design.md` §6.1 (`:377`); Stage 3 spec `2026-10-24-ladder-stage-3-pretool-safety-design.md` §2 (`:45`: "`memory.lesson_admit`, `schedule.admit` (stage 4, with trust/standing approvals)"); Stage 4B (`2026-10-29-ladder-stage4b-bind-redact-design.md`, shipped `17e72c2`) for the pattern and the differential harness.
