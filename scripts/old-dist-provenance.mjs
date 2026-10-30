@@ -31,21 +31,40 @@ export function distHash(dir) {
   return h.digest("hex");
 }
 
-/** A stamped old build (scripts/stamp-dist.mjs): stamp present, worktree clean, HEAD = stamp.head, dist hash = stamp, core-worker.js differs from the new build. */
-export function verifyStampedDist(oldDist, newDist) {
+/** An error carrying a closed `kind`; callers print provenanceText(kind), never the message. */
+export class ProvenanceError extends Error { constructor(kind, message) { super(message); this.kind = kind; } }
+const TEXT = {
+  base_unknown: "provenance: merge base unknown", stamp_missing: "provenance: stamp missing", not_worktree: "provenance: old dist parent is not a git worktree",
+  dirty: "provenance: dirty worktree", head_mismatch: "provenance: head is not the merge base", stamp_mismatch: "provenance: stamp is not for the merge base",
+  hash_mismatch: "provenance: dist hash mismatch", same_build: "provenance: same core-worker as new",
+};
+/** The fixed text for a failure of verifyStampedDist / mergeBaseOf; anything else is one generic line. */
+export const provenanceText = (e) => TEXT[e?.kind] ?? "provenance: failed";
+
+/** The full merge-base sha of HEAD and main in the new build's worktree root (the parent of newDist). */
+export function mergeBaseOf(newDist) {
+  try { return execFileSync("git", ["-C", dirname(newDist), "merge-base", "HEAD", "main"], { encoding: "utf8" }).trim(); }
+  catch { throw new ProvenanceError("base_unknown", "git merge-base failed"); }
+}
+
+/** A stamped old build (scripts/stamp-dist.mjs) pinned to `base` (full sha): stamp present and for `base`, worktree clean at `base`, dist hash = stamp, core-worker.js differs from the new build. */
+export function verifyStampedDist(oldDist, newDist, base) {
+  if (!/^[0-9a-f]{40}$/.test(base ?? "")) throw new ProvenanceError("base_unknown", "base must be a full sha");
   const worktree = dirname(oldDist);
   const stampPath = join(oldDist, STAMP);
-  if (!existsSync(stampPath)) throw new Error(`--old-dist-4b ${oldDist} has no ${STAMP}: run node scripts/stamp-dist.mjs ${worktree} first`);
-  const stamp = JSON.parse(readFileSync(stampPath, "utf8"));
+  if (!existsSync(stampPath)) throw new ProvenanceError("stamp_missing", "no stamp");
+  let stamp;
+  try { stamp = JSON.parse(readFileSync(stampPath, "utf8")); } catch { throw new ProvenanceError("stamp_missing", "stamp unreadable"); }
   let head, dirty;
   try {
     head = execFileSync("git", ["-C", worktree, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
     dirty = execFileSync("git", ["-C", worktree, "status", "--porcelain"], { encoding: "utf8" }).trim();
-  } catch (e) { throw new Error(`--old-dist-4b ${oldDist}: its parent ${worktree} is not a git worktree (${e instanceof Error ? e.message.split("\n")[0] : String(e)})`); }
-  if (dirty) throw new Error(`--old-dist-4b worktree ${worktree} is not clean`);
-  if (head !== stamp.head) throw new Error(`--old-dist-4b stamp is for ${String(stamp.head).slice(0, 12)} but the worktree HEAD is ${head.slice(0, 12)}: run node scripts/stamp-dist.mjs ${worktree} again`);
+  } catch { throw new ProvenanceError("not_worktree", "not a worktree"); }
+  if (dirty) throw new ProvenanceError("dirty", "dirty");
+  if (head !== base) throw new ProvenanceError("head_mismatch", "head != base");
+  if (stamp.head !== base) throw new ProvenanceError("stamp_mismatch", "stamp head != base");
   const hash = distHash(oldDist);
-  if (hash !== stamp.dist_sha256) throw new Error(`--old-dist-4b dist hash ${hash.slice(0, 12)} does not match its stamp ${String(stamp.dist_sha256).slice(0, 12)} (dist changed since stamping): run node scripts/stamp-dist.mjs ${worktree} again`);
-  if (sha256(join(oldDist, "core/core-worker.js")) === sha256(join(newDist, "core/core-worker.js"))) throw new Error(`--old-dist-4b has the same core/core-worker.js as the new build: it is not a previous build`);
+  if (hash !== stamp.dist_sha256) throw new ProvenanceError("hash_mismatch", "hash");
+  if (sha256(join(oldDist, "core/core-worker.js")) === sha256(join(newDist, "core/core-worker.js"))) throw new ProvenanceError("same_build", "same");
   return { head, hash };
 }

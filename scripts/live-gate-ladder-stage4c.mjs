@@ -15,7 +15,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync } from "node:
 import { dirname, join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { SetupError, canon, cleanupTemp, initTemp, loadDist, mkTemp, redactForPrint } from "./stage4-diff-lib.mjs";
-import { verifyStampedDist } from "./old-dist-provenance.mjs";
+import { mergeBaseOf, provenanceText, verifyStampedDist } from "./old-dist-provenance.mjs";
 import { adminWorker, scheduleRun } from "./stage4-admit-fixture.mjs";
 
 const DIST = resolve(new URL("../dist", import.meta.url).pathname);
@@ -297,7 +297,7 @@ async function line8() {
 async function setup() {
   const oldDist = arg("--old-dist");
   if (!oldDist) throw new SetupError("usage: --old-dist <merge-base dist> [--live-db <path>]");
-  try { verifyStampedDist(resolve(oldDist), DIST); } catch (e) { throw new SetupError(e instanceof Error ? e.message : "old dist provenance failed"); }
+  try { const base = mergeBaseOf(DIST); verifyStampedDist(resolve(oldDist), DIST, base); note(`old build pinned to merge base ${base.slice(0, 7)}`); } catch (e) { throw new SetupError(provenanceText(e)); }
   const liveDb = resolve(arg("--live-db") ?? join(dirname(resolve(process.env.HOUGE_ENV_FILE ?? join(process.cwd(), ".env"))), "houge.sqlite"));
   if (!existsSync(liveDb)) throw new SetupError("live DB not found (--live-db <path>)");
   const root = initTemp(false); G.root = root;

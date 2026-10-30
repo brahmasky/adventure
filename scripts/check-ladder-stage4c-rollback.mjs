@@ -24,7 +24,7 @@ import { pathToFileURL } from "node:url";
 import { dirname, join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { SetupError, cleanupTemp, initTemp, loadDist, mkTemp, runClosers } from "./stage4-diff-lib.mjs";
-import { verifyStampedDist } from "./old-dist-provenance.mjs";
+import { mergeBaseOf, provenanceText, verifyStampedDist } from "./old-dist-provenance.mjs";
 import { adminWorker, scheduleRun } from "./stage4-admit-fixture.mjs";
 
 const DIST = resolve(new URL("../dist", import.meta.url).pathname);
@@ -197,7 +197,7 @@ const norm = (l) => l.replace(/\b\d\d-\d\d \d\d:\d\d\b/g, "<ts>").replace(/\b[0-
   .replace(/\d{4}-\d\d-\d\d(?:T[\d:.]+Z?)?/g, "<ts>").replace(/\b\d\d:\d\d\b/g, "<ts>");
 function render(m, store, now) {
   const dg = m.buildDecisionDigest(store, now, { ...process.env, HOUGE_IMPROVE_ENABLED: "false" });
-  return { status: m.decisionStatusLines(store, now), digest: dg ? dg.text.split("\n") : [], list: m.decisionListText(store, process.env).split("\n") };
+  return { status: m.decisionStatusLines(store, now), digest: dg && dg.text ? dg.text.split("\n") : null, list: m.decisionListText(store, process.env).split("\n") };
 }
 const RUNGS = ["rule", "system_one", "model", "paco", "fail"];
 function fmtCount(id, m, label) {
@@ -233,7 +233,10 @@ function cmpStatus(a, f, rungs, label) {
   if (!same(got.map((l) => COUNT_RE.exec(l)[1]), want.map((l) => COUNT_RE.exec(l)[1]))) bad.push("count line order differs");
   return bad;
 }
-const cmpDigest = (a, f) => (same(a.map(norm), f.map(norm)) ? [] : [`digest lines differ (A ${a.length}, F ${f.length})`]);
+const cmpDigest = (a, f) => {
+  if (!a || !f || a.length === 0 || f.length === 0) return [`digest did not render (A ${a ? a.length : "null"}, F ${f ? f.length : "null"})`];
+  return same(a.map(norm), f.map(norm)) ? [] : [`digest lines differ (A ${a.length}, F ${f.length})`];
+};
 const listLine = (r, label) => `<ts> · ${r.entry_id} · ${label(r.rung)} → ${r.verdict} · p ${r.p === null ? "–" : r.p.toFixed(2)} · run ${r.run_id ? "<id>" : "–"}`;
 /** The newest-10 list, whole: the old build's own rows (newest), then the seed's rows, then F's older rows, cut at 10. */
 function cmpList(a, f, seedRows, oldRows, label) {
@@ -249,7 +252,7 @@ function cmpRenders(tag, ra, rf, seed, oldRows, label) {
   const bad = [...cmpStatus(ra.status, rf.status, seed.rungs, label), ...cmpDigest(ra.digest, rf.digest), ...cmpList(ra.list, rf.list, seed.seedRows, oldRows, label)];
   const seen = NEW_IDS.map((id) => `${id} ${countMap(ra.status).get(id) ?? 0}`).join(" · ");
   check(`A vs F at ${tag}: full /status count lines = F + seed delta per decider, digest equal, recent list = expected newest 10`, bad.length === 0,
-    bad.length ? bad.join("; ") : `A carries [${seen}], F carries none; ${countLinesOf(ra.status).length} count lines compared whole; digest ${ra.digest.length} lines equal; list ${ra.list.length - 1} rows`);
+    bad.length ? bad.join("; ") : `A carries [${seen}], F carries none; ${countLinesOf(ra.status).length} count lines compared whole; digest ${ra.digest?.length ?? 0} lines equal; list ${ra.list.length - 1} rows`);
 }
 
 // ---- step 2: the merge base on one copy ----
@@ -282,9 +285,9 @@ async function setup() {
   const oldDist = resolve(arg("--old-dist"));
   const liveDb = resolve(arg("--live-db") ?? join(dirname(resolve(process.env.HOUGE_ENV_FILE ?? join(process.cwd(), ".env"))), "houge.sqlite"));
   if (!existsSync(liveDb)) throw new SetupError("live DB not found (--live-db <path>)");
-  let prov;
-  try { prov = verifyStampedDist(oldDist, DIST); } catch (e) { throw new SetupError(e instanceof Error ? e.message : "old dist provenance failed"); }
-  console.log(`old build: worktree HEAD ${prov.head.slice(0, 7)}, stamped dist ${prov.hash.slice(0, 12)}`);
+  let prov, base;
+  try { base = mergeBaseOf(DIST); prov = verifyStampedDist(oldDist, DIST, base); } catch (e) { throw new SetupError(provenanceText(e)); }
+  console.log(`old build pinned to merge base ${base.slice(0, 7)}: worktree HEAD ${prov.head.slice(0, 7)}, stamped dist ${prov.hash.slice(0, 12)}`);
   const root = initTemp(false);
   mkdirSync(join(root, "daemon"), { recursive: true, mode: 0o700 });
   for (const k of ["HOUGE_TELEGRAM_BOT_TOKEN", "HOUGE_TELEGRAM_USER_ID"]) delete process.env[k];

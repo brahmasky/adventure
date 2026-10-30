@@ -11,7 +11,7 @@
 import { existsSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 
-import { verifyOldDist, verifyStampedDist } from "./old-dist-provenance.mjs";
+import { mergeBaseOf, provenanceText, verifyOldDist, verifyStampedDist } from "./old-dist-provenance.mjs";
 import { CORPORA, SetupError, DISTS, NEW_ROW_IDS, STRIP_KEYS, cleanupTemp, compare, runClosers, indexItems, initTemp, itemLabel, isPrivate, loadDist, mkTemp, ownOmit, redactForPrint, state } from "./stage4-diff-lib.mjs";
 
 const NEW_DIST = resolve(new URL("../dist", import.meta.url).pathname);
@@ -42,11 +42,11 @@ function verifyProvenance(a) {
   try {
     p3 = verifyOldDist(a.old3, NEW_DIST, "548cb87", "decisions/registry.js");
     p4 = verifyOldDist(a.old4a, NEW_DIST, "1451a66", "capabilities/capability-runner.js");
-    p5 = verifyStampedDist(a.old4b, NEW_DIST);
-  } catch (e) { throw new SetupError(`provenance: ${e instanceof Error ? e.message : String(e)}`); }
+    p5 = verifyStampedDist(a.old4b, NEW_DIST, mergeBaseOf(NEW_DIST));
+  } catch (e) { throw new SetupError(e?.kind ? provenanceText(e) : "provenance: s3/s4a old build check failed"); }
   console.log(`s3  old build: worktree HEAD ${p3.head.slice(0, 12)}, registry.js ${p3.oldHash} (new ${p3.newHash})`);
   console.log(`s4a old build: worktree HEAD ${p4.head.slice(0, 12)}, capability-runner.js ${p4.oldHash} (new ${p4.newHash})`);
-  console.log(`s4b old build: worktree HEAD ${p5.head.slice(0, 12)}, dist stamp ${p5.hash.slice(0, 12)}`);
+  console.log(`s4b old build pinned to merge base: worktree HEAD ${p5.head.slice(0, 12)}, dist stamp ${p5.hash.slice(0, 12)}`);
 }
 
 async function loadCorpora(only) {
