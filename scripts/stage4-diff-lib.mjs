@@ -4,7 +4,7 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-export const DISTS = { new: null, s3: null, s4a: null, s4b: null }; // filled by the CLI
+export const DISTS = { new: null, s3: null, s4a: null, s4b: null, r1: null }; // filled by the CLI
 export const CORPORA = [];                               // filled by the CLI from scripts/stage4-corpora/*.mjs
 /** Async teardown callbacks (a corpus's open sockets); the CLI runs them in a finally, on success and on error alike. */
 export const closers = [];
@@ -35,7 +35,9 @@ const EXPORTS = {
   TRUST_ASK_REASON: "policy/capability-policy.js",
   // Stage 4C: the lesson-write adapter and the correction preflight / executor
   createMemoryWriteAdapter: "capabilities/lesson-write.js", memoryWritePreflight: "capabilities/memory-correct.js",
-  executeMemoryCorrect: "capabilities/memory-correct.js", memorySources: "capabilities/memory-sources.js"
+  executeMemoryCorrect: "capabilities/memory-correct.js", memorySources: "capabilities/memory-sources.js",
+  // Slice R1: the global budget caps the intake corpus pins
+  DEFAULT_GLOBAL_BUDGET_CAPS: "budget/global-budget-ledger.js"
 };
 const distCache = new Map();
 
@@ -138,12 +140,33 @@ export function redactForPrint(s) {
   return out.length > 200 ? `${out.slice(0, 200)}…` : out;
 }
 
+/** The three Slice R1 intake decision rows (Gateway.intake). The branch build is the new side of EVERY pair, so every pair filters them: an older corpus whose fixture intakes through Gateway could otherwise trip a limiter or fuse and show a spurious difference (spec R1 §6). */
+export const INTAKE_IDS = ["intake.rate_limit", "intake.rating_reply", "intake.budget_fuse"];
 /** Decision rows one pair's NEW build records and the OLD build cannot: excluded from both sides before comparing (per old build, P1). */
 export const NEW_ROW_IDS = {
-  s3: new Set(["approval.bind", "secret.redact"]),
-  s4a: new Set(["approval.bind", "secret.redact"]),
-  s4b: new Set(["memory.lesson_admit", "schedule.admit", "memory.correct_preflight"])
+  s3: new Set(["approval.bind", "secret.redact", ...INTAKE_IDS]),
+  s4a: new Set(["approval.bind", "secret.redact", ...INTAKE_IDS]),
+  s4b: new Set(["memory.lesson_admit", "schedule.admit", "memory.correct_preflight", ...INTAKE_IDS]),
+  r1: new Set(INTAKE_IDS)
 };
+
+/**
+ * Every table's rows in rowid order, FTS shadow tables and sqlite_* excluded: the whole-DB projection (spec R1 §6). Raw column
+ * values, `*_json` strings NOT parsed (byte-identical compare; relabelClocks reaches clocks inside them textually). `decisions` rows
+ * whose entry_id is in dropDecisionIds are removed HERE, before any clock relabelling, so they never occupy a clock rank (P2).
+ */
+export function dumpDb(store, { dropDecisionIds = [] } = {}) {
+  const tables = store.db.prepare("SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name NOT GLOB '*_fts*' ORDER BY name").all();
+  const drop = new Set(dropDecisionIds);
+  const out = {};
+  for (const { name, sql } of tables) {
+    if (/WITHOUT\s+ROWID/i.test(sql ?? "")) throw new Error(`dumpDb: ${name} is WITHOUT ROWID; order it by its primary key first`);
+    let rows = store.db.prepare(`SELECT * FROM "${name.replace(/"/g, '""')}" ORDER BY rowid`).all();
+    if (name === "decisions") rows = rows.filter((r) => !drop.has(r.entry_id));
+    if (rows.length) out[name] = rows.map((r) => ({ ...r }));
+  }
+  return out;
+}
 const ID_RE = /\b(tool|op)_[0-9A-Za-z][0-9A-Za-z-]{5,}/g;
 /** Spec §6 metadata exclusions, by exact key name: row ids, timestamps, latency_ms. Nothing else is stripped; extend here, by name. */
 export const STRIP_KEYS = new Set([
