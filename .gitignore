@@ -47,3 +47,4 @@ memory/briefs/
 # omp runtime data (<data>/omp): sessions with full chat transcripts, chat workspaces, bridge sockets, Seatbelt
 # profiles, houge-config.yml. Anchored to top-level only: must NOT swallow src/omp/ or tests/omp/.
 /omp/
+.superpowers/

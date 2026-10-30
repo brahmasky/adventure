@@ -4,7 +4,7 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-export const DISTS = { new: null, s3: null, s4a: null }; // filled by the CLI
+export const DISTS = { new: null, s3: null, s4a: null, s4b: null }; // filled by the CLI
 export const CORPORA = [];                               // filled by the CLI from scripts/stage4-corpora/*.mjs
 /** Async teardown callbacks (a corpus's open sockets); the CLI runs them in a finally, on success and on error alike. */
 export const closers = [];
@@ -32,7 +32,10 @@ const EXPORTS = {
   OMP_SHELL_META: "core/omp-turn-wiring.js", OMP_BUILTIN_META: "core/omp-turn-wiring.js", OMP_LOOP_TOOL_META: "core/omp-turn-wiring.js",
   CoreWorker: "core/core-worker.js", actionFingerprint: "capabilities/capability-runner.js", stableHash: "domain/canonical.js",
   TOOL_POLICY: "decisions/entries/tool-policy.js", STANDING_REASON: "policy/capability-policy.js", STANDING_MISMATCH_REASON: "policy/capability-policy.js",
-  TRUST_ASK_REASON: "policy/capability-policy.js"
+  TRUST_ASK_REASON: "policy/capability-policy.js",
+  // Stage 4C: the lesson-write adapter and the correction preflight / executor
+  createMemoryWriteAdapter: "capabilities/lesson-write.js", memoryWritePreflight: "capabilities/memory-correct.js",
+  executeMemoryCorrect: "capabilities/memory-correct.js", memorySources: "capabilities/memory-sources.js"
 };
 const distCache = new Map();
 
@@ -135,7 +138,12 @@ export function redactForPrint(s) {
   return out.length > 200 ? `${out.slice(0, 200)}…` : out;
 }
 
-const BIND_REDACT = new Set(["approval.bind", "secret.redact"]);
+/** Decision rows one pair's NEW build records and the OLD build cannot: excluded from both sides before comparing (per old build, P1). */
+export const NEW_ROW_IDS = {
+  s3: new Set(["approval.bind", "secret.redact"]),
+  s4a: new Set(["approval.bind", "secret.redact"]),
+  s4b: new Set(["memory.lesson_admit", "schedule.admit", "memory.correct_preflight"])
+};
 const ID_RE = /\b(tool|op)_[0-9A-Za-z][0-9A-Za-z-]{5,}/g;
 /** Spec §6 metadata exclusions, by exact key name: row ids, timestamps, latency_ms. Nothing else is stripped; extend here, by name. */
 export const STRIP_KEYS = new Set([
@@ -146,17 +154,17 @@ export const STRIP_KEYS = new Set([
 /** Thrown by the harness itself (args, provenance, temp): its message is safe to print. Anything else is withheld. */
 export class SetupError extends Error {}
 
-const isBindRow = (x) => x && typeof x === "object" && BIND_REDACT.has(x.entry_id);
-function stripNode(v, map, omit) {
+const isNewRow = (x, ids) => x && typeof x === "object" && ids.has(x.entry_id);
+function stripNode(v, map, omit, ids) {
   if (typeof v === "string") return v.replace(ID_RE, (m, kind) => {
     if (!map.has(m)) map.set(m, `${kind}#${[...map.values()].filter((x) => x.startsWith(`${kind}#`)).length + 1}`);
     return map.get(m);
   });
-  if (Array.isArray(v)) return v.filter((x) => !isBindRow(x)).map((x) => stripNode(x, map, omit));
+  if (Array.isArray(v)) return v.filter((x) => !isNewRow(x, ids)).map((x) => stripNode(x, map, omit, ids));
   if (v && typeof v === "object") {
     const out = {};
     for (const k of Object.keys(v).sort()) { // sorted-key walk, the order canon() uses: id labels do not depend on key order
-      if (k !== "__s3Omit" && k !== "__strip" && !STRIP_KEYS.has(k) && !omit.has(k)) out[k] = stripNode(v[k], map, omit);
+      if (k !== "__s3Omit" && k !== "__strip" && !STRIP_KEYS.has(k) && !omit.has(k)) out[k] = stripNode(v[k], map, omit, ids);
     }
     return out;
   }
@@ -168,14 +176,14 @@ export const ownOmit = (projection, pair) => [...(projection?.__strip ?? []), ..
 const omitUnion = (a, b, pair) => [...new Set([...ownOmit(a, pair), ...ownOmit(b, pair)])];
 
 /**
- * Spec §6 exclusions: STRIP_KEYS (exact names), approval.bind / secret.redact decision rows, and the keys a projection lists in
+ * Spec §6 exclusions: STRIP_KEYS (exact names), the pair's NEW_ROW_IDS decision rows (s3/s4a: approval.bind, secret.redact; s4b: the three Stage 4C admit rows), and the keys a projection lists in
  * `__strip: string[]` (any pair) or `__s3Omit: string[]` (pair[0] === "s3" only). compare() takes the union of both sides' lists
  * and deletes those keys from both sides; both marker keys are dropped. tool_/op_ ids are renamed tool#1, op#1 ... in sorted-key
  * walk order, per side: ownership is NOT compared. A corpus whose result depends on which call owns which id must project that
  * ownership explicitly (e.g. {call: "first", tool: "tool#1"}). `omit` overrides the projection's own lists.
  */
 export function strip(projection, pair, omit) {
-  return stripNode(projection, new Map(), new Set(omit ?? ownOmit(projection, pair)));
+  return stripNode(projection, new Map(), new Set(omit ?? ownOmit(projection, pair)), NEW_ROW_IDS[pair[0]]);
 }
 
 /** JSON with object keys sorted recursively; arrays keep their order. */
@@ -247,3 +255,45 @@ export function requireNew(corpus, item, name, ok, detail = "") {
   return ok;
 }
 const ordinals = new WeakMap();
+
+const ISO_INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?(Z|[+-]\d{2}:\d{2})$/;
+/**
+ * Ordered relabelling of wall-clock values. Walks the whole projection; every string under a key `isClockKey(key)` accepts AND matching a
+ * strict ISO-8601 instant is collected (anything else under a clock key is left as is, so "not a clock" still differs from a timestamp). The
+ * distinct instants are sorted ascending and renamed `t#1`, `t#2`, ... (equal values share a label, order is kept; null stays null).
+ * A `*_json` string is only READ to find the clock values in it; if it holds none it is left byte-for-byte, and if it holds some each is
+ * replaced textually (`"<instant>"` -> `"t#n"`) in the original string, so key order and every other byte survive.
+ * Call it BEFORE the harness strips by key name: a stripped created_at still occupies a rank, so what is compared is the ORDER and EQUALITY
+ * of the kept clocks among all clocks (e.g. valid_from == the fact's created_at shows as the same rank), never the absolute instants or gaps.
+ * Returns a new value; the input is untouched.
+ */
+export function relabelClocks(projection, isClockKey) {
+  const isInstant = (k, x) => isClockKey(k) && typeof x === "string" && ISO_INSTANT.test(x);
+  const seen = new Set();
+  const clocksOf = (v, out) => {
+    if (Array.isArray(v)) v.forEach((x) => clocksOf(x, out));
+    else if (v && typeof v === "object") {
+      for (const [k, x] of Object.entries(v)) {
+        if (isInstant(k, x)) out.add(x);
+        else if (k.endsWith("_json") && typeof x === "string") { try { clocksOf(JSON.parse(x), out); } catch { /* not JSON: untouched */ } }
+        else clocksOf(x, out);
+      }
+    }
+    return out;
+  };
+  clocksOf(projection, seen);
+  // The label keeps the instant's shape (digits masked), so a format change (Z vs +00:00, ms digits) still shows as a difference.
+  const label = new Map([...seen].sort().map((t, i) => [t, `t#${i + 1}@${t.replace(/\d/g, "9")}`]));
+  const textual = (str) => {
+    let parsed;
+    try { parsed = JSON.parse(str); } catch { return str; }
+    return [...clocksOf(parsed, new Set())].reduce((t, c) => t.split(`"${c}"`).join(`"${label.get(c)}"`), str);
+  };
+  const apply = (v) => {
+    if (Array.isArray(v)) return v.map(apply);
+    if (!v || typeof v !== "object") return v;
+    return Object.fromEntries(Object.entries(v).map(([k, x]) => [k,
+      isInstant(k, x) ? label.get(x) : k.endsWith("_json") && typeof x === "string" ? textual(x) : apply(x)]));
+  };
+  return apply(projection);
+}

@@ -1,3 +1,6 @@
+import { decideSync } from "../decisions/decide.js";
+import { MEMORY_CORRECT_PREFLIGHT, type MemoryCorrectRefusal } from "../decisions/entries/memory-correct-preflight.js";
+import type { DecisionRecorder } from "../decisions/types.js";
 import { blobToFloat32, cosineSimilarity, resolveEmbedConfig } from "../llm/embeddings.js";
 import type { NotificationButton } from "../notifications/notification-types.js";
 import type { MemoryChange, MemoryKind, RunStore } from "../run/run-store.js";
@@ -184,6 +187,8 @@ export interface MemoryToolDeps {
   embed: (query: string) => Promise<Float32Array | null>;
   /** True only on the approval-gated memory_correct_write entry: a write never runs through the ungated search entry. */
   gated: boolean;
+  /** memory.correct_preflight's recorder (spec 2026-10-30 §4.3); absent = no row (tests that build deps without one). */
+  recorder?: DecisionRecorder;
 }
 
 /**
@@ -195,7 +200,7 @@ export function memoryWritePreflight(
   d: Omit<MemoryToolDeps, "embed" | "gated">, input: Record<string, unknown>
 ): { refused: { reason: string; text: string } } | { card_detail: string } {
   const req = parseMemoryRequest(input);
-  const reason = "refusal" in req ? req.refusal : req.action === "search" ? "bad_input" : writeRefusal(d, req);
+  const reason = "refusal" in req ? req.refusal : req.action === "search" ? "bad_input" : recordedRefusal(d, req);
   if (reason !== null) return { refused: { reason, text: refusalText(reason) } };
   const w = req as Exclude<MemoryRequest, { action: "search" }>;
   const olds = w.ids.map((id) => `${w.kind === "wiki" ? "wiki " : ""}#${id}: ${quotedFull(memoryRowText(d.store, w.kind, id))}`);
@@ -209,7 +214,7 @@ export async function executeMemoryCorrect(d: MemoryToolDeps, input: Record<stri
   if ("refusal" in req) return refusal(req.refusal);
   if (req.action === "search") return memorySearch(d, req);
   if (!d.gated) return refusal("bad_input");
-  const refused = writeRefusal(d, req);
+  const refused = recordedRefusal(d, req);
   if (refused) return refusal(refused);
   const change = applyChange(d, req);
   if (!change) return refusal("not_active");
@@ -247,13 +252,20 @@ async function embedCorrected(d: Pick<MemoryToolDeps, "store" | "embed">, id: nu
 }
 
 /** The trust limits, in order: Paco's own turn, no untrusted read earlier in it, caps, ids offered by this turn. */
-function writeRefusal(d: Pick<MemoryToolDeps, "store" | "run_id" | "state">, req: Exclude<MemoryRequest, { action: "search" }>): string | null {
+function writeRefusal(d: Pick<MemoryToolDeps, "store" | "run_id" | "state">, req: Exclude<MemoryRequest, { action: "search" }>): MemoryCorrectRefusal | null {
   if (d.store.runSource(d.run_id) !== "telegram") return "not_operator_turn";
   if (d.store.runLoopCapabilities(d.run_id).some((c) => !MEMORY_CLEAN_PRIOR_STEPS.has(c))) return "tainted_turn";
   if (req.ids.length > MEMORY_IDS_PER_CALL_MAX) return "too_many";
   if (req.ids.some((id) => !d.state.offered[req.kind].has(id))) return "not_offered";
   if (d.state.changed + req.ids.length > MEMORY_CHANGES_PER_TURN_MAX) return "too_many";
   return null;
+}
+
+/** writeRefusal with its answer recorded (raw answer drives). */
+function recordedRefusal(d: Pick<MemoryToolDeps, "store" | "run_id" | "state" | "recorder">, req: Exclude<MemoryRequest, { action: "search" }>): MemoryCorrectRefusal | null {
+  const refused = writeRefusal(d, req);
+  if (d.recorder) decideSync(MEMORY_CORRECT_PREFLIGHT, { refused }, { run_id: d.run_id, tool_call_id: null, recorder: d.recorder });
+  return refused;
 }
 
 function applyChange(d: MemoryToolDeps, req: Exclude<MemoryRequest, { action: "search" }>): MemoryChange | null {

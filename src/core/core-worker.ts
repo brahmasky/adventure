@@ -158,6 +158,7 @@ import {
   type RouteReason
 } from "../jev/tree-policy.js";
 import { decide as decideLadder, decideSync } from "../decisions/decide.js";
+import { SCHEDULE_ADMIT, type ScheduleAdmitReason, type ScheduleAdmitVerb, type ScheduleAdmitVerdict } from "../decisions/entries/schedule-admit.js";
 import { NOT_ARMED, treeArmingFor } from "../decisions/jev-version-check.js";
 import { INJECTION_TOTAL_MS } from "../decisions/entries/tool-injection.js";
 import { createInjectionJudge, type InjectionJudge } from "../decisions/injection-judge.js";
@@ -2701,11 +2702,12 @@ export class CoreWorker {
     if (!state) return { result: { ok: false, error: "no turn state for this run" }, committed: false };
     const outcome: MemoryWriteOutcome = { result: { ok: false, error: "memory write did not run" }, committed: false };
     const held = heldRecorder(this.decisionRecorder);
+    const admit = heldList(this.decisionRecorder);
     const sources = this.memorySourcesFor(claim, chatId, state);
     const adapter = createMemoryWriteAdapter({
       sources, allowedScopes: ["ask", "research"], defaultScope: state.anchor.defaultScope,
       llm: (i) => this.llmAdapterFor(claim.run_id, LESSON_WRITE_ROLES.distill)(i),
-      ...(o.askJev ? { askJev: o.askJev } : {}), escapes: o.escapes ?? false, recorder: held.recorder, run_id: claim.run_id, runSource: (r) => this.runStore.runSource(r),
+      ...(o.askJev ? { askJev: o.askJev } : {}), escapes: o.escapes ?? false, recorder: held.recorder, admitRecorder: admit.recorder, run_id: claim.run_id, runSource: (r) => this.runStore.runSource(r),
       // A scheduled run's objective is the stored schedule goal, not Paco: refused in code.
       scheduledRun: this.runStore.runSource(claim.run_id) === "schedule",
       // Layer routing (⓪·3 S1c): an instruction quoting a code-owned literal (verbatim in src/*.ts) is refused with a digest.
@@ -2721,8 +2723,10 @@ export class CoreWorker {
       console.error(`memory write: adapter threw: ${safeReason(error)}`);
       outcome.result = { ok: true, output: { saved: false, kinds: [], items: [], reason: "save_failed" } };
     } finally {
-      // memory.kind's row, once, when the save transaction did not carry it; a lost turn writes no decisions row (ruling 14)
-      if (!o.signal?.aborted && this.ompTurns.get(claim.run_id) === state) held.write();
+      // memory.kind's row, once, when the save transaction did not carry it, and memory.lesson_admit's rows; a lost turn writes no decisions row (ruling 14)
+      if (!o.signal?.aborted && this.ompTurns.get(claim.run_id) === state) {
+        try { held.write(); } finally { admit.write(); }
+      }
     }
     this.recordNotSaved(claim.run_id, outcome, o.source);
     return outcome;
@@ -3716,7 +3720,7 @@ export class CoreWorker {
 
   private memoryDeps(claim: ClaimedRun, turnCtx: LoopTurnContext): Omit<MemoryToolDeps, "gated"> {
     return { store: this.runStore, run_id: claim.run_id, chat_id: this.chatOf(claim.run_id), state: turnCtx.memory,
-      embed: (query) => this.embedQueryForTurn(query) };
+      embed: (query) => this.embedQueryForTurn(query), recorder: this.decisionRecorder };
   }
 
   /** houge_status: the chat's supervisor (omp version, answering model) plus the store's boot record and health. */
@@ -3736,6 +3740,11 @@ export class CoreWorker {
     return /^sch_[0-9a-fA-F-]{8,}$/.test(trimmed) ? trimmed : undefined;
   }
 
+  /** schedule.admit (spec 2026-10-30 §4.2): one row per schedule_task call that reached an admit decision; the raw branch drives. */
+  private admitSchedule(run_id: string, verb: ScheduleAdmitVerb, outcome: ScheduleAdmitVerdict, code?: ScheduleAdmitReason): void {
+    decideSync(SCHEDULE_ADMIT, { verb, outcome, ...(code !== undefined ? { code } : {}) }, { run_id, tool_call_id: null, recorder: this.decisionRecorder });
+  }
+
   /**
    * The schedule_task adapter (B10b, ADR 0017). Everything untrusted is validated or
    * neutralized in code: the spec parses tolerantly, the tz must resolve (defaulting to
@@ -3747,6 +3756,7 @@ export class CoreWorker {
   private executeScheduleTask(claim: ClaimedRun, input: Record<string, unknown>): ToolAdapterResult {
     const target = this.runStore.getRunNotifyTarget(claim.run_id);
     if (target.kind !== "telegram") {
+      this.admitSchedule(claim.run_id, "none", "refuse", "no_chat");
       return { ok: false, error: SCHEDULE_TASK_NO_CHAT_ERROR };
     }
     const chat_id = target.chat_id;
@@ -3767,12 +3777,15 @@ export class CoreWorker {
       const schedule_id = this.resolveScheduleId(chat_id, input.cancel);
       // Shape-check before any lookup so a hostile id is never echoed into a digest.
       if (!schedule_id) {
+        this.admitSchedule(claim.run_id, "cancel", "refuse", "not_found");
         return { ok: false, error: SCHEDULE_TASK_CANCEL_NOT_FOUND_ERROR };
       }
       const row = this.runStore.getScheduledTask(schedule_id);
       if (!row || row.chat_id !== chat_id || !this.runStore.cancelScheduledTask(schedule_id)) {
+        this.admitSchedule(claim.run_id, "cancel", "refuse", "not_found");
         return { ok: false, error: SCHEDULE_TASK_CANCEL_NOT_FOUND_ERROR };
       }
+      this.admitSchedule(claim.run_id, "cancel", "admit");
       return { ok: true, output: { answer: buildScheduleCancelledDigest(schedule_id) } };
     }
 
@@ -3784,10 +3797,12 @@ export class CoreWorker {
     if (typeof input.update === "string" && input.update.trim().length > 0) {
       const schedule_id = this.resolveScheduleId(chat_id, input.update);
       if (!schedule_id) {
+        this.admitSchedule(claim.run_id, "update", "refuse", "not_found");
         return { ok: false, error: SCHEDULE_TASK_UPDATE_NOT_FOUND_ERROR };
       }
       const row = this.runStore.getScheduledTask(schedule_id);
       if (!row || row.chat_id !== chat_id || row.state === "disabled") {
+        this.admitSchedule(claim.run_id, "update", "refuse", "not_found");
         return { ok: false, error: SCHEDULE_TASK_UPDATE_NOT_FOUND_ERROR };
       }
       const hasGoal = typeof input.goal === "string" && input.goal.trim().length > 0;
@@ -3832,8 +3847,10 @@ export class CoreWorker {
       // The store can still say no (state changed under us) — a digest must never
       // claim a write that didn't land.
       if (!updated) {
+        this.admitSchedule(claim.run_id, "update", "refuse", "not_found");
         return { ok: false, error: SCHEDULE_TASK_UPDATE_NOT_FOUND_ERROR };
       }
+      this.admitSchedule(claim.run_id, "update", "admit");
       return {
         ok: true,
         output: { answer: buildScheduleUpdatedDigest(schedule_id, spec, tz, next_run_at) }
@@ -3868,6 +3885,7 @@ export class CoreWorker {
       .listScheduledTasks(chat_id)
       .find((r) => r.state === "enabled" && r.spec_json === spec_json && r.tz === tz && r.goal === goal);
     if (duplicate) {
+      this.admitSchedule(claim.run_id, "create", "exists");
       return {
         ok: true,
         output: {
@@ -3877,6 +3895,7 @@ export class CoreWorker {
     }
     const cap = resolveSchedulerMaxPerChat(process.env);
     if (this.runStore.countActiveSchedules(chat_id) >= cap) {
+      this.admitSchedule(claim.run_id, "create", "refuse", "cap");
       return { ok: false, error: buildScheduleCapError(cap) };
     }
     const now = new Date().toISOString();
@@ -3893,6 +3912,7 @@ export class CoreWorker {
       created_by: `run:${claim.run_id}`,
       now
     });
+    this.admitSchedule(claim.run_id, "create", "admit");
     return {
       ok: true,
       output: { answer: buildScheduleCreatedDigest(row.schedule_id, spec, tz, next_run_at) }
@@ -4581,6 +4601,19 @@ function heldRecorder(inner: DecisionRecorder): HeldRecorder {
     recorder: { record: (entry, r, ctx) => { row = [entry, r, ctx]; return null; } },
     write: () => { if (row && !done) inner.record(...row); },
     committed: () => { done = true; }
+  };
+}
+
+/** memory.lesson_admit's rows for one save (spec 2026-10-30 §4.1): kept in order, written once by runMemoryWrite's finally on a live turn. */
+function heldList(inner: DecisionRecorder): { recorder: DecisionRecorder; write: () => void } {
+  const rows: Array<Parameters<DecisionRecorder["record"]>> = [];
+  return {
+    recorder: { record: (entry, r, ctx) => { rows.push([entry, r, ctx]); return null; } },
+    write: () => {
+      for (const row of rows.splice(0)) {
+        try { inner.record(...row); } catch (e) { console.error(`decisions: ${row[0].id} record threw past the recorder: ${safeReason(e)}`); }
+      }
+    }
   };
 }
 

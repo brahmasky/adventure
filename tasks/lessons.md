@@ -593,3 +593,11 @@ The clean-room merge rebuilt `dist/` (new `omp/shell-wrapper.sh`) and the kickst
 - **Implementers' sandboxes and a loaded machine produce false signals.** Socket EPERM inside a reviewer's sandbox and vitest timeouts under an external runner's load both looked like defects. The orchestrator reruns gates and the suite outside the sandbox before ruling, and checks `uptime` / `ps` before blaming the diff.
 - **A plan's own test code can carry the defect the rubric names.** Task 2's plan text collected recorder rows and never asserted them; follow the spec's intent over the plan's literal code, and ledger the ruling.
 
+## 2026-10-30 — Stage 4C admits (differential normalisation)
+
+- **"The next Stage N item" is defined by the specs, not by a numbering in a delta.** The ladder's own §13 row was fully shipped; the remaining Stage 4 work was what the Stage 3 spec had moved there by name (B23) plus an unclaimed row (B9). Before declaring a stage done, read every stage spec's "out of scope, later stages" list.
+- **Every normalisation in a differential must keep what behaviour depends on.** This slice went strip → presence → ordered relabel → ordered relabel with the value's shape, each step after a reviewer showed the previous one hid a real change (a timestamp no longer equal to its row's `created_at`; JSON key order; a non-instant under a clock key; `Z` vs `+00:00`). Default to relabelling, never to dropping; filter new rows per pair, never globally.
+- **A test hook "inside the save" must be proven to fire.** The plan hooked the fact-reconcile call, which only runs when a similar fact exists, so the abort tests passed vacuously; assert the hook's own counter.
+- **A pin to "the merge base" must also work after the merge.** On `main`, `git merge-base HEAD main` is HEAD; gates need an explicit `--old-base`.
+- **Only the orchestrator runs the full suite, and only on a quiet machine.** An implementer's full run under concurrent agents and codex reported 49 failures; the same head on a quiet machine passed 5850/5850.
+

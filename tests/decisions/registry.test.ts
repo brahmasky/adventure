@@ -129,6 +129,16 @@ describe("entryProblems (R12 and R13 as data)", () => {
       expect(e.ladder[0]?.kind).toBe("rule");
       expect(LOCKED_ENTRY_IDS).toContain(id);
     }
-    expect(ENTRY_IDS).toHaveLength(20);
+    expect(ENTRY_IDS).toHaveLength(23);
+  });
+  it("memory.lesson_admit, schedule.admit and memory.correct_preflight are registered, unlocked and rule-only (Stage 4C)", () => {
+    for (const id of ["memory.lesson_admit", "schedule.admit", "memory.correct_preflight"] as const) {
+      const e = entryById(id) as AnyEntry;
+      expect(e).toBeDefined();
+      expect(e.locked).toBeUndefined();
+      expect(e.ladder.map((r) => r.kind)).toEqual(["rule"]);
+      expect(LOCKED_ENTRY_IDS).not.toContain(id);
+    }
+    expect(ENTRY_IDS).toHaveLength(23);
   });
 });

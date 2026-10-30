@@ -169,7 +169,7 @@ async function line1() {
   const sound = two.every((e) => e && e.locked === true && e.ladder.length === 1 && e.ladder[0].kind === "rule");
   const store = openCopy(G.dNew, "l1", "bare");
   const refused = two.map((e) => { try { store.insertLadderMove({ entry_id: e.id, scope: "g", from_rung: "paco", to_rung: "rule", evidence: [], granted_by: "paco", granted_via: "gate", paco_callback_id: "cb", revocable: true }); return false; } catch (err) { return err?.code === "locked_entry"; } });
-  const ok = reg.REGISTRY.length === 20 && sound && problems.length === 0 && refused.every(Boolean);
+  const ok = reg.REGISTRY.length === 23 && sound && problems.length === 0 && refused.every(Boolean);
   return { ok, detail: `${reg.REGISTRY.length} ids · two locked, one rule rung each: ${sound} · entryProblems non-empty for [${problems}] · insertLadderMove refused locked_entry: ${refused}` };
 }
 async function line3() {
