@@ -195,15 +195,29 @@ async function setup() {
 
 /** F's seeded rows, newest first as the old build's list orders them (created_at DESC, rowid DESC). */
 const listLine = (r, label) => `<ts> · ${r.entry_id} · ${label(r.rung)} → ${r.verdict} · p ${r.p === null ? "–" : r.p.toFixed(2)} · run –`;
-/** The one line the seed adds to the digest is not a decision row: the captured rating (a bare digit with no run) raises Watch's "unattached: rating N" by exactly 1. Everything else equal. */
-const UNATT = /^· unattached: rating (\d+)$/;
+/** The one line the seed adds to the digest is not a decision row: the captured rating (a bare digit with no run) raises Watch's single combined
+ * line `· unattached: <kind> N, <kind> M` (digest.ts watchLines, kinds sorted) by exactly 1 for kind "rating". Every other kind stays equal; A may have no such line. */
+const UNATT = /^· unattached: (.+)$/;
+function parseUnatt(lines) {
+  const l = lines.find((x) => UNATT.test(x));
+  return new Map(l ? UNATT.exec(l)[1].split(", ").map((p) => [p.slice(0, p.lastIndexOf(" ")), Number(p.slice(p.lastIndexOf(" ") + 1))]) : []);
+}
 function digestBad(a, f) {
-  const [na, nf] = [a.find((l) => UNATT.test(l)), f.find((l) => UNATT.test(l))];
-  const [ca, cf] = [na ? Number(UNATT.exec(na)[1]) : 0, nf ? Number(UNATT.exec(nf)[1]) : 0];
+  const [ua, uf] = [parseUnatt(a), parseUnatt(f)];
   const bad = [];
-  if (!same(a.filter((l) => !UNATT.test(l)).map(norm), f.filter((l) => !UNATT.test(l)).map(norm))) bad.push(`digest differs beyond the unattached-rating line (A ${a.length}, F ${f.length})`);
-  if (cf !== ca + 1) bad.push(`unattached rating ${ca} -> ${cf}, expected +1`);
+  if (!same(a.filter((l) => !UNATT.test(l)).map(norm), f.filter((l) => !UNATT.test(l)).map(norm))) bad.push(`digest differs beyond the unattached line (A ${a.length}, F ${f.length})`);
+  const kinds = new Set([...ua.keys(), ...uf.keys()]);
+  for (const k of kinds) { const want = (ua.get(k) ?? 0) + (k === "rating" ? 1 : 0); if ((uf.get(k) ?? 0) !== want) bad.push(`unattached ${k} ${ua.get(k) ?? 0} -> ${uf.get(k) ?? 0}, expected ${want}`); }
+  if (!kinds.has("rating")) bad.push("unattached rating absent on both");
   return bad;
+}
+/** The comparison must pass the valid shapes and fail each broken one (run on every check). */
+function digestSelfTest() {
+  const head = ["h", "", "· improvement tick off"];
+  const cases = [[[...head], [...head, "· unattached: rating 1"], true], [[...head, "· unattached: lesson 2, rating 4"], [...head, "· unattached: lesson 2, rating 5"], true],
+    [[...head, "· unattached: lesson 2, rating 4"], [...head, "· unattached: lesson 3, rating 5"], false], [[...head, "· unattached: lesson 2, rating 4"], [...head, "· unattached: lesson 2, rating 4"], false],
+    [[...head, "· unattached: lesson 2, rating 4"], [...head, "x", "· unattached: lesson 2, rating 5"], false], [[...head], [...head, "· unattached: lesson 1, rating 1"], false]];
+  return cases.every(([a, f, ok]) => (digestBad(a, f).length === 0) === ok);
 }
 function renderBad(a, f, seedRows, label) {
   const bad = [];
@@ -251,9 +265,9 @@ async function run(ctx) {
     `decisions A ${snapA.counts.decisions} -> ${aA.decisions}, F ${snapF.counts.decisions} -> ${aF.decisions} · keys lost ${[...gone, ...goneA].reduce((a, b) => a + b, 0)} · rows compared whole ${snapF.content.length + snapA.content.length} · old build read ${of.read.length}/${oa.read.length} · new ids listed ${of.listedNew} on F`);
   const bad = renderBad(oa, of, seed.rows, mOld.deciderLabel);
   const [winA, winF] = [windowCounts(A, now), windowCounts(F, now)];
-  check("A vs F as rendered by aec1d4f: digest equal except the captured rating's own Watch line (+1 unattached rating; it prints no per-entry lines, spec §5), /status differs only in the three new-id count lines (each total = SQL window count), recent list = A's with the three seeded rows on top",
-    bad.length === 0 && totalsMatch(oa.status, winA) && totalsMatch(of.status, winF) && NEW_IDS.every((id) => winF[id] === winA[id] + 1),
-    bad.length ? bad.join("; ") : `F lines ${J(lineTotals(of.status)).replace(/"/g, "")} vs SQL ${J(winF).replace(/"/g, "")} · A lines ${J(lineTotals(oa.status)).replace(/"/g, "")} · digest ${of.digest.length} lines (A ${oa.digest.length}) equal but the unattached-rating line · list ${of.listText.length - 1} rows`);
+  check("A vs F as rendered by aec1d4f: digest equal except the captured rating's own Watch line (unattached rating +1, every other kind equal; it prints no per-entry lines, spec §5), /status differs only in the three new-id count lines (each total = SQL window count), recent list = A's with the three seeded rows on top",
+    bad.length === 0 && digestSelfTest() && totalsMatch(oa.status, winA) && totalsMatch(of.status, winF) && NEW_IDS.every((id) => winF[id] === winA[id] + 1),
+    bad.length ? bad.join("; ") : `F lines ${J(lineTotals(of.status)).replace(/"/g, "")} vs SQL ${J(winF).replace(/"/g, "")} · A lines ${J(lineTotals(oa.status)).replace(/"/g, "")} · digest ${of.digest.length} lines (A ${oa.digest.length}) equal but the unattached line, comparison self-test ${digestSelfTest() ? "ok" : "BROKEN"} · list ${of.listText.length - 1} rows`);
   check("aec1d4f refuses review_ok naming intake.rate_limit, intake.rating_reply and intake.budget_fuse (normal OutcomeRejected, no crash; a valid id is accepted) on A and F",
     [oa, of].every((x) => NEW_IDS.every((id) => x.outcomes[id] === OUT_REJ) && x.outcomes["tool.policy"] === "inserted:true") && same(oa.outcomes, of.outcomes), `A ${J(oa.outcomes)} · F ${J(of.outcomes)}`.replace(/"/g, ""));
   const grew = (x, y) => TABLES.map((t) => y[t] - x[t]);
