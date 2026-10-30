@@ -35,7 +35,7 @@ const EXPORTS = {
   TRUST_ASK_REASON: "policy/capability-policy.js",
   // Stage 4C: the lesson-write adapter and the correction preflight / executor
   createMemoryWriteAdapter: "capabilities/lesson-write.js", memoryWritePreflight: "capabilities/memory-correct.js",
-  executeMemoryCorrect: "capabilities/memory-correct.js"
+  executeMemoryCorrect: "capabilities/memory-correct.js", memorySources: "capabilities/memory-sources.js"
 };
 const distCache = new Map();
 
