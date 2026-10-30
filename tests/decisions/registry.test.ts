@@ -129,7 +129,7 @@ describe("entryProblems (R12 and R13 as data)", () => {
       expect(e.ladder[0]?.kind).toBe("rule");
       expect(LOCKED_ENTRY_IDS).toContain(id);
     }
-    expect(ENTRY_IDS).toHaveLength(23);
+    expect(ENTRY_IDS).toHaveLength(26);
   });
   it("memory.lesson_admit, schedule.admit and memory.correct_preflight are registered, unlocked and rule-only (Stage 4C)", () => {
     for (const id of ["memory.lesson_admit", "schedule.admit", "memory.correct_preflight"] as const) {
@@ -139,6 +139,17 @@ describe("entryProblems (R12 and R13 as data)", () => {
       expect(e.ladder.map((r) => r.kind)).toEqual(["rule"]);
       expect(LOCKED_ENTRY_IDS).not.toContain(id);
     }
-    expect(ENTRY_IDS).toHaveLength(23);
+    expect(ENTRY_IDS).toHaveLength(26);
+  });
+  it("intake.rate_limit, intake.rating_reply (unlocked) and intake.budget_fuse (locked) are registered rule-only intake entries (remainder R1)", () => {
+    for (const [id, locked] of [["intake.rate_limit", false], ["intake.rating_reply", false], ["intake.budget_fuse", true]] as const) {
+      const e = entryById(id) as AnyEntry;
+      expect(e).toBeDefined();
+      expect(e.stage).toBe("intake");
+      expect(e.locked === true).toBe(locked);
+      expect(e.ladder.map((r) => r.kind)).toEqual(["rule"]);
+      expect((LOCKED_ENTRY_IDS as readonly string[]).includes(id)).toBe(locked);
+    }
+    expect(ENTRY_IDS).toHaveLength(26);
   });
 });

@@ -389,6 +389,11 @@ E1, E3–E7, E9–E10.
 The plan's first task re-walks the inventory at its base commit and fixes this table. A row moved between columns
 carries its reason in the plan.
 
+**Note (2026-10-30, Stage 3 remainder R1, Paco's Decisions 2-A, 3-A; ADR 0030 amendment):** `memory.rule_save` (A19) gets no
+entry — absorbed by `memory.lesson_admit`, `memory.kind` and `turn.handler`'s detail row; `notify.page` (E12) gets no entry —
+it does not change a turn's path. `intake.rate_limit`'s exemption (now `kill` plus the three digest taps) is code in front of the
+entry, not a locked rule inside it. Remainder order and slices: spec `2026-10-30-ladder-remainder-r1-gateway-intake-design.md` §2.
+
 ### 6.2 Move, don't improve
 
 For every migrated entry:

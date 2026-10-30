@@ -5,6 +5,9 @@ import { SECRET_REDACT } from "./entries/secret-redact.js";
 import { MEMORY_LESSON_ADMIT } from "./entries/memory-lesson-admit.js";
 import { SCHEDULE_ADMIT } from "./entries/schedule-admit.js";
 import { MEMORY_CORRECT_PREFLIGHT } from "./entries/memory-correct-preflight.js";
+import { INTAKE_RATE_LIMIT } from "./entries/intake-rate-limit.js";
+import { INTAKE_RATING_REPLY } from "./entries/intake-rating-reply.js";
+import { INTAKE_BUDGET_FUSE } from "./entries/intake-budget-fuse.js";
 import { READER_FAMILY } from "./entries/reader-family.js";
 import { SELF_WRITE_GUARD } from "./entries/selfwrite-guard.js";
 import { FETCH_SSRF } from "./entries/fetch-ssrf.js";
@@ -31,7 +34,8 @@ export const REGISTRY: readonly AnyEntry[] = [TURN_HANDLER as unknown as AnyEntr
   SELF_WRITE_GUARD as unknown as AnyEntry, FETCH_SSRF as unknown as AnyEntry, TOOL_POLICY as unknown as AnyEntry, TOOL_MANIFEST as unknown as AnyEntry,
   TOOL_BUDGET as unknown as AnyEntry, TOOL_WALL as unknown as AnyEntry, READER_FAMILY as unknown as AnyEntry, POSTURE_KILL as unknown as AnyEntry,
   APPROVAL_BIND as unknown as AnyEntry, SECRET_REDACT as unknown as AnyEntry,
-  MEMORY_LESSON_ADMIT as unknown as AnyEntry, SCHEDULE_ADMIT as unknown as AnyEntry, MEMORY_CORRECT_PREFLIGHT as unknown as AnyEntry];
+  MEMORY_LESSON_ADMIT as unknown as AnyEntry, SCHEDULE_ADMIT as unknown as AnyEntry, MEMORY_CORRECT_PREFLIGHT as unknown as AnyEntry,
+  INTAKE_RATE_LIMIT as unknown as AnyEntry, INTAKE_RATING_REPLY as unknown as AnyEntry, INTAKE_BUDGET_FUSE as unknown as AnyEntry];
 /** Effects a judge may choose over any input (R12): nothing, a tightening, or a proposal for Paco's tap. */
 const PASSIVE: ReadonlySet<EffectKind> = new Set(["none", "tighten", "proposal"]);
 /** How a judge's effect over Paco's message must be announced (Paco 2026-10-12): an allowlist, so a missing or unknown value fails. */

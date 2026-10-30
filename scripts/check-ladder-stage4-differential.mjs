@@ -3,6 +3,8 @@
 //   node scripts/check-ladder-stage4-differential.mjs --old-dist-3 <548cb87 worktree>/dist --old-dist-4a <1451a66 worktree>/dist \
 //     --old-dist-4b <merge-base worktree>/dist (REQUIRED; stamped by node scripts/stamp-dist.mjs <worktree>) \
 //     [--old-base <full sha>: the base the 4b build is pinned to; required once the branch is merged] \
+//     --old-dist-r1 <merge-base worktree>/dist (REQUIRED, Slice R1; stamped likewise; must contain gateway/gateway.js) \
+//     [--old-base-r1 <full sha>: the base the r1 build is pinned to; required once the branch is merged] \
 //     [--transcripts-dir <dir>] [--live-db <path>] [--only a,b] [--keep] [--debug: may print private corpus content; local diagnosis only, never paste its output]
 // Runs each corpus's items through the old builds and this one and proves nothing but the new decision rows changed, per pair:
 //   s3 and s4a (old builds 548cb87, 1451a66): approval.bind and secret.redact; s4b (the stamped merge-base build): memory.lesson_admit, schedule.admit, memory.correct_preflight.
@@ -19,13 +21,15 @@ const NEW_DIST = resolve(new URL("../dist", import.meta.url).pathname);
 const CORPORA_DIR = resolve(new URL("./stage4-corpora", import.meta.url).pathname);
 
 function parseArgs(argv) {
-  const a = { old3: null, old4a: null, old4b: null, oldBase: null, transcriptsDir: null, liveDb: null, only: null, keep: false, debug: false };
+  const a = { old3: null, old4a: null, old4b: null, oldBase: null, oldR1: null, oldBaseR1: null, transcriptsDir: null, liveDb: null, only: null, keep: false, debug: false };
   const val = (i) => { if (argv[i + 1] === undefined) throw new SetupError(`${argv[i]} needs a value`); return argv[i + 1]; };
   for (let i = 0; i < argv.length; i += 1) {
     if (argv[i] === "--old-dist-3") a.old3 = resolve(val(i++));
     else if (argv[i] === "--old-dist-4a") a.old4a = resolve(val(i++));
     else if (argv[i] === "--old-dist-4b") a.old4b = resolve(val(i++));
     else if (argv[i] === "--old-base") a.oldBase = val(i++);
+    else if (argv[i] === "--old-dist-r1") a.oldR1 = resolve(val(i++));
+    else if (argv[i] === "--old-base-r1") a.oldBaseR1 = val(i++);
     else if (argv[i] === "--transcripts-dir") a.transcriptsDir = resolve(val(i++));
     else if (argv[i] === "--live-db") a.liveDb = resolve(val(i++));
     else if (argv[i] === "--only") a.only = val(i++).split(",").filter(Boolean);
@@ -33,22 +37,24 @@ function parseArgs(argv) {
     else if (argv[i] === "--debug") a.debug = true;
     else throw new SetupError(`unknown argument ${argv[i]}`);
   }
-  for (const [flag, dir, file] of [["--old-dist-3", a.old3, "decisions/registry.js"], ["--old-dist-4a", a.old4a, "capabilities/capability-runner.js"], ["--old-dist-4b", a.old4b, "capabilities/lesson-write.js"]]) {
+  for (const [flag, dir, file] of [["--old-dist-3", a.old3, "decisions/registry.js"], ["--old-dist-4a", a.old4a, "capabilities/capability-runner.js"], ["--old-dist-4b", a.old4b, "capabilities/lesson-write.js"], ["--old-dist-r1", a.oldR1, "gateway/gateway.js"]]) {
     if (!dir || !existsSync(join(dir, file))) throw new SetupError(`${flag} <previous build's dist> is required (no ${file} at ${dir ?? "(unset)"})`);
   }
   return a;
 }
 
 function verifyProvenance(a) {
-  let p3, p4, p5;
+  let p3, p4, p5, p6;
   try {
     p3 = verifyOldDist(a.old3, NEW_DIST, "548cb87", "decisions/registry.js");
     p4 = verifyOldDist(a.old4a, NEW_DIST, "1451a66", "capabilities/capability-runner.js");
     p5 = verifyStampedDist(a.old4b, NEW_DIST, mergeBaseOf(NEW_DIST, a.oldBase ?? undefined));
+    p6 = verifyStampedDist(a.oldR1, NEW_DIST, mergeBaseOf(NEW_DIST, a.oldBaseR1 ?? undefined), "gateway/gateway.js");
   } catch (e) { throw new SetupError(e?.kind ? provenanceText(e) : "provenance: s3/s4a old build check failed"); }
   console.log(`s3  old build: worktree HEAD ${p3.head.slice(0, 12)}, registry.js ${p3.oldHash} (new ${p3.newHash})`);
   console.log(`s4a old build: worktree HEAD ${p4.head.slice(0, 12)}, capability-runner.js ${p4.oldHash} (new ${p4.newHash})`);
   console.log(`s4b old build pinned to merge base: worktree HEAD ${p5.head.slice(0, 12)}, dist stamp ${p5.hash.slice(0, 12)}`);
+  console.log(`r1  old build pinned to merge base: worktree HEAD ${p6.head.slice(0, 12)}, dist stamp ${p6.hash.slice(0, 12)}`);
 }
 
 async function loadCorpora(only) {
@@ -151,10 +157,10 @@ async function main() {
   const args = parseArgs(process.argv.slice(2));
   state.debug = args.debug;
   verifyProvenance(args);
-  Object.assign(DISTS, { new: NEW_DIST, s3: args.old3, s4a: args.old4a, s4b: args.old4b });
+  Object.assign(DISTS, { new: NEW_DIST, s3: args.old3, s4a: args.old4a, s4b: args.old4b, r1: args.oldR1 });
   const corpora = await loadCorpora(args.only);
   try { initTemp(args.keep); } catch (e) { throw new SetupError(`temp root: ${e instanceof Error ? e.message : String(e)}`); }
-  const ctx = { dists: { new: await loadDist(NEW_DIST), s3: await loadDist(args.old3), s4a: await loadDist(args.old4a), s4b: await loadDist(args.old4b) },
+  const ctx = { dists: { new: await loadDist(NEW_DIST), s3: await loadDist(args.old3), s4a: await loadDist(args.old4a), s4b: await loadDist(args.old4b), r1: await loadDist(args.oldR1) },
     transcriptsDir: args.transcriptsDir, liveDb: args.liveDb, mkTemp };
   let allOk = true;
   try { for (const corpus of corpora) allOk = (await runCorpus(corpus, ctx)) && allOk; } finally { await runClosers(); }

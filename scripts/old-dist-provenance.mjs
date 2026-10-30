@@ -36,7 +36,7 @@ export class ProvenanceError extends Error { constructor(kind, message) { super(
 const TEXT = {
   base_unknown: "provenance: merge base unknown", stamp_missing: "provenance: stamp missing", not_worktree: "provenance: old dist parent is not a git worktree",
   dirty: "provenance: dirty worktree", head_mismatch: "provenance: head is not the merge base", stamp_mismatch: "provenance: stamp is not for the merge base",
-  hash_mismatch: "provenance: dist hash mismatch", same_build: "provenance: same core-worker as new",
+  hash_mismatch: "provenance: dist hash mismatch", same_build: "provenance: same build as new (the compared file is identical)",
   base_is_head: "provenance: merge base is this build's own HEAD (already merged); pass --old-base <full sha>",
 };
 /** The fixed text for a failure of verifyStampedDist / mergeBaseOf; anything else is one generic line. */
@@ -56,8 +56,8 @@ export function mergeBaseOf(newDist, explicit) {
   } catch (e) { throw e instanceof ProvenanceError ? e : new ProvenanceError("base_unknown", "git merge-base failed"); }
 }
 
-/** A stamped old build (scripts/stamp-dist.mjs) pinned to `base` (full sha): stamp present and for `base`, worktree clean at `base`, dist hash = stamp, core-worker.js differs from the new build. */
-export function verifyStampedDist(oldDist, newDist, base) {
+/** A stamped old build (scripts/stamp-dist.mjs) pinned to `base` (full sha): stamp present and for `base`, worktree clean at `base`, dist hash = stamp, `file` (default core/core-worker.js) differs from the new build. */
+export function verifyStampedDist(oldDist, newDist, base, file = "core/core-worker.js") {
   if (!/^[0-9a-f]{40}$/.test(base ?? "")) throw new ProvenanceError("base_unknown", "base must be a full sha");
   const worktree = dirname(oldDist);
   const stampPath = join(oldDist, STAMP);
@@ -74,6 +74,6 @@ export function verifyStampedDist(oldDist, newDist, base) {
   if (stamp.head !== base) throw new ProvenanceError("stamp_mismatch", "stamp head != base");
   const hash = distHash(oldDist);
   if (hash !== stamp.dist_sha256) throw new ProvenanceError("hash_mismatch", "hash");
-  if (sha256(join(oldDist, "core/core-worker.js")) === sha256(join(newDist, "core/core-worker.js"))) throw new ProvenanceError("same_build", "same");
+  if (sha256(join(oldDist, file)) === sha256(join(newDist, file))) throw new ProvenanceError("same_build", "same");
   return { head, hash };
 }

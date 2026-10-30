@@ -48,6 +48,12 @@ import { resolveQuietTriageOverrides } from "../jev/jev-incidents.js";
 import { handleDecisionReview } from "./decision-commands.js";
 import { handleImprovementTap } from "./improvement-commands.js";
 import { handleJevAcceptTap } from "./jev-accept-commands.js";
+import { decideSync } from "../decisions/decide.js";
+import { INTAKE_BUDGET_FUSE } from "../decisions/entries/intake-budget-fuse.js";
+import { INTAKE_RATING_REPLY, type RatingReplyOutcome } from "../decisions/entries/intake-rating-reply.js";
+import { INTAKE_RATE_LIMIT } from "../decisions/entries/intake-rate-limit.js";
+import { storeRecorder } from "../decisions/record.js";
+import type { DecisionRecorder } from "../decisions/types.js";
 import { decisionListText, decisionStatusLines } from "../decisions/status-view.js";
 import { recordApprovalDenied, recordCorrection, recordImproveSignal, skipImproveSignal } from "../decisions/improve-signals.js";
 import type { NotificationButton, NotificationPayload } from "../notifications/notification-types.js";
@@ -137,13 +143,16 @@ const APPROVAL_ID_ECHO_MAX = 48;
 const LOW_RATING_MAX = 1;
 
 /** ADR 0018 + decision ladder plan ruling 16: commands the per-chat rate limit never delays (kill; digest review taps). */
-const RATE_LIMIT_EXEMPT: ReadonlySet<string> = new Set(["kill", "decision_review", "improvement_tap", "jev_accept_tap"]);
+export const RATE_LIMIT_EXEMPT: ReadonlySet<string> = new Set(["kill", "decision_review", "improvement_tap", "jev_accept_tap"]);
 
 export class Gateway {
   private readonly caps: GlobalBudgetCaps;
   private readonly projectRoot: string;
   private readonly skillStore: SkillStore;
   private readonly hooks: GatewayHooks;
+  private recorderCache?: DecisionRecorder;
+  /** Lazy, like CoreWorker's (core-worker.ts:560): the intake entries' rows have no run (spec 2026-10-30 R1 §4). No env: a record failure pages HOUGE_TELEGRAM_CHAT_ID. */
+  private get decisionRecorder(): DecisionRecorder { return (this.recorderCache ??= storeRecorder(this.runStore)); }
 
   constructor(
     private readonly runStore: RunStore,
@@ -175,6 +184,7 @@ export class Gateway {
         now
       });
       if (!limit.ok) {
+        decideSync(INTAKE_RATE_LIMIT, { limited: limit.error.reason }, { run_id: null, tool_call_id: null, recorder: this.decisionRecorder });
         this.runStore.recordTelegramCommandAudit({
           actor_id: event.requested_by.id,
           chat_id: this.telegramChatId(event),
@@ -351,6 +361,7 @@ export class Gateway {
     const parsed = parseBareRating(typeof event.goal === "string" ? event.goal : "");
     if (!parsed) {
       this.runStore.cancelPendingRating(chat_id);
+      this.recordRatingReply("lapse");
       return undefined;
     }
 
@@ -377,6 +388,7 @@ export class Gateway {
       // Not consumed: the comment is the message. No ack — the turn's answer replies.
       const marker: RatingCommentMarker = { ok: true, status: "rating_comment_captured", comment: parsed.comment };
       this.runStore.recordTriggerProcessed(event, marker);
+      this.recordRatingReply("forward");
       return { kind: "forward", goal: parsed.comment, rating_signal };
     }
 
@@ -397,7 +409,13 @@ export class Gateway {
     });
     this.runStore.recordTriggerProcessed(event, result);
     this.recordTelegramAccepted(event, now);
+    this.recordRatingReply("consume");
     return { kind: "consumed", result };
+  }
+
+  /** intake.rating_reply (spec 2026-10-30 R1 §4.2): one row per fresh decision of an open, in-window ask; never on a replay or conflict. */
+  private recordRatingReply(outcome: RatingReplyOutcome): void {
+    decideSync(INTAKE_RATING_REPLY, { outcome }, { run_id: null, tool_call_id: null, recorder: this.decisionRecorder });
   }
 
   /**
@@ -1083,6 +1101,7 @@ export class Gateway {
     // control commands are never blocked by the breaker.
     const budget = this.runStore.checkGlobalBudget(this.caps, now);
     if (!budget.ok) {
+      decideSync(INTAKE_BUDGET_FUSE, { breached: budget.breaches.map((b) => b.kind) }, { run_id: null, tool_call_id: null, recorder: this.decisionRecorder });
       this.runStore.recordGlobalBudgetFuse({
         breaches: budget.breaches,
         correlation_id: event.source_reference,
