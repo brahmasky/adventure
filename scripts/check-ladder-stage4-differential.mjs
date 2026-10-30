@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Stage 4B differential harness (spec 2026-10-29 §6). From the feature worktree, after `npm run build`:
 //   node scripts/check-ladder-stage4-differential.mjs --old-dist-3 <548cb87 worktree>/dist --old-dist-4a <1451a66 worktree>/dist \
+//     --old-dist-4b <merge-base worktree>/dist (REQUIRED; stamped by node scripts/stamp-dist.mjs <worktree>) \
 //     [--transcripts-dir <dir>] [--live-db <path>] [--only a,b] [--keep] [--debug: may print private corpus content; local diagnosis only, never paste its output]
 // Runs each corpus's items through the old builds and this one and proves nothing but the two new decision rows changed.
 // Exit: 0 PASS · 1 FAIL · 2 setup error. --transcripts-dir and --live-db are read-only inputs (the live DB only via a VACUUM copy).
@@ -9,18 +10,19 @@
 import { existsSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 
-import { verifyOldDist } from "./old-dist-provenance.mjs";
-import { CORPORA, SetupError, DISTS, STRIP_KEYS, cleanupTemp, compare, runClosers, indexItems, initTemp, itemLabel, isPrivate, loadDist, mkTemp, ownOmit, redactForPrint, state } from "./stage4-diff-lib.mjs";
+import { verifyOldDist, verifyStampedDist } from "./old-dist-provenance.mjs";
+import { CORPORA, SetupError, DISTS, NEW_ROW_IDS, STRIP_KEYS, cleanupTemp, compare, runClosers, indexItems, initTemp, itemLabel, isPrivate, loadDist, mkTemp, ownOmit, redactForPrint, state } from "./stage4-diff-lib.mjs";
 
 const NEW_DIST = resolve(new URL("../dist", import.meta.url).pathname);
 const CORPORA_DIR = resolve(new URL("./stage4-corpora", import.meta.url).pathname);
 
 function parseArgs(argv) {
-  const a = { old3: null, old4a: null, transcriptsDir: null, liveDb: null, only: null, keep: false, debug: false };
+  const a = { old3: null, old4a: null, old4b: null, transcriptsDir: null, liveDb: null, only: null, keep: false, debug: false };
   const val = (i) => { if (argv[i + 1] === undefined) throw new SetupError(`${argv[i]} needs a value`); return argv[i + 1]; };
   for (let i = 0; i < argv.length; i += 1) {
     if (argv[i] === "--old-dist-3") a.old3 = resolve(val(i++));
     else if (argv[i] === "--old-dist-4a") a.old4a = resolve(val(i++));
+    else if (argv[i] === "--old-dist-4b") a.old4b = resolve(val(i++));
     else if (argv[i] === "--transcripts-dir") a.transcriptsDir = resolve(val(i++));
     else if (argv[i] === "--live-db") a.liveDb = resolve(val(i++));
     else if (argv[i] === "--only") a.only = val(i++).split(",").filter(Boolean);
@@ -28,20 +30,22 @@ function parseArgs(argv) {
     else if (argv[i] === "--debug") a.debug = true;
     else throw new SetupError(`unknown argument ${argv[i]}`);
   }
-  for (const [flag, dir, file] of [["--old-dist-3", a.old3, "decisions/registry.js"], ["--old-dist-4a", a.old4a, "capabilities/capability-runner.js"]]) {
+  for (const [flag, dir, file] of [["--old-dist-3", a.old3, "decisions/registry.js"], ["--old-dist-4a", a.old4a, "capabilities/capability-runner.js"], ["--old-dist-4b", a.old4b, "capabilities/lesson-write.js"]]) {
     if (!dir || !existsSync(join(dir, file))) throw new SetupError(`${flag} <previous build's dist> is required (no ${file} at ${dir ?? "(unset)"})`);
   }
   return a;
 }
 
 function verifyProvenance(a) {
-  let p3, p4;
+  let p3, p4, p5;
   try {
     p3 = verifyOldDist(a.old3, NEW_DIST, "548cb87", "decisions/registry.js");
     p4 = verifyOldDist(a.old4a, NEW_DIST, "1451a66", "capabilities/capability-runner.js");
+    p5 = verifyStampedDist(a.old4b, NEW_DIST);
   } catch (e) { throw new SetupError(`provenance: ${e instanceof Error ? e.message : String(e)}`); }
   console.log(`s3  old build: worktree HEAD ${p3.head.slice(0, 12)}, registry.js ${p3.oldHash} (new ${p3.newHash})`);
   console.log(`s4a old build: worktree HEAD ${p4.head.slice(0, 12)}, capability-runner.js ${p4.oldHash} (new ${p4.newHash})`);
+  console.log(`s4b old build: worktree HEAD ${p5.head.slice(0, 12)}, dist stamp ${p5.hash.slice(0, 12)}`);
 }
 
 async function loadCorpora(only) {
@@ -67,12 +71,12 @@ function coverage(corpus, items, counts) {
 const survives = (path) => !path.some((k) => STRIP_KEYS.has(k) || k.startsWith("__"));
 
 /** First string leaf of the RAW projection whose path survives strip (ids are skipped: they are renamed, not compared). */
-function firstSurvivingString(v, path = [], omit = []) {
+function firstSurvivingString(v, pair, path = [], omit = []) {
   if (typeof v === "string") return survives(path) && !/\b(tool|op)_[0-9A-Za-z]/.test(v) ? path : null;
-  if (!v || typeof v !== "object" || (!Array.isArray(v) && ["approval.bind", "secret.redact"].includes(v.entry_id))) return null;
+  if (!v || typeof v !== "object" || (!Array.isArray(v) && NEW_ROW_IDS[pair[0]].has(v.entry_id))) return null;
   for (const k of Object.keys(v).sort()) {
     if (omit.includes(k) || !survives([k])) continue;
-    const r = firstSurvivingString(v[k], [...path, k], omit);
+    const r = firstSurvivingString(v[k], pair, [...path, k], omit);
     if (r) return r;
   }
   return null;
@@ -83,7 +87,7 @@ function firstSurvivingString(v, path = [], omit = []) {
  * new projection must equal itself, and with one byte appended to its first surviving string leaf compare must report exactly one path.
  */
 function selfTest(corpus, item, rawNew, pair) {
-  const path = firstSurvivingString(rawNew, [], ownOmit(rawNew, pair));
+  const path = firstSurvivingString(rawNew, pair, [], ownOmit(rawNew, pair));
   if (!path) return false;
   const mutated = structuredClone(rawNew);
   const parent = path.slice(0, -1).reduce((x, k) => x[k], mutated);
@@ -144,10 +148,10 @@ async function main() {
   const args = parseArgs(process.argv.slice(2));
   state.debug = args.debug;
   verifyProvenance(args);
-  Object.assign(DISTS, { new: NEW_DIST, s3: args.old3, s4a: args.old4a });
+  Object.assign(DISTS, { new: NEW_DIST, s3: args.old3, s4a: args.old4a, s4b: args.old4b });
   const corpora = await loadCorpora(args.only);
   try { initTemp(args.keep); } catch (e) { throw new SetupError(`temp root: ${e instanceof Error ? e.message : String(e)}`); }
-  const ctx = { dists: { new: await loadDist(NEW_DIST), s3: await loadDist(args.old3), s4a: await loadDist(args.old4a) },
+  const ctx = { dists: { new: await loadDist(NEW_DIST), s3: await loadDist(args.old3), s4a: await loadDist(args.old4a), s4b: await loadDist(args.old4b) },
     transcriptsDir: args.transcriptsDir, liveDb: args.liveDb, mkTemp };
   let allOk = true;
   try { for (const corpus of corpora) allOk = (await runCorpus(corpus, ctx)) && allOk; } finally { await runClosers(); }
