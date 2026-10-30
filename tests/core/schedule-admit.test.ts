@@ -1,12 +1,13 @@
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  buildScheduleCapError, buildScheduleCancelledDigest, SCHEDULE_TASK_CANCEL_NOT_FOUND_ERROR, SCHEDULE_TASK_INVALID_SPEC_ERROR,
+  buildScheduleCreatedDigest, buildScheduleExistsDigest, buildScheduleCapError, buildScheduleCancelledDigest, SCHEDULE_TASK_CANCEL_NOT_FOUND_ERROR, SCHEDULE_TASK_INVALID_SPEC_ERROR,
   SCHEDULE_TASK_NO_CHAT_ERROR, SCHEDULE_TASK_UPDATE_EMPTY_ERROR, SCHEDULE_TASK_UPDATE_NOT_FOUND_ERROR
 } from "../../src/core/core-worker.js";
 import { buildTypedTaskEvent } from "../../src/domain/types.js";
 import { Gateway } from "../../src/gateway/gateway.js";
 import { RunStore } from "../../src/run/run-store.js";
+import type { ScheduleSpec } from "../../src/run/schedule-spec.js";
 import { pinEnabledFlags, pinOmpEnv, shortTmp } from "../helpers/omp-env.js";
 import { bridgeTurn, ompWorker } from "../helpers/omp-worker.js";
 
@@ -33,7 +34,8 @@ afterEach(() => {
   else process.env.HOUGE_SCHEDULER_MAX_PER_CHAT = savedCap;
 });
 
-const SPEC = { kind: "daily", at: "08:00" };
+const SPEC = { kind: "daily", at: "08:00" } as const satisfies ScheduleSpec;
+const MISSING_ID = "sch_00000000-0000-4000-8000-000000000000";
 const SPEC_JSON = '{"kind":"daily","at":"08:00"}';
 
 function seed(chat_id: string, goal: string, state?: "disabled") {
@@ -69,8 +71,9 @@ describe("schedule.admit rows", () => {
     const id = store.listScheduledTasks("555")[0]!.schedule_id;
     const b = await call("schedule_task", { spec: SPEC, goal: "daily brief", tz: "Australia/Sydney" });
     expect(b.isError).toBe(false);
-    expect(answer(b.content)).toContain(id);
-    expect(answer(b.content)).toContain("Already scheduled");
+    const row = store.getScheduledTask(id)!;
+    expect(answer(a.content)).toBe(buildScheduleCreatedDigest(id, SPEC, row.tz, row.next_run_at));
+    expect(answer(b.content)).toBe(buildScheduleExistsDigest(id, SPEC, row.tz, row.next_run_at));
     expect(rows(run_id)).toEqual([["admit", "create"], ["exists", "create"]]);
   });
 
@@ -80,7 +83,7 @@ describe("schedule.admit rows", () => {
     const { run_id, call } = chatRun();
     const r = await call("schedule_task", { spec: SPEC, goal: "another", tz: "Australia/Sydney" });
     expect(r.isError).toBe(true);
-    expect(r.content).toContain(buildScheduleCapError(1));
+    expect(r.content).toBe(`failed: ${buildScheduleCapError(1)}`);
     expect(rows(run_id)).toEqual([["refuse", "cap"]]);
   });
 
@@ -91,10 +94,10 @@ describe("schedule.admit rows", () => {
     const ok = await call("schedule_task", { cancel: "1" });
     expect(answer(ok.content)).toBe(buildScheduleCancelledDigest(own.schedule_id));
     expect(rows(run_id)).toEqual([["admit", "cancel"]]);
-    for (const arg of ["abc", "sch_missing", foreign.schedule_id]) {
+    for (const arg of ["abc", MISSING_ID, foreign.schedule_id]) {
       const r = await call("schedule_task", { cancel: arg });
       expect(r.isError).toBe(true);
-      expect(r.content).toContain(SCHEDULE_TASK_CANCEL_NOT_FOUND_ERROR);
+      expect(r.content).toBe(`failed: ${SCHEDULE_TASK_CANCEL_NOT_FOUND_ERROR}`);
     }
     expect(rows(run_id)).toEqual([["admit", "cancel"], ["refuse", "not_found"], ["refuse", "not_found"], ["refuse", "not_found"]]);
     expect(store.getScheduledTask(foreign.schedule_id)!.state).toBe("enabled");
@@ -109,20 +112,20 @@ describe("schedule.admit rows", () => {
     expect(ok.isError).toBe(false);
     expect(store.getScheduledTask(own.schedule_id)!.goal).toBe("new goal");
     expect(rows(run_id)).toEqual([["admit", "update"]]);
-    for (const arg of [gone.schedule_id, foreign.schedule_id, "sch_missing"]) {
+    for (const arg of [gone.schedule_id, foreign.schedule_id, MISSING_ID, "abc"]) {
       const r = await call("schedule_task", { update: arg, goal: "x" });
-      expect(r.content).toContain(SCHEDULE_TASK_UPDATE_NOT_FOUND_ERROR);
+      expect(r.content).toBe(`failed: ${SCHEDULE_TASK_UPDATE_NOT_FOUND_ERROR}`);
     }
-    expect(rows(run_id)).toEqual([["admit", "update"], ["refuse", "not_found"], ["refuse", "not_found"], ["refuse", "not_found"]]);
+    expect(rows(run_id)).toEqual([["admit", "update"], ["refuse", "not_found"], ["refuse", "not_found"], ["refuse", "not_found"], ["refuse", "not_found"]]);
   });
 
   it("validation returns record nothing: empty update, invalid create spec, and list", async () => {
     const own = seed("555", "mine");
     const { run_id, call } = chatRun();
     const empty = await call("schedule_task", { update: own.schedule_id });
-    expect(empty.content).toContain(SCHEDULE_TASK_UPDATE_EMPTY_ERROR);
+    expect(empty.content).toBe(`failed: ${SCHEDULE_TASK_UPDATE_EMPTY_ERROR}`);
     const bad = await call("schedule_task", { spec: { kind: "nonsense" }, goal: "x" });
-    expect(bad.content).toContain(SCHEDULE_TASK_INVALID_SPEC_ERROR);
+    expect(bad.content).toBe(`failed: ${SCHEDULE_TASK_INVALID_SPEC_ERROR}`);
     expect((await call("schedule_task", { list: true })).isError).toBe(false);
     expect(rows(run_id)).toEqual([]);
   });
@@ -132,7 +135,7 @@ describe("schedule.admit rows", () => {
     for (const input of [{ list: true }, { spec: SPEC, goal: "x" }]) {
       const r = await call("schedule_task", input);
       expect(r.isError).toBe(true);
-      expect(r.content).toContain(SCHEDULE_TASK_NO_CHAT_ERROR);
+      expect(r.content).toBe(`failed: ${SCHEDULE_TASK_NO_CHAT_ERROR}`);
     }
     expect(rows(run_id)).toEqual([["refuse", "no_chat"], ["refuse", "no_chat"]]);
   });
@@ -145,19 +148,31 @@ describe("schedule.admit rows", () => {
     expect(rows(run_id)).toEqual([["admit", "cancel"]]);
   });
 
-  it("a decisions insert fault leaves the created digest and schedule row unchanged and opens one decision_record_failed incident", async () => {
-    const base = chatRun();
-    const expectedCall = await base.call("schedule_task", { spec: SPEC, goal: "fault goal", tz: "Australia/Sydney" });
-    const expected = answer(expectedCall.content).replace(/sch_[\w-]+/, "ID");
-    for (const t of store.listScheduledTasks("555")) store.cancelScheduledTask(t.schedule_id);
+  it("the store's late refusals (state changed under the call) record refuse/not_found with the exact error", async () => {
+    const own = seed("555", "mine");
+    const { run_id, call } = chatRun();
+    vi.spyOn(store, "updateScheduledTask").mockReturnValueOnce(false as never);
+    const u = await call("schedule_task", { update: own.schedule_id, goal: "late" });
+    expect(u.isError).toBe(true);
+    expect(u.content).toBe(`failed: ${SCHEDULE_TASK_UPDATE_NOT_FOUND_ERROR}`);
+    expect(rows(run_id)).toEqual([["refuse", "not_found"]]);
+    vi.spyOn(store, "cancelScheduledTask").mockReturnValueOnce(false);
+    const c = await call("schedule_task", { cancel: own.schedule_id });
+    expect(c.isError).toBe(true);
+    expect(c.content).toBe(`failed: ${SCHEDULE_TASK_CANCEL_NOT_FOUND_ERROR}`);
+    expect(rows(run_id)).toEqual([["refuse", "not_found"], ["refuse", "not_found"]]);
+  });
 
+  it("a decisions insert fault leaves the created digest and schedule row unchanged and opens one decision_record_failed incident", async () => {
     const { call } = chatRun();
     vi.spyOn(store, "insertDecision").mockImplementationOnce(() => { throw new Error("disk full"); });
     vi.spyOn(console, "error").mockImplementation(() => undefined);
     const r = await call("schedule_task", { spec: SPEC, goal: "fault goal", tz: "Australia/Sydney" });
     expect(r.isError).toBe(false);
-    expect(answer(r.content).replace(/sch_[\w-]+/, "ID")).toBe(expected);
-    expect(store.listScheduledTasks("555").filter((t) => t.state === "enabled")).toHaveLength(1);
+    const created = store.listScheduledTasks("555");
+    expect(created).toHaveLength(1);
+    const row = created[0]!;
+    expect(answer(r.content)).toBe(buildScheduleCreatedDigest(row.schedule_id, SPEC, row.tz, row.next_run_at));
     expect(store.listOpenIncidents().filter((i) => i.kind === "decision_record_failed")).toHaveLength(1);
   });
 });
