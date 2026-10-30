@@ -10,7 +10,7 @@
 // byte-identical before and after: no migration), render /status + digest + /status decisions, and refuse review_ok outcomes naming each
 // new id (outcomes.ts validates against its own ENTRY_IDS). insertLadderMove is NOT id-validated (plan P2) and is not probed.
 // PASS = nothing throws, no row count drops, the seeded rows are byte-identical after the old build, and A and F differ only in the stated
-// way: A's /status carries a count line per new id (F's carry none) and every other count line equals F's plus the seed's own per-entry delta.
+// way: A's /status carries a count line per new id (F's lines for them, if any, equal F's own SQL counts) and every other count line equals F's plus the seed's own per-entry delta.
 // Dropped from the 4B check (4C touches none of them): the bind/redact/standing seeds and their survival line, the approval resolve, the
 // resume and masked-report probes, the schedule tick probe, and the "old build writes no bind/redact row" line. The 4A standing rows are not
 // a 4C surface, and the old build's own behaviour is unchanged by rows it does not know. Kept: A/F structure, count-line delta, row identity,
@@ -217,12 +217,17 @@ function parseCount(line, label) {
 const countLinesOf = (lines) => lines.filter((l) => COUNT_RE.test(l));
 const countMap = (lines) => new Map(lines.flatMap((l) => { const m = COUNT_RE.exec(l); return m ? [[m[1], Number(m[2])]] : []; }));
 /** A's /status against F's. Non-count lines equal; each count line is F's plus the seed's per-decider delta, compared whole. */
-function cmpStatus(a, f, rungs, label) {
+function cmpStatus(a, f, rungs, label, fSql) {
   const bad = [];
   const [oa, of] = [a.filter((l) => !COUNT_RE.test(l)).map(norm), f.filter((l) => !COUNT_RE.test(l)).map(norm)];
   if (!same(oa, of)) bad.push(`non-count lines differ (A ${oa.length}, F ${of.length})`);
   const base = new Map(countLinesOf(f).map((l) => parseCount(l, label)));
-  for (const id of NEW_IDS) if (base.has(id)) bad.push(`${id}: F carries a line`);
+  // F may already hold rows of the new ids (a fresh live-DB copy after 4C ships): the old build reads them correctly, so its line for each new id must equal F's own SQL count over the same window.
+  for (const id of NEW_IDS) {
+    const want = fSql.get(id);
+    const got = base.has(id) ? fmtCount(id, base.get(id), label) : null;
+    if (got !== (want ? fmtCount(id, want, label) : null)) bad.push(`${id}: old build's line on F differs from F's own SQL count`);
+  }
   for (const [id, byRung] of Object.entries(rungs)) {
     const m = base.get(id) ?? new Map();
     for (const [k, n] of Object.entries(byRung)) m.set(k, (m.get(k) ?? 0) + n);
@@ -252,11 +257,21 @@ function cmpList(a, f, seedRows, oldRows, label) {
   const at = got.findIndex((l, i) => l !== want[i]);
   return got.length === want.length && at < 0 ? [] : [`recent-decisions list: A has ${got.length - 1} rows, expected ${want.length - 1}; first difference at row ${at < 0 ? "end" : at}`];
 }
-function cmpRenders(tag, ra, rf, seed, oldRows, label) {
-  const bad = [...cmpStatus(ra.status, rf.status, seed.rungs, label), ...cmpDigest(ra.digest, rf.digest), ...cmpList(ra.list, rf.list, seed.seedRows, oldRows, label)];
+/** F's own per-rung counts of the new ids over the /status window (created_at in (now - 24 h, now]), straight from SQL. */
+function newIdCounts(path, now) {
+  const since = new Date(Date.parse(now) - 24 * 60 * 60 * 1000).toISOString();
+  return ro(path, (db) => {
+    const out = new Map();
+    const q = db.prepare("SELECT rung, COUNT(*) AS n FROM decisions WHERE entry_id = ? AND created_at > ? AND created_at <= ? GROUP BY rung");
+    for (const id of NEW_IDS) { const rows = q.all(id, since, now); if (rows.length) out.set(id, new Map(rows.map((r) => [r.rung, r.n]))); }
+    return out;
+  });
+}
+function cmpRenders(tag, ra, rf, seed, oldRows, label, fPath, now) {
+  const bad = [...cmpStatus(ra.status, rf.status, seed.rungs, label, newIdCounts(fPath, now)), ...cmpDigest(ra.digest, rf.digest), ...cmpList(ra.list, rf.list, seed.seedRows, oldRows, label)];
   const seen = NEW_IDS.map((id) => `${id} ${countMap(ra.status).get(id) ?? 0}`).join(" · ");
   check(`A vs F at ${tag}: full /status count lines = F + seed delta per decider, digest equal, recent list = expected newest 10`, bad.length === 0,
-    bad.length ? bad.join("; ") : `A carries [${seen}], F carries none; ${countLinesOf(ra.status).length} count lines compared whole; digest ${ra.digest?.length ?? 0} lines equal; list ${ra.list.length - 1} rows`);
+    bad.length ? bad.join("; ") : `A carries [${seen}], F carries ${NEW_IDS.map((id) => `${id} ${countMap(rf.status).get(id) ?? 0}`).join(" · ")} (= its SQL counts); ${countLinesOf(ra.status).length} count lines compared whole; digest ${ra.digest?.length ?? 0} lines equal; list ${ra.list.length - 1} rows`);
 }
 
 // ---- step 2: the merge base on one copy ----
@@ -347,8 +362,8 @@ async function run(ctx) {
     hashA2 === snap.hashA1 && seed.seedKeys.every((k) => ka2.decisions.has(k)) && a.listedAll === a2.decisions && f.listedAll === f1.decisions,
     `${seed.seedKeys.length} seeded rows, hash ${snap.hashA1} -> ${hashA2} · old list reads ${a.listedAll}/${a2.decisions} rows on A, ${f.listedAll}/${f1.decisions} on F`);
   const label = mNew.deciderLabel;
-  cmpRenders("start of the c558413 steps", a.before, f.before, seed, [], label);
-  cmpRenders("end of the c558413 steps", a.after, f.after, seed, f.oldRows, label);
+  cmpRenders("start of the c558413 steps", a.before, f.before, seed, [], label, F, now);
+  cmpRenders("end of the c558413 steps", a.after, f.after, seed, f.oldRows, label, F, now);
   const refused = (x) => NEW_IDS.every((id) => x.outcomes[id] === "OutcomeRejected:value not allowed for review_ok") && x.outcomes["tool.policy"] === "inserted:true";
   check("c558413 refuses review_ok naming memory.lesson_admit, schedule.admit and memory.correct_preflight (normal OutcomeRejected, no crash; a valid id is accepted) on both copies",
     refused(a) && refused(f) && same(a.outcomes, f.outcomes), `A ${J(a.outcomes)} · F ${J(f.outcomes)}`.replace(/"/g, ""));
@@ -359,7 +374,9 @@ async function run(ctx) {
   noDrop("A, after c558413 -> reopened by this build", a2, counts(A));
   const ka3 = keysOfFull(A);
   identity("A after c558413 (to the reopen by this build)", ka2, ka3);
-  const exact = NEW_IDS.every((id) => re.includes(fmtCount(id, new Map(Object.entries(seed.rungs[id])), label)));
+  const fOwn = newIdCounts(F, now); // F's own rows of the new ids (none on today's live DB) plus the seed's, per rung
+  const wantRungs = (id) => { const m = new Map(fOwn.get(id) ?? []); for (const [k, n] of Object.entries(seed.rungs[id])) m.set(k, (m.get(k) ?? 0) + n); return m; };
+  const exact = NEW_IDS.every((id) => re.includes(fmtCount(id, wantRungs(id), label)));
   check("this build reopens A: the seeded rows are intact, every decision row is listed, and the three new-id /status lines are exact (decider breakdown)",
     exact && NEW_IDS.every((id) => entryCount(A, id) === snap.newF0[NEW_IDS.indexOf(id)] + 1) && rowsHash(A, seed.seedKeys) === snap.hashA1 && seed.seedKeys.every((k) => ka3.decisions.has(k)) && reRows === a2.decisions,
     NEW_IDS.map((id) => `${id} ${entryCount(A, id)}`).join(" · ") + ` · rows listed ${reRows}/${a2.decisions}`);
