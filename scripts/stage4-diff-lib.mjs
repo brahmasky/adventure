@@ -282,7 +282,8 @@ export function relabelClocks(projection, isClockKey) {
     return out;
   };
   clocksOf(projection, seen);
-  const label = new Map([...seen].sort().map((t, i) => [t, `t#${i + 1}`]));
+  // The label keeps the instant's shape (digits masked), so a format change (Z vs +00:00, ms digits) still shows as a difference.
+  const label = new Map([...seen].sort().map((t, i) => [t, `t#${i + 1}@${t.replace(/\d/g, "9")}`]));
   const textual = (str) => {
     let parsed;
     try { parsed = JSON.parse(str); } catch { return str; }
