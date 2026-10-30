@@ -3718,7 +3718,7 @@ export class CoreWorker {
 
   private memoryDeps(claim: ClaimedRun, turnCtx: LoopTurnContext): Omit<MemoryToolDeps, "gated"> {
     return { store: this.runStore, run_id: claim.run_id, chat_id: this.chatOf(claim.run_id), state: turnCtx.memory,
-      embed: (query) => this.embedQueryForTurn(query) };
+      embed: (query) => this.embedQueryForTurn(query), recorder: this.decisionRecorder };
   }
 
   /** houge_status: the chat's supervisor (omp version, answering model) plus the store's boot record and health. */
