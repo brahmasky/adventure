@@ -256,35 +256,43 @@ export function requireNew(corpus, item, name, ok, detail = "") {
 }
 const ordinals = new WeakMap();
 
+const ISO_INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?(Z|[+-]\d{2}:\d{2})$/;
 /**
- * Ordered relabelling of wall-clock values (replaces "set / not set" reduction). Walks the whole projection; every string value under a key
- * `isClockKey(key)` accepts is collected, the distinct values are sorted ascending and each is renamed `t#1`, `t#2`, ... (equal values share
- * a label, order is kept; null/undefined stay as they are). A `*_json` string is parsed first, so keys embedded in it (a lease expiry) are
- * relabelled too. Call it BEFORE the harness strips by key name: a stripped created_at still occupies a rank, so what is compared is the
- * ORDER and EQUALITY of the kept clocks among all clocks (e.g. valid_from == the fact's created_at shows as the same rank), never the
- * absolute instants or the gaps between them. Returns a new value; the input is untouched.
+ * Ordered relabelling of wall-clock values. Walks the whole projection; every string under a key `isClockKey(key)` accepts AND matching a
+ * strict ISO-8601 instant is collected (anything else under a clock key is left as is, so "not a clock" still differs from a timestamp). The
+ * distinct instants are sorted ascending and renamed `t#1`, `t#2`, ... (equal values share a label, order is kept; null stays null).
+ * A `*_json` string is only READ to find the clock values in it; if it holds none it is left byte-for-byte, and if it holds some each is
+ * replaced textually (`"<instant>"` -> `"t#n"`) in the original string, so key order and every other byte survive.
+ * Call it BEFORE the harness strips by key name: a stripped created_at still occupies a rank, so what is compared is the ORDER and EQUALITY
+ * of the kept clocks among all clocks (e.g. valid_from == the fact's created_at shows as the same rank), never the absolute instants or gaps.
+ * Returns a new value; the input is untouched.
  */
 export function relabelClocks(projection, isClockKey) {
-  const prep = (v) => {
-    if (Array.isArray(v)) return v.map(prep);
-    if (!v || typeof v !== "object") return v;
-    return Object.fromEntries(Object.entries(v).map(([k, x]) => {
-      if (k.endsWith("_json") && typeof x === "string") { try { return [k, prep(JSON.parse(x))]; } catch { return [k, x]; } }
-      return [k, prep(x)];
-    }));
-  };
-  const tree = prep(projection);
+  const isInstant = (k, x) => isClockKey(k) && typeof x === "string" && ISO_INSTANT.test(x);
   const seen = new Set();
-  const collect = (v) => {
-    if (Array.isArray(v)) v.forEach(collect);
-    else if (v && typeof v === "object") for (const [k, x] of Object.entries(v)) { if (isClockKey(k) && typeof x === "string") seen.add(x); else collect(x); }
+  const clocksOf = (v, out) => {
+    if (Array.isArray(v)) v.forEach((x) => clocksOf(x, out));
+    else if (v && typeof v === "object") {
+      for (const [k, x] of Object.entries(v)) {
+        if (isInstant(k, x)) out.add(x);
+        else if (k.endsWith("_json") && typeof x === "string") { try { clocksOf(JSON.parse(x), out); } catch { /* not JSON: untouched */ } }
+        else clocksOf(x, out);
+      }
+    }
+    return out;
   };
-  collect(tree);
+  clocksOf(projection, seen);
   const label = new Map([...seen].sort().map((t, i) => [t, `t#${i + 1}`]));
+  const textual = (str) => {
+    let parsed;
+    try { parsed = JSON.parse(str); } catch { return str; }
+    return [...clocksOf(parsed, new Set())].reduce((t, c) => t.split(`"${c}"`).join(`"${label.get(c)}"`), str);
+  };
   const apply = (v) => {
     if (Array.isArray(v)) return v.map(apply);
     if (!v || typeof v !== "object") return v;
-    return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, isClockKey(k) && typeof x === "string" ? label.get(x) : apply(x)]));
+    return Object.fromEntries(Object.entries(v).map(([k, x]) => [k,
+      isInstant(k, x) ? label.get(x) : k.endsWith("_json") && typeof x === "string" ? textual(x) : apply(x)]));
   };
-  return apply(tree);
+  return apply(projection);
 }
