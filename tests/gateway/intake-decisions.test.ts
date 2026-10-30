@@ -40,6 +40,20 @@ function saturate(store: RunStore, command = "turn", n = 5): void {
 const intakeRows = (store: RunStore) => (store as unknown as { db: { prepare(s: string): { all(): Array<Record<string, unknown>> } } }).db
   .prepare("SELECT entry_id, verdict, reason_code, run_id, tool_call_id FROM decisions WHERE entry_id LIKE 'intake.%' ORDER BY rowid").all();
 
+type Db = { db: { prepare(s: string): { all(): Array<Record<string, unknown>> } } };
+const q = (store: RunStore, sql: string) => (store as unknown as Db).db.prepare(sql).all();
+const DENIED_AUDIT = (reason: string, command = "turn") => ({ actor_id: "paco", chat_id: CHAT, command, decision: "denied", reason_code: reason });
+const deniedAudit = (store: RunStore) => q(store, "SELECT actor_id, chat_id, command, decision, reason_code FROM telegram_command_audit WHERE decision = 'denied'");
+/** Records the order in which the named store methods are called (pass-through). */
+function trace(store: RunStore, methods: string[]): string[] {
+  const calls: string[] = [];
+  for (const m of methods) {
+    const orig = (store as unknown as Record<string, (...a: unknown[]) => unknown>)[m]!.bind(store);
+    (vi.spyOn(store as never, m as never) as unknown as { mockImplementation(f: unknown): void }).mockImplementation(((...a: unknown[]) => { calls.push(m); return orig(...a); }) as never);
+  }
+  return calls;
+}
+
 describe("intake.rate_limit at Gateway.intake", () => {
   it("a sixth command in the window → TELEGRAM_RATE_LIMITED as before, one limit/command_window row with no run", () => {
     const store = RunStore.openInMemory();
@@ -83,10 +97,10 @@ describe("intake.rate_limit at Gateway.intake", () => {
   it("the denied audit row is still written, after the decision row, exactly as before", () => {
     const store = RunStore.openInMemory();
     saturate(store);
+    const calls = trace(store, ["insertDecision", "recordTelegramCommandAudit"]);
     new Gateway(store).intake(ev("turn"), NOW);
-    const audit = (store as unknown as { db: { prepare(s: string): { all(): Array<Record<string, unknown>> } } }).db
-      .prepare("SELECT decision, reason_code FROM telegram_command_audit WHERE decision = 'denied'").all();
-    expect(audit).toEqual([{ decision: "denied", reason_code: "command_window" }]);
+    expect(calls).toEqual(["insertDecision", "recordTelegramCommandAudit"]);
+    expect(deniedAudit(store)).toEqual([DENIED_AUDIT("command_window")]);
   });
 });
 
@@ -94,11 +108,23 @@ describe("intake.budget_fuse at handleTaskIntake", () => {
   it("runs cap reached → GLOBAL_BUDGET_FUSE as before, one alert, one refuse/runs row; a second refusal → no second alert, a second row", () => {
     const store = RunStore.openInMemory();
     const g = new Gateway(store, { ...DEFAULT_GLOBAL_BUDGET_CAPS, runs: 0 });
+    const calls = trace(store, ["insertDecision", "recordGlobalBudgetFuse", "armGlobalFuseIfNeeded", "recordTelegramCommandAudit"]);
     expect(g.intake(ev("turn"), NOW)).toEqual({ ok: false, error: { code: "GLOBAL_BUDGET_FUSE", message: "Global 24h budget reached; new runs are paused until the window clears" } });
+    // order: decision row first, then the ledger event, the latch, the audit row
+    expect(calls).toEqual(["insertDecision", "recordGlobalBudgetFuse", "armGlobalFuseIfNeeded", "recordTelegramCommandAudit"]);
+    expect(q(store, "SELECT fused, since FROM global_budget_fuse_state WHERE id = 1")).toEqual([{ fused: 1, since: NOW }]);
     g.intake(ev("turn"), NOW);
+    expect(q(store, "SELECT fused, since FROM global_budget_fuse_state WHERE id = 1")).toEqual([{ fused: 1, since: NOW }]);
     expect(intakeRows(store).map((r) => [r.entry_id, r.verdict, r.reason_code, r.run_id])).toEqual([["intake.budget_fuse", "refuse", "runs", null], ["intake.budget_fuse", "refuse", "runs", null]]);
-    const alerts = (store as unknown as { db: { prepare(s: string): { all(): unknown[] } } }).db.prepare("SELECT 1 FROM notification_outbox WHERE idempotency_key LIKE 'global-budget-fuse:%'").all();
+    const alerts = q(store, "SELECT 1 FROM notification_outbox WHERE idempotency_key LIKE 'global-budget-fuse:%'");
     expect(alerts).toHaveLength(1);
+    const events = q(store, "SELECT actor, payload_json FROM ledger_events WHERE event_type = 'global_budget_fuse' ORDER BY sequence");
+    expect(events).toHaveLength(2);
+    for (const e of events) {
+      expect(e.actor).toBe("gateway");
+      expect(JSON.parse(e.payload_json as string)).toMatchObject({ reason: "global_budget_fuse", breaches: [{ kind: "runs" }], window_hours: 24 });
+    }
+    expect(deniedAudit(store)).toEqual([DENIED_AUDIT("global_budget_fuse"), DENIED_AUDIT("global_budget_fuse")]);
   });
   it("two kinds breached → the first kind in GLOBAL_BUDGET_KINDS order", () => {
     const store = RunStore.openInMemory();
@@ -133,6 +159,7 @@ describe("a failing decision write never changes the intake result (spec §4.4)"
     expect(new Gateway(store).intake(ev("turn"), NOW)).toMatchObject({ ok: false, error: { code: "TELEGRAM_RATE_LIMITED" } });
     const kinds = (store as unknown as { db: { prepare(s: string): { all(): Array<{ kind: string }> } } }).db.prepare("SELECT kind FROM incidents").all().map((r) => r.kind);
     expect(kinds).toContain("decision_record_failed");
+    expect(deniedAudit(store)).toEqual([DENIED_AUDIT("command_window")]);
   });
   it("a recorder that throws past itself → logged, no incident, result unchanged", () => {
     const store = RunStore.openInMemory();
