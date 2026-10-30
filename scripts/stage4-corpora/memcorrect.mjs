@@ -35,6 +35,8 @@ const BRANCHES = ["not_operator_turn", "tainted_turn", "too_many_ids", "too_many
 // Full rows (SELECT *): created_at/updated_at-style columns are dropped by the harness's STRIP_KEYS; an embedding blob, if a row ever carries one,
 // would need a per-item __strip (none is written here: embed returns null, so the column stays NULL). Ids are relabelled by scrubIds.
 const rows = (store, sql) => store.db.prepare(sql).all();
+/** valid_from / valid_until are wall-clock instants a retire or correct stamps: the value varies per run, so only whether each is set is compared. */
+const clockPresence = (r) => ({ ...r, valid_from: r.valid_from == null ? null : "<set>", valid_until: r.valid_until == null ? null : "<set>" });
 
 async function runSteps(d, store, item, run_id) {
   const state = { offered: { fact: new Set(item.offered), wiki: new Set() }, changed: item.changed ?? 0 };
@@ -58,10 +60,9 @@ async function project(d, item) {
     const steps = await runSteps(d, store, item, run_id);
     const decisions = rows(store, `SELECT entry_id, tool_call_id, stage, rung, verdict, reason_code, armed_mode, fallback_reason FROM decisions ORDER BY rowid`);
     if (d.dir !== DISTS.new && decisions.some((r) => r.entry_id === "memory.correct_preflight")) throw new Error("control failed: the old build wrote memory.correct_preflight rows");
-    return { ...scrubIds({ steps, episodic_facts: rows(store, `SELECT * FROM episodic_facts ORDER BY id`),
+    return { ...scrubIds({ steps, episodic_facts: rows(store, `SELECT * FROM episodic_facts ORDER BY id`).map(clockPresence),
       memory_changes: rows(store, `SELECT * FROM memory_changes ORDER BY rowid`), ledger: rows(store, `SELECT event_type, actor, sequence, payload_json FROM ledger_events ORDER BY rowid`), decisions }),
-      // valid_until / valid_from: wall-clock instants a retire/correct stamps on the superseded and the new fact; they vary per run and carry no behaviour
-      __strip: ["valid_until", "valid_from"] };
+    };
   } finally { try { store.close(); } catch { /* closed */ } }
 }
 
