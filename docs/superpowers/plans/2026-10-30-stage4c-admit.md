@@ -10,6 +10,14 @@
 
 **Spec:** `docs/superpowers/specs/2026-10-30-ladder-stage4c-admit-design.md` (Rev 2.1, APPROVED by Paco 2026-10-30: 1-A, 2-A). Read it before any task.
 
+## Rulings from the plan review (senior Sonnet ran the code: 0 B / 5 W / 9 S; codex: 2 B / 3 W / 1 S)
+- **P1 (codex B1, senior S6):** the differential's new-row filter is chosen **per pair**: `s3`/`s4a` pairs exclude `approval.bind` + `secret.redact` (as today); the `s4b` pair excludes only the three Stage 4C ids, so `approval.bind`/`secret.redact`/`memory.kind` rows stay compared there.
+- **P2 (codex B2):** `insertLadderMove` is not `ENTRY_IDS`-validated (`run-store.ts:5088` checks locked ids and grant conditions only), so the rollback check probes `review_ok` only. The spec §8 sentence naming `insertLadderMove` is corrected in Rev 2.2 (fact fix, no meaning change).
+- **P3 (senior W2):** `rowOf` stores verdict and reason only, so `memory.correct_preflight`'s `caller` would never reach a row. Ruling: **drop `caller`** from the input; preflight and write refusals share the entry and are not told apart in `decisions` (stated limit, spec §4.3 corrected in Rev 2.2). Cost if wrong: a v2 adds distinct reason codes.
+- **P4 (senior W1, codex W):** the lost-turn, race and in-transaction cases are written out as code in Task 2 (they must fail with the guard deleted).
+- **P5 (senior W5, codex W):** the reason maps are exhaustive by type over `LessonSide`/`FactSide` reasons and pinned by a test.
+- **P6 (senior W3):** Task 6's fixture is a constructed `CoreWorker` only (no bridge); the bridge port moves to Task 8.
+
 ## Global Constraints
 
 - `dependencies: {}` stays empty; Node stdlib plus devDeps only.
@@ -59,7 +67,7 @@
 - Test: `tests/decisions/memory-lesson-admit.test.ts`, `tests/decisions/schedule-admit.test.ts`, `tests/decisions/memory-correct-preflight.test.ts`
 
 **Interfaces:**
-- Produces: `MEMORY_LESSON_ADMIT: Entry<MemoryAdmitInput, MemoryAdmitVerdict>`, `MEMORY_ADMIT_REASONS`, `type MemoryAdmitReason`, `type MemoryAdmitInput = { seam: "pre" | "backstop"; refused?: MemoryAdmitReason }`; `SCHEDULE_ADMIT: Entry<ScheduleAdmitInput, ScheduleAdmitVerdict>`, `type ScheduleAdmitVerb = "create" | "update" | "cancel" | "none"`, `type ScheduleAdmitReason = "no_chat" | "not_found" | "cap"`, `type ScheduleAdmitInput = { verb: ScheduleAdmitVerb; outcome: "admit" | "exists" | "refuse"; code?: ScheduleAdmitReason }`; `MEMORY_CORRECT_PREFLIGHT: Entry<MemoryCorrectInput, MemoryCorrectVerdict>`, `MEMORY_CORRECT_REFUSALS`, `type MemoryCorrectRefusal`, `type MemoryCorrectInput = { caller: "preflight" | "write"; refused: MemoryCorrectRefusal | null }`.
+- Produces: `MEMORY_LESSON_ADMIT: Entry<MemoryAdmitInput, MemoryAdmitVerdict>`, `MEMORY_ADMIT_REASONS`, `type MemoryAdmitReason`, `type MemoryAdmitInput = { seam: "pre" | "backstop"; refused?: MemoryAdmitReason }`; `SCHEDULE_ADMIT: Entry<ScheduleAdmitInput, ScheduleAdmitVerdict>`, `type ScheduleAdmitVerb = "create" | "update" | "cancel" | "none"`, `type ScheduleAdmitReason = "no_chat" | "not_found" | "cap"`, `type ScheduleAdmitInput = { verb: ScheduleAdmitVerb; outcome: "admit" | "exists" | "refuse"; code?: ScheduleAdmitReason }`; `MEMORY_CORRECT_PREFLIGHT: Entry<MemoryCorrectInput, MemoryCorrectVerdict>`, `MEMORY_CORRECT_REFUSALS`, `type MemoryCorrectRefusal`, `type MemoryCorrectInput = { refused: MemoryCorrectRefusal | null }` (P3).
 
 - [ ] **Step 1: Write the failing entry tests**
 
@@ -152,11 +160,11 @@ describe("memory.correct_preflight — a memory correction refused by a trust li
     expect(entryProblems(MEMORY_CORRECT_PREFLIGHT as unknown as AnyEntry)).toEqual([]);
   });
   it("allowed → allow, not recorded", () => {
-    expect(decideSync(MEMORY_CORRECT_PREFLIGHT, { caller: "preflight", refused: null }, { run_id: "r", tool_call_id: null, recorder }).verdict).toBe("allow");
+    expect(decideSync(MEMORY_CORRECT_PREFLIGHT, { refused: null }, { run_id: "r", tool_call_id: null, recorder }).verdict).toBe("allow");
     expect(rows).toEqual([]);
   });
   it.each([...MEMORY_CORRECT_REFUSALS])("refused %s → refuse with that reason", (code) => {
-    expect(decideSync(MEMORY_CORRECT_PREFLIGHT, { caller: "write", refused: code }, { run_id: "r", tool_call_id: null, recorder })).toMatchObject({ verdict: "refuse", reason: code });
+    expect(decideSync(MEMORY_CORRECT_PREFLIGHT, { refused: code }, { run_id: "r", tool_call_id: null, recorder })).toMatchObject({ verdict: "refuse", reason: code });
     expect(rows).toEqual([{ verdict: "refuse", reason: code }]);
   });
 });
@@ -244,7 +252,8 @@ export type MemoryCorrectVerdict = "allow" | "refuse";
 /** writeRefusal's trust limits (src/capabilities/memory-correct.ts), in their check order; both `too_many` checks map here. */
 export const MEMORY_CORRECT_REFUSALS = ["not_operator_turn", "tainted_turn", "too_many", "not_offered"] as const;
 export type MemoryCorrectRefusal = (typeof MEMORY_CORRECT_REFUSALS)[number];
-export interface MemoryCorrectInput { caller: "preflight" | "write"; refused: MemoryCorrectRefusal | null }
+/** No caller field: rowOf stores verdict + reason only (plan P3). */
+export interface MemoryCorrectInput { refused: MemoryCorrectRefusal | null }
 
 function rule(s: MemoryCorrectInput): RungAnswer<MemoryCorrectVerdict> {
   return s.refused === null ? { verdict: "allow" } : { verdict: "refuse", reason: s.refused };
@@ -301,22 +310,58 @@ Build configs the way `tests/capabilities/lesson-write*.test.ts` already do (rea
 // 7. distill → fact rejected by backstop and lesson rejected → rows contain lesson_backstop then fact_backstop (two rows, in that order).
 // 8. clean save → rows [] (the adapter calls decideSync only at a refusal point, so the raw recorder receives nothing).
 // 9. no admitRecorder given → identical tool results for cases 1, 4, 5 (the field is optional; existing callers unchanged).
+// 10. admitRecorder whose record throws → decideSync logs (spy console.error) and the tool result equals case 1's exactly; nothing thrown (spec §4.4 b).
+// 11. drift pin (P5): expect(Object.keys(PRE_ADMIT).sort()).toEqual([ALREADY_SAVED_REASON, "code-owned", "scheduled-run"].sort()) and each value is in MEMORY_ADMIT_REASONS; every MEMORY_ADMIT_REASONS code is a value of PRE_ADMIT or SIDE_ADMIT.
 ```
 For case 8 the adapter must make **no** `record` call at all (it records only where a refusal happens): assert `rows` is `[]` with the raw recorder above.
 
 - [ ] **Step 2: Write the failing worker-level test** — `tests/core/memory-write-admit.test.ts`
 
-Copy the `setup`/`seat` helpers from `tests/core/memory-write-service.test.ts:20–40` (same `ompWorker`, `createQueuedTurnRun`, synthetic texts). Cases:
+Copy the `setup`/`seat` helpers from `tests/core/memory-write-service.test.ts:20–40` verbatim (same `ompWorker`, `createQueuedTurnRun`, synthetic texts; `seat`'s `onCall(system)` fires on every LLM call and `FACT_RECONCILE_DISCIPLINE` identifies the fact-reconcile call, which runs **inside the save**, after `planOf`). Use a distill whose lesson side `checkLessonSide` rejects (read `shouldRejectLesson` in `memory-backstops.ts` and pick a lesson it rejects for a synthetic text — e.g. one that only restates the prior reply) beside a fact with evidence, named `REFUSED_LESSON_WITH_FACT`. Each case must FAIL if `runMemoryWrite`'s `finally` guard is replaced by an unconditional `{ held.write(); admit.write(); }` (verify by making that mutation once locally, then revert):
+
 ```ts
-// 1. scheduled run (createQueuedTurnRun with source schedule — use the helper the existing schedule-run memory test uses; grep "scheduled-run" in tests/core) →
-//    store.listDecisionsForRun(run_id) has exactly one memory.lesson_admit row, verdict refuse, reason_code scheduled_run; memory_not_saved event unchanged.
-// 2. backstop: distill {"kind":"both", lesson that checkLessonSide rejects, fact with evidence} → fact saved (fact_saved event), one admit row lesson_backstop,
-//    AND the memory.kind row is still present exactly once (the held single-row recorder was not clobbered).
-// 3. abort mid-save: pass o.signal from an AbortController aborted inside the llm seat (onCall) after the distill → no memory.lesson_admit row, no memory.kind row.
-// 4. state replaced: replace worker's ompTurns entry for the run before the save (as the existing "turn ended" test does — grep "turn_ended" in tests/core) → no admit row.
-// 5. race: set state.memorySavedThisTurn between the adapter's guard read and the save (as the existing racedBy test does — grep "racedBy" in tests/core) with a backstop-refused side → the backstop admit row IS written (live turn) while the result reason is already_saved_this_turn (spec §4.1: row and result may differ; this pins it).
-// 6. recorder insert fault: make store.insertDecision throw once (vi.spyOn) on a scheduled-run save → tool result identical to case 1, an open incident of kind decision_record_failed.
+const admitRows = (store: RunStore, run_id: string) => store.listDecisionsForRun(run_id).filter((d) => d.entry_id === "memory.lesson_admit").map((d) => [d.verdict, d.reason_code]);
+
+it("a live turn with a refused lesson beside a saved fact writes one lesson_backstop row, and memory.kind's row lands inside the save transaction", async () => {
+  const h = setup({ distill: REFUSED_LESSON_WITH_FACT });
+  const run_id = createQueuedTurnRun(h.store, "记下来吧");
+  const claim = h.store.claimRun(run_id, "w", 120)!;
+  h.worker.buildOmpTools(claim, CHAT);
+  let inTx: { kind: number; admit: number } | null = null;
+  const w = await h.worker.runMemoryWrite(claim, CHAT, {}, { source: "loop", inTx: () => {
+    const rows = h.store.listDecisionsForRun(run_id);
+    inTx = { kind: rows.filter((d) => d.entry_id === "memory.kind").length, admit: rows.filter((d) => d.entry_id === "memory.lesson_admit").length };
+  } });
+  expect(w.saved?.fact).toBeDefined();
+  expect(inTx).toEqual({ kind: 1, admit: 0 }); // memory.kind inside the transaction; admit rows only after it (finally)
+  expect(admitRows(h.store, run_id)).toEqual([["refuse", "lesson_backstop"]]);
+});
+
+it("an abort inside the save (after planOf) writes no admit row", async () => {
+  const ac = new AbortController();
+  const h = setup({ distill: REFUSED_LESSON_WITH_FACT }, { onCall: (system) => { if (system === FACT_RECONCILE_DISCIPLINE) ac.abort(); } });
+  const run_id = createQueuedTurnRun(h.store, "记下来吧");
+  const claim = h.store.claimRun(run_id, "w", 120)!;
+  h.worker.buildOmpTools(claim, CHAT);
+  await h.worker.runMemoryWrite(claim, CHAT, {}, { source: "loop", signal: ac.signal });
+  expect(admitRows(h.store, run_id)).toEqual([]);
+});
+
+it("a scheduled run with an already-aborted signal writes no admit row (pre seam)", async () => { /* schedule-source run (see the existing scheduled-run memory test in tests/core for its setup), signal pre-aborted → admitRows [] */ });
+
+it("the turn's state replaced inside the save writes no admit row", async () => {
+  /* as the abort case, but onCall replaces the worker's ompTurns entry for run_id (the existing "turn_ended" test in tests/core shows how) → admitRows [] */
+});
+
+it("a race inside the save keeps the backstop row on a live turn (row and result may differ, spec §4.1)", async () => {
+  /* onCall on FACT_RECONCILE_DISCIPLINE sets the turn state's memorySavedThisTurn (as the existing racedBy test does) → result reason already_saved_this_turn, admitRows [["refuse","lesson_backstop"]] */
+});
+
+it("a store insert fault opens decision_record_failed and leaves the result unchanged", async () => {
+  /* scheduled-run save with vi.spyOn(store, "insertDecision").mockImplementationOnce(() => { throw new Error("disk full"); }) → result equals the unfaulted run's; one open incident kind decision_record_failed */
+});
 ```
+The three commented bodies are short; write them out following the first two (they reuse the same setup). If no existing test shows how to replace the turn state or set `memorySavedThisTurn`, read `runMemoryWrite`/`saveMemoryForTurn` (`core-worker.ts:2699–2790`): `this.ompTurns` is a `Map<run_id, OmpTurnState>`; reach it as `(h.worker as unknown as { ompTurns: Map<string, { memorySavedThisTurn?: unknown }> }).ompTurns`.
 
 - [ ] **Step 3: Run both to see them fail**
 
@@ -329,6 +374,7 @@ Add imports:
 ```ts
 import { decide, decideSync } from "../decisions/decide.js";
 import { MEMORY_LESSON_ADMIT, type MemoryAdmitReason } from "../decisions/entries/memory-lesson-admit.js";
+import type { FactSide, LessonSide } from "./memory-backstops.js";
 ```
 (replace the existing `import { decide } from "../decisions/decide.js";`).
 
@@ -341,8 +387,11 @@ Add to `MemoryWriteAdapterConfig` after `recorder`:
 Add below `memoryPreChecks`:
 ```ts
 /** Today's early-return strings → memory.lesson_admit codes; the tool result keeps the strings. */
-const PRE_ADMIT: Readonly<Record<string, MemoryAdmitReason>> = { "scheduled-run": "scheduled_run", [ALREADY_SAVED_REASON]: "already_saved", "code-owned": "code_owned" };
-const SIDE_ADMIT: Readonly<Record<string, MemoryAdmitReason>> = { "rule:rejected_by_backstop": "lesson_backstop", "fact:rejected_by_backstop": "fact_backstop", "fact:no_evidence": "fact_no_evidence" };
+/** Exported for the drift test (plan P5): its key set must equal the three early-return reason strings. */
+export const PRE_ADMIT: Readonly<Record<string, MemoryAdmitReason>> = { "scheduled-run": "scheduled_run", [ALREADY_SAVED_REASON]: "already_saved", "code-owned": "code_owned" };
+type SideKey = `rule:${Extract<LessonSide, { ok: false }>["reason"]}` | `fact:${Extract<FactSide, { ok: false }>["reason"]}`;
+/** Exhaustive by type: a new LessonSide/FactSide refusal reason fails typecheck here until it is mapped (plan P5). */
+export const SIDE_ADMIT: Readonly<Record<SideKey, MemoryAdmitReason>> = { "rule:rejected_by_backstop": "lesson_backstop", "fact:rejected_by_backstop": "fact_backstop", "fact:no_evidence": "fact_no_evidence" };
 
 /** Records one admit refusal (raw answer drives; the result is discarded, Stage 4B R1). */
 function recordAdmit(c: Pick<MemoryWriteAdapterConfig, "admitRecorder" | "run_id">, seam: "pre" | "backstop", refused: MemoryAdmitReason | undefined): void {
@@ -363,7 +412,7 @@ In `createMemoryWriteAdapter`, change exactly these lines (order unchanged):
 ```
 and after `const { plan, items } = planOf(c, kind.distill, scope);` add:
 ```ts
-    for (const i of items) recordAdmit(c, "backstop", i.reason !== undefined ? SIDE_ADMIT[`${i.kind}:${i.reason}`] : undefined);
+    for (const i of items) recordAdmit(c, "backstop", i.reason !== undefined ? (SIDE_ADMIT as Readonly<Record<string, MemoryAdmitReason>>)[`${i.kind}:${i.reason}`] : undefined);
 ```
 (`items` from `planOf` holds only refused sides, lesson first — `lesson-write.ts:297–300`.)
 
@@ -429,7 +478,8 @@ Cases (each asserts the tool result is exactly what the merge base returns — r
 // update with nothing to change → SCHEDULE_TASK_UPDATE_EMPTY_ERROR and NO row (validation)
 // create with an invalid spec → SCHEDULE_TASK_INVALID_SPEC_ERROR and NO row
 // list → no row
-// a non-telegram run (notify kind local, via a cli intake; grep SCHEDULE_TASK_NO_CHAT_ERROR in tests for an existing setup) for list and for create → [["refuse","no_chat"]] each
+// a non-telegram run: intake { source: "cli", type: "turn", program: "turn", notify: { kind: "local" }, … } then bridgeTurn (verified by the plan review) — for list and for create → SCHEDULE_TASK_NO_CHAT_ERROR and [["refuse","no_chat"]] each
+// fault: vi.spyOn(store, "insertDecision").mockImplementationOnce(throw) on a create → the created digest unchanged, the schedule row exists, one decision_record_failed incident
 // verb precedence: {cancel:"1", update:"1", goal:"x"} → cancel's row only
 ```
 Read `resolveSchedulerMaxPerChat` for the exact env name before writing the cap case.
@@ -494,6 +544,7 @@ Build deps the way the existing `tests/capabilities/memory-correct*.test.ts` doe
 // search action → no record call (not a write)
 // parse refusal (bad input) → no record call
 // deps without recorder → identical results for the not_operator_turn and pass cases
+// a recorder whose record throws → result identical, console.error logged, nothing thrown (spec §4.4 b)
 ```
 
 - [ ] **Step 2: Run to see it fail**
@@ -517,14 +568,13 @@ import type { DecisionRecorder } from "../decisions/types.js";
 `writeRefusal`'s return type becomes `MemoryCorrectRefusal | null` (body unchanged). Add below it:
 ```ts
 /** writeRefusal with its answer recorded (raw answer drives). */
-function recordedRefusal(d: Pick<MemoryToolDeps, "store" | "run_id" | "state" | "recorder">, req: Exclude<MemoryRequest, { action: "search" }>,
-  caller: "preflight" | "write"): MemoryCorrectRefusal | null {
+function recordedRefusal(d: Pick<MemoryToolDeps, "store" | "run_id" | "state" | "recorder">, req: Exclude<MemoryRequest, { action: "search" }>): MemoryCorrectRefusal | null {
   const refused = writeRefusal(d, req);
-  if (d.recorder) decideSync(MEMORY_CORRECT_PREFLIGHT, { caller, refused }, { run_id: d.run_id, tool_call_id: null, recorder: d.recorder });
+  if (d.recorder) decideSync(MEMORY_CORRECT_PREFLIGHT, { refused }, { run_id: d.run_id, tool_call_id: null, recorder: d.recorder });
   return refused;
 }
 ```
-In `memoryWritePreflight` replace `writeRefusal(d, req)` with `recordedRefusal(d, req, "preflight")`; in `executeMemoryCorrect` replace `const refused = writeRefusal(d, req);` with `const refused = recordedRefusal(d, req, "write");`.
+In `memoryWritePreflight` replace `writeRefusal(d, req)` with `recordedRefusal(d, req)`; in `executeMemoryCorrect` replace `const refused = writeRefusal(d, req);` with `const refused = recordedRefusal(d, req);`.
 In `core-worker.ts` `memoryDeps`: add `recorder: this.decisionRecorder,` to the returned object.
 
 - [ ] **Step 4: Run tests**
@@ -554,9 +604,9 @@ git commit -m "feat(memory): memory.correct_preflight records the trust-limit an
 
 - [ ] **Step 2: `verifyStampedDist(oldDist, newDist)`** in `old-dist-provenance.mjs`: reads the stamp (missing → throw "run node scripts/stamp-dist.mjs <worktree> first"); worktree clean; HEAD === `stamp.head`; `distHash(oldDist) === stamp.dist_sha256`; `core/core-worker.js` differs from the new build's. Returns `{ head, hash }`. Existing `verifyOldDist` unchanged.
 
-- [ ] **Step 3: lib** — `DISTS = { new: null, s3: null, s4a: null, s4b: null }`; `EXPORTS` gains `createMemoryWriteAdapter: "capabilities/lesson-write.js"`, `memoryWritePreflight: "capabilities/memory-correct.js"`, `executeMemoryCorrect: "capabilities/memory-correct.js"` (CoreWorker is already there), plus any helper the Task 6/7 fixtures import from a dist (add them in those tasks, by name). Rename `BIND_REDACT` to `NEW_ROW_IDS`, export it, and set it to `new Set(["approval.bind", "secret.redact", "memory.lesson_admit", "schedule.admit", "memory.correct_preflight"])` — this filters only those ids; `memory.kind` and every other row stay compared. Update `isBindRow` → `isNewRow` (same body, new set) and its doc comment.
+- [ ] **Step 3: lib** — `DISTS = { new: null, s3: null, s4a: null, s4b: null }`; `EXPORTS` gains `createMemoryWriteAdapter: "capabilities/lesson-write.js"`, `memoryWritePreflight: "capabilities/memory-correct.js"`, `executeMemoryCorrect: "capabilities/memory-correct.js"` (CoreWorker is already there), plus any helper the Task 6/7 fixtures import from a dist (add them in those tasks, by name). Replace the single `BIND_REDACT` filter with a **per-pair** one (P1): export `NEW_ROW_IDS = { s3: new Set(["approval.bind", "secret.redact"]), s4a: new Set(["approval.bind", "secret.redact"]), s4b: new Set(["memory.lesson_admit", "schedule.admit", "memory.correct_preflight"]) }`; `stripNode` takes the pair's set (thread it from `strip(projection, pair, omit)` → `stripNode(v, map, omit, NEW_ROW_IDS[pair[0]])`); `isNewRow(x, ids)`. So on the `s4b` pair `approval.bind`, `secret.redact` and `memory.kind` rows are compared. Update the doc comments.
 
-- [ ] **Step 4: CLI** — `--old-dist-4b <dir>` (required; must contain `capabilities/lesson-write.js`); `verifyProvenance` also calls `verifyStampedDist(a.old4b, NEW_DIST)` and prints `s4b old build: worktree HEAD …, dist stamp …`; `DISTS.s4b`, `ctx.dists.s4b = await loadDist(args.old4b)`; `firstSurvivingString` skips objects whose `entry_id` is in `NEW_ROW_IDS` (import it) instead of the two-id literal; usage comment at the top gains the flag.
+- [ ] **Step 4: CLI** — `--old-dist-4b <dir>` (required; must contain `capabilities/lesson-write.js`); `verifyProvenance` also calls `verifyStampedDist(a.old4b, NEW_DIST)` and prints `s4b old build: worktree HEAD …, dist stamp …`; `DISTS.s4b`, `ctx.dists.s4b = await loadDist(args.old4b)`; `firstSurvivingString` takes the pair and skips objects whose `entry_id` is in `NEW_ROW_IDS[pair[0]]` (import it) instead of the two-id literal; `selfTest` passes its pair through; usage comment at the top gains the flag and notes the flag is now required (senior S9).
 
 - [ ] **Step 5: Verify** — build the merge base: `git worktree add .worktrees/base-<mergebase7> <mergebase>`; `ln -s ../../node_modules .worktrees/base-<mergebase7>/node_modules` (as the 4B bases did — check `.worktrees/base-1451a66/node_modules`); `node scripts/stamp-dist.mjs .worktrees/base-<mergebase7>`. Then on the branch: `npm run build && node scripts/check-ladder-stage4-differential.mjs --old-dist-3 .worktrees/base-548cb87/dist --old-dist-4a .worktrees/base-1451a66/dist --old-dist-4b .worktrees/base-<mergebase7>/dist`
 Expected: the five existing corpora PASS unchanged; exit 0. Then `touch .worktrees/base-<mergebase7>/dist/x.js` → exit 2 with the stamp error; remove the file → exit 0 again.
@@ -581,11 +631,11 @@ git commit -m "test(gate): Stage 4 differential gains a stamped merge-base pair 
 
 Corpus module shape (copy from `scripts/stage4-corpora/binding.mjs`): `export default { name, pairs: [["s4b", "new"]], min: { items, branches }, load, project, required }`.
 
-- [ ] **Step 1: Fixture** — `stage4-admit-fixture.mjs` ports `tests/helpers/omp-worker.ts` `ompWorker` + `bridgeTurn` to JS against a dist's exports (`CoreWorker`, `createBridgeHandler`, `resolveOmpConfig`, `loadToolDeclarations`, `TOOL_DECLS_DIR`, `Gateway`, `buildTypedTaskEvent`; add the missing ones to `EXPORTS`), the omp dist copied the way `tests/helpers/omp-env.ts` `tmpOmpDist` does, `HOUGE_OMP_BIN` pinned to `/nonexistent/houge-tests/omp` (as `stage4-runlevel-fixture.mjs`), `HOUGE_SCHEDULER_ENABLED=1`, `HOUGE_SCHEDULER_MAX_PER_CHAT` set per item, fixed `tz` on every spec, and a fixed clock: wrap the call in a `Date` override (`globalThis.Date` subclass returning `2026-06-01T00:00:00.000Z` for `new Date()`/`Date.now()`) restored in `finally`. Env restored in `finally`.
+- [ ] **Step 1: Fixture** (P6: no bridge) — `stage4-admit-fixture.mjs` exports `adminWorker(d, root, store, o)` = `new d.CoreWorker(store, join(root, "project"), o.llm ?? stub, undefined, undefined, undefined, undefined, undefined, undefined, o.embed ?? (async () => null), undefined, undefined, { dataDir: root, distDir })` (argument order from `tests/helpers/omp-worker.ts` `ompWorker`; confirm against the dist's constructor), where `distDir` is a temp copy of **that same dist's** `omp/` files the way `tests/helpers/omp-env.ts` `tmpOmpDist` does (the wrapper must be that dist's `omp/shell-wrapper.sh`, else `wrapper_mismatch`); `scheduleRun(d, store, kind)` intakes a run through that dist's `Gateway` (`telegram` with `notify: {kind:"telegram", chat_id:"555"}`, or `cli` with `notify: {kind:"local"}`), `claimRun`, `buildOmpTools(claim, chat)` (needed so `ompTurns` holds the turn state), then calls `worker.executeScheduleTask(claim, input)` directly; `HOUGE_OMP_BIN` pinned to `/nonexistent/houge-tests/omp` (as `stage4-runlevel-fixture.mjs`), `HOUGE_SCHEDULER_ENABLED=1`, `HOUGE_SCHEDULER_MAX_PER_CHAT` set per item, fixed `tz` on every spec, and, for the `schedule` corpus only (senior S5), a fixed clock: wrap the call in a `Date` override (`globalThis.Date` subclass returning `2026-06-01T00:00:00.000Z` for `new Date()`/`Date.now()`) restored in `finally`. Env restored in `finally`.
 
-- [ ] **Step 2: `schedule` corpus** — items (tags in brackets) per spec §6: non-telegram × {list, create, cancel, update} [`no_chat`]; cancel {bad shape, missing, other chat, store-refused (stub `cancelScheduledTask` → false)} [`not_found`]; update {bad shape, missing, other chat, disabled, store-refused} [`not_found`]; update {empty, bad goal, bad spec, bad tz} [`validation`]; create {new [`admit`], duplicate [`exists`], at cap [`cap`], bad spec/tz/goal/too long [`validation`]}; cancel own, update own [`admit`]; list [`list`]; verb pairs {cancel+update, cancel+create, update+create, list+cancel} [`precedence`]. Projection: the tool result + the run's ledger events + `scheduled_tasks` rows + `decisions` rows (NEW_ROW_IDS filtered by the harness), with `schedule_id` relabelled in order (`sch#1`…) inside strings and values. `required`: new side has exactly the expected `schedule.admit` rows `[verdict, reason_code]` per item (table in the corpus), old side none (throw in `project` if old has any). `min.items` = the item count; `min.branches` = every tag above.
+- [ ] **Step 2: `schedule` corpus** — items (tags in brackets) per spec §6: non-telegram × {list, create, cancel, update} [`no_chat`]; cancel {bad shape, missing, other chat, disabled, store-refused (stub `cancelScheduledTask` → false)} [`not_found`]; update {bad shape, missing, other chat, disabled, store-refused} [`not_found`]; update {empty, bad goal, bad spec, bad tz} [`validation`]; create {new [`admit`], duplicate [`exists`], at cap [`cap`], bad spec/tz/goal/too long [`validation`]}; cancel own, update own [`admit`]; list [`list`]; verb pairs {cancel+update, cancel+create, update+create, list+cancel, list+update, list+create} [`precedence`]. Projection: the tool result + the run's ledger events + `scheduled_tasks` rows + `decisions` rows (NEW_ROW_IDS filtered by the harness), with `schedule_id` relabelled in order (`sch#1`…) inside strings and values. `required`: new side has exactly the expected `schedule.admit` rows `[verdict, reason_code]` per item (table in the corpus), old side none (throw in `project` if old has any). `min.items` = the item count; `min.branches` = every tag above.
 
-- [ ] **Step 3: `memcorrect` corpus** — items: preflight × {not_operator_turn, tainted_turn, too_many ids, too_many changes, not_offered, pass-retire, pass-correct, search, bad input}; write × {pass-retire, pass-correct, offered cleared after preflight → not_offered, schedule-source}. Store seeded with synthetic facts; projection: result + `episodic_facts` rows + `memory_changes` rows + ledger events + decisions; `required`: expected `memory.correct_preflight` rows per item, read with the real `storeRecorder` (so the default `allow` is NOT stored).
+- [ ] **Step 3: `memcorrect` corpus** — items: each of {not_operator_turn, tainted_turn, too_many ids, too_many changes, not_offered} through **both** callers (`memoryWritePreflight` and gated `executeMemoryCorrect`); preflight × {pass-retire, pass-correct, search, bad input}; write × {pass-retire, pass-correct, offered cleared after a passing preflight → not_offered}. Store seeded with synthetic facts; projection: result + `episodic_facts` rows + `memory_changes` rows + ledger events + decisions; `required`: expected `memory.correct_preflight` rows per item, read with the real `storeRecorder` (so the default `allow` is NOT stored).
 
 - [ ] **Step 4: Run**
 
@@ -609,9 +659,9 @@ git commit -m "test(gate): schedule and memory-correct corpora for the Stage 4 d
 **Interfaces:**
 - Consumes: `stage4-admit-fixture.mjs` (Task 6), `NEW_ROW_IDS`.
 
-- [ ] **Step 1: Adapter items** — `createMemoryWriteAdapter` from each dist with stubbed `llm` (returns a fixed distill JSON per item), no `askJev`, a `save` stub that records the plan it got and returns a fixed `MemorySaveResult`, `srcContains` stub, synthetic `sources` built with the dist's `memorySources` if exported (add to `EXPORTS`) else a literal object of the same shape. Items: scheduled run; already saved {lesson, fact, both}; code-owned {instruction phrase, thread phrase}; empty instruction; backstop {lesson rejected + fact ok, fact no_evidence + lesson ok, both rejected, fact rejected_by_backstop}; clean {lesson, fact, both}; aborted {before kind, after kind}. The new side gets an `admitRecorder` that collects raw rows; the old side gets the same field (ignored by the old build). Projection: result + the plan the save stub received + the llm call count + srcContains call count (pins "no grep on an early return"). `required`: new-side admit rows equal the expected list per item.
+- [ ] **Step 1: Adapter items** — `createMemoryWriteAdapter` from each dist with stubbed `llm` (returns a fixed distill JSON per item), no `askJev`, a `save` stub that records the plan it got and returns a fixed `MemorySaveResult`, `srcContains` stub, synthetic `sources` built with the dist's `memorySources` if exported (add to `EXPORTS`) else a literal object of the same shape. Items: scheduled run; already saved {lesson, fact, both}; code-owned {instruction phrase, thread phrase} (the worker-level code-owned item must plant `<root>/project/src/x.ts` containing the phrase: `createSrcPhraseChecker` greps `<project>/src`, senior S3); empty instruction; backstop {lesson rejected + fact ok, fact no_evidence + lesson ok, both rejected, fact rejected_by_backstop}; clean {lesson, fact, both}; aborted {before kind, after kind}. The new side gets an `admitRecorder` that collects raw rows; the old side gets the same field (ignored by the old build). Projection: result + the plan the save stub received + the llm call count + srcContains call count (pins "no grep on an early return"). `required`: new-side admit rows equal the expected list per item.
 
-- [ ] **Step 2: Worker items** — `runMemoryWrite` on a constructed worker (fixture) over a temp store, llm seats stubbed as in `tests/core/memory-write-service.test.ts` `seat`: scheduled run, already saved, code-owned, backstop refusal beside a saved fact, abort mid-save, state replaced, race. Projection: result + ledger events + lessons/facts/memory_changes rows + `decisions` rows (memory.kind compared; NEW_ROW_IDS filtered). `required`: admit rows per item (abort/replaced → 0; race → the backstop row).
+- [ ] **Step 2: Worker items** — `runMemoryWrite` on a constructed worker (fixture) over a temp store, llm seats stubbed as in `tests/core/memory-write-service.test.ts` `seat`: scheduled run, already saved, code-owned, backstop refusal beside a saved fact, abort inside the save (fact-reconcile seat), state replaced inside the save, race inside the save — each with `source: "loop"` and again with `source: "lane"` (spec §6 "both callers"; senior S4). The memory.kind in-transaction check is the vitest in Task 2; here memory.kind rows are compared old vs new. Projection: result + ledger events + lessons/facts/memory_changes rows + `decisions` rows (memory.kind compared; NEW_ROW_IDS filtered). `required`: admit rows per item (abort/replaced → 0; race → the backstop row).
 
 - [ ] **Step 3: Run the whole differential**
 
@@ -634,15 +684,15 @@ git commit -m "test(gate): memory-save admit corpus at adapter and worker level"
 
 Pattern: `scripts/live-gate-ladder-stage4b.mjs` (read it whole first): refuses to run outside `.worktrees/`, imports `../dist/`, `HOUGE_ENV_FILE` for env, a `VACUUM INTO` copy of `houge.sqlite` under a temp root removed in `finally` and on SIGINT/SIGTERM/SIGHUP, numbered `check(n, label, ok, detail)` lines, exit 0 only if all pass, prints counts and codes, never text.
 
-- [ ] **Step 1: Write the eight lines of spec §7** on the copy, through the fixture of Task 6 (`adminWorker` over the copy's `RunStore.open` with `storeOptionsFor`):
+- [ ] **Step 1: Write the eight lines of spec §7** on the copy, through the fixture of Task 6 (`adminWorker` over the copy's `RunStore.open` with `storeOptionsFor`); line 6 needs the bridge, so this task ports `bridgeTurn` from `tests/helpers/omp-worker.ts` into the gate (P6: its first use):
 1. scheduled-run save → result reason `scheduled-run`; exactly one admit row `refuse/scheduled_run`.
 2. code-owned phrase (a phrase the gate reads from a real `src/*.ts` literal, e.g. `SCHEDULED_RUN_HINT`'s first words) → `refuse/code_owned`.
 3. backstop lesson refusal + saved fact → one `refuse/lesson_backstop`, a `fact_saved` event, `memory.kind` row count 1.
 4. clean lesson save → 0 admit rows, `lesson_saved` present.
 5. schedule create → `admit/create`; again → `exists/create`; at cap → `refuse/cap`; cancel of another chat's id → `refuse/not_found`.
 6. memory_correct retire with an un-offered id through the bridge preflight → no `approval_prompt` notification; `refuse/not_offered`.
-7. `store.insertDecision` faulted once → a `decision_record_failed` incident opened, line 1's result byte-identical; separately an `admitRecorder` whose `record` throws → no incident, result identical.
-8. `/status` decision count lines (call the CLI's status renderer from `dist/` over the copy) contain one line per new id.
+7. `store.insertDecision` faulted once → a `decision_record_failed` incident opened, line 1's result byte-identical; separately an `admitRecorder` whose `record` throws → no incident, result identical, and the `decisions: … record threw past the recorder` line logged (capture `console.error`; codex S).
+8. `/status` decision count lines — `decisionStatusLines(store, now)` from `dist/decisions/status-view.js` over the copy — contain one line per new id.
 
 - [ ] **Step 2: Run**
 
@@ -663,9 +713,9 @@ git commit -m "test(gate): Stage 4C live gate — admit rows on a copy of the li
 **Files:**
 - Create: `scripts/check-ladder-stage4c-rollback.mjs`
 
-Pattern: `scripts/check-ladder-stage4b-rollback.mjs` (read whole; it uses `verifyOldDist` — use `verifyStampedDist` for `--old-dist` = the merge-base dist).
+Pattern: `scripts/check-ladder-stage4b-rollback.mjs` (read whole; it uses `verifyOldDist` — use `verifyStampedDist` for `--old-dist` = the merge-base dist). Keep its A/F copy structure and count-line delta where they apply; any 4B assertion dropped here is named in the script header with why (senior S7).
 
-- [ ] **Step 1: Lines** — on a VACUUM copy: the new build writes one row of each new id (through its own call sites, as the live gate does); the old build then opens the copy (no migration, no error), renders `/status` and the digest (no throw), lists `decisions` (all rows present, count unchanged), and calls its `ENTRY_IDS`-validated writers naming each new id — `review_ok` in `outcomes.ts` and `insertLadderMove` (as `check-ladder-stage4b-rollback.mjs:248`) — asserting each refuses with its normal error, not a crash; the new build reopens the copy and still reads all rows.
+- [ ] **Step 1: Lines** — on a VACUUM copy: the new build writes one row of each new id (through its own call sites, as the live gate does); the old build then opens the copy (no migration, no error), renders `/status` and the digest (no throw), lists `decisions` (all rows present, count unchanged), and calls its `ENTRY_IDS`-validated writer naming each new id — `review_ok` in `outcomes.ts` (as `check-ladder-stage4b-rollback.mjs:248`) — asserting it refuses with its normal error, not a crash (`insertLadderMove` is not id-validated, P2: not probed); the new build reopens the copy and still reads all rows.
 
 - [ ] **Step 2: Run**
 
