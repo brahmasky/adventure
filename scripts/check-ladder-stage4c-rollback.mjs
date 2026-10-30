@@ -51,10 +51,13 @@ const later = (ms) => new Date(Date.now() + ms).toISOString();
 
 /** Closed sets (never the message): a standard error class name, and a Node/SQLite system code shape; anything else prints `<other>`. */
 const ERROR_NAMES = new Set(["Error", "TypeError", "RangeError", "SyntaxError", "ReferenceError", "AssertionError", "AbortError"]);
-const SYSTEM_CODE = /^(ERR_[A-Z0-9_]{1,40}|SQLITE_[A-Z_]{1,30}|E[A-Z]{2,15})$/;
+/** A literal closed set of Node and SQLite error codes (a code outside it prints <other>). */
+const SYSTEM_CODES = new Set(["ERR_SQLITE_ERROR", "ERR_MODULE_NOT_FOUND", "ERR_INVALID_ARG_TYPE", "ERR_INVALID_STATE", "ERR_ASSERTION",
+  "SQLITE_BUSY", "SQLITE_LOCKED", "SQLITE_CONSTRAINT", "SQLITE_CORRUPT", "SQLITE_FULL", "SQLITE_IOERR", "SQLITE_READONLY", "SQLITE_CANTOPEN",
+  "ENOENT", "EACCES", "EPERM", "EEXIST", "ENOSPC", "EBUSY", "EISDIR", "ENOTDIR", "EMFILE", "ETIMEDOUT", "ECONNREFUSED", "ESRCH"]);
 function errCode(e) {
   const name = e instanceof Error ? (ERROR_NAMES.has(e.name) ? e.name : "<other>") : "non-Error";
-  const code = typeof e?.code === "string" ? (SYSTEM_CODE.test(e.code) ? ` ${e.code}` : " <other>") : "";
+  const code = typeof e?.code === "string" ? (SYSTEM_CODES.has(e.code) ? ` ${e.code}` : " <other>") : "";
   return `${name}${code}`;
 }
 
