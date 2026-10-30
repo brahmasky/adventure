@@ -57,11 +57,16 @@ const ITEMS = [
 const BRANCHES = ["command_window", "active_runs", "pending_approvals", "under", "exempt", "exempt_count", "schedule", "consume", "forward", "lapse", "low", "no_ask", "replay", "conflict", "fuse", "fuse_multi", "fuse_repeat"];
 
 const all = (store, sql) => store.db.prepare(sql).all().map((r) => ({ ...r }));
-// A payload_hash is a digest of its payload_json; when that text carries a random id (an approval prompt names its appr_<uuid>) the digest
-// differs run to run for the same behaviour. Only those rows' digests are masked; the payload text itself is still compared (ids scrubbed).
+// A payload_hash is stableHash(payload) (run-store.ts enqueueNotification). When the payload carries a random id (an approval prompt names its
+// appr_<uuid>) the digest differs run to run for the same behaviour. For those rows the digest is RECOMPUTED with that dist's own stableHash
+// over the stored payload: if it equals the stored hash it is replaced by a marker (the hash is proved to be exactly the hash of its payload,
+// and the payload is compared after id scrubbing); if not, the raw value stays, so the mismatch shows as a difference.
 const RANDOM_ID = /\b[a-z]+_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/;
-const maskIdHashes = (db) => Object.fromEntries(Object.entries(db).map(([t, rows]) => [t, rows.map((r) =>
-  typeof r.payload_hash === "string" && RANDOM_ID.test(String(r.payload_json)) ? { ...r, payload_hash: "<digest of an id-bearing payload>" } : r)]));
+function hashOk(d, r) {
+  try { return d.stableHash(JSON.parse(r.payload_json)) === r.payload_hash; } catch { return false; }
+}
+const maskIdHashes = (d, db) => Object.fromEntries(Object.entries(db).map(([t, rows]) => [t, rows.map((r) =>
+  typeof r.payload_hash === "string" && RANDOM_ID.test(String(r.payload_json)) && hashOk(d, r) ? { ...r, payload_hash: "hash-of-payload-ok" } : r)]));
 const isClockKey = (k) => /(_at|_since|^since|^now)$/.test(k);
 
 // Coverage self-test: the dump must hold exactly the tables that have rows, counted by a separate sqlite_master loop (virtual tables and their shadows left out).
@@ -77,7 +82,7 @@ function populatedTables(store) {
 function runEvents(d, store, item) {
   const caps = { ...d.DEFAULT_GLOBAL_BUDGET_CAPS, ...item.caps };
   const gateway = new d.Gateway(store, caps);
-  return item.events.map((e) => { try { return gateway.intake(intakeEvent(d, WHO, e), NOW); } catch (err) { return { threw: err instanceof Error ? err.message : String(err) }; } });
+  return item.events.map((e) => gateway.intake(intakeEvent(d, WHO, e), NOW)); // a throw fails the item: Gateway.intake returns error results and never throws
 }
 
 // The pinned env dir (tombstone / disarm paths) is the SAME path for the old and the new side of an item: kill's reply text and its payload_hash carry it.
@@ -104,7 +109,7 @@ async function project(d, item) {
       const db = dumpDb(store, { dropDecisionIds: INTAKE_IDS });
       const want = populatedTables(store).sort();
       if (canon(Object.keys(db).sort()) !== canon(want)) throw new Error(`coverage self-test: dump holds [${Object.keys(db)}], sqlite_master holds [${want}]`);
-      return { ...scrubIds(relabelClocks({ results, db: maskIdHashes(db) }, isClockKey)), intake, __strip: ["intake"] };
+      return { ...scrubIds(relabelClocks({ results, db: maskIdHashes(d, db) }, isClockKey)), intake, __strip: ["intake"] };
     }));
   } finally { try { store?.close(); } catch { /* closed */ } }
 }
