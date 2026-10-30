@@ -327,13 +327,13 @@ it("a live turn with a refused lesson beside a saved fact writes one lesson_back
   const run_id = createQueuedTurnRun(h.store, "记下来吧");
   const claim = h.store.claimRun(run_id, "w", 120)!;
   h.worker.buildOmpTools(claim, CHAT);
-  let inTx: { kind: number; admit: number } | null = null;
-  const w = await h.worker.runMemoryWrite(claim, CHAT, {}, { source: "loop", inTx: () => {
-    const rows = h.store.listDecisionsForRun(run_id);
-    inTx = { kind: rows.filter((d) => d.entry_id === "memory.kind").length, admit: rows.filter((d) => d.entry_id === "memory.lesson_admit").length };
-  } });
+  // Each insert's transaction state at the moment it runs: memory.kind's must be inside the save transaction, the admit row's outside it.
+  const real = h.store.insertDecision.bind(h.store);
+  const at: Array<[string, boolean]> = [];
+  vi.spyOn(h.store, "insertDecision").mockImplementation((row) => { at.push([row.entry_id, h.store.db.isTransaction]); return real(row); });
+  const w = await h.worker.runMemoryWrite(claim, CHAT, {}, { source: "loop" });
   expect(w.saved?.fact).toBeDefined();
-  expect(inTx).toEqual({ kind: 1, admit: 0 }); // memory.kind inside the transaction; admit rows only after it (finally)
+  expect(at).toEqual([["memory.kind", true], ["memory.lesson_admit", false]]);
   expect(admitRows(h.store, run_id)).toEqual([["refuse", "lesson_backstop"]]);
 });
 
@@ -361,7 +361,7 @@ it("a store insert fault opens decision_record_failed and leaves the result unch
   /* scheduled-run save with vi.spyOn(store, "insertDecision").mockImplementationOnce(() => { throw new Error("disk full"); }) → result equals the unfaulted run's; one open incident kind decision_record_failed */
 });
 ```
-The three commented bodies are short; write them out following the first two (they reuse the same setup). If no existing test shows how to replace the turn state or set `memorySavedThisTurn`, read `runMemoryWrite`/`saveMemoryForTurn` (`core-worker.ts:2699–2790`): `this.ompTurns` is a `Map<run_id, OmpTurnState>`; reach it as `(h.worker as unknown as { ompTurns: Map<string, { memorySavedThisTurn?: unknown }> }).ompTurns`.
+(`insertDecision`'s argument type and `store.db` (a `DatabaseSync`, whose `isTransaction` is true inside `BEGIN`) — read `run-store.ts` for the exact names; if `db` is private, reach it the way existing tests do — grep `store.db` in tests.) The three commented bodies are short; write them out following the first two (they reuse the same setup). If no existing test shows how to replace the turn state or set `memorySavedThisTurn`, read `runMemoryWrite`/`saveMemoryForTurn` (`core-worker.ts:2699–2790`): `this.ompTurns` is a `Map<run_id, OmpTurnState>`; reach it as `(h.worker as unknown as { ompTurns: Map<string, { memorySavedThisTurn?: unknown }> }).ompTurns`.
 
 - [ ] **Step 3: Run both to see them fail**
 
@@ -604,7 +604,7 @@ git commit -m "feat(memory): memory.correct_preflight records the trust-limit an
 
 - [ ] **Step 2: `verifyStampedDist(oldDist, newDist)`** in `old-dist-provenance.mjs`: reads the stamp (missing → throw "run node scripts/stamp-dist.mjs <worktree> first"); worktree clean; HEAD === `stamp.head`; `distHash(oldDist) === stamp.dist_sha256`; `core/core-worker.js` differs from the new build's. Returns `{ head, hash }`. Existing `verifyOldDist` unchanged.
 
-- [ ] **Step 3: lib** — `DISTS = { new: null, s3: null, s4a: null, s4b: null }`; `EXPORTS` gains `createMemoryWriteAdapter: "capabilities/lesson-write.js"`, `memoryWritePreflight: "capabilities/memory-correct.js"`, `executeMemoryCorrect: "capabilities/memory-correct.js"` (CoreWorker is already there), plus any helper the Task 6/7 fixtures import from a dist (add them in those tasks, by name). Replace the single `BIND_REDACT` filter with a **per-pair** one (P1): export `NEW_ROW_IDS = { s3: new Set(["approval.bind", "secret.redact"]), s4a: new Set(["approval.bind", "secret.redact"]), s4b: new Set(["memory.lesson_admit", "schedule.admit", "memory.correct_preflight"]) }`; `stripNode` takes the pair's set (thread it from `strip(projection, pair, omit)` → `stripNode(v, map, omit, NEW_ROW_IDS[pair[0]])`); `isNewRow(x, ids)`. So on the `s4b` pair `approval.bind`, `secret.redact` and `memory.kind` rows are compared. Update the doc comments.
+- [ ] **Step 3: lib** — `DISTS = { new: null, s3: null, s4a: null, s4b: null }`; `EXPORTS` gains `createMemoryWriteAdapter: "capabilities/lesson-write.js"`, `memoryWritePreflight: "capabilities/memory-correct.js"`, `executeMemoryCorrect: "capabilities/memory-correct.js"` (CoreWorker is already there), plus any helper the Task 6/7 fixtures import from a dist (add them in those tasks, by name). Replace the single `BIND_REDACT` filter with a **per-pair** one (P1): export `NEW_ROW_IDS = { s3: new Set(["approval.bind", "secret.redact"]), s4a: new Set(["approval.bind", "secret.redact"]), s4b: new Set(["memory.lesson_admit", "schedule.admit", "memory.correct_preflight"]) }`; `stripNode` takes the pair's set as a fourth parameter `ids` (thread it from `strip(projection, pair, omit)` → `stripNode(v, map, omit, NEW_ROW_IDS[pair[0]])`) and passes `ids` on **both** recursive calls — the array branch `v.filter((x) => !isNewRow(x, ids)).map((x) => stripNode(x, map, omit, ids))` and the object branch `stripNode(v[k], map, omit, ids)`; `isNewRow(x, ids)`. So on the `s4b` pair `approval.bind`, `secret.redact` and `memory.kind` rows are compared. Update the doc comments.
 
 - [ ] **Step 4: CLI** — `--old-dist-4b <dir>` (required; must contain `capabilities/lesson-write.js`); `verifyProvenance` also calls `verifyStampedDist(a.old4b, NEW_DIST)` and prints `s4b old build: worktree HEAD …, dist stamp …`; `DISTS.s4b`, `ctx.dists.s4b = await loadDist(args.old4b)`; `firstSurvivingString` takes the pair and skips objects whose `entry_id` is in `NEW_ROW_IDS[pair[0]]` (import it) instead of the two-id literal; `selfTest` passes its pair through; usage comment at the top gains the flag and notes the flag is now required (senior S9).
 
