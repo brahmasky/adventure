@@ -39,7 +39,7 @@ const SAVED = ["HOUGE_OMP_BIN", "HOUGE_SCHEDULER_ENABLED", "HOUGE_SCHEDULER_MAX_
 
 /**
  * A claimed turn run + a caller for the dist's own schedule_task adapter. kind: "telegram" (chat 555) | "cli" (no chat).
- * o: { cap } sets HOUGE_SCHEDULER_MAX_PER_CHAT. `close()` restores every env var and is safe to call twice.
+ * o: { cap } sets HOUGE_SCHEDULER_MAX_PER_CHAT; { chat } replaces the default chat 555 (and keys the intake by it, so one store can hold several runs). `close()` restores every env var and is safe to call twice.
  */
 export function scheduleRun(d, store, kind, o = {}) {
   if (kind !== "telegram" && kind !== "cli") throw new Error(`scheduleRun: unknown kind ${kind}`);
@@ -54,8 +54,8 @@ export function scheduleRun(d, store, kind, o = {}) {
     const tg = kind === "telegram";
     const intake = new d.Gateway(store).intake(d.buildTypedTaskEvent({
       source: kind, type: "turn", program: "turn", goal: "schedule admit", requested_by: { kind: "user", id: "paco" },
-      notify: tg ? { kind: "telegram", chat_id: "555" } : { kind: "local" },
-      idempotency_key: `schedule-admit-${kind}`, source_reference: `${kind}:update:1:message:1`
+      notify: tg ? { kind: "telegram", chat_id: o.chat ?? "555" } : { kind: "local" },
+      idempotency_key: `schedule-admit-${kind}${o.chat ? `:${o.chat}` : ""}`, source_reference: `${kind}:update:1:message:${o.chat ? o.chat.replace(/\D/g, "") || 1 : 1}`
     }));
     if (!intake.ok) throw new Error(`admit fixture intake failed: ${JSON.stringify(intake)}`);
     const worker = adminWorker(d, root, store);
