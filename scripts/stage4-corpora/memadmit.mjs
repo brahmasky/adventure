@@ -4,7 +4,7 @@
 //  worker:  runMemoryWrite on the dist's own CoreWorker over a temp store, once as source "loop" and once as "lane"; compared: result, ledger
 //           events, lessons / episodic_facts / memory_changes rows and decisions (memory.kind included).
 // memory.lesson_admit rows are filtered by the harness (NEW_ROW_IDS.s4b) and instead REQUIRED on the new side (item.expect); the old side
-// must hold none (checked in project). No Date override here: wall-clock columns are compared by presence only.
+// must hold none (checked in project). No Date override here: wall-clock columns go through relabelClocks (order, equality and shape are compared, not the instants).
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DISTS, mkStore, mkTemp, relabelClocks, requireNew } from "../stage4-diff-lib.mjs";
