@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Live gate — decision ladder Stage 4C, memory.lesson_admit + schedule.admit + memory.correct_preflight (spec 2026-10-30 §7; plan Task 8).
 //   From the worktree after `npm run build` THERE (never in the main checkout: the daemon runs its dist/):
-//   HOUGE_ENV_FILE=/Users/xiaochuan/Projects/adventure/.env node scripts/live-gate-ladder-stage4c.mjs --old-dist <merge-base dist> [--live-db <path>]
+//   HOUGE_ENV_FILE=/Users/xiaochuan/Projects/adventure/.env node scripts/live-gate-ladder-stage4c.mjs --old-dist <merge-base dist> [--old-base <full sha>] [--live-db <path>]
+//   --old-base: the base the old build is pinned to; required once the branch is merged (merge-base of HEAD and main is then HEAD itself).
 // Prints only counts, ids of entries, verdicts and codes from a closed allowlist (anything else prints <other>); an exception prints its
 // class name and code, never its message. There is no debug flag.
 // Eight lines on stdout, each `PASS`/`FAIL <n> <name> — <detail>`; exit 0 only when all eight PASS (1 FAIL, 2 setup error).
@@ -299,8 +300,8 @@ async function line8() {
 // ---- main ----
 async function setup() {
   const oldDist = arg("--old-dist");
-  if (!oldDist) throw new SetupError("usage: --old-dist <merge-base dist> [--live-db <path>]");
-  try { const base = mergeBaseOf(DIST); verifyStampedDist(resolve(oldDist), DIST, base); note(`old build pinned to merge base ${base.slice(0, 7)}`); } catch (e) { throw new SetupError(provenanceText(e)); }
+  if (!oldDist) throw new SetupError("usage: --old-dist <merge-base dist> [--old-base <full sha>] [--live-db <path>]");
+  try { const base = mergeBaseOf(DIST, arg("--old-base")); verifyStampedDist(resolve(oldDist), DIST, base); note(`old build pinned to merge base ${base.slice(0, 7)}`); } catch (e) { throw new SetupError(provenanceText(e)); }
   const liveDb = resolve(arg("--live-db") ?? join(dirname(resolve(process.env.HOUGE_ENV_FILE ?? join(process.cwd(), ".env"))), "houge.sqlite"));
   if (!existsSync(liveDb)) throw new SetupError("live DB not found (--live-db <path>)");
   const root = initTemp(false); G.root = root;

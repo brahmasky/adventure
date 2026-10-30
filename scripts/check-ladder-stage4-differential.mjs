@@ -2,6 +2,7 @@
 // Stage 4B differential harness (spec 2026-10-29 §6). From the feature worktree, after `npm run build`:
 //   node scripts/check-ladder-stage4-differential.mjs --old-dist-3 <548cb87 worktree>/dist --old-dist-4a <1451a66 worktree>/dist \
 //     --old-dist-4b <merge-base worktree>/dist (REQUIRED; stamped by node scripts/stamp-dist.mjs <worktree>) \
+//     [--old-base <full sha>: the base the 4b build is pinned to; required once the branch is merged] \
 //     [--transcripts-dir <dir>] [--live-db <path>] [--only a,b] [--keep] [--debug: may print private corpus content; local diagnosis only, never paste its output]
 // Runs each corpus's items through the old builds and this one and proves nothing but the new decision rows changed, per pair:
 //   s3 and s4a (old builds 548cb87, 1451a66): approval.bind and secret.redact; s4b (the stamped merge-base build): memory.lesson_admit, schedule.admit, memory.correct_preflight.
@@ -18,12 +19,13 @@ const NEW_DIST = resolve(new URL("../dist", import.meta.url).pathname);
 const CORPORA_DIR = resolve(new URL("./stage4-corpora", import.meta.url).pathname);
 
 function parseArgs(argv) {
-  const a = { old3: null, old4a: null, old4b: null, transcriptsDir: null, liveDb: null, only: null, keep: false, debug: false };
+  const a = { old3: null, old4a: null, old4b: null, oldBase: null, transcriptsDir: null, liveDb: null, only: null, keep: false, debug: false };
   const val = (i) => { if (argv[i + 1] === undefined) throw new SetupError(`${argv[i]} needs a value`); return argv[i + 1]; };
   for (let i = 0; i < argv.length; i += 1) {
     if (argv[i] === "--old-dist-3") a.old3 = resolve(val(i++));
     else if (argv[i] === "--old-dist-4a") a.old4a = resolve(val(i++));
     else if (argv[i] === "--old-dist-4b") a.old4b = resolve(val(i++));
+    else if (argv[i] === "--old-base") a.oldBase = val(i++);
     else if (argv[i] === "--transcripts-dir") a.transcriptsDir = resolve(val(i++));
     else if (argv[i] === "--live-db") a.liveDb = resolve(val(i++));
     else if (argv[i] === "--only") a.only = val(i++).split(",").filter(Boolean);
@@ -42,7 +44,7 @@ function verifyProvenance(a) {
   try {
     p3 = verifyOldDist(a.old3, NEW_DIST, "548cb87", "decisions/registry.js");
     p4 = verifyOldDist(a.old4a, NEW_DIST, "1451a66", "capabilities/capability-runner.js");
-    p5 = verifyStampedDist(a.old4b, NEW_DIST, mergeBaseOf(NEW_DIST));
+    p5 = verifyStampedDist(a.old4b, NEW_DIST, mergeBaseOf(NEW_DIST, a.oldBase ?? undefined));
   } catch (e) { throw new SetupError(e?.kind ? provenanceText(e) : "provenance: s3/s4a old build check failed"); }
   console.log(`s3  old build: worktree HEAD ${p3.head.slice(0, 12)}, registry.js ${p3.oldHash} (new ${p3.newHash})`);
   console.log(`s4a old build: worktree HEAD ${p4.head.slice(0, 12)}, capability-runner.js ${p4.oldHash} (new ${p4.newHash})`);

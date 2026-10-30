@@ -37,14 +37,23 @@ const TEXT = {
   base_unknown: "provenance: merge base unknown", stamp_missing: "provenance: stamp missing", not_worktree: "provenance: old dist parent is not a git worktree",
   dirty: "provenance: dirty worktree", head_mismatch: "provenance: head is not the merge base", stamp_mismatch: "provenance: stamp is not for the merge base",
   hash_mismatch: "provenance: dist hash mismatch", same_build: "provenance: same core-worker as new",
+  base_is_head: "provenance: merge base is this build's own HEAD (already merged); pass --old-base <full sha>",
 };
 /** The fixed text for a failure of verifyStampedDist / mergeBaseOf; anything else is one generic line. */
 export const provenanceText = (e) => TEXT[e?.kind] ?? "provenance: failed";
 
-/** The full merge-base sha of HEAD and main in the new build's worktree root (the parent of newDist). */
-export function mergeBaseOf(newDist) {
-  try { return execFileSync("git", ["-C", dirname(newDist), "merge-base", "HEAD", "main"], { encoding: "utf8" }).trim(); }
-  catch { throw new ProvenanceError("base_unknown", "git merge-base failed"); }
+/** The base the old build must be pinned to: `explicit` (--old-base, a full sha) when given, else the full merge-base sha of HEAD and main in the new build's worktree root (the parent of newDist). A merge base equal to the worktree's own HEAD (the branch is already merged) is refused: the caller must pass --old-base. */
+export function mergeBaseOf(newDist, explicit) {
+  if (explicit !== undefined && explicit !== null) {
+    if (!/^[0-9a-f]{40}$/.test(explicit)) throw new ProvenanceError("base_unknown", "--old-base must be a full sha");
+    return explicit;
+  }
+  try {
+    const git = (...a) => execFileSync("git", ["-C", dirname(newDist), ...a], { encoding: "utf8" }).trim();
+    const base = git("merge-base", "HEAD", "main");
+    if (base === git("rev-parse", "HEAD")) throw new ProvenanceError("base_is_head", "merge base is HEAD");
+    return base;
+  } catch (e) { throw e instanceof ProvenanceError ? e : new ProvenanceError("base_unknown", "git merge-base failed"); }
 }
 
 /** A stamped old build (scripts/stamp-dist.mjs) pinned to `base` (full sha): stamp present and for `base`, worktree clean at `base`, dist hash = stamp, core-worker.js differs from the new build. */
