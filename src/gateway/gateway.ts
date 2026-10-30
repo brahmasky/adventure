@@ -50,6 +50,7 @@ import { handleImprovementTap } from "./improvement-commands.js";
 import { handleJevAcceptTap } from "./jev-accept-commands.js";
 import { decideSync } from "../decisions/decide.js";
 import { INTAKE_BUDGET_FUSE } from "../decisions/entries/intake-budget-fuse.js";
+import { INTAKE_RATING_REPLY, type RatingReplyOutcome } from "../decisions/entries/intake-rating-reply.js";
 import { INTAKE_RATE_LIMIT } from "../decisions/entries/intake-rate-limit.js";
 import { storeRecorder } from "../decisions/record.js";
 import type { DecisionRecorder } from "../decisions/types.js";
@@ -360,6 +361,7 @@ export class Gateway {
     const parsed = parseBareRating(typeof event.goal === "string" ? event.goal : "");
     if (!parsed) {
       this.runStore.cancelPendingRating(chat_id);
+      this.recordRatingReply("lapse");
       return undefined;
     }
 
@@ -386,6 +388,7 @@ export class Gateway {
       // Not consumed: the comment is the message. No ack — the turn's answer replies.
       const marker: RatingCommentMarker = { ok: true, status: "rating_comment_captured", comment: parsed.comment };
       this.runStore.recordTriggerProcessed(event, marker);
+      this.recordRatingReply("forward");
       return { kind: "forward", goal: parsed.comment, rating_signal };
     }
 
@@ -406,7 +409,13 @@ export class Gateway {
     });
     this.runStore.recordTriggerProcessed(event, result);
     this.recordTelegramAccepted(event, now);
+    this.recordRatingReply("consume");
     return { kind: "consumed", result };
+  }
+
+  /** intake.rating_reply (spec 2026-10-30 R1 §4.2): one row per fresh decision of an open, in-window ask; never on a replay or conflict. */
+  private recordRatingReply(outcome: RatingReplyOutcome): void {
+    decideSync(INTAKE_RATING_REPLY, { outcome }, { run_id: null, tool_call_id: null, recorder: this.decisionRecorder });
   }
 
   /**
