@@ -91,8 +91,8 @@ async function line2() {
   const rows = rowsAfter(mark, "intake.rate_limit");
   const here = [join(process.cwd(), "houge.kill"), join(MAIN_CHECKOUT, "houge.kill")].filter(existsSync).length;
   const pinned = existsSync(process.env.HOUGE_TOMBSTONE_PATH);
-  const ok = r.error?.code !== "TELEGRAM_RATE_LIMITED" && rows.length === 0 && here === 0;
-  return { ok, detail: `code ${r.ok ? "ok" : r.error?.code} · intake.rate_limit rows ${rows.length} (want 0) · houge.kill in cwd/main checkout ${here} (want 0) · tombstone at pinned path ${pinned}` };
+  const ok = r.ok === true && r.status === "killed" && pinned && rows.length === 0 && here === 0;
+  return { ok, detail: `status ${r.ok ? r.status : r.error?.code} (want killed) · intake.rate_limit rows ${rows.length} (want 0) · houge.kill in cwd/main checkout ${here} (want 0) · tombstone at pinned path ${pinned}` };
 }
 
 // ---- lines 3 and 4: the rating reply ----
@@ -100,8 +100,8 @@ async function line3() {
   const who = whoFor(3); const gw = gateway(); const mark = decisionMark();
   seedAsk(G.store, who, wall(), 10, true);
   const first = send(gw, who, { goal: "3", key: "l3-digit" });
-  const acks = countOf("SELECT COUNT(*) AS n FROM notification_outbox WHERE idempotency_key = ?", "t:l3-digit:rating");
   const again = send(gw, who, { goal: "3", key: "l3-digit" });
+  const acks = countOf("SELECT COUNT(*) AS n FROM notification_outbox WHERE idempotency_key = ?", "t:l3-digit:rating"); // after the replay: a duplicate ack must fail
   const rows = rowsAfter(mark, "intake.rating_reply");
   const ok = first.ok && first.status === "rating_captured" && acks === 1 && same(first, again) && pair(rows) === "consume/bare_digit" && rows.length === 1 && nullIds(rows);
   return { ok, detail: `status ${first.status} · :rating acks ${acks} (want 1) · replay same result ${same(first, again)} · rows ${rows.length} [${pair(rows)}] (want 1 [consume/bare_digit])` };
@@ -160,9 +160,9 @@ async function line6() {
   const inc1 = openFailed();
   const thrown = await captured(() => sixthCommand(gw, "6b"));
   const logged = thrown.seen.filter((l) => l.startsWith("decisions: intake.rate_limit record threw past the recorder")).length;
-  const ok = fired >= 1 && opened === 1 && sameAsLine1(faulted.value) && targets.every((t) => t === STUB_CHAT)
+  const ok = fired >= 1 && opened === 1 && sameAsLine1(faulted.value) && targets.length === 1 && targets.every((t) => t === STUB_CHAT)
     && openFailed() === inc1 && sameAsLine1(thrown.value) && logged === 1;
-  return { ok, detail: `store fault ${fired >= 1 ? "once" : "never"}: incidents +${opened} (want 1), result same ${sameAsLine1(faulted.value)}, alerts queued ${targets.length} all to ${STUB_CHAT} ${targets.every((t) => t === STUB_CHAT)} | recorder throw: incidents +${openFailed() - inc1} (want 0), result same ${sameAsLine1(thrown.value)}, logged ${logged} (want 1)` };
+  return { ok, detail: `store fault ${fired >= 1 ? "once" : "never"}: incidents +${opened} (want 1), result same ${sameAsLine1(faulted.value)}, alerts queued ${targets.length} (want 1) all to ${STUB_CHAT} ${targets.every((t) => t === STUB_CHAT)} | recorder throw: incidents +${openFailed() - inc1} (want 0), result same ${sameAsLine1(thrown.value)}, logged ${logged} (want 1)` };
 }
 
 // ---- line 7: /status ----
