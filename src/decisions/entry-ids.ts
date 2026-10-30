@@ -2,7 +2,7 @@
  * Every registered entry id (registry.ts holds the entries; tests/decisions/registry.test.ts keeps the two equal). A leaf
  * module with no imports, because the store imports it (outcome values, ladder-move refusals).
  */
-export const ENTRY_IDS = ["turn.handler", "turn.gear", "tool.injection", "tool.shell_netread", "turn.trust", "memory.kind", "turn.settle", "improve.route", "tool.shell_class", "tool.path", "selfwrite.guard", "fetch.ssrf", "tool.policy", "tool.manifest", "tool.budget", "tool.wall", "reader.family", "posture.kill", "approval.bind", "secret.redact", "memory.lesson_admit", "schedule.admit", "memory.correct_preflight"] as const;
+export const ENTRY_IDS = ["turn.handler", "turn.gear", "tool.injection", "tool.shell_netread", "turn.trust", "memory.kind", "turn.settle", "improve.route", "tool.shell_class", "tool.path", "selfwrite.guard", "fetch.ssrf", "tool.policy", "tool.manifest", "tool.budget", "tool.wall", "reader.family", "posture.kill", "approval.bind", "secret.redact", "memory.lesson_admit", "schedule.admit", "memory.correct_preflight", "intake.rate_limit", "intake.rating_reply", "intake.budget_fuse"] as const;
 
 /** The front-door entries (R12/R13): the one definition; migrated callers and the recorder import it. */
 export const FRONT_DOOR_ENTRIES: ReadonlySet<string> = new Set(["turn.handler", "turn.gear"]);
