@@ -47,10 +47,12 @@ function verdict(n, name, ok, detail) {
   out.push(ok);
   console.log(`${ok ? "PASS" : "FAIL"} ${n} ${name} — ${redactForPrint(detail)}`);
 }
-/** The error's name plus its code when it has a short one; never the message. */
+/** Closed sets (never the message): a standard error class name, and a Node/SQLite system code shape; anything else prints `<other>`. */
+const ERROR_NAMES = new Set(["Error", "TypeError", "RangeError", "SyntaxError", "ReferenceError", "AssertionError", "AbortError"]);
+const SYSTEM_CODE = /^(ERR_[A-Z0-9_]{1,40}|SQLITE_[A-Z_]{1,30}|E[A-Z]{2,15})$/;
 function errCode(e) {
-  const name = e instanceof Error && /^[A-Za-z]{1,40}$/.test(e.name) ? e.name : "non-Error";
-  const code = typeof e?.code === "string" && /^[A-Z0-9_]{1,40}$/.test(e.code) ? ` ${e.code}` : "";
+  const name = e instanceof Error ? (ERROR_NAMES.has(e.name) ? e.name : "<other>") : "non-Error";
+  const code = typeof e?.code === "string" ? (SYSTEM_CODE.test(e.code) ? ` ${e.code}` : " <other>") : "";
   return `${name}${code}`;
 }
 /** A line body that returns { ok, detail }; a throw is that line's FAIL (a later line still runs). */
