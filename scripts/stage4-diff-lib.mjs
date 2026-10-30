@@ -150,13 +150,20 @@ export const NEW_ROW_IDS = {
   r1: new Set(INTAKE_IDS)
 };
 
+/** Every ordinary table: sqlite_* internals, virtual tables and their shadow tables (`<virtual>_*`) as sqlite_master reports them are excluded; a name alone (e.g. "_fts") never excludes one. */
+export function regularTables(store) {
+  const t = store.db.prepare("SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all();
+  const virtual = t.filter((x) => /^CREATE VIRTUAL/i.test(x.sql ?? "")).map((x) => x.name);
+  return t.filter((x) => !virtual.some((v) => x.name === v || x.name.startsWith(`${v}_`)));
+}
+
 /**
- * Every table's rows in rowid order, FTS shadow tables and sqlite_* excluded: the whole-DB projection (spec R1 §6). Raw column
+ * Every table's rows in rowid order, virtual tables, their shadows and sqlite_* excluded (regularTables): the whole-DB projection (spec R1 §6). Raw column
  * values, `*_json` strings NOT parsed (byte-identical compare; relabelClocks reaches clocks inside them textually). `decisions` rows
  * whose entry_id is in dropDecisionIds are removed HERE, before any clock relabelling, so they never occupy a clock rank (P2).
  */
 export function dumpDb(store, { dropDecisionIds = [] } = {}) {
-  const tables = store.db.prepare("SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name NOT GLOB '*_fts*' ORDER BY name").all();
+  const tables = regularTables(store);
   const drop = new Set(dropDecisionIds);
   const out = {};
   for (const { name, sql } of tables) {

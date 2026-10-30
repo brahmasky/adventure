@@ -4,7 +4,7 @@
 // rows are filtered by the harness (NEW_ROW_IDS.r1) and instead REQUIRED on the new side (each item's `expect`); the old build must hold none.
 import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { DISTS, INTAKE_IDS, canon, diffPaths, dumpDb, mkStore, mkTemp, relabelClocks, requireNew } from "../stage4-diff-lib.mjs";
+import { DISTS, INTAKE_IDS, canon, diffPaths, dumpDb, mkStore, mkTemp, regularTables, relabelClocks, requireNew } from "../stage4-diff-lib.mjs";
 import { scrubIds } from "../stage4-bind-fixture.mjs";
 import { NOW, intakeEvent, saturateWindow, seedActiveRuns, seedAsk, seedPendingApprovals, withCountingClock, withPinnedEnv } from "../stage4-intake-fixture.mjs";
 
@@ -69,14 +69,30 @@ const maskIdHashes = (d, db) => Object.fromEntries(Object.entries(db).map(([t, r
   typeof r.payload_hash === "string" && RANDOM_ID.test(String(r.payload_json)) && hashOk(d, r) ? { ...r, payload_hash: "hash-of-payload-ok" } : r)]));
 const isClockKey = (k) => /(_at|_since|^since|^now)$/.test(k);
 
-// Coverage self-test: the dump must hold exactly the tables that have rows, counted by a separate sqlite_master loop (virtual tables and their shadows left out).
-function populatedTables(store) {
-  const t = all(store, "SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name");
-  const virtual = t.filter((x) => /^CREATE VIRTUAL/i.test(x.sql ?? "")).map((x) => x.name);
-  return t.filter((x) => !virtual.some((v) => x.name === v || x.name.startsWith(`${v}_`))).filter((x) => {
-    const n = store.db.prepare(`SELECT COUNT(*) AS n FROM "${x.name}"${x.name === "decisions" ? ` WHERE entry_id NOT IN (${INTAKE_IDS.map((i) => `'${i}'`).join(",")})` : ""}`).get().n;
-    return n > 0;
-  }).map((x) => x.name);
+// Coverage self-test: the dump must hold, per table, exactly the rows the DB holds (minus the intentionally dropped intake decisions rows),
+// counted by SQL count(*) over the same ordinary-table rule dumpDb uses (virtual tables and their shadows left out).
+function tableCounts(store) {
+  const ids = INTAKE_IDS.map((i) => `'${i}'`).join(",");
+  const counts = {};
+  for (const { name } of regularTables(store)) {
+    const n = store.db.prepare(`SELECT COUNT(*) AS n FROM "${name}"${name === "decisions" ? ` WHERE entry_id NOT IN (${ids})` : ""}`).get().n;
+    if (n > 0) counts[name] = n;
+  }
+  return counts;
+}
+const dumpCounts = (db) => Object.fromEntries(Object.entries(db).map(([t, rows]) => [t, rows.length]));
+function checkCoverage(db, want) {
+  const got = dumpCounts(db);
+  if (canon(got) !== canon(want)) throw new Error(`coverage self-test: dump holds ${canon(got)}, the DB holds ${canon(want)}`);
+}
+/** The check must itself catch a dump that lost one row of a still-populated table (or a whole table). */
+function omittedRowSelfTest(db, want) {
+  const t = Object.keys(db).find((k) => db[k].length > 1) ?? Object.keys(db)[0];
+  if (!t) return;
+  const mutated = { ...db, [t]: db[t].slice(1) };
+  if (!mutated[t].length) delete mutated[t];
+  try { checkCoverage(mutated, want); } catch { return; }
+  throw new Error(`coverage self-test is blind: a dump missing one row of ${t} passed`);
 }
 
 function runEvents(d, store, item) {
@@ -107,8 +123,9 @@ async function project(d, item) {
       const intake = all(store, `SELECT entry_id, verdict, reason_code, run_id, tool_call_id FROM decisions WHERE rowid > ${Number(seedMax)} ORDER BY rowid`);
       if (d.dir !== DISTS.new && intake.some((r) => INTAKE_IDS.includes(r.entry_id))) throw new Error("control failed: the old build wrote intake.* rows");
       const db = dumpDb(store, { dropDecisionIds: INTAKE_IDS });
-      const want = populatedTables(store).sort();
-      if (canon(Object.keys(db).sort()) !== canon(want)) throw new Error(`coverage self-test: dump holds [${Object.keys(db)}], sqlite_master holds [${want}]`);
+      const want = tableCounts(store);
+      checkCoverage(db, want);
+      omittedRowSelfTest(db, want);
       return { ...scrubIds(relabelClocks({ results, db: maskIdHashes(d, db) }, isClockKey)), intake, __strip: ["intake"] };
     }));
   } finally { try { store?.close(); } catch { /* closed */ } }

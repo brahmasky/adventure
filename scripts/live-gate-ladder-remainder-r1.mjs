@@ -126,16 +126,16 @@ const fuseAlerts = () => countOf("SELECT COUNT(*) AS n FROM notification_outbox 
 const latched = () => countOf("SELECT COUNT(*) AS n FROM global_budget_fuse_state WHERE id = 1 AND fused = 1") === 1;
 async function line5() {
   const who = whoFor(5); const gw = gateway({ runs: 0 }); const mark = decisionMark();
-  const wasLatched = latched(); const alerts0 = fuseAlerts();
+  G.store.disarmGlobalFuse(); // the copy may already be fused: reset the latch so the 0 -> 1 transition is always what is tested (the copy is disposable)
+  const unlatched = !latched(); const alerts0 = fuseAlerts();
   const first = send(gw, who, { key: "l5-a" });
   const alerts1 = fuseAlerts();
   const second = send(gw, who, { key: "l5-b" });
   const alerts2 = fuseAlerts();
   const rows = rowsAfter(mark, "intake.budget_fuse");
-  const wantFirst = wasLatched ? 0 : 1;
-  const ok = first.error?.code === "GLOBAL_BUDGET_FUSE" && second.error?.code === "GLOBAL_BUDGET_FUSE" && alerts1 - alerts0 === wantFirst && alerts2 === alerts1
+  const ok = first.error?.code === "GLOBAL_BUDGET_FUSE" && second.error?.code === "GLOBAL_BUDGET_FUSE" && unlatched && alerts1 - alerts0 === 1 && alerts2 === alerts1
     && rows.length === 2 && rows.every((x) => x.verdict === "refuse" && x.reason_code === "runs") && nullIds(rows);
-  return { ok, detail: `case ${wasLatched ? "latched in the copy: no new alert, rows written" : "unlatched: one alert"} · codes ${first.error?.code},${second.error?.code} · fuse alerts +${alerts1 - alerts0} then +${alerts2 - alerts1} (want +${wantFirst} then +0) · rows ${rows.length} [${pair(rows)}] (want 2 [refuse/runs])` };
+  return { ok, detail: `latch reset ${unlatched} · codes ${first.error?.code},${second.error?.code} · fuse alerts +${alerts1 - alerts0} then +${alerts2 - alerts1} (want +1 then +0) · rows ${rows.length} [${pair(rows)}] (want 2 [refuse/runs])` };
 }
 
 // ---- line 6: record faults ----

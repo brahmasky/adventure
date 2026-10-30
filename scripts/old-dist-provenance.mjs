@@ -36,7 +36,7 @@ export class ProvenanceError extends Error { constructor(kind, message) { super(
 const TEXT = {
   base_unknown: "provenance: merge base unknown", stamp_missing: "provenance: stamp missing", not_worktree: "provenance: old dist parent is not a git worktree",
   dirty: "provenance: dirty worktree", head_mismatch: "provenance: head is not the merge base", stamp_mismatch: "provenance: stamp is not for the merge base",
-  hash_mismatch: "provenance: dist hash mismatch", same_build: "provenance: same core-worker as new",
+  hash_mismatch: "provenance: dist hash mismatch", same_build: "provenance: same build as new (the compared file is identical)",
   base_is_head: "provenance: merge base is this build's own HEAD (already merged); pass --old-base <full sha>",
 };
 /** The fixed text for a failure of verifyStampedDist / mergeBaseOf; anything else is one generic line. */
