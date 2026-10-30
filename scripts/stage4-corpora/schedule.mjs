@@ -71,7 +71,8 @@ async function project(d, item) {
     const decisions = rows(store, `SELECT entry_id, tool_call_id, stage, rung, verdict, reason_code, armed_mode, fallback_reason FROM decisions ORDER BY rowid`);
     if (d.dir !== DISTS.new && decisions.some((r) => r.entry_id === "schedule.admit")) throw new Error("control failed: the old build wrote schedule.admit rows");
     const view = { results, ledger: rows(store, `SELECT event_type, actor, sequence, payload_json FROM ledger_events ORDER BY rowid`),
-      scheduled_tasks: rows(store, `SELECT * FROM scheduled_tasks ORDER BY rowid`), decisions };
+      scheduled_tasks: rows(store, `SELECT * FROM scheduled_tasks ORDER BY rowid`), decisions,
+      run_ok: store.db.prepare("SELECT run_id FROM decisions WHERE entry_id = ?").all("schedule.admit").every((r) => r.run_id === run.run_id), __strip: ["run_ok"] }; // per-side check for required(): every new row sits on this item's own run
     return scrubIds(view, [run.root]);
   } finally { run.close(); try { store.close(); } catch { /* closed */ } }
 }
@@ -79,6 +80,7 @@ async function project(d, item) {
 function required(d, item, proj) {
   const got = proj.decisions.filter((r) => r.entry_id === "schedule.admit").map((r) => [r.verdict, r.reason_code]);
   requireNew(corpus, item, "schedule.admit rows", JSON.stringify(got) === JSON.stringify(item.expect), `got ${JSON.stringify(got)}, want ${JSON.stringify(item.expect)}`);
+  requireNew(corpus, item, "schedule.admit rows attached to the item's own run", proj.run_ok === true);
   const other = proj.decisions.filter((r) => r.entry_id !== "schedule.admit");
   requireNew(corpus, item, "no other decision rows", other.length === 0, [...new Set(other.map((r) => r.entry_id))].join(","));
 }
