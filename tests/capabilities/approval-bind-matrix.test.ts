@@ -98,6 +98,8 @@ function bindFixture(o: { source?: "user" | "schedule"; approver?: Identity; sin
     const actual = store.listDecisionsForRun(run_id).map((d) => key(d.entry_id, d)).sort();
     // A schedule-born run is admitted through Gateway.intake, which records exactly one turn.contract|restrict|schedule_born row (R2 P10); a user turn records none.
     const contract = source === "schedule" ? [key("turn.contract", { verdict: "restrict", reason_code: "schedule_born", tool_call_id: null })] : [];
+    const own = store.listDecisionsForRun(run_id).filter((d) => d.entry_id === "turn.contract");
+    expect(own.map((d) => [d.run_id, d.verdict, d.reason_code])).toEqual(source === "schedule" ? [[run_id, "restrict", "schedule_born"]] : []); // the row belongs to THIS run
     expect(actual).toEqual([key("tool.policy", policy), ...binds.map((b) => key("approval.bind", b)), ...contract].sort());
   }
   const bindRows = (): Array<{ verdict: string; reason_code: string | null; tool_call_id: string | null }> =>
@@ -154,6 +156,8 @@ async function expectRefused(f: ReturnType<typeof bindFixture>, id: string, code
   expect(f.store.listStandingApprovals()).toEqual([]); // no standing row created or touched
   expect(f.standingUses()).toBe(0);
   // a schedule-born run also holds its one admission row (R2 P10), asserted exactly
+  expect(f.store.listDecisionsForRun(f.run_id).filter((d) => d.entry_id === "turn.contract").map((d) => [d.run_id, d.verdict, d.reason_code]))
+    .toEqual(scheduleBorn ? [[f.run_id, "restrict", "schedule_born"]] : []);
   expect(f.recorded).toEqual(scheduleBorn ? [{ entry_id: "turn.contract", verdict: "restrict", reason_code: "schedule_born" }, ...POLICY_ROWS] : POLICY_ROWS);
 }
 const POLICY_ROWS = [{ entry_id: "tool.policy", verdict: "requires_approval", reason_code: "gated_side_effect" }];

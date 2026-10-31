@@ -88,6 +88,14 @@ describe("turn.contract at handleTaskIntake", () => {
     expect(() => r.g.intake(ev({ source: "schedule", key: "schedule:sch_1:4" }), NOW)).toThrow("planted");
     expect(rows(r.store)).toHaveLength(1);
   });
+  it("a failed attach (CONTRACT_ATTACH_FAILED: attachContract returns false) → zero turn.contract calls and rows", () => {
+    const r = rig();
+    (r.store as unknown as { attachContract: () => boolean }).attachContract = () => false;
+    const out = r.g.intake(ev({ source: "schedule", key: "schedule:sch_1:7" }), NOW);
+    expect(out).toMatchObject({ ok: false, error: { code: "CONTRACT_ATTACH_FAILED" } });
+    expect(r.contractCalls()).toBe(0);
+    expect(rows(r.store)).toEqual([]);
+  });
   it("order (codex W): the decision row precedes recordGlobalBudgetRun, disarmGlobalFuse and recordTelegramAccepted", () => {
     const r = rig(); const order: string[] = [];
     const s = r.store as unknown as Record<string, (...a: unknown[]) => unknown>;

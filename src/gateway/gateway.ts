@@ -1174,8 +1174,7 @@ export class Gateway {
     const queued = this.attachAndQueue(created.run_id, contract.contract);
     if (queued.ok) {
       // turn.contract (spec 2026-11-01 R2 §4.2): first, so no later write in this block can cost the row; one per admitted run.
-      const restricted = event.type === "turn" && !contract.contract.allowed_actions.includes("schedule_task");
-      decideSync(TURN_CONTRACT, { refused: null, restricted }, { run_id: created.run_id, tool_call_id: null, recorder: this.decisionRecorder });
+      decideSync(TURN_CONTRACT, { refused: null, restricted: event.type === "turn" && !contract.contract.allowed_actions.includes("schedule_task") }, { run_id: created.run_id, tool_call_id: null, recorder: this.decisionRecorder });
       // Count the admitted run against the global breaker, and re-arm the fuse
       // (admissions are back under cap). Only genuinely-new runs reach here;
       // duplicates resume above without double-counting.
