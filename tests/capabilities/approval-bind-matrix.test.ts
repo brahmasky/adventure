@@ -96,7 +96,9 @@ function bindFixture(o: { source?: "user" | "schedule"; approver?: Identity; sin
   function assertWholeTable(policy: Row, binds: Row[]): void {
     const key = (entry_id: string, r: Row): string => `${entry_id}|${r.verdict}|${r.reason_code}|${r.tool_call_id}`;
     const actual = store.listDecisionsForRun(run_id).map((d) => key(d.entry_id, d)).sort();
-    expect(actual).toEqual([key("tool.policy", policy), ...binds.map((b) => key("approval.bind", b))].sort());
+    // A schedule-born run is admitted through Gateway.intake, which records exactly one turn.contract|restrict|schedule_born row (R2 P10); a user turn records none.
+    const contract = source === "schedule" ? [key("turn.contract", { verdict: "restrict", reason_code: "schedule_born", tool_call_id: null })] : [];
+    expect(actual).toEqual([key("tool.policy", policy), ...binds.map((b) => key("approval.bind", b)), ...contract].sort());
   }
   const bindRows = (): Array<{ verdict: string; reason_code: string | null; tool_call_id: string | null }> =>
     store.listDecisionsForRun(run_id).filter((d) => d.entry_id === "approval.bind").map((d) => ({ verdict: d.verdict, reason_code: d.reason_code, tool_call_id: d.tool_call_id }));
@@ -144,14 +146,15 @@ function bindFixture(o: { source?: "user" | "schedule"; approver?: Identity; sin
 const OK: CapabilityResult = { status: "succeeded", output_ref: "inline:shell_external", output_hash: "f9065a2a435e2e3efc39980ff31f9ea29ba970e700e9ecf6a0645f82a18f7bda", output: { ran: true } };
 const refused = (code: string): CapabilityResult => ({ status: "failed", error_ref: `${code}: ${code}` });
 /** Every refusal: the result bytes are the code twice, the policy row is the only decision recorded, and the caller reads the row back itself. */
-async function expectRefused(f: ReturnType<typeof bindFixture>, id: string, code: string, rowState = "approved"): Promise<void> {
+async function expectRefused(f: ReturnType<typeof bindFixture>, id: string, code: string, rowState = "approved", scheduleBorn = false): Promise<void> {
   const { result, added } = await f.execute(id);
   expect(result).toEqual(refused(code));
   expect(f.state(id)).toBe(rowState); // a refusal never moves the approval row
   expect(added).toEqual([]); // nothing reached the run's ledger
   expect(f.store.listStandingApprovals()).toEqual([]); // no standing row created or touched
   expect(f.standingUses()).toBe(0);
-  expect(f.recorded).toEqual(POLICY_ROWS);
+  // a schedule-born run also holds its one admission row (R2 P10), asserted exactly
+  expect(f.recorded).toEqual(scheduleBorn ? [{ entry_id: "turn.contract", verdict: "restrict", reason_code: "schedule_born" }, ...POLICY_ROWS] : POLICY_ROWS);
 }
 const POLICY_ROWS = [{ entry_id: "tool.policy", verdict: "requires_approval", reason_code: "gated_side_effect" }];
 
@@ -239,7 +242,7 @@ describe("approval consume binding through CapabilityRunner + the omp sink (toda
   it("P5 control: the same schedule-born run WITHOUT the swap is a requester_mismatch (the swap is what makes the operator's tap count)", async () => {
     const f = bindFixture({ source: "schedule" });
     const id = f.approvedRow({ requester: PACO });
-    await expectRefused(f, id, "requester_mismatch");
+    await expectRefused(f, id, "requester_mismatch", "approved", true);
     expect(f.state(id)).toBe("approved");
   });
 

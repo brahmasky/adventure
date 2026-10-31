@@ -95,7 +95,7 @@ describe("memory.correct_preflight: the trust-limit answer is recorded at prefli
     const t = setup({ source: "schedule" });
     try {
       memoryWritePreflight(pre({ ...t.deps, recorder: storeRecorder(t.store) }), { action: "retire", ids: [t.ids[0]] });
-      expect(t.store.listDecisionsForRun(t.run_id).map((r) => [r.entry_id, r.verdict, r.reason_code])).toEqual([["memory.correct_preflight", "refuse", "not_operator_turn"]]);
+      expect(t.store.listDecisionsForRun(t.run_id).map((r) => [r.entry_id, r.verdict, r.reason_code])).toEqual([["turn.contract", "restrict", "schedule_born"], ["memory.correct_preflight", "refuse", "not_operator_turn"]]);
     } finally { t.store.close(); }
   });
 
