@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { buildTypedTaskEvent } from "../../src/domain/types.js";
-import { Gateway } from "../../src/gateway/gateway.js";
+import { CONTRACT_REFUSAL_ECHO_MAX, Gateway } from "../../src/gateway/gateway.js";
 import { RunStore, StandingHookError } from "../../src/run/run-store.js";
 import { isHandledIntakeDenial, runTelegramPollOnce } from "../../src/telegram/telegram-poll-runner.js";
 import { pinOmpEnv, tmpOmpDist, useFakeOmp } from "../helpers/omp-env.js";
@@ -147,4 +147,71 @@ describe("standing-approval refusals never wedge Telegram intake", () => {
     expect(sent.filter((m) => m.text.includes("/schedule") && m.text.includes("Revoke"))).toHaveLength(1);
     expect(sent.some((m) => m.text.includes("answered"))).toBe(true);
   }));
+});
+
+// Spec 2026-11-01 R2 §3.3 / Decision 2-A: `/run <unknown program>` parses, then the contract compile refuses it with
+// TASK_CONTRACT_INVALID. That code was missing from the handled set, so the poll loop threw, never acknowledged the update,
+// and replayed it forever — every later message stalled behind one typo. Through the real poll loop: one code-built reply,
+// the offset passes the refused update, and the next message still runs.
+describe("a refused task contract never wedges Telegram intake", () => {
+  it("`/run nosuch hello` gets one reply; the offset moves past it and the later turn runs", async () => {
+    const store = RunStore.openInMemory();
+    const root = mkdtempSync(join(tmpdir(), "houge-cr-"));
+    const sent: Array<{ chat_id: string; text: string }> = [];
+    try {
+      useFakeOmp({ "*": { rpcText: "answered" } }, root);
+      const msg = (update_id: number, text: string) => ({ update_id, message: { message_id: update_id, text, from: { id: 111 }, chat: { id: 222 } } });
+      await runTelegramPollOnce({
+        store, projectRoot: root, omp: { dataDir: root, distDir: tmpOmpDist(root) },
+        allowlist: { users: [{ telegram_user_id: 111, identity_id: "paco" }], chats: [{ telegram_chat_id: 222, label: "p", allowed_identity_ids: ["paco"] }] },
+        telegramClient: {
+          getUpdates: async () => [msg(70, "/run nosuch hello"), msg(71, "hello")],
+          sendMessage: async ({ chat_id, text }) => { sent.push({ chat_id: String(chat_id), text }); return { message_id: sent.length }; }
+        }
+      });
+      const replies = sent.filter((m) => m.text === "That command was not accepted: Unknown program: nosuch. Send /help for the list.");
+      expect(replies).toHaveLength(1);
+      expect(replies[0]!.chat_id).toBe("222");
+      expect(store.getOffset("telegram")).toBe(72);
+      expect(sent.some((m) => m.text.includes("answered"))).toBe(true);
+    } finally {
+      store.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("TASK_CONTRACT_INVALID is a handled denial", () => {
+    expect(isHandledIntakeDenial("TASK_CONTRACT_INVALID")).toBe(true);
+  });
+});
+
+describe("the contract-refusal reply (gateway)", () => {
+  const ev = (source: "telegram" | "schedule", key: string) => buildTypedTaskEvent({ source, type: "run", program: "nosuch", goal: "hello",
+    requested_by: source === "telegram" ? { kind: "user", id: "paco" } : { kind: "schedule", id: "sch_1" },
+    notify: { kind: "telegram", chat_id: "222" }, idempotency_key: key, source_reference: `ref:${key}` });
+
+  it("a Telegram refusal replies once, even when the update is redelivered", () => {
+    const store = RunStore.openInMemory();
+    const g = new Gateway(store);
+    for (let i = 0; i < 2; i += 1) expect(g.intake(ev("telegram", "telegram:70:message:70"))).toMatchObject({ ok: false, error: { code: "TASK_CONTRACT_INVALID" } });
+    expect(store.countNotificationsByIdempotencyKey("telegram:70:message:70:contract_invalid")).toBe(1);
+    store.close();
+  });
+
+  it("a very long program word is cut, so the reply stays well under Telegram's 4096-char limit", () => {
+    const store = RunStore.openInMemory();
+    const long = buildTypedTaskEvent({ source: "telegram", type: "run", program: "x".repeat(4000), goal: "hello", requested_by: { kind: "user", id: "paco" },
+      notify: { kind: "telegram", chat_id: "222" }, idempotency_key: "telegram:80:message:80", source_reference: "ref:80" });
+    new Gateway(store).intake(long);
+    const text = String(store.claimNextNotification("t", 60)?.payload.text);
+    expect(text).toBe(`That command was not accepted: Unknown program: ${"x".repeat(CONTRACT_REFUSAL_ECHO_MAX - "Unknown program: ".length)}…. Send /help for the list.`);
+    store.close();
+  });
+
+  it("a scheduled refusal stays silent (schedule-tick retries and parks)", () => {
+    const store = RunStore.openInMemory();
+    expect(new Gateway(store).intake(ev("schedule", "schedule:sch_1:1"))).toMatchObject({ ok: false, error: { code: "TASK_CONTRACT_INVALID" } });
+    expect(store.countNotificationsByIdempotencyKey("schedule:sch_1:1:contract_invalid")).toBe(0);
+    store.close();
+  });
 });

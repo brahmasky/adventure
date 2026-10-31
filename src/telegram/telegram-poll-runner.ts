@@ -64,7 +64,10 @@ export const HANDLED_INTAKE_DENIAL_CODES: ReadonlySet<string> = new Set([
   // /models refusals (no match, outside the allow-list, a role-level judges set, no catalog, no resolver): replied to, never a poll failure.
   MODELS_REFUSED,
   "TRIGGER_IDEMPOTENCY_CONFLICT",
-  "GLOBAL_BUDGET_FUSE"
+  "GLOBAL_BUDGET_FUSE",
+  // A refused contract (`/run <unknown program>`, 2026-11-01): answered by the gateway, never a poll failure. Unhandled, one
+  // typo replayed forever and every later update stalled behind it (spec 2026-11-01 R2 §3.3, Decision 2-A).
+  "TASK_CONTRACT_INVALID"
 ]);
 
 export function isHandledIntakeDenial(code: string): boolean {

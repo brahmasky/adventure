@@ -61,6 +61,7 @@ import { standingScheduleSection } from "../decisions/standing-approval.js";
 import { handleForgetMemory, handleMemories, handleMemoryUndo } from "./memory-commands.js";
 import { handleModels, modelsUnavailable, type ModelsRoles } from "./models-commands.js";
 import type { IdeaRow, ShortlistRow } from "../run/run-store.js";
+import { invalidCommandReply } from "../triggers/telegram-trigger-adapter.js";
 
 /** A freshly captured rating the daemon follows up on (the low-rating attribution pass). */
 export interface RatingSignal {
@@ -139,6 +140,9 @@ const APPROVAL_REFUSAL_TEXT: Readonly<Record<string, string>> = {
 };
 /** An `appr_<uuid>` is 41 characters; anything longer is not an id and is not echoed in full. */
 const APPROVAL_ID_ECHO_MAX = 48;
+/** A contract refusal echoes Paco's program word; a near-4096-char command must not push the reply past Telegram's limit. */
+export const CONTRACT_REFUSAL_ECHO_MAX = 200;
+const boundedEcho = (text: string): string => (text.length > CONTRACT_REFUSAL_ECHO_MAX ? `${text.slice(0, CONTRACT_REFUSAL_ECHO_MAX)}…` : text);
 /** Spec §6: a session rated at or below this is a correction on the chat's latest routed turn. */
 const LOW_RATING_MAX = 1;
 
@@ -1092,9 +1096,7 @@ export class Gateway {
 
   private handleTaskIntake(event: TypedTaskEvent, now: string): GatewayIntakeResult {
     const contract = compileTaskContract(event);
-    if (!contract.ok) {
-      return { ok: false, error: contract.error };
-    }
+    if (!contract.ok) return this.refuseContract(event, contract.error);
 
     // Global autonomy circuit-breaker: refuse new run admissions once any
     // rolling-24h cap is reached. Status/approve/deny never reach here, so
@@ -1182,6 +1184,24 @@ export class Gateway {
       this.recordTelegramAccepted(event, now);
     }
     return queued;
+  }
+
+  /**
+   * A refused contract (e.g. `/run <unknown program>`). Paco's own command is answered, never ghosted (the 2026-10-01
+   * precedent): a code-built reply keyed on the update, so a redelivery never sends it twice. A scheduled source stays
+   * silent (schedule-tick retries and parks). The poll loop treats the code as a handled denial (spec 2026-11-01 R2 §3.3).
+   */
+  private refuseContract(event: TypedTaskEvent, error: { code: "TASK_CONTRACT_INVALID"; message: string }): GatewayIntakeResult {
+    if (event.source === "telegram") {
+      this.runStore.enqueueNotification({
+        target: event.notify,
+        intent_type: "progress",
+        idempotency_key: `${event.idempotency_key}:contract_invalid`,
+        correlation_id: event.source_reference,
+        payload: { text: invalidCommandReply(boundedEcho(error.message)) }
+      });
+    }
+    return { ok: false, error };
   }
 
   /** Spec §6: a low session rating labels the chat's latest verdict (first correction wins: a tap or think-harder stays). */
