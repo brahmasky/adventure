@@ -7,7 +7,7 @@
 // must hold none (checked in project). No Date override here: wall-clock columns go through relabelClocks (order, equality and shape are compared, not the instants).
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { DISTS, mkStore, mkTemp, relabelClocks, requireNew } from "../stage4-diff-lib.mjs";
+import { DISTS, R2_IDS, mkStore, mkTemp, relabelClocks, requireNew } from "../stage4-diff-lib.mjs";
 import { scrubIds } from "../stage4-bind-fixture.mjs";
 import { adminWorker } from "../stage4-admit-fixture.mjs";
 
@@ -75,7 +75,15 @@ const rows = (store, sql) => store.db.prepare(sql).all();
 const CLOCK = /(_at|^valid_from|^valid_until|^last_seen)$/;
 /** Wall-clock instants vary per run: relabelClocks keeps their order and equality (t#1, t#2, ...), not the values (see its doc). */
 const isClock = (k) => /(_at|^valid_from|^valid_until|^last_seen)$/.test(k);
-const DEC_SQL = "SELECT entry_id, tool_call_id, stage, rung, verdict, reason_code, armed_mode, fallback_reason FROM decisions ORDER BY rowid";
+const DEC_SQL = "SELECT entry_id, tool_call_id, stage, rung, verdict, reason_code, armed_mode, fallback_reason FROM decisions WHERE entry_id NOT IN ('intake.sender', 'turn.contract') ORDER BY rowid";
+// Slice R2 (P10): a schedule-born live run writes exactly one turn.contract|restrict|schedule_born row on that run; a Paco turn writes none. The rows are read
+// apart from the compared view (dropped before relabelClocks) and asserted exactly in required(); the old build must hold none.
+const SCHED_CONTRACT = [["turn.contract", "restrict", "schedule_born", "run"]];
+function r2Rows(d, store, runId) {
+  const r2 = rows(store, `SELECT entry_id, verdict, reason_code, run_id FROM decisions WHERE entry_id IN (${R2_IDS.map((i) => `'${i}'`).join(",")}) ORDER BY rowid`).map((r) => [r.entry_id, r.verdict, r.reason_code, r.run_id === runId ? "run" : r.run_id]);
+  if (d.dir !== DISTS.new && r2.length) throw new Error("control failed: the old build wrote intake.sender / turn.contract rows");
+  return r2;
+}
 
 // ---- adapter level ----
 function makeSources(d, item) {
@@ -165,7 +173,7 @@ async function projectWorker(d, item) {
       episodic_facts: rows(store, "SELECT * FROM episodic_facts ORDER BY id"),
       memory_changes: rows(store, "SELECT * FROM memory_changes ORDER BY rowid"), decisions, hook_fired: hooks.n };
     // per-side check for required(): every new row sits on this item's own run (outside the compared view, listed in __strip)
-    return { ...scrubIds(relabelClocks(view, isClock), [root]), run_ok: store.db.prepare("SELECT run_id, tool_call_id FROM decisions WHERE entry_id = ?").all("memory.lesson_admit").every((r) => r.run_id === run_id && r.tool_call_id === null), __strip: ["run_ok"] };
+    return { ...scrubIds(relabelClocks(view, isClock), [root]), run_ok: store.db.prepare("SELECT run_id, tool_call_id FROM decisions WHERE entry_id = ?").all("memory.lesson_admit").every((r) => r.run_id === run_id && r.tool_call_id === null), r2: r2Rows(d, store, run_id), __strip: ["run_ok", "r2"] };
   } finally { try { store.close(); } catch { /* closed */ } }
 }
 
@@ -178,6 +186,8 @@ function required(d, item, proj) {
   requireNew(corpus, item, "memory.lesson_admit rows attached to the item's own run with no tool call id", proj.run_ok === true);
   if (["abort", "replace", "race"].includes(item.hook)) requireNew(corpus, item, "the hook fired inside the save", proj.hook_fired > 0, `fired ${proj.hook_fired}`);
   if (item.reason) requireNew(corpus, item, "result reason", proj.result?.output?.reason === item.reason, `got ${proj.result?.output?.reason}`);
+  const wantR2 = item.run === "schedule" ? SCHED_CONTRACT : [];
+  requireNew(corpus, item, "R2 decision rows (exact: entry, verdict, reason, run)", JSON.stringify(proj.r2) === JSON.stringify(wantR2), `got ${JSON.stringify(proj.r2)}, want ${JSON.stringify(wantR2)}`);
   const other = proj.decisions.filter((r) => r.entry_id !== "memory.lesson_admit" && r.entry_id !== "memory.kind");
   requireNew(corpus, item, "no other decision rows", other.length === 0, [...new Set(other.map((r) => r.entry_id))].join(","));
 }

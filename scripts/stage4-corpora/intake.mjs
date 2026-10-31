@@ -2,9 +2,11 @@
 // Gateway.intake on a fresh temp-file store, under a pinned env (kill writes a tombstone, P1) and a counting clock (P2). Compared: each
 // intake result plus a whole-DB dump with the three intake.* decision rows removed, clocks relabelled by order, ids scrubbed. The intake.*
 // rows are filtered by the harness (NEW_ROW_IDS.r1) and instead REQUIRED on the new side (each item's `expect`); the old build must hold none.
+// Slice R2 (P10): an admitted schedule-born turn also writes one turn.contract|restrict|schedule_born row on that run. R2_IDS rows are dropped
+// from the dump before relabelling and asserted EXACTLY on the new side (each item's `expectR2`, default none); the old build must hold none.
 import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { DISTS, INTAKE_IDS, canon, diffPaths, dumpDb, mkStore, mkTemp, regularTables, relabelClocks, requireNew } from "../stage4-diff-lib.mjs";
+import { DISTS, INTAKE_IDS, R2_IDS, canon, diffPaths, dumpDb, mkStore, mkTemp, regularTables, relabelClocks, requireNew } from "../stage4-diff-lib.mjs";
 import { scrubIds } from "../stage4-bind-fixture.mjs";
 import { NOW, intakeEvent, saturateWindow, seedActiveRuns, seedAsk, seedPendingApprovals, withCountingClock, withPinnedEnv } from "../stage4-intake-fixture.mjs";
 
@@ -13,6 +15,7 @@ const EXEMPT = ["kill", "decision_review", "improvement_tap", "jev_accept_tap"];
 const RL = (reason) => ["intake.rate_limit", "limit", reason];
 const RR = (verdict, reason) => ["intake.rating_reply", verdict, reason];
 const BF = (reason) => ["intake.budget_fuse", "refuse", reason];
+const SCHED_CONTRACT = [["turn.contract", "restrict", "schedule_born", "run:0"]]; // run:<n> = the run created by event n of the item
 const turn = (key, goal = "synthetic", more = {}) => ({ key, goal, ...more });
 const ask = (minutes = 10, active = true) => (d, store) => seedAsk(store, WHO, NOW, minutes, active);
 const minus = (m) => new Date(Date.parse(NOW) - m * 60_000).toISOString();
@@ -39,11 +42,11 @@ const ITEMS = [
   ...EXEMPT.map((cmd) => ({ key: `exempt:${cmd}`, tags: ["exempt"], setup: (d, s) => saturateWindow(s, WHO, "turn", 5, NOW), events: [turn("a", "synthetic", { type: cmd })], expect: [] })),
   // kill is absent from the SQL NOT IN on purpose: its accepted rows count toward the window; the three taps' never do.
   ...EXEMPT.map((cmd) => ({ key: `exempt_count:${cmd}`, tags: ["exempt_count"], setup: (d, s) => saturateWindow(s, WHO, cmd, 5, NOW), events: [turn("a")], expect: cmd === "kill" ? [RL("command_window")] : [] })),
-  { key: "schedule:saturated", tags: ["schedule"], setup: (d, s) => saturateWindow(s, WHO, "turn", 5, NOW), events: [turn("a", "synthetic", { source: "schedule" })], expect: [] },
+  { key: "schedule:saturated", tags: ["schedule"], setup: (d, s) => saturateWindow(s, WHO, "turn", 5, NOW), events: [turn("a", "synthetic", { source: "schedule" })], expect: [], expectR2: SCHED_CONTRACT },
   ...RATING.map(([goal, tag, verdict, reason], i) => ({ key: `rating:${i}:${verdict}`, tags: [tag === "consume" ? "consume" : tag], setup: ask(), events: [turn("a", goal)], expect: [RR(verdict, reason)] })),
   { key: "rating:low", tags: ["low"], setup: (d, s) => { seedRoutedVerdict(d, s); ask()(d, s); }, events: [turn("a", "0")], expect: [RR("consume", "bare_digit")] },
   ...NO_ASK.map(([n, setup]) => ({ key: `no_ask:${n}`, tags: ["no_ask"], setup, events: [turn("a", "3")], expect: [] })),
-  { key: "no_ask:schedule", tags: ["no_ask"], setup: ask(), events: [turn("a", "3", { source: "schedule" })], expect: [] },
+  { key: "no_ask:schedule", tags: ["no_ask"], setup: ask(), events: [turn("a", "3", { source: "schedule" })], expect: [], expectR2: SCHED_CONTRACT },
   { key: "replay:digit", tags: ["replay"], setup: ask(), events: [turn("a", "3"), turn("a", "3")], expect: [RR("consume", "bare_digit")] },
   { key: "replay:comment", tags: ["replay"], setup: ask(), events: [turn("a", "2，synthetic"), turn("a", "2，synthetic")], expect: [RR("forward", "digit_comment")] },
   { key: "conflict", tags: ["conflict"], setup: ask(), events: [turn("a", "3"), turn("a", "2")], expect: [RR("consume", "bare_digit")] },
@@ -72,7 +75,7 @@ const isClockKey = (k) => /(_at|_since|^since|^now)$/.test(k);
 // Coverage self-test: the dump must hold, per table, exactly the rows the DB holds (minus the intentionally dropped intake decisions rows),
 // counted by SQL count(*) over the same ordinary-table rule dumpDb uses (virtual tables and their shadows left out).
 function tableCounts(store) {
-  const ids = INTAKE_IDS.map((i) => `'${i}'`).join(",");
+  const ids = [...INTAKE_IDS, ...R2_IDS].map((i) => `'${i}'`).join(",");
   const counts = {};
   for (const { name } of regularTables(store)) {
     const n = store.db.prepare(`SELECT COUNT(*) AS n FROM "${name}"${name === "decisions" ? ` WHERE entry_id NOT IN (${ids})` : ""}`).get().n;
@@ -111,6 +114,9 @@ function pinnedDir(item) {
   return dir;
 }
 
+/** "run:<n>" when the row sits on the run event n created, else the raw id (so a row on the wrong run never matches an expectation). */
+const runLabel = (results, runId) => { const n = results.findIndex((r) => r.ok && r.run_id === runId); return n >= 0 ? `run:${n}` : runId; };
+
 async function project(d, item) {
   const dir = mkTemp(`intake-${item.key}`);
   let store = null;
@@ -120,13 +126,16 @@ async function project(d, item) {
       item.setup?.(d, store);
       const seedMax = store.db.prepare("SELECT COALESCE(MAX(rowid), 0) AS m FROM decisions").get().m; // P11: an empty table gives NULL, and rowid > NULL selects nothing
       const results = runEvents(d, store, item);
-      const intake = all(store, `SELECT entry_id, verdict, reason_code, run_id, tool_call_id FROM decisions WHERE rowid > ${Number(seedMax)} ORDER BY rowid`);
+      const intake = all(store, `SELECT entry_id, verdict, reason_code, run_id, tool_call_id FROM decisions WHERE rowid > ${Number(seedMax)} AND entry_id NOT IN (${R2_IDS.map((i) => `'${i}'`).join(",")}) ORDER BY rowid`);
       if (d.dir !== DISTS.new && intake.some((r) => INTAKE_IDS.includes(r.entry_id))) throw new Error("control failed: the old build wrote intake.* rows");
-      const db = dumpDb(store, { dropDecisionIds: INTAKE_IDS });
+      const r2 = all(store, `SELECT entry_id, verdict, reason_code, run_id FROM decisions WHERE rowid > ${Number(seedMax)} AND entry_id IN (${R2_IDS.map((i) => `'${i}'`).join(",")}) ORDER BY rowid`)
+        .map((r) => [r.entry_id, r.verdict, r.reason_code, runLabel(results, r.run_id)]);
+      if (d.dir !== DISTS.new && r2.length) throw new Error("control failed: the old build wrote intake.sender / turn.contract rows");
+      const db = dumpDb(store, { dropDecisionIds: [...INTAKE_IDS, ...R2_IDS] });
       const want = tableCounts(store);
       checkCoverage(db, want);
       omittedRowSelfTest(db, want);
-      return { ...scrubIds(relabelClocks({ results, db: maskIdHashes(d, db) }, isClockKey)), intake, __strip: ["intake"] };
+      return { ...scrubIds(relabelClocks({ results, db: maskIdHashes(d, db) }, isClockKey)), intake, r2, __strip: ["intake", "r2"] };
     }));
   } finally { try { store?.close(); } catch { /* closed */ } }
 }
@@ -135,6 +144,7 @@ function required(d, item, proj) {
   const got = proj.intake.map((r) => [r.entry_id, r.verdict, r.reason_code, r.run_id, r.tool_call_id]);
   const want = item.expect.map((r) => [...r, null, null]);
   requireNew(corpus, item, "intake decision rows", canon(got) === canon(want), `got ${canon(got)}, want ${canon(want)}`);
+  requireNew(corpus, item, "R2 decision rows (exact: entry, verdict, reason, run)", canon(proj.r2) === canon(item.expectR2 ?? []), `got ${canon(proj.r2)}, want ${canon(item.expectR2 ?? [])}`);
 }
 
 // Determinism self-test (P2): the same item twice on the new build must project identically, or the old/new comparison would flag its own noise.

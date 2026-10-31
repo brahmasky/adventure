@@ -7,9 +7,21 @@
 // (isBindRow) and instead REQUIRED on the new side; the old side must hold none (checked in project: a nonzero count there throws).
 // Strip decisions: `bindTotal` is a per-side count (old 0, new N), so it is listed in __strip; the corpus-specific timestamp/hash keys the
 // generic STRIP_KEYS lacks are listed in STRIP_HERE (they vary run to run and carry no behaviour). STRIP_KEYS itself is unchanged.
-import { DISTS } from "../stage4-diff-lib.mjs";
+import { DISTS, R2_IDS } from "../stage4-diff-lib.mjs";
 import { INPUT_ONE_BYTE, OTHER, PACO, approvedRow, attempt, bindFixture, dump, otherRun, poke, scrubIds } from "../stage4-bind-fixture.mjs";
 import { RUN_LEVEL_CASES, runLevelFixture } from "../stage4-runlevel-fixture.mjs";
+
+// Slice R2 (P10): a schedule-born run writes one turn.contract|restrict|schedule_born row on that run. The rows are split out of the dump BEFORE
+// scrubbing (they are not compared: the old build holds none, which is checked per side) and asserted exactly in required().
+const SCHED_CONTRACT = [["turn.contract", "restrict", "schedule_born", "run"]];
+function splitR2(d, f, all) {
+  // the shared dump's decision columns omit run_id, so the R2 rows are read straight from the store
+  const ids = R2_IDS.map((i) => `'${i}'`).join(",");
+  const r2 = f.store.db.prepare(`SELECT entry_id, verdict, reason_code, run_id FROM decisions WHERE entry_id IN (${ids}) ORDER BY rowid`).all()
+    .map((r) => [r.entry_id, r.verdict, r.reason_code, r.run_id === f.run_id ? "run" : r.run_id]);
+  if (d.dir !== DISTS.new && r2.length) throw new Error("control failed: the old build wrote intake.sender / turn.contract rows");
+  return { all: { ...all, decisions: all.decisions.filter((r) => !R2_IDS.includes(r.entry_id)) }, r2 };
+}
 
 const STRIP_HERE = ["sealing_started_at", "denied_until", "ended_at", "first_seen_at", "last_seen_at", "report_hash", "grant_notification_id", "duration_ms"];
 // Run-level hashes. The fixture's adapter input embeds the random run id and the per-dist temp root, so the ORIGINAL action_fingerprint and
@@ -99,9 +111,9 @@ async function projectOmp(d, item) {
   try {
     await item.run(f);
     const bindTotal = f.attempts.reduce((n, a) => n + a.newBind.length, 0);
-    const all = dump(f);
+    const { all, r2 } = splitR2(d, f, dump(f));
     const view = scrubIds({ kind: "omp", attempts: f.attempts, dump: all });
-    return { ...view, bindTotal, __strip: [...STRIP_HERE, "bindTotal"] };
+    return { ...view, r2, bindTotal, __strip: [...STRIP_HERE, "bindTotal", "r2"] };
   } finally { f.close(); }
 }
 
@@ -110,10 +122,10 @@ async function projectRunLevel(d, item) {
   try {
     item.setup(f);
     const done = await f.resume();
-    const all = dump(f);
+    const { all, r2 } = splitR2(d, f, dump(f));
     const labels = [[f.real.action_fingerprint, "<run-varying fingerprint>"], [f.real.adapter_input_hash, "<run-varying input hash>"]];
     const view = scrubIds({ kind: "runlevel", done, approvalState: f.approvalState(), dump: all }, [f.root], labels);
-    return { ...view, bindTotal: all.decisions.filter((r) => r.entry_id === "approval.bind").length, decisionRows: all.decisions.length, __strip: [...STRIP_HERE, ...(RUN_LEVEL_STRIP[item.name] ?? []), "bindTotal"] };
+    return { ...view, r2, bindTotal: all.decisions.filter((r) => r.entry_id === "approval.bind").length, decisionRows: all.decisions.length, __strip: [...STRIP_HERE, ...(RUN_LEVEL_STRIP[item.name] ?? []), "bindTotal", "r2"] };
   } finally { f.close(); }
 }
 
@@ -124,6 +136,7 @@ function required(d, item, proj) {
     const want = item.name === "happy" ? "completed" : "failed";
     if (proj.done.status !== want || (want === "failed" && !String(proj.done.error).startsWith(`${item.name.toUpperCase()}:`))) bad.push(`run-level outcome ${proj.done.status}/${proj.done.error} is not ${want}/${item.name.toUpperCase()}`);
     if (proj.decisionRows !== 0) bad.push(`run-level path wrote ${proj.decisionRows} decisions rows`);
+    if (JSON.stringify(proj.r2) !== "[]") bad.push(`run-level path wrote R2 rows ${JSON.stringify(proj.r2)}`);
   } else bad.push(...checkOmp(item, proj));
   if (bad.length) throw new Error(bad.join("; "));
 }
@@ -136,6 +149,8 @@ function checkOmp(item, proj) {
   if (JSON.stringify(table.map((r) => [r.verdict, r.reason_code, r.tool_call_id])) !== JSON.stringify(claimed.map((r) => [r.verdict, r.reason_code, r.tool_call_id]))) bad.push("decisions table bind rows differ from the per-attempt rows");
   const other = proj.dump.decisions.filter((r) => !["approval.bind", "tool.policy"].includes(r.entry_id));
   if (other.length) bad.push(`unexpected decision entries: ${[...new Set(other.map((r) => r.entry_id))].join(",")}`);
+  const wantR2 = item.opts.source === "schedule" ? SCHED_CONTRACT : [];
+  if (JSON.stringify(proj.r2) !== JSON.stringify(wantR2)) bad.push(`R2 decision rows ${JSON.stringify(proj.r2)}, want exactly ${JSON.stringify(wantR2)}`);
   if (item.expectUses !== undefined && proj.dump.standing_uses.length !== item.expectUses) bad.push(`standing_uses ${proj.dump.standing_uses.length} != ${item.expectUses}`);
   return bad;
 }
