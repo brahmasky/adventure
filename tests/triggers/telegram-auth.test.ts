@@ -30,7 +30,8 @@ describe("authorizeTelegramUpdate", () => {
 
     expect(authorizeTelegramUpdate({ from_id: 111, chat_id: 333 }, splitAllowlist)).toEqual({
       ok: false,
-      error: { code: "TELEGRAM_AUTH_DENIED", message: "Telegram identity is not allowlisted for this chat" }
+      error: { code: "TELEGRAM_AUTH_DENIED", message: "Telegram identity is not allowlisted for this chat" },
+      reason: "identity_not_for_chat"
     });
   });
 });

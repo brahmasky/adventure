@@ -5,6 +5,7 @@ import { authorizeTelegramUpdate } from "./telegram-auth.js";
 import type { ApprovalCallback, SelfWriteCallbackAction, TelegramCommand } from "./telegram-command-parser.js";
 import type { ImprovementTap } from "./telegram-command-parser.js";
 import { parseApprovalCallback, parseDecisionReviewCallback, parseImprovementCallback, parseJevAcceptCallback, parseMemLaneCallback, parseMemoryUndoCallback, parseSelfWriteCallback, parseTelegramCommand } from "./telegram-command-parser.js";
+import type { SenderDenialReason } from "../decisions/entries/intake-sender.js";
 
 export interface TelegramUpdate {
   update_id: number;
@@ -83,7 +84,7 @@ export interface TelegramAcknowledgement {
 
 export type TelegramNormalizeResult =
   | { ok: true; event: TelegramNormalizedEvent }
-  | { ok: false; error: { code: string; message: string }; acknowledgement?: TelegramAcknowledgement };
+  | { ok: false; error: { code: string; message: string }; acknowledgement?: TelegramAcknowledgement; reason?: SenderDenialReason };
 
 /**
  * Reply for a text-less/caption-less message while multimodal ingest is OFF (today's text, unchanged).
@@ -104,7 +105,7 @@ export function normalizeTelegramUpdate(
   options: { mediaIngestEnabled?: boolean } = {}
 ): TelegramNormalizeResult {
   if (update.channel_post) {
-    return { ok: false, error: { code: "TELEGRAM_AUTH_DENIED", message: "Channel posts are not accepted" } };
+    return { ok: false, error: { code: "TELEGRAM_AUTH_DENIED", message: "Channel posts are not accepted" }, reason: "channel_post" };
   }
 
   if (update.callback_query) {

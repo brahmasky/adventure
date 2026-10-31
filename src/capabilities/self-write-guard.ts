@@ -76,6 +76,7 @@ export const PROTECTED_DIRS: readonly string[] = [
 export const PROTECTED_FILES: readonly string[] = [
   // ── Gate machinery ──
   "src/contracts/task-contract.ts",
+  "src/triggers/telegram-auth.ts", // the sender allowlist predicate — locked intake.sender's raw answer (R2 Decision 3-A); the evidence derivation stays in the adapter, pinned by tests/triggers/telegram-sender-evidence.test.ts
   "src/capabilities/capability-runner.ts",
   "src/capabilities/capability-policy.ts", // listed in spec; defended even though the live file lives under src/policy/
   "src/run/run-store.ts",
