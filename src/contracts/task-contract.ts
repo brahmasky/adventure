@@ -1,17 +1,21 @@
 import { stableHash } from "../domain/canonical.js";
 import type { CompiledTaskContract, SideEffectLevel, TypedTaskEvent } from "../domain/types.js";
+import type { ContractRefusal } from "../decisions/entries/turn-contract.js";
 
 export type TaskContractResult =
   | { ok: true; contract: CompiledTaskContract }
   | {
       ok: false;
       error: { code: "TASK_CONTRACT_INVALID"; message: string };
+      /** Beside `error` (spec 2026-11-01 R2 §4.2): the gateway returns `error` alone, so no intake result changes. */
+      reason: ContractRefusal;
     };
 
-function invalid(message: string): TaskContractResult {
+function invalid(reason: ContractRefusal, message: string): TaskContractResult {
   return {
     ok: false,
-    error: { code: "TASK_CONTRACT_INVALID", message }
+    error: { code: "TASK_CONTRACT_INVALID", message },
+    reason
   };
 }
 
@@ -25,7 +29,7 @@ export function compileTaskContract(event: TypedTaskEvent): TaskContractResult {
   }
 
   if (event.type !== "run") {
-    return invalid(`Unsupported event type: ${event.type}`);
+    return invalid("unsupported_type", `Unsupported event type: ${event.type}`);
   }
 
   if (event.program === "research-brief") {
@@ -34,12 +38,12 @@ export function compileTaskContract(event: TypedTaskEvent): TaskContractResult {
   if (event.program === "web-research") {
     return compileWebResearchContract(event);
   }
-  return invalid(`Unknown program: ${event.program ?? "(missing)"}`);
+  return invalid("unknown_program", `Unknown program: ${event.program ?? "(missing)"}`);
 }
 
 function compileResearchBriefContract(event: TypedTaskEvent): TaskContractResult {
   if (!event.goal?.trim()) {
-    return invalid("Goal is required");
+    return invalid("goal_missing", "Goal is required");
   }
 
   const base = {
@@ -58,7 +62,7 @@ function compileResearchBriefContract(event: TypedTaskEvent): TaskContractResult
 
 function compileWebResearchContract(event: TypedTaskEvent): TaskContractResult {
   if (!event.goal?.trim()) {
-    return invalid("Topic is required");
+    return invalid("goal_missing", "Topic is required");
   }
 
   // Tier-1 web read (ADR 0006): web_search (read the live web) + llm_answer
@@ -154,7 +158,7 @@ export const TURN_ACTIONS: readonly string[] = [
 
 function compileTurnContract(event: TypedTaskEvent): TaskContractResult {
   if (!event.goal?.trim()) {
-    return invalid("Message is required");
+    return invalid("goal_missing", "Message is required");
   }
 
   // The omp planner turn (spec §9, plan deviation 4). The envelope lists every registry entry
@@ -183,9 +187,9 @@ function compileTurnContract(event: TypedTaskEvent): TaskContractResult {
 
 function compileAskContract(event: TypedTaskEvent): TaskContractResult {
   if (event.program !== undefined && event.program !== "ask") {
-    return invalid(`Unknown program: ${event.program}`);
+    return invalid("unknown_program", `Unknown program: ${event.program}`);
   }
-  if (!event.goal?.trim()) return invalid("Question is required");
+  if (!event.goal?.trim()) return invalid("goal_missing", "Question is required");
   const base = {
     objective: event.goal,
     budget: { time_minutes: 5, max_tool_calls: 2, max_agent_delegations: 0 },

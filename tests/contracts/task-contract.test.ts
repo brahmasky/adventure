@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { buildTypedTaskEvent } from "../../src/domain/types.js";
 import { compileCodeSelfWriteContract, compileSelfDiagnoseContract, compileSkillAuthorContract, compileTaskContract, TURN_ACTIONS } from "../../src/contracts/task-contract.js";
@@ -34,7 +35,8 @@ describe("compileTaskContract", () => {
       error: {
         code: "TASK_CONTRACT_INVALID",
         message: "Unknown program: unknown-program"
-      }
+      },
+      reason: "unknown_program"
     });
   });
 
@@ -81,7 +83,8 @@ describe("compileTaskContract", () => {
     });
     expect(compileTaskContract(empty)).toEqual({
       ok: false,
-      error: { code: "TASK_CONTRACT_INVALID", message: "Message is required" }
+      error: { code: "TASK_CONTRACT_INVALID", message: "Message is required" },
+      reason: "goal_missing"
     });
   });
 
@@ -201,5 +204,27 @@ describe("scheduler v2 provenance strip", () => {
         fromTelegram.contract.allowed_actions.filter((a) => a !== "schedule_task")
       );
     }
+  });
+});
+
+describe("every contract refusal names its reason beside the unchanged error (spec 2026-11-01 R2 §4.2)", () => {
+  const base = { source: "telegram", requested_by: { kind: "user", id: "paco" }, notify: { kind: "local" }, idempotency_key: "k", source_reference: "r" } as const;
+  const ev = (o: Record<string, unknown>) => buildTypedTaskEvent({ ...base, ...o } as never);
+  it.each([
+    ["unsupported type", { type: "bogus" }, "unsupported_type", "Unsupported event type: bogus"],
+    ["unknown /run program", { type: "run", program: "nosuch", goal: "g" }, "unknown_program", "Unknown program: nosuch"],
+    ["/run without a program", { type: "run", goal: "g" }, "unknown_program", "Unknown program: (missing)"],
+    ["research-brief, empty goal", { type: "run", program: "research-brief", goal: " " }, "goal_missing", "Goal is required"],
+    ["web-research, empty topic", { type: "run", program: "web-research", goal: " " }, "goal_missing", "Topic is required"],
+    ["turn, empty message", { type: "turn", program: "turn", goal: " " }, "goal_missing", "Message is required"],
+    ["ask, foreign program", { type: "ask", program: "nosuch", goal: "g" }, "unknown_program", "Unknown program: nosuch"],
+    ["ask, empty question", { type: "ask", goal: " " }, "goal_missing", "Question is required"]
+  ])("%s", (_l, o, reason, message) => {
+    expect(compileTaskContract(ev(o))).toEqual({ ok: false, error: { code: "TASK_CONTRACT_INVALID", message }, reason });
+  });
+  it("totality: seven invalid( call sites besides the definition, each naming a reason first", () => {
+    const src = readFileSync(new URL("../../src/contracts/task-contract.ts", import.meta.url), "utf8");
+    expect([...src.matchAll(/\binvalid\(/g)]).toHaveLength(8); // the definition + seven calls
+    expect([...src.matchAll(/\binvalid\("(goal_missing|unknown_program|unsupported_type)", /g)]).toHaveLength(7);
   });
 });
