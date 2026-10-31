@@ -15,7 +15,7 @@ import { SetupError } from "../stage4-diff-lib.mjs";
 import { REPO_ROOT, transcriptCalls, testLiterals } from "../stage4-sources.mjs";
 import { join } from "node:path";
 
-const TRANSCRIPT_COMMANDS = 147;
+const TRANSCRIPT_COMMANDS = 148; // Houge's live omp transcript grows (one new distinct bash command since R1 shipped at 147); re-pin when it moves
 
 // ADR 0028 "Matcher misses (D12, best effort)" (docs/decisions/0028-omp-runtime.md:239-241), one concrete command per miss:
 // Concrete forms chosen so each really is classified plain today (probed on this build); the two quoting misses hide a `git push`.

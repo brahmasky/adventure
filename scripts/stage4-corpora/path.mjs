@@ -9,7 +9,7 @@ import { ROOTS, gateCall, hookCall } from "../stage4-bridge-seam.mjs";
 import { SetupError } from "../stage4-diff-lib.mjs";
 import { REPO_ROOT, testLiterals, transcriptCalls } from "../stage4-sources.mjs";
 
-const TRANSCRIPT_INPUTS = 13; // 7 read + 3 write + 3 edit, distinct
+const TRANSCRIPT_INPUTS = 14; // distinct read/write/edit inputs in the live omp transcript (13 at R1's ship; it grows, re-pin when it moves)
 
 const MANY = Array.from({ length: 300 }, (_, i) => `p${i}`).join(";"); // > MAX_GATE_TARGETS candidates
 const FEW = Array.from({ length: 100 }, (_, i) => `p${i}`).join(";"); // under it: valid
