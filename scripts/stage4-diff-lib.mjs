@@ -9,7 +9,7 @@ export const CORPORA = [];                               // filled by the CLI fr
 /** Async teardown callbacks (a corpus's open sockets); the CLI runs them in a finally, on success and on error alike. */
 export const closers = [];
 export async function runClosers() {
-  for (const fn of closers.splice(0)) { try { await fn(); } catch (e) { console.error("teardown_failed"); } }
+  for (const fn of closers.splice(0)) { try { await fn(); } catch (e) { console.error(state.debug ? `teardown_failed: ${redactForPrint(String(e?.message ?? e))}` : "teardown_failed"); } }
 }
 export const state = { requiredFailures: [], seq: 0, debug: false };
 
