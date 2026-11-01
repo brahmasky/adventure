@@ -230,7 +230,7 @@ function renderBad(a, f, seedRows, label) {
   else if (!same(a.digest, f.digest)) bad.push(`digest differs (A ${a.digest.length} lines, F ${f.digest.length})`);
   if (f.digest?.some((l) => COUNT_RE.test(l) || NEW_IDS.some((id) => l.includes(id)))) bad.push("digest carries a per-entry line or new id");
   const isNew = (l) => NEW_IDS.includes(COUNT_RE.exec(l)?.[1]);
-  const [sa, sf] = [a.status.filter((l) => !isNew(l)).map(norm), f.status.filter((l) => !isNew(l)).map(norm)];
+  const [sa, sf] = [a.status.filter((l) => !isNew(l)), f.status.filter((l) => !isNew(l))];
   if (!same(sa, sf)) bad.push(`/status other lines differ (A ${sa.length}, F ${sf.length})`);
   const [head, ...rows] = a.listText.map(norm);
   const want = [head, ...[...seedRows].reverse().map((r) => listLine(r, label)), ...rows].slice(0, 11);
@@ -238,9 +238,9 @@ function renderBad(a, f, seedRows, label) {
   return bad;
 }
 const OUT_REJ = "OutcomeRejected:value not allowed for review_ok";
-/** P5: the three rows, exact, in the order they are written. [entry_id, verdict, reason_code, stage, the incoming run's label] */
-const EXPECTED = [[SQ, "steer", "live_turn", "intake", "steer"], [BA, "nudge", "ack_while_card_waits", "intake", "nudge"], [SQ, "wait", "turn_schedule_born", "intake", "wait"]];
-const shapeOf = (runs) => (r) => [r.entry_id, r.verdict, r.reason_code, r.stage, Object.entries(runs).find(([, id]) => id === r.run_id)?.[0] ?? "?"];
+/** P5: the three rows, exact, in the order they are written. [entry_id, verdict, reason_code, stage, the incoming run's label, rung, entry_version] */
+const EXPECTED = [[SQ, "steer", "live_turn", "intake", "steer", "rule", 1], [BA, "nudge", "ack_while_card_waits", "intake", "nudge", "rule", 1], [SQ, "wait", "turn_schedule_born", "intake", "wait", "rule", 1]];
+const shapeOf = (runs) => (r) => [r.entry_id, r.verdict, r.reason_code, r.stage, Object.entries(runs).find(([, id]) => id === r.run_id)?.[0] ?? "?", r.rung, r.entry_version];
 async function run(ctx) {
   const { A, F, mNew, mOld } = ctx;
   phase = "snapshot"; const before = { n: NEW_IDS.map((id) => entryCount(F, id)), schema: schemaOf(F), counts: counts(F) };
@@ -252,7 +252,7 @@ async function run(ctx) {
   check("this build wrote exactly the three expected rows through the real supervisor path: intake.steer_or_queue steer/live_turn, intake.bare_ack nudge/ack_while_card_waits, intake.steer_or_queue wait/turn_schedule_born (each with its incoming run's id, tool_call_id null), and nothing else",
     same(got, EXPECTED) && seed.rows.every((r) => r.tool_call_id === null && r.run_id !== null) && entryCount(F, BA) === before.n[0] + 1 && entryCount(F, SQ) === before.n[1] + 2
     && snapF.counts.decisions === snapA.counts.decisions + 3,
-    `rows ${seed.rows.map((r) => `${r.entry_id}/${r.verdict}/${r.reason_code}/${r.stage}/${rowShape(r)[4]}`).join(" ")} · decisions A ${snapA.counts.decisions} F ${snapF.counts.decisions} · prep: schedules cancelled ${ctx.prep.cancelled}, outbox parked ${ctx.prep.parked}`);
+    `rows ${seed.rows.map((r) => `${r.entry_id}/${r.verdict}/${r.reason_code}/${r.stage}/${rowShape(r)[4]}/${r.rung}/v${r.entry_version}`).join(" ")} · decisions A ${snapA.counts.decisions} F ${snapF.counts.decisions} · prep: schedules cancelled ${ctx.prep.cancelled}, outbox parked ${ctx.prep.parked}`);
   await yieldLoop();
   const now = new Date(Date.now() + 60_000).toISOString();
   phase = "old build on A"; const oa = await oldSteps(ctx, A, now);
