@@ -184,6 +184,18 @@ function classDurations(db) {
   return JSON.parse(JSON.stringify(db).replace(/\\"duration_ms\\":(\d+)/g, (_m, n) => `\\"duration_ms\\":\\"${durationClass(Number(n))}\\"`));
 }
 
+/** STRIP_KEYS drops every `run_id` before comparison, so ownership would be invisible: put a stable `run_label` beside each one (submit order r1.., foreign ids other#n by first appearance). */
+function labelRunOwners(v, ownerLabel) {
+  if (Array.isArray(v)) return v.map((e) => labelRunOwners(e, ownerLabel));
+  if (v === null || typeof v !== "object") return v;
+  const out = {};
+  for (const [k, e] of Object.entries(v)) {
+    out[k] = labelRunOwners(e, ownerLabel);
+    if (k === "run_id") out.run_label = typeof e === "string" ? ownerLabel(e) : e;
+  }
+  return out;
+}
+
 async function project(d, item) {
   const dir = mkTemp(`supervisor-${item.key}`);
   let store = null;
@@ -202,6 +214,8 @@ async function project(d, item) {
       const seedMax = store.db.prepare("SELECT COALESCE(MAX(rowid), 0) AS m FROM decisions").get().m; // an empty table gives NULL, and rowid > NULL selects nothing
       try { await item.drive(x); } finally { await cleanup(); }
       const label = (id) => names.get(id) ?? id;
+      const order = [...names.keys()]; const foreign = new Map();
+      const ownerLabel = (id) => (order.includes(id) ? `r${order.indexOf(id) + 1}` : foreign.has(id) ? foreign.get(id) : (foreign.set(id, `other#${foreign.size + 1}`), foreign.get(id)));
       const newRows = all(store, `SELECT entry_id, verdict, reason_code, run_id, tool_call_id FROM decisions WHERE rowid > ${Number(seedMax)} AND entry_id IN (${idList}) ORDER BY rowid`)
         .map((r) => [r.entry_id, r.verdict, r.reason_code, label(r.run_id), r.tool_call_id]);
       if (!isNew && newRows.length) throw new Error("control failed: the old build wrote intake.bare_ack / intake.steer_or_queue rows");
@@ -212,8 +226,8 @@ async function project(d, item) {
       omittedRowSelfTest(db, want);
       const { session, outcome } = rig;
       const agreement = durationDisagreements(store, outcome.done, label); // BEFORE any normalising: the emitted value must be the stored one
-      const seen = (list) => list.map(({ run_id, ...rest }) => ({ ...rest, ...("duration_ms" in rest ? { duration_ms: durationClass(rest.duration_ms) } : {}), run_id: label(run_id) }));
-      const observed = { prompts: session.prompts, steers: session.steers, done: seen(outcome.done), failed: seen(outcome.failed), incidents: outcome.incidents, db: classDurations(db) };
+      const seen = (list) => list.map(({ run_id, ...rest }) => ({ ...rest, ...("duration_ms" in rest ? { duration_ms: durationClass(rest.duration_ms) } : {}), run_id: label(run_id), run_label: ownerLabel(run_id) }));
+      const observed = { prompts: session.prompts, steers: session.steers, done: seen(outcome.done), failed: seen(outcome.failed), incidents: outcome.incidents, db: classDurations(labelRunOwners(db, ownerLabel)) };
       return { ...scrubWorkers(scrubIds(relabelClocks(observed, isClockKey))), newRows, calls: counting?.calls ?? {}, agreement, __strip: ["newRows", "calls", "agreement"] };
     }));
   } finally { try { store?.close(); } catch { /* closed */ } }
