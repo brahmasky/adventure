@@ -266,7 +266,7 @@ async function captured(fn) {
 async function line7() {
   const base = await memorySave(openCopy("l7-base"), { schedule: true, distill: BACKSTOP_WITH_FACT });
   const sB = openCopy("l7-store"); let fired = 0; const real = sB.insertDecision.bind(sB);
-  sB.insertDecision = (...a) => { if (++fired === 1) throw new Error("gate fault: insertDecision"); return real(...a); };
+  sB.insertDecision = (...a) => { if (a[0]?.entry_id === "memory.lesson_admit" && ++fired === 1) throw new Error("gate fault: insertDecision"); return real(...a); }; // R2: the seeding scheduled intake now writes a turn.contract row first; the fault must land on the admit row it names
   const before = openFailed(sB, "memory.lesson_admit");
   const fault = await captured(() => memorySave(sB, { schedule: true, distill: BACKSTOP_WITH_FACT }));
   const opened = openFailed(sB, "memory.lesson_admit") - before;
