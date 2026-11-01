@@ -37,21 +37,24 @@ export function fakeSession(script = {}) {
   const emit = (f) => frameCbs.forEach((cb) => cb(f));
   const assistant = (text) => emit({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text }], provider: "anthropic", model: "claude-opus-5-5", usage: { input: 10, output: 2 }, stopReason: "stop" } });
   const s = {
-    prompts: [], steers: [], options: [], assistant, emit,
+    prompts: [], steers: [], models: [], log: [], options: [], assistant, emit,
     bind: (o) => { s.options.push(o); return s; },
     start: async () => {
       const o = s.options.at(-1);
+      if (script.failStart) throw new Error("fixture start failed"); // R4: a plain start rejection is a crash exit (spawnFailed), at once
       if (script.holdStart) await script.holdStart;
       sockets.push(await openManifestClient(o.bridgeSock, o.bridgeToken));
       return { resumed: false, sessionId: "s" };
     },
-    prompt: async (t) => { s.prompts.push(t); setTimeout(() => (script.onPrompt ?? ((_t, e) => { e({ type: "turn_start" }); assistant("answer"); e({ type: "agent_end" }); }))(t, emit), 5); },
-    steer: async (t) => { s.steers.push(t); },
+    prompt: async (t) => { s.prompts.push(t); s.log.push(["prompt", t]); setTimeout(() => (script.onPrompt ?? ((_t, e) => { e({ type: "turn_start" }); assistant("answer"); e({ type: "agent_end" }); }))(t, emit), 5); },
+    steer: async (t) => { s.steers.push(t); s.log.push(["steer", t]); },
     getState: async () => ({ todoPhases: [], queuedMessageCount: 0, queuedMessages: { steering: [], followUp: [] } }),
     abort: async () => { setTimeout(() => emit({ type: "agent_end", aborted: true }), 5); },
-    setModel: async () => undefined, newSession: async () => ({ cancelled: false }),
+    setModel: async (m) => { const k = `${m.provider}/${m.model}`; s.models.push(k); s.log.push(["set_model", k]); }, newSession: async () => ({ cancelled: false }),
     onFrame: (cb) => { frameCbs.push(cb); }, onExit: (cb) => { exitCbs.push(cb); },
-    stop: async () => { for (const k of sockets.splice(0)) k.destroy(); }
+    stop: async () => { for (const k of sockets.splice(0)) k.destroy(); },
+    /** R4: the ready child crashes (as tests/helpers/supervisor-harness.ts exit): sockets dropped, every exit callback told. */
+    exit: (code) => { for (const k of sockets.splice(0)) k.destroy(); exitCbs.forEach((cb) => cb({ code, signal: null, stopped: false })); }
   };
   return s;
 }
@@ -77,12 +80,12 @@ export function sink(store) {
 }
 
 const LISTS = { default: ["anthropic/claude-opus-5-5:medium"], fast: ["anthropic/claude-sonnet-5-5:low"], thinking: ["anthropic/claude-opus-5-5:high"] };
-const fakeRoles = (d) => ({ requestRefresh() {}, candidates: (role, o = {}) => (LISTS[role] ?? []).map(d.parseModelString)
+const fakeRoles = (d, lists = LISTS) => ({ requestRefresh() {}, candidates: (role, o = {}) => (lists[role] ?? []).map(d.parseModelString)
   .filter((m) => !(o.refused?.has(d.selectorKey(m)) ?? false)).map((m) => (o.effort ? { ...m, effort: o.effort } : m)) });
 /** Every Jev question answered at 0.1, below each per-question bar, so a settle the rules pass settles. */
 const jev01 = async (r) => ({ ok: true, model: "jev-1.13.0", input_tokens: 1, latency_ms: 1, answers: Object.fromEntries(Object.keys(r.questions).map((id) => [id, { type: "noul", noul: 0.1 }])) });
 
-/** Seeds chat 42's planner session as current, as harness() does, then builds the supervisor. `opts`: { recorder, session, extra (SupervisorDeps overrides), outcome }. */
+/** Seeds chat 42's planner session as current, as harness() does, then builds the supervisor. `opts`: { recorder, session, extra (SupervisorDeps overrides), outcome, roles ({ default, fast, thinking } lists; R4) }. */
 export function mkSupervisor(d, store, opts = {}) {
   store.recordPlannerSessionReset("42", d.lessonSetFingerprint(store), new Date().toISOString());
   store.claimSessionSeed("42"); store.promotePlannerSession("42");
@@ -96,7 +99,7 @@ export function mkSupervisor(d, store, opts = {}) {
     turnContext: { store, memoryRoot: MEMORY_ROOT, dataDir: data, skillsReader: () => undefined, coreBlock: () => undefined, retrieve: async () => ({ facts: [], pages: [] }), env: {} },
     buildTools: () => ({ registry: new d.ToolRegistry(), quarantine: async () => ({ digest: "", contains_instructions: false, source_meta: { tool: "x", bytes: 0 } }) }),
     posture: () => null, outcome, sessionFactory: (o) => session.bind(o), versionCheck: () => ({ ok: true, version: "18.4.4" }), skipPreflightForTest: true,
-    manifestWaitMs: 5_000, roles: fakeRoles(d), settleClient: () => jev01,
+    manifestWaitMs: 5_000, roles: fakeRoles(d, opts.roles ?? LISTS), settleClient: () => jev01,
     ...(opts.recorder ? { recorder: opts.recorder } : {}), ...opts.extra });
   return { sup, outcome, session, data };
 }
@@ -104,10 +107,11 @@ export function mkSupervisor(d, store, opts = {}) {
 /** Run ids and worker ids are random uuids: rows compared across builds scrub them with scripts/stage4-bind-fixture.mjs scrubIds. Shuts every supervisor down and removes its data dir. */
 export async function cleanup() { for (const fn of cleanups.splice(0).reverse()) { try { await fn(); } catch (e) { console.error(`fixture teardown failed: ${e instanceof Error ? e.message : String(e)}`); } } }
 
-/** One running run through Gateway.intake, as the worker would claim it (telegram, chat 555). */
-export function intakeRun(d, store, goal, key = goal) {
-  const r = new d.Gateway(store).intake(d.buildTypedTaskEvent({ source: "telegram", type: "turn", program: "turn", goal, requested_by: { kind: "user", id: "paco" },
+/** One running run through Gateway.intake, as the worker would claim it (telegram, chat 555). `actor` (R4, P20) is `requested_by.id`: the gateway admits 5 Telegram runs per actor per minute, so a line past five uses a second actor. Throws when the gateway refuses. */
+export function intakeRun(d, store, goal, key = goal, actor = "paco") {
+  const r = new d.Gateway(store).intake(d.buildTypedTaskEvent({ source: "telegram", type: "turn", program: "turn", goal, requested_by: { kind: "user", id: actor },
     notify: { kind: "telegram", chat_id: "555" }, idempotency_key: `k:${key}`, source_reference: "telegram:update:1:message:1" }));
+  if (!r.ok) throw new Error(`fixture: intake refused (${r.error?.code ?? "unknown"})`);
   return r.run_id;
 }
 export const req = (run_id, text = "hi", source = "telegram") => ({ run_id, text, source, requester: { kind: "user", id: "paco" } });
