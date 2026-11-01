@@ -11,7 +11,7 @@ import { DISTS, R4_IDS, canon, compare, dumpDb, mkStore, mkTemp, regularTables, 
 import { scrubIds } from "../stage4-bind-fixture.mjs";
 import { NOW, withCountingClock, withPinnedEnv } from "../stage4-intake-fixture.mjs";
 import { countingRecorder } from "../stage4-sender-fixture.mjs";
-import { cleanup, fakeSession, intakeRun, mkSupervisor, req, untilState } from "../stage4-supervisor-fixture.mjs";
+import { cleanup, fakeSession, intakeRun, mkSupervisor, req, until, untilState } from "../stage4-supervisor-fixture.mjs";
 
 const ROLES = { default: ["anthropic/claude-opus-5-5:medium", "google-antigravity/claude-opus-4-6:medium"], fast: ["anthropic/claude-sonnet-5-5:low"], thinking: ["anthropic/claude-opus-5-5:high"] };
 const routed = (role) => ({ triage: async () => ({ kind: "fallthrough", route: { role, effort: null, verdict_id: "jv_1" } }) });
@@ -62,6 +62,17 @@ const lateConsult = async (x) => {
   if (r !== "crash_loop") throw new Error(`late consult returned ${r}, wanted crash_loop`);
   await turn(x, sup, "a");
 };
+/** The natural interleaving (spec §6), pinned as it really runs (real timers, ~20 s): lane turns A and B, A's warm start held. A's lane waits 5 s, stopSession bumps the gen, and
+ *  awaitStart's `superseded` race ends that start AT ONCE although the hold is pending, so startInFlight clears: A completes, B's warm ensureSession finds nothing to join and
+ *  makes its OWN consult while B is unfinished (spawn, no row), its start held and superseded the same way; releasing the hold afterwards consults nothing. No finished-turn
+ *  consult occurs naturally (hence the seam item above, P9): this item pins that no row appears for B and that exactly two consults are made. */
+const lateNatural = async (x) => {
+  let release; const gate = new Promise((r) => { release = r; });
+  const { sup, outcome } = x.mk({ session: fakeSession({ holdStart: gate }), extra: { triage: async () => ({ kind: "lane_reply", text: "lane text", buttons: [] }) } });
+  const a = x.run("a", "lane a"); sup.submit(req(a, "lane a")); await until(() => outcome.done.length === 1, 30_000);
+  const b = x.run("b", "lane b"); sup.submit(req(b, "lane b")); await until(() => outcome.done.length === 2, 30_000);
+  release(); await sup.whenIdle();
+};
 
 // retry ---------------------------------------------------------------------------------------------------------------------------------------------------
 const withRoles = (drive) => async (x) => drive({ ...x, mk: (o = {}) => x.mk({ roles: ROLES, ...o }) });
@@ -108,6 +119,8 @@ const ITEMS = [
     facts: { done: [], failed: [], incidents: [], log: [] } },
   { key: "late_consult", tags: ["late"], drive: lateConsult, rows: [H("latched", "a")], calls: { [CG]: 1, [SQ]: 1 },
     facts: { done: [], failed: ["a:planner_exit:crash_loop"], incidents: ["planner_crash_loop"], log: [] } },
+  { key: "late_consult_natural", tags: ["late_natural"], drive: lateNatural, rows: [], calls: { [CG]: 2, [SQ]: 2 },
+    facts: { done: ["a:lane text", "b:lane text"], failed: [], incidents: [], log: [] } },
   { key: "quota_then_ok", tags: ["quota"], drive: quotaThenOk, rows: [T("retry", "quota")], calls: { [CG]: 1, [SQ]: 1, [TR]: 1 },
     facts: { done: ["a:ok"], failed: [], incidents: [], log: ["set_model:anthropic/claude-opus-5-5", "prompt:hi", "set_model:google-antigravity/claude-opus-4-6", `prompt:${RN}`] } },
   { key: "timeout_every_leg", tags: ["timeout"], drive: timeoutExhausted, rows: [T("retry", "timeout"), T("retry", "timeout")], calls: { [CG]: 1, [SQ]: 1, [TR]: 2 },
@@ -127,7 +140,7 @@ const ITEMS = [
   { key: "fast_quota_step_up", tags: ["step_up"], drive: fastStepUp, rows: [T("retry", "quota"), T("retry", "quota")], calls: { [CG]: 1, [SQ]: 1, [TR]: 2 },
     facts: { done: ["a:ok"], failed: [], incidents: [], log: ["set_model:anthropic/claude-sonnet-5-5", "prompt:hi", "set_model:anthropic/claude-opus-5-5", `prompt:${RN}`, "set_model:google-antigravity/claude-opus-4-6", `prompt:${RN}`] } }
 ];
-const BRANCHES = ["limit", "latched", "reset", "ready_exit", "lane", "below_limit", "claimed", "late", "quota", "timeout", "other", "other_retried", "other_tool", "other_todo", "refusal", "async", "step_up"];
+const BRANCHES = ["limit", "latched", "reset", "ready_exit", "lane", "below_limit", "claimed", "late", "late_natural", "quota", "timeout", "other", "other_retried", "other_tool", "other_todo", "refusal", "async", "step_up"];
 
 const all = (store, sql) => store.db.prepare(sql).all().map((r) => ({ ...r }));
 const isClockKey = (k) => /(_at|_since|^since|^now)$/.test(k);
