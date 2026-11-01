@@ -1,6 +1,6 @@
 # Decision ladder, remainder slice R3 — `intake.bare_ack` and `intake.steer_or_queue` on the ladder (Rev 1.2)
 
-**Status:** Rev 1.2 — codex scoped re-review of Rev 1.1: all five prior findings closed, one wording fix (`failQueued`) applied. Rev 1.1 — after the senior review (Sonnet 5.5, read the supervisor lifecycle: 1 blocker, 3 warnings, 2 suggestions) and the codex design pass (1 blocker, 2 warnings, 1 suggestion), every finding verified first-hand and applied (§Rev 1.1 changes). Not yet approved.
+**Status:** **APPROVED by Paco 2026-11-01: Decisions 1-A, 2-A.** Rev 1.2 — codex scoped re-review of Rev 1.1: all five prior findings closed, one wording fix (`failQueued`) applied. Rev 1.1 — after the senior review (Sonnet 5.5, read the supervisor lifecycle: 1 blocker, 3 warnings, 2 suggestions) and the codex design pass (1 blocker, 2 warnings, 1 suggestion), every finding verified first-hand and applied (§Rev 1.1 changes).
 **Date:** 2026-11-01
 **Amends:** `docs/ROADMAP.md` (the remainder line); ADR 0030 gets an amendment row (drafted under the approved spec, awaiting Paco's signature).
 **Depends on:** ADR 0030 §4.1, §6.1 (rows A9, A10), §6.2; ADR 0029 §5.1 (slot A: a bare ack while an approval card waits is consent to nothing); remainder R1 spec §2 (seam order, Decision 1-A: R3 is the first slice on the planner supervisor) and R2 (`2026-11-01-ladder-remainder-r2-sender-contract-design.md`, shipped `d231a4e`) for the pattern: stamped merge-base differential, production-wiring tests, exact-row assertions (R2 plan ruling P10).
