@@ -7,9 +7,9 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { DISTS, R2_IDS, canon, diffPaths, dumpDb, mkStore, mkTemp, regularTables, relabelClocks, requireNew } from "../stage4-diff-lib.mjs";
 import { scrubIds } from "../stage4-bind-fixture.mjs";
-import { FOREIGN_CHAT, OTHER, STRANGER, countingRecorder, pollItem, senderUpdate as u, underPins } from "../stage4-sender-fixture.mjs";
+import { FOREIGN_CHAT, OTHER, STRANGER, pollItem, senderUpdate as u, underPins } from "../stage4-sender-fixture.mjs";
 
-// n: update_id. expect: the denial reasons written, in order. emits: events handed to emit (positive evidence an allowed update got through).
+// acks: acknowledgements sent (default 0; only Paco's malformed command earns one). expect: the denial reasons written, in order. emits: events handed to emit (positive evidence an allowed update got through).
 const ITEMS = [
   { key: "channel_post", tags: ["channel_post"], updates: [u("channel_post", { id: 1 })], expect: ["channel_post"], emits: 0 },
   { key: "forwarded:date", tags: ["forwarded"], updates: [u("forward", { id: 2, forward: "date" })], expect: ["forwarded"], emits: 0 },
@@ -28,7 +28,7 @@ const ITEMS = [
   { key: "allowed:text", tags: ["allowed"], updates: [u("message", { id: 15 })], expect: [], emits: 1 },
   { key: "allowed:photo", tags: ["allowed"], mediaIngest: true, updates: [u("photo", { id: 16 })], expect: [], emits: 1 },
   { key: "allowed:tap", tags: ["allowed"], updates: [u("tap", { id: 17 })], expect: [], emits: 1 },
-  { key: "allowed:malformed", tags: ["not_sender"], updates: [u("malformed", { id: 18 })], expect: [], emits: 0 },
+  { key: "allowed:malformed", tags: ["not_sender"], updates: [u("malformed", { id: 18 })], expect: [], emits: 0, acks: 1 },
   { key: "batch", tags: ["batch"], updates: [u("message", { id: 19 }), u("message", { id: 20, from: STRANGER }), u("message", { id: 21 })], expect: ["user_not_allowlisted"], emits: 2 }
 ];
 const BRANCHES = ["channel_post", "forwarded", "anonymous", "user_not_allowlisted", "chat_not_allowlisted", "identity_not_for_chat", "precedence", "tap", "not_sender", "photo_denied", "allowed", "batch"];
@@ -70,8 +70,7 @@ async function project(d, item) {
       store = mkStore(d, "bare", join(dir, "sender.sqlite")); // opened under the counting clock: schema_migrations.applied_at is a stamp too
       const seedMax = store.db.prepare("SELECT COALESCE(MAX(rowid), 0) AS m FROM decisions").get().m; // an empty table gives NULL, and rowid > NULL selects nothing
       const isNew = d.dir === DISTS.new;
-      const counting = isNew ? countingRecorder(d.storeRecorder(store)) : null;
-      const polled = await pollItem(d, store, item.updates, { recorder: counting?.recorder ?? null, mediaIngest: item.mediaIngest === true });
+      const polled = await pollItem(d, store, item.updates, { recorder: isNew ? d.storeRecorder(store) : null, mediaIngest: item.mediaIngest === true });
       const newRows = all(store, `SELECT entry_id, verdict, reason_code, run_id, tool_call_id FROM decisions WHERE rowid > ${Number(seedMax)} AND entry_id IN (${idList}) ORDER BY rowid`)
         .map((r) => [r.entry_id, r.verdict, r.reason_code, r.run_id, r.tool_call_id]);
       if (!isNew && newRows.length) throw new Error("control failed: the old build wrote intake.sender / turn.contract rows");
@@ -80,8 +79,8 @@ async function project(d, item) {
       const want = tableCounts(store);
       checkCoverage(db, want);
       omittedRowSelfTest(db, want);
-      const { result, emitted, acks, offset } = polled;
-      return { ...scrubIds(relabelClocks({ result, emitted, acks, offset, db }, isClockKey)), newRows, calls: counting?.calls ?? {}, emittedCount: emitted.length, __strip: ["newRows", "calls", "emittedCount"] };
+      const { result, emitted, acks, offset, calls } = polled;
+      return { ...scrubIds(relabelClocks({ result, emitted, acks, offset, db }, isClockKey)), newRows, calls, emittedCount: emitted.length, ackCount: acks.length, __strip: ["newRows", "calls", "emittedCount", "ackCount"] };
     });
   } finally { try { store?.close(); } catch { /* closed */ } }
 }
@@ -91,6 +90,7 @@ function required(d, item, proj) {
   requireNew(corpus, item, "intake.sender rows (exact: entry, verdict, reason, run null, tool_call null)", canon(proj.newRows) === canon(want), `got ${canon(proj.newRows)}, want ${canon(want)}`);
   requireNew(corpus, item, "intake.sender record calls", (proj.calls["intake.sender"] ?? 0) === item.expect.length, `got ${proj.calls["intake.sender"] ?? 0}, want ${item.expect.length}`);
   requireNew(corpus, item, "emitted events (positive evidence)", proj.emittedCount === item.emits, `got ${proj.emittedCount}, want ${item.emits}`);
+  requireNew(corpus, item, "acknowledgements (exact)", proj.ackCount === (item.acks ?? 0), `got ${proj.ackCount}, want ${item.acks ?? 0}`);
 }
 
 // Determinism self-test: the same item twice on the new build must project identically, or the old/new comparison would flag its own noise.

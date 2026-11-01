@@ -41,21 +41,23 @@ export function countingRecorder(inner) {
 }
 
 /**
- * Runs `updates` through the dist's adapter once, on `store`, inside the caller's pinned env / clock. `recorder` is the new side's counting
- * wrapper; the old side passes none (its adapter has no such option). Returns { result, emitted, acks, offset }.
+ * Runs `updates` through the dist's adapter once, on `store`, inside the caller's pinned env / clock. `recorder` is the new side's plain
+ * store recorder (d.storeRecorder(store)), wrapped here in a counting one; the old side passes none (its adapter has no such option).
+ * Returns { result, emitted, acks, offset, calls } where calls is the per-entry-id record tally ({} without a recorder).
  */
 export async function pollItem(d, store, updates, { recorder = null, mediaIngest = false } = {}) {
   const emitted = [];
   const acks = [];
+  const counting = recorder ? countingRecorder(recorder) : null;
   const adapter = d.createTelegramLongPollingAdapter({
     allowlist: ALLOWLIST, offsetStore: store, skippedUpdateStore: store,
     client: { getUpdates: async () => structuredClone(updates) },
     acknowledgeSink: (a) => { acks.push(a); },
     mediaIngestEnabled: () => mediaIngest,
-    ...(recorder ? { decisionRecorder: recorder } : {})
+    ...(counting ? { decisionRecorder: counting.recorder } : {})
   });
   const result = await adapter.pollOnce(async (event) => { emitted.push(structuredClone(event)); });
-  return { result, emitted, acks, offset: store.getOffset("telegram") };
+  return { result, emitted, acks, offset: store.getOffset("telegram"), calls: counting?.calls ?? {} };
 }
 
 /** Runs fn under the pinned env and the counting clock, the way every R1/R2 item does. */
