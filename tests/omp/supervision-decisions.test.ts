@@ -70,6 +70,8 @@ const quotaThenOk = () => {
 const FAILING_START: Partial<SupervisorDeps> = { manifestWaitMs: 20 };
 type Private = { exits: number[]; crashLatched: boolean; ensureSession(fresh: boolean, turn: unknown): Promise<unknown>; crashLooping(now: number): boolean };
 const priv = (sup: unknown) => sup as Private;
+const PAIR = [SQ, CG];
+const pairs = (n: number) => Array<string[]>(n).fill(PAIR).flat();
 const turnOn = (h: { store: RunStore; sup: { submit(r: ReturnType<typeof req>): void; whenIdle(): Promise<void> } }, text = "hi") =>
   async () => { const r = createQueuedTurnRun(h.store, text); h.sup.submit(req(r, text)); await h.sup.whenIdle(); return r; };
 
@@ -103,11 +105,13 @@ describe("R4 rows — planner.crash_guard", () => {
     const session = fakeSession({ noManifest: true });
     const triage: SupervisorDeps["triage"] = async (i) => (i.text === "lane" ? { kind: "lane_reply", text: "lane text", buttons: [] } : { kind: "fallthrough" });
     const h = withRecorder(session, { ...FAILING_START, triage }); const turn = turnOn(h);
-    for (let i = 0; i < 4; i++) await turn();
+    const ids: string[] = [];
+    for (let i = 0; i < 4; i++) ids.push(await turn());
     expect(h.sup.state()).not.toBe("RUNNING");
     const lane = await turnOn(h, "lane")();
     expect(doneOf(h.outcome, lane)).toMatchObject({ text: "lane text" }); expect(h.store.getRunState(lane)).toBe("completed");
-    expect(rows(h.store).filter((r) => r[3] === lane)).toEqual([[CG, "halt", "latched", lane, null]]);
+    expect(rows(h.store)).toEqual([[CG, "halt", "limit_reached", ids[3] as string, null], [CG, "halt", "latched", lane, null]]);
+    expect(h.counts).toEqual(pairs(5));
     expect(session.options).toHaveLength(3);
   });
   it("6 two failed starts then a good turn: no row, completed", async () => {
@@ -125,13 +129,13 @@ describe("R4 rows — planner.crash_guard", () => {
     expect(rows(h.store)).toEqual([]); expect(h.counts).toEqual([]);
     const r = await turnOn(h)();
     expect(failedOf(h.outcome, r)).toMatchObject({ error_ref: "crash_loop" });
-    expect(rows(h.store)).toEqual([[CG, "halt", "latched", r, null]]);
+    expect(rows(h.store)).toEqual([[CG, "halt", "latched", r, null]]); expect(h.counts).toEqual(PAIR);
   });
   it("7b the row names the run of the turn it was given, not this.turn (none is live at the seam)", async () => {
     const h = withRecorder(fakeSession()); const r = createQueuedTurnRun(h.store);
     priv(h.sup).crashLatched = true; (h.sup as unknown as { turn: unknown }).turn = undefined;
     expect(await priv(h.sup).ensureSession(true, { finished: false, req: { run_id: r } })).toBe("crash_loop");
-    expect(rows(h.store)).toEqual([[CG, "halt", "latched", r, null]]);
+    expect(rows(h.store)).toEqual([[CG, "halt", "latched", r, null]]); expect(h.counts).toEqual([CG]);
   });
   it("8b one clock read: with a clock that moves a minute per read, the row still agrees with the raw answer", async () => {
     const h = withRecorder(fakeSession()); const r = createQueuedTurnRun(h.store);
@@ -142,6 +146,7 @@ describe("R4 rows — planner.crash_guard", () => {
     vi.restoreAllMocks();
     expect(halt).toBe(true); expect(crashLoops(h.outcome)).toHaveLength(1);
     expect(rows(h.store)).toEqual([[CG, "halt", "limit_reached", r, null]]); // a second read would have excluded the exits from the capture
+    expect(h.counts).toEqual([CG]);
   });
   it("8 boundary: three exits at exactly now − CRASH_WINDOW_MS are outside the window (strict >): spawned, no row", async () => {
     vi.useFakeTimers({ toFake: ["Date"] }); const now = Date.now();
@@ -149,6 +154,7 @@ describe("R4 rows — planner.crash_guard", () => {
     priv(h.sup).exits = [now - CRASH_WINDOW_MS, now - CRASH_WINDOW_MS, now - CRASH_WINDOW_MS];
     const r = await turnOn(h)();
     expect(doneOf(h.outcome, r)).toMatchObject({ text: "answer" }); expect(rows(h.store)).toEqual([]); expect(crashLoops(h.outcome)).toEqual([]);
+    expect(h.counts).toEqual(PAIR);
   });
   it("mirror: crashLooping(now) is halt ⇔ the rule's verdict over latched × recent", () => {
     const h = withRecorder(fakeSession()); const noop: DecisionRecorder = { record: () => null };
@@ -172,30 +178,36 @@ describe("R4 rows — turn.retry", () => {
     const session = failing(["model refusal"]); const h = withRecorder(session); const r = await turnOn(h)();
     expect(rows(h.store)).toEqual([[TR, "final", "model_refusal", r, null]]);
     expect(failedOf(h.outcome, r)).toMatchObject({ error_type: "model_error", error_ref: "model_refusal" }); expect(session.prompts).toEqual(["hi"]);
+    expect(h.counts).toEqual([SQ, CG, TR]);
   });
   it("11 `other` on an unrouted turn: final/other_unrouted", async () => {
     const session = failing(["something odd"]); const h = withRecorder(session); const r = await turnOn(h)();
     expect(rows(h.store)).toEqual([[TR, "final", "other_unrouted", r, null]]);
     expect(failedOf(h.outcome, r)).toMatchObject({ error_type: "model_error", error_ref: "other" });
+    expect(session.prompts).toEqual(["hi"]); expect(h.counts).toEqual([SQ, CG, TR]);
   });
   it("12 routed Default, `other` twice: retry/other_once then final/other_retried", async () => {
     const session = failing(["something odd", "something odd"]); const h = withRecorder(session, routed("default")); const r = await turnOn(h)();
     expect(rows(h.store)).toEqual([[TR, "retry", "other_once", r, null], [TR, "final", "other_retried", r, null]]);
     expect(failedOf(h.outcome, r)).toMatchObject({ error_type: "model_error", error_ref: "other" }); expect(session.prompts).toEqual(["hi", RETRY_NOTE]);
+    expect(h.counts).toEqual([SQ, CG, TR, TR]);
   });
   it("13 routed Fast, a tool ran, then `other`: final/other_after_tool, one prompt", async () => {
     const session = toolThenOther([{ type: "tool_execution_start" }]); const h = withRecorder(session, routed("fast")); const r = await turnOn(h)();
     expect(rows(h.store)).toEqual([[TR, "final", "other_after_tool", r, null]]); expect(session.prompts).toEqual(["hi"]);
+    expect(failedOf(h.outcome, r)).toMatchObject({ error_type: "model_error", error_ref: "other" }); expect(h.counts).toEqual([SQ, CG, TR]);
   });
   it("14 routed Fast, only a todo tool, then `other` twice: retry/other_once then final/other_retried", async () => {
     const session = toolThenOther([{ type: "tool_execution_start", toolName: "todo" } as OmpFrame]); const h = withRecorder(session, routed("fast")); const r = await turnOn(h)();
     expect(rows(h.store)).toEqual([[TR, "retry", "other_once", r, null], [TR, "final", "other_retried", r, null]]);
     expect(session.prompts).toEqual(["hi", RETRY_NOTE]);
+    expect(failedOf(h.outcome, r)).toMatchObject({ error_type: "model_error", error_ref: "other" }); expect(h.counts).toEqual([SQ, CG, TR, TR]);
   });
   it("15 routed Fast, quota twice steps up to Default: retry/quota ×2, one routed_escalation, completed", async () => {
     const session = failing(["429 quota", "429 quota"]); const h = withRecorder(session, routed("fast")); const r = await turnOn(h)();
     expect(rows(h.store)).toEqual([[TR, "retry", "quota", r, null], [TR, "retry", "quota", r, null]]);
     expect(escalations(h.store, r)).toEqual([{ from: "fast", to: "default", kind: "quota" }]); expect(doneOf(h.outcome, r)).toMatchObject({ text: "ok" });
+    expect(h.counts).toEqual([SQ, CG, TR, TR]);
   });
   it("16 an async-work-only end with an error never consults the rule: no row; failed model_error; one prompt", async () => {
     const session = fakeSession({ onPrompt: (_t, e) => {
@@ -210,16 +222,19 @@ describe("R4 rows — turn.retry", () => {
 
 describe("R4 faults (spec §4.4)", () => {
   it("17 a throwing recorder: no rows, no incident; the retry (case 9) and the latch (case 2) are unchanged", async () => {
-    const boom: DecisionRecorder = { record: () => { throw new Error("boom"); } };
+    const seen: string[] = [];
+    const boom: DecisionRecorder = { record: (e) => { seen.push(e.id); throw new Error("boom"); } };
     const s9 = quotaThenOk(); const h9 = harness(s9, {}, { recorder: boom }); const r9 = await turnOn(h9)();
     expect(s9.prompts).toEqual(["hi", RETRY_NOTE]); expect(doneOf(h9.outcome, r9)).toMatchObject({ text: "from 4.6" });
     expect(rows(h9.store)).toEqual([]); expect(recordFailedN(h9.store)).toBe(0);
+    expect(seen).toEqual([SQ, CG, TR]); seen.length = 0;
     const s2 = fakeSession({ noManifest: true }); const h2 = harness(s2, {}, { recorder: boom, ...FAILING_START }); const turn = turnOn(h2);
     for (let i = 0; i < 3; i++) await turn();
     const r4 = await turn();
     expect(failedOf(h2.outcome, r4)).toMatchObject({ error_type: "planner_exit", error_ref: "crash_loop" });
     expect(crashLoops(h2.outcome)).toHaveLength(1); expect(s2.options).toHaveLength(3);
     expect(rows(h2.store)).toEqual([]); expect(recordFailedN(h2.store)).toBe(0);
+    expect(seen).toEqual(pairs(4));
   });
   it("18 an insert fault on the latch row: one decision_record_failed, one alert; the latch, the incident and the failure are unchanged", async () => {
     vi.stubEnv("HOUGE_TELEGRAM_CHAT_ID", "stub-chat");
@@ -231,7 +246,7 @@ describe("R4 faults (spec §4.4)", () => {
       const out0 = outboxN(h.store); const r4 = await turn();
       expect(failedOf(h.outcome, r4)).toMatchObject({ error_type: "planner_exit", error_ref: "crash_loop" });
       expect(crashLoops(h.outcome)).toHaveLength(1); expect(session.options).toHaveLength(3);
-      expect(rows(h.store)).toEqual([]); expect(h.counts.filter((c) => c === CG)).toHaveLength(4);
+      expect(rows(h.store)).toEqual([]); expect(h.counts).toEqual(pairs(4));
       expect(recordFailedN(h.store)).toBe(1); expect(outboxN(h.store) - out0).toBe(1);
       expect(q(h.store).prepare("SELECT target_json FROM notification_outbox WHERE idempotency_key LIKE 'incident_opened:%'").all()).toHaveLength(1);
     } finally { vi.unstubAllEnvs(); }
