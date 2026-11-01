@@ -686,9 +686,9 @@ This file is protected (ADR 0011); drafted for Paco's hand, signed off by Paco 2
 - **Evidence.** Differential with a fifth stamped pair at the merge base (`--old-dist-r2`, `ef4d0d1`, provenance on `gateway/gateway.js`), new corpora `sender` (19) and `contract` (13), and the four existing corpora that intake scheduled turns (`intake`, `binding`, `memadmit`, `memcorrect`) asserting the new row exactly: 12 corpora, 0 differences. Live gate `scripts/live-gate-ladder-remainder-r2.mjs` 8/8; R1, 4C, 4B gates PASS; rollback `scripts/check-ladder-remainder-r2-rollback.mjs` 9/9.
 - **Rollback.** No schema change: revert + rebuild. The previous build reads the new rows (the first `pre_model` rows with a null `run_id` among them) unchanged and refuses `review_ok` naming the new ids.
 
-## Amendment (2026-11-01): Stage 3 remainder slice R3, `intake.bare_ack` and `intake.steer_or_queue` on the ladder (awaiting Paco's signature)
+## Amendment (2026-11-01): Stage 3 remainder slice R3, `intake.bare_ack` and `intake.steer_or_queue` on the ladder (signed off by Paco 2026-11-01)
 
-This file is protected (ADR 0011); this amendment is drafted for Paco's hand. Spec: `docs/superpowers/specs/2026-11-01-ladder-remainder-r3-ack-steer-design.md` (Rev 1.2, approved 2026-11-01, Decisions 1-A, 2-A). Plan: `docs/superpowers/plans/2026-11-01-remainder-r3-ack-steer.md`.
+This file is protected (ADR 0011); drafted for Paco's hand, signed off by Paco 2026-11-01. Spec: `docs/superpowers/specs/2026-11-01-ladder-remainder-r3-ack-steer-design.md` (Rev 1.2, approved 2026-11-01, Decisions 1-A, 2-A). Plan: `docs/superpowers/plans/2026-11-01-remainder-r3-ack-steer.md`.
 
 - **Move, don't improve.** `PlannerSupervisor.submit`'s nudge / steer / queue branch is unchanged; it captures each decision from the same values it branches on. Which messages are nudged, steered or queued, the claims, replies, merged completions and their order are identical to the merge base.
 - **Recorded with the turn's own records (§5).** A row is written only after the incoming run's claim succeeds: a `nudge` in `nudgeAck`, a `steer` in `steer`, a `wait` when `runTurn` claims the queued run (the captured input rides on the request). A failed claim, a duplicate submit, or a queued run failed before it runs (`/kill`, shutdown) writes no row.

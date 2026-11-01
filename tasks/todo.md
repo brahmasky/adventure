@@ -7,7 +7,7 @@ Gates: differential sixth stamped pair `--old-dist-r3 .worktrees/base-6c75b03/di
 Evidence on the final head `0943719`: typecheck + build clean; full suite 432 files / 6001 tests, none skipped; differential PASS, 13 corpora, 0 differences; R3 live gate 8/8; R2, R1, 4C, 4B (scratch copy) gates PASS; rollback 9/9.
 Reviews: spec — senior (Sonnet) + codex + codex scoped (recording moved to the claim; not-live ≠ idle); plan — senior (Sonnet, ran Tasks 1–2: all 15 cases reachable) + codex ×2; per task — Haiku/Sonnet implementers, codex reviewers, one fix round on every task; final — whole-branch on Sonnet (Fable rate-limited all day), mutation pass (23/25; both survivors became tests), codex whole-diff (run ownership in the corpus): one fix wave.
 - [ ] **Next (chaining, seam order): remainder slice R4 — `planner.crash_guard` + `turn.retry`; spec first (reuses the supervisor fixture).** Then R5 `context.*` + `turn.clarify_cap`, R6 `lookup.rewrite`, `lookup.thin`, `turn.model`, R7 `attach.path`.
-- [ ] ADR 0030 amendment 2026-11-01 (R3) — **awaiting Paco's signature**.
+- [x] ADR 0030 amendment 2026-11-01 (R3) — signed off by Paco 2026-11-01.
 - [ ] Follow-ups (from R3, none load-bearing): the supervisor fixture's `live()` without `sup` returns at `turn_start`; `not_running` is exercised via ABORTING, not a mid-respawn STARTING (mirror test covers the input); queued rows say what `submit` saw (by design); durations compared as 0/+ across builds; foreign (non-submitted) run ids in the supervisor corpus are labelled by first appearance; the R2 follow-ups below still stand.
 
 # Earlier block — 2026-11-01: remainder R2
