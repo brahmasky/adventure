@@ -8,7 +8,7 @@ import type { OmpFrame } from "../../src/omp/omp-frames.js";
 import { RETRY_NOTE, type SupervisorDeps } from "../../src/omp/planner-supervisor.js";
 import type { RunStore } from "../../src/run/run-store.js";
 import { createQueuedTurnRun } from "../helpers/runs.js";
-import { cleanups, fakeSession, harness, req, type Fake, type Outcome, type Script } from "../helpers/supervisor-harness.js";
+import { cleanups, fakeSession, harness, req, until, type Fake, type Outcome, type Script } from "../helpers/supervisor-harness.js";
 
 afterEach(async () => { for (const c of cleanups.splice(0)) await c(); vi.restoreAllMocks(); vi.useRealTimers(); });
 
@@ -68,7 +68,7 @@ const quotaThenOk = () => {
 };
 /** P10: a child that never asks for its manifest fails every start after manifestWaitMs (a crash exit each). */
 const FAILING_START: Partial<SupervisorDeps> = { manifestWaitMs: 20 };
-type Private = { exits: number[]; crashLatched: boolean; ensureSession(fresh: boolean, turn: unknown): Promise<unknown>; crashLooping(now: number): boolean };
+type Private = { exits: number[]; crashLatched: boolean; stale: boolean; session?: unknown; recordStartMissing(...a: unknown[]): void; ensureSession(fresh: boolean, turn: unknown): Promise<unknown>; crashLooping(now: number): boolean };
 const priv = (sup: unknown) => sup as Private;
 const PAIR = [SQ, CG];
 const pairs = (n: number) => Array<string[]>(n).fill(PAIR).flat();
@@ -136,6 +136,47 @@ describe("R4 rows — planner.crash_guard", () => {
     priv(h.sup).crashLatched = true; (h.sup as unknown as { turn: unknown }).turn = undefined;
     expect(await priv(h.sup).ensureSession(true, { finished: false, req: { run_id: r } })).toBe("crash_loop");
     expect(rows(h.store)).toEqual([[CG, "halt", "latched", r, null]]); expect(h.counts).toEqual([CG]);
+  });
+  it("P4 tally: one candidate refused at spawn is one more consult (the respawn): counts [SQ, CG, CG], no row", async () => {
+    const h = withRecorder(fakeSession({ badModels: ["anthropic/claude-opus-5-5"] })); const a = createQueuedTurnRun(h.store);
+    h.sup.submit(req(a)); await h.sup.whenIdle();
+    expect(doneOf(h.outcome, a)).toBeDefined(); expect(rows(h.store)).toEqual([]);
+    expect(h.counts).toEqual([SQ, CG, CG]);
+  });
+  it("P4 tally: the stale re-check (the child loses its bridge during the prompt build) is one more consult: counts [SQ, CG, SQ, CG], no row", async () => {
+    const session = fakeSession(); const h = withRecorder(session);
+    let release: () => void = () => undefined; let calls = 0;
+    (h.sup as unknown as { d: { turnContext: { retrieve(): Promise<unknown> } } }).d.turnContext.retrieve = async () => {
+      if (calls++ > 0) await new Promise<void>((r) => { release = r; });
+      return { facts: [], pages: [] };
+    };
+    await turnOn(h)();
+    const b = createQueuedTurnRun(h.store); h.sup.submit(req(b)); await until(() => calls === 2);
+    session.dropBridge(); await until(() => priv(h.sup).stale);
+    release(); await h.sup.whenIdle();
+    expect(doneOf(h.outcome, b)).toBeDefined(); expect(rows(h.store)).toEqual([]);
+    expect(h.counts).toEqual([SQ, CG, SQ, CG]);
+  });
+  it("the non-warm startSession consult names its own turn's run: a start refusal, then exits at the limit, halts there with a row on that run", async () => {
+    const h = withRecorder(fakeSession({ badModels: ["anthropic/claude-opus-5-5"] })); const a = createQueuedTurnRun(h.store);
+    const orig = priv(h.sup).recordStartMissing.bind(h.sup);
+    priv(h.sup).recordStartMissing = (...args: unknown[]) => { orig(...args); const n = Date.now(); priv(h.sup).exits = [n - 3_000, n - 2_000, n - 1_000]; };
+    h.sup.submit(req(a)); await h.sup.whenIdle();
+    expect(failedOf(h.outcome, a)).toMatchObject({ error_ref: "crash_loop" });
+    expect(rows(h.store)).toEqual([[CG, "halt", "limit_reached", a, null]]);
+    expect(h.counts).toEqual([SQ, CG, CG]);
+  });
+  it("afterWarm's re-ensure names the consulting turn's run: warm resolves ready, the child goes stale, exits at the limit, the re-ensure halts with a row on that run", async () => {
+    const triage: SupervisorDeps["triage"] = async () => {
+      await until(() => priv(h.sup).session !== undefined);
+      const n = Date.now(); priv(h.sup).exits = [n - 3_000, n - 2_000, n - 1_000]; priv(h.sup).stale = true;
+      return { kind: "fallthrough" };
+    };
+    const h = withRecorder(fakeSession(), { triage }); const a = createQueuedTurnRun(h.store);
+    h.sup.submit(req(a)); await h.sup.whenIdle();
+    expect(failedOf(h.outcome, a)).toMatchObject({ error_ref: "crash_loop" });
+    expect(rows(h.store)).toEqual([[CG, "halt", "limit_reached", a, null]]);
+    expect(h.counts).toEqual([SQ, CG, CG]);
   });
   it("8b one clock read: with a clock that moves a minute per read, the row still agrees with the raw answer", async () => {
     const h = withRecorder(fakeSession()); const r = createQueuedTurnRun(h.store);

@@ -175,4 +175,15 @@ describe("entryProblems (R12 and R13 as data)", () => {
     }
     expect(ENTRY_IDS).toHaveLength(32);
   });
+
+  it("planner.crash_guard and turn.retry are registered, unlocked rule-only entries (remainder R4)", () => {
+    for (const id of ["planner.crash_guard", "turn.retry"] as const) {
+      const e = entryById(id) as AnyEntry;
+      expect(e).toBeDefined();
+      expect(e.locked === true).toBe(false);
+      expect(e.ladder.map((r) => r.kind)).toEqual(["rule"]);
+      expect((LOCKED_ENTRY_IDS as readonly string[]).includes(id)).toBe(false);
+    }
+    expect(ENTRY_IDS).toHaveLength(32);
+  });
 });
