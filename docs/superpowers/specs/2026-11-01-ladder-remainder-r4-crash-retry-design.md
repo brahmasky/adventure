@@ -1,6 +1,6 @@
 # Decision ladder, remainder slice R4 — `planner.crash_guard` and `turn.retry` on the ladder (Rev 1.2)
 
-**Status:** Rev 1.2, for Paco's tap. Rev 1.2 — codex scoped re-review of Rev 1.1: all prior findings closed; one new blocker and two warnings applied (§Rev 1.2 changes). Rev 1.1 — after the senior review (Fable 5.1: 1 blocker, 3 warnings, 7 suggestions) and the codex design pass (1 blocker, 1 warning, 1 suggestion), every finding verified first-hand and applied (§Rev 1.1 changes).
+**Status:** **APPROVED by Paco 2026-11-01: Decisions 1-A, 2-A.** Rev 1.2 — codex scoped re-review of Rev 1.1: all prior findings closed; one new blocker and two warnings applied (§Rev 1.2 changes). Rev 1.1 — after the senior review (Fable 5.1: 1 blocker, 3 warnings, 7 suggestions) and the codex design pass (1 blocker, 1 warning, 1 suggestion), every finding verified first-hand and applied (§Rev 1.1 changes).
 **Date:** 2026-11-01
 **Amends:** `docs/ROADMAP.md` (the remainder line); ADR 0030 gets an amendment row (drafted under the approved spec, awaiting Paco's signature).
 **Depends on:** ADR 0030 §4.1, §5 (a turn's row is written with the turn's own records), §6.1 (rows D2, D9, stage `supervision`), §6.2; remainder R1 spec §2 (seam order: R4 reuses R3's supervisor fixture); R3 (`2026-11-01-ladder-remainder-r3-ack-steer-design.md`, shipped `c02a96c`) for the pattern: `SupervisorDeps.recorder`, the private `record()` helper, the stamped merge-base differential with `scripts/stage4-supervisor-fixture.mjs`, production-wiring tests, exact-row assertions.
