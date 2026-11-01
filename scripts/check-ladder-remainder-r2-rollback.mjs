@@ -105,6 +105,19 @@ function windowCounts(path, now) {
 }
 const lineTotals = (lines) => Object.fromEntries(NEW_IDS.map((id) => [id, lines.filter((l) => COUNT_RE.exec(l)?.[1] === id).map((l) => Number(COUNT_RE.exec(l)[2]))]));
 const totalsMatch = (lines, want) => { const got = lineTotals(lines); return NEW_IDS.every((id) => (want[id] === 0 ? got[id].length === 0 : got[id].length === 1 && got[id][0] === want[id])); };
+/** The exact count line (digest.ts countLines format) for `id`, built from SQL rung counts over the same window and `now`; null when the window holds no row. */
+const RUNG_ORDER = ["rule", "system_one", "model", "paco", "fail"]; const RUNG_LABEL = { rule: "code", system_one: "Jev", model: "model", paco: "you", fail: "fallback" };
+function expectedLine(path, id, now) {
+  const since = new Date(Date.parse(now) - 24 * 60 * 60 * 1000).toISOString();
+  const by = ro(path, (db) => db.prepare("SELECT rung, COUNT(*) AS n FROM decisions WHERE entry_id = ? AND created_at > ? AND created_at <= ? GROUP BY rung").all(id, since, now));
+  if (by.length === 0) return null;
+  const m = new Map(by.map((r) => [r.rung, r.n]));
+  const known = RUNG_ORDER.filter((k) => m.has(k)).map((k) => `${RUNG_LABEL[k]} ${m.get(k)}`);
+  const other = [...m.keys()].filter((k) => !RUNG_ORDER.includes(k)).sort().map((k) => `${k} ${m.get(k)}`);
+  return `· ${id} ${[...m.values()].reduce((a, b) => a + b, 0)} — ${[...known, ...other].join(" · ")}`;
+}
+const expectedLines = (path, now) => NEW_IDS.map((id) => expectedLine(path, id, now)).filter((l) => l !== null);
+const newLines = (lines) => lines.filter((l) => NEW_IDS.includes(COUNT_RE.exec(l)?.[1]));
 const norm = (l) => l.replace(/\b\d\d-\d\d \d\d:\d\d\b/g, "<ts>");
 const shortRun = (run_id) => (run_id ? run_id.replace(/^run_/, "").slice(0, 8) : "–"); // status-view.ts shortRun
 
@@ -210,7 +223,7 @@ const listLine = (r, label) => `<ts> · ${r.entry_id} · ${label(r.rung)} → ${
 function renderBad(a, f, seedRows, label) {
   const bad = [];
   if (!a.digest || !f.digest) bad.push("digest did not render");
-  else if (!same(a.digest.map(norm), f.digest.map(norm))) bad.push(`digest differs (A ${a.digest.length} lines, F ${f.digest.length})`);
+  else if (!same(a.digest, f.digest)) bad.push(`digest differs (A ${a.digest.length} lines, F ${f.digest.length})`);
   if (f.digest?.some((l) => COUNT_RE.test(l) || NEW_IDS.some((id) => l.includes(id)))) bad.push("digest carries a per-entry line or new id");
   const isNew = (l) => NEW_IDS.includes(COUNT_RE.exec(l)?.[1]);
   const [sa, sf] = [a.status.filter((l) => !isNew(l)).map(norm), f.status.filter((l) => !isNew(l)).map(norm)];
@@ -260,9 +273,10 @@ async function run(ctx) {
     `decisions A ${snapA.counts.decisions} -> ${aA.decisions}, F ${snapF.counts.decisions} -> ${aF.decisions} · keys lost ${[...gone, ...goneA].reduce((a, b) => a + b, 0)} · rows compared whole ${snapF.content.length + snapA.content.length} · old build read ${of.read.length}/${oa.read.length} · seeded rows read ${seededRead.filter(Boolean).length}/3 exact ${seededOk} · new ids listed ${of.listedNew} on F`);
   const bad = renderBad(oa, of, seed.rows, mOld.deciderLabel);
   const [winA, winF] = [windowCounts(A, now), windowCounts(F, now)];
-  check("A vs F as rendered by ef4d0d1: the digest is identical (no per-entry lines, no new id), /status differs only in the intake.sender and turn.contract count lines (each total = SQL window count, +1 and +2 over A), recent list = A's with the three seeded rows on top",
-    bad.length === 0 && totalsMatch(oa.status, winA) && totalsMatch(of.status, winF) && winF["intake.sender"] === winA["intake.sender"] + 1 && winF["turn.contract"] === winA["turn.contract"] + 2,
-    bad.length ? bad.join("; ") : `F lines ${J(lineTotals(of.status)).replace(/"/g, "")} vs SQL ${J(winF).replace(/"/g, "")} · A lines ${J(lineTotals(oa.status)).replace(/"/g, "")} · digest ${of.digest.length} lines (A ${oa.digest.length}) identical · list ${of.listText.length - 1} rows`);
+  const [expLinesA, expLinesF] = [expectedLines(A, now), expectedLines(F, now)];
+  check("A vs F as rendered by ef4d0d1: the digest is identical (no per-entry lines, no new id), /status differs only in the intake.sender and turn.contract count lines (each whole line, rung breakdown included, equals the line built from SQL rung counts over the same window; +1 and +2 over A), recent list = A's with the three seeded rows on top",
+    bad.length === 0 && same(newLines(oa.status), expLinesA) && same(newLines(of.status), expLinesF) && expLinesF.length === 2 && winF["intake.sender"] === winA["intake.sender"] + 1 && winF["turn.contract"] === winA["turn.contract"] + 2,
+    bad.length ? bad.join("; ") : `F lines [${newLines(of.status).join(" | ")}] = SQL-built · A lines [${newLines(oa.status).join(" | ")}] · digest ${of.digest.length} raw lines (A ${oa.digest.length}) identical, same now · list ${of.listText.length - 1} rows`);
   check("ef4d0d1 refuses review_ok naming intake.sender and turn.contract (normal OutcomeRejected, no crash; a valid id is accepted) on A and F",
     [oa, of].every((x) => NEW_IDS.every((id) => x.outcomes[id] === OUT_REJ) && x.outcomes["tool.policy"] === "inserted:true") && same(oa.outcomes, of.outcomes), `A ${J(oa.outcomes)} · F ${J(of.outcomes)}`.replace(/"/g, ""));
   const grew = (x, y) => TABLES.map((t) => y[t] - x[t]);
@@ -273,7 +287,7 @@ async function run(ctx) {
   const reRows = s.listRecentDecisions(100_000).map(canonRow).sort();
   closeStore(s);
   check("this build reopens F: every decisions row's full content is unchanged, nothing lost, and the intake.sender and turn.contract /status lines equal the SQL counts",
-    same(contentOf(F), snapF.content) && same(reRows, [...snapF.content].sort()) && lost(keysF, keysOf(F)).every((n) => n === 0) && totalsMatch(re, windowCounts(F, now)),
+    same(contentOf(F), snapF.content) && same(reRows, [...snapF.content].sort()) && lost(keysF, keysOf(F)).every((n) => n === 0) && same(newLines(re), expectedLines(F, now)),
     `rows read ${reRows.length}/${snapF.content.length} · lines ${J(lineTotals(re)).replace(/"/g, "")}`);
   const tomb = [join(process.cwd(), "houge.kill"), join(MAIN_CHECKOUT, "houge.kill")].filter(existsSync).length;
   check("no houge.kill tombstone appeared in the cwd or the main checkout (P3)", tomb === 0, `found ${tomb} (want 0)`);
