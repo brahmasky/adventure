@@ -2387,6 +2387,7 @@ export class CoreWorker {
       triage: (i) => this.triageTurn(i),
       roles: this.roles,
       settleClient: (run_id) => this.settleClient(run_id),
+      recorder: this.decisionRecorder,
       ...(this.ompOptions.gateHold ? { gateHold: this.ompOptions.gateHold } : {})
     };
   }
