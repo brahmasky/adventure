@@ -1,6 +1,6 @@
 # Loud degradation — newest model per tier, reminders that repeat, trust carry with an exit (Rev 1.2)
 
-**Status:** DRAFT Rev 1.2, awaiting Paco's tap (Decisions D1–D4).
+**Status:** **APPROVED by Paco 2026-11-02 ("yes, proceed"): Decisions D1-A, D2-A, D3-A, D4-A (the recommended options).** Rev 1.2.
 - **Rev 1.2:** after codex's scoped re-review of Rev 1.1 (15 of 18 prior findings closed; 2 new blockers and 3
   warnings applied, §Rev 1.2 changes).
 - **Rev 1.1:** after the senior review (claude-fable-5-1: 3 blockers, 12 warnings, 6 suggestions, 7 facts corrected)
