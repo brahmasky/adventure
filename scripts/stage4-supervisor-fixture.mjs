@@ -56,14 +56,14 @@ export function fakeSession(script = {}) {
   return s;
 }
 
-/** A child whose turns stay live until `end()`: `live(n)` waits for the n-th prompt's turn_start (hold-live), `end(text)` finishes the oldest live turn. */
+/** A child whose turns stay live until `end()`: `live(n, sup)` waits for the n-th prompt's turn_start and, given the supervisor, for its state to be RUNNING (hold-live); `end(text)` finishes the oldest live turn. */
 export function heldSession(script = {}) {
   const ends = []; let live = 0;
   const session = fakeSession({ ...script, onPrompt: (_t, e) => {
     live += 1; e({ type: "turn_start" });
     ends.push((text) => { session.assistant(text); e({ type: "agent_end" }); });
   } });
-  return { session, live: async (n = 1) => { await until(() => live >= n); await wait(30); }, end: (text = "ok") => { ends.shift()(text); } };
+  return { session, live: async (n = 1, sup) => { await until(() => live >= n); if (sup) await untilState(sup, "RUNNING"); }, end: (text = "ok") => { ends.shift()(text); } };
 }
 
 /** The outcome sink the worker would pass: finishes the run in `store`; lists what it saw. */
@@ -87,16 +87,17 @@ export function mkSupervisor(d, store, opts = {}) {
   store.recordPlannerSessionReset("42", d.lessonSetFingerprint(store), new Date().toISOString());
   store.claimSessionSeed("42"); store.promotePlannerSession("42");
   const data = mkdtempSync(join(tmpdir(), "hsv-")); // short: the bridge socket path must fit sun_path (104 bytes)
+  let sup;
+  cleanups.push(async () => { try { await sup?.shutdown(); } finally { rmSync(data, { recursive: true, force: true }); } }); // registered before construction: a constructor throw still removes the dir
   const outcome = opts.outcome ?? sink(store);
   const session = opts.session ?? fakeSession();
-  const sup = new d.PlannerSupervisor({
+  sup = new d.PlannerSupervisor({
     chatId: "42", store, cfg: d.resolveOmpConfig({ HOUGE_OMP_SANDBOX: "0" }), ctx: { home: data, repo: data, data }, distDir: data, decls: [], env: {}, turnEnvelopeActions: ["shell"],
     turnContext: { store, memoryRoot: MEMORY_ROOT, dataDir: data, skillsReader: () => undefined, coreBlock: () => undefined, retrieve: async () => ({ facts: [], pages: [] }), env: {} },
     buildTools: () => ({ registry: new d.ToolRegistry(), quarantine: async () => ({ digest: "", contains_instructions: false, source_meta: { tool: "x", bytes: 0 } }) }),
     posture: () => null, outcome, sessionFactory: (o) => session.bind(o), versionCheck: () => ({ ok: true, version: "18.4.4" }), skipPreflightForTest: true,
     manifestWaitMs: 5_000, roles: fakeRoles(d), settleClient: () => jev01,
     ...(opts.recorder ? { recorder: opts.recorder } : {}), ...opts.extra });
-  cleanups.push(async () => { await sup.shutdown(); rmSync(data, { recursive: true, force: true }); });
   return { sup, outcome, session, data };
 }
 
