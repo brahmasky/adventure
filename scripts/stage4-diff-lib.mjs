@@ -4,12 +4,12 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-export const DISTS = { new: null, s3: null, s4a: null, s4b: null, r1: null, r2: null, r3: null }; // filled by the CLI
+export const DISTS = { new: null, s3: null, s4a: null, s4b: null, r1: null, r2: null, r3: null, r4: null }; // filled by the CLI
 export const CORPORA = [];                               // filled by the CLI from scripts/stage4-corpora/*.mjs
 /** Async teardown callbacks (a corpus's open sockets); the CLI runs them in a finally, on success and on error alike. */
 export const closers = [];
 export async function runClosers() {
-  for (const fn of closers.splice(0)) { try { await fn(); } catch (e) { console.error(`teardown failed: ${e instanceof Error ? e.message : String(e)}`); } }
+  for (const fn of closers.splice(0)) { try { await fn(); } catch (e) { console.error(state.debug ? `teardown_failed: ${redactForPrint(String(e?.message ?? e))}` : "teardown_failed"); } }
 }
 export const state = { requiredFailures: [], seq: 0, debug: false };
 
@@ -151,19 +151,22 @@ export const INTAKE_IDS = ["intake.rate_limit", "intake.rating_reply", "intake.b
 export const R2_IDS = ["intake.sender", "turn.contract"];
 /** The two Slice R3 decision rows written at an incoming run's claim: intake.bare_ack (a bare acknowledgement) and intake.steer_or_queue (steer vs queue behind a live turn). */
 export const R3_IDS = ["intake.bare_ack", "intake.steer_or_queue"];
+/** The two Slice R4 decision rows written by the planner supervisor: planner.crash_guard (a refused spawn) and turn.retry (every retry-or-final judgement). */
+export const R4_IDS = ["planner.crash_guard", "turn.retry"];
 /**
  * Decision rows one pair's NEW build records and the OLD build cannot: excluded from both sides before comparing (per old build, P1).
- * The branch build is the new side of every pair, so R2_IDS and R3_IDS are in every set. The corpora that intake scheduled turns through Gateway
+ * The branch build is the new side of every pair, so R2_IDS, R3_IDS and R4_IDS are in every set. The corpora that intake scheduled turns through Gateway
  * (R1 intake.mjs `source: "schedule"` items, 4B memadmit.mjs) would otherwise show a spurious `restrict` row in a raw-decisions read;
  * they assert that row exactly instead (P10). 4C's schedule.mjs never touches Gateway.
  */
 export const NEW_ROW_IDS = {
-  s3: new Set(["approval.bind", "secret.redact", ...INTAKE_IDS, ...R2_IDS, ...R3_IDS]),
-  s4a: new Set(["approval.bind", "secret.redact", ...INTAKE_IDS, ...R2_IDS, ...R3_IDS]),
-  s4b: new Set(["memory.lesson_admit", "schedule.admit", "memory.correct_preflight", ...INTAKE_IDS, ...R2_IDS, ...R3_IDS]),
-  r1: new Set([...INTAKE_IDS, ...R2_IDS, ...R3_IDS]),
-  r2: new Set([...R2_IDS, ...R3_IDS]),
-  r3: new Set(R3_IDS)
+  s3: new Set(["approval.bind", "secret.redact", ...INTAKE_IDS, ...R2_IDS, ...R3_IDS, ...R4_IDS]),
+  s4a: new Set(["approval.bind", "secret.redact", ...INTAKE_IDS, ...R2_IDS, ...R3_IDS, ...R4_IDS]),
+  s4b: new Set(["memory.lesson_admit", "schedule.admit", "memory.correct_preflight", ...INTAKE_IDS, ...R2_IDS, ...R3_IDS, ...R4_IDS]),
+  r1: new Set([...INTAKE_IDS, ...R2_IDS, ...R3_IDS, ...R4_IDS]),
+  r2: new Set([...R2_IDS, ...R3_IDS, ...R4_IDS]),
+  r3: new Set([...R3_IDS, ...R4_IDS]),
+  r4: new Set(R4_IDS)
 };
 
 /** Every ordinary table: sqlite_* internals, virtual tables and their shadow tables (`<virtual>_*`) as sqlite_master reports them are excluded; a name alone (e.g. "_fts") never excludes one. */

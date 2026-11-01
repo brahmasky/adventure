@@ -8,6 +8,8 @@ import { TurnTrust } from "../decisions/trust.js";
 import { decideSync } from "../decisions/decide.js";
 import { INTAKE_BARE_ACK } from "../decisions/entries/intake-bare-ack.js";
 import { INTAKE_STEER_OR_QUEUE, type SteerOrQueueInput, type SteerReason } from "../decisions/entries/intake-steer-or-queue.js";
+import { CRASH_LIMIT, CRASH_WINDOW_MS, PLANNER_CRASH_GUARD, type CrashGuardInput } from "../decisions/entries/planner-crash-guard.js";
+import { TURN_RETRY, type RetryInput } from "../decisions/entries/turn-retry.js";
 import type { DecisionRecorder, Entry } from "../decisions/types.js";
 import { errorCode, safeReason } from "../domain/error-code.js";
 import type { Identity } from "../domain/types.js";
@@ -29,7 +31,7 @@ import type { JevRequest, JevResult } from "../jev/jev-client.js";
 import { selectorKey, STEP_UP } from "./model-roles.js";
 import { familyOf, type ModelFamily, type ModelString } from "./model-string.js";
 import { PLANNER_HEARTBEAT_MS, type OmpConfig } from "./omp-config.js";
-import { classifyOmpError, frameErrorText, RETRYABLE_ERROR_KINDS, summarizeAssistantMessage, type AssistantSummary, type OmpFrame } from "./omp-frames.js";
+import { classifyOmpError, frameErrorText, mayRetryOf, summarizeAssistantMessage, type AssistantSummary, type OmpFrame } from "./omp-frames.js";
 import type { OmpCheckResult } from "./omp-version.js";
 import { sharedOmpVersionCache } from "./omp-version-cache.js";
 import { PlannerRpcError, PlannerSession, type ExitInfo, type PlannerSessionOptions } from "./planner-session.js";
@@ -147,8 +149,6 @@ export const TRUST_WAIT_MARGIN_MS = 15_000;
 const PAUSE_SLACK_MS = 10;
 /** The failure ref of a turn the daemon's own stop cut short: its open request is audited error{shutdown}. */
 const DAEMON_SHUTDOWN = "daemon shutdown";
-const CRASH_WINDOW_MS = 10 * 60_000;
-const CRASH_LIMIT = 3;
 /** macOS sun_path is 104 bytes including the terminating NUL. */
 const MAX_SOCK_PATH = 103;
 const TIMED_OUT = Symbol("timed_out");
@@ -197,6 +197,9 @@ export function writeHougeConfigFile(ctx: Pick<PathContext, "data">): string {
 }
 
 interface SpawnRec { gen: number; model: ModelString; exit?: string; started?: Promise<unknown>; bridgeLost?: boolean }
+
+/** What the crash guard needs of the consulting turn (spec R4 §4.0). */
+type GuardTurn = Pick<Turn, "finished" | "req">;
 
 interface Turn {
   req: TurnRequest; claim: ClaimedRun; worker: string; startedAt: number; merged: string[];
@@ -597,7 +600,7 @@ export class PlannerSupervisor {
       turn.userText = userText;
       // Slot B (ADR 0029 §5.1): the child starts now; only planner paths await it. `warm` never rejects: a start failure
       // is the spawn's own incident (or a string result), never this turn's.
-      const warm: Promise<StartResult> = this.ensureSession(true).catch((e): StartResult => `spawn_failed: ${message(e)}`);
+      const warm: Promise<StartResult> = this.ensureSession(true, turn).catch((e): StartResult => `spawn_failed: ${message(e)}`);
       const verdict = await this.triage(turn, { claim: turn.claim, text, userText, modality, posture: this.d.posture(), signal: turn.abort.signal });
       if (verdict === ENDED || turn.failure) return;
       if (verdict.kind === "lane_reply") { await this.finishLane(turn, userText, verdict, warm); return; }
@@ -920,9 +923,11 @@ export class PlannerSupervisor {
     return this.promptRetry(turn, s, kind);
   }
 
+  /** turn.retry (spec R4 §4.2): recorded on every consult (Decision 1-A); mayRetryOf, the same predicate as the rule, drives. */
   private mayRetry(turn: Turn, kind: LlmErrorKind): boolean {
-    if (RETRYABLE_ERROR_KINDS.has(kind)) return true;
-    return kind === "other" && turn.route !== null && !turn.usedTool && !turn.retriedOther;
+    const input: RetryInput = { kind, routed: turn.route !== null, usedTool: turn.usedTool, retriedOther: turn.retriedOther };
+    this.record(TURN_RETRY, input, turn.req.run_id);
+    return mayRetryOf(input);
   }
 
   /** Pin the next candidate and tell it to continue (RETRY_NOTE); the transcript already holds every executed tool's result. */
@@ -951,7 +956,7 @@ export class PlannerSupervisor {
    * null when a live, current child is ready; else the failure ref for the run. `fresh` = a new spawn sequence: the last
    * child's refused set is no evidence for this one (spec §4 step 4), so it clears; false after a start refusal.
    */
-  private async ensureSession(fresh: boolean): Promise<StartResult> {
+  private async ensureSession(fresh: boolean, turn: GuardTurn): Promise<StartResult> {
     const { turnContext, chatId } = this.d;
     // never two spawns: join the start in flight; if it did not produce a ready child, this turn makes its own attempt
     while (this.startInFlight) if ((await this.startInFlight) === null && this.session) return null;
@@ -960,7 +965,7 @@ export class PlannerSupervisor {
     const refresh = this.stale || systemPromptFingerprint(turnContext, chatId) !== this.fingerprint;
     if (this.session && refresh) await this.stopSession();
     if (this.session) return null;
-    if (this.crashLooping()) return "crash_loop";
+    if (this.crashGuard(turn)) return "crash_loop";
     // in flight from here: the preflight awaits omp --version, and a turn arriving meanwhile must join, not spawn twice
     const p: Promise<StartResult> = this.preflightThenSpawn(fresh).finally(() => { if (this.startInFlight === p) this.startInFlight = undefined; });
     this.startInFlight = p;
@@ -985,7 +990,7 @@ export class PlannerSupervisor {
    */
   private async startSession(turn: Turn, warm?: Promise<StartResult>): Promise<string | null | typeof ENDED> {
     for (let fresh = true; ; fresh = false, warm = undefined) {
-      const r = await this.step(turn, warm ? this.afterWarm(warm) : this.ensureSession(fresh));
+      const r = await this.step(turn, warm ? this.afterWarm(warm, turn) : this.ensureSession(fresh, turn));
       if (r === NO_SPAWN_MODEL) {
         this.noLeg(turn, "model_missing", turn.startMissing);
         this.failTurn(turn, "no_planner_leg", "model_missing");
@@ -1001,10 +1006,10 @@ export class PlannerSupervisor {
    * turn's result, never a second spawn (one start, one incident, one crash count, as before the lane). The warm call
    * was this turn's start-time fingerprint compare; a ready child is replaced only if it exited or went stale meanwhile.
    */
-  private async afterWarm(warm: Promise<StartResult>): Promise<StartResult> {
+  private async afterWarm(warm: Promise<StartResult>, turn: GuardTurn): Promise<StartResult> {
     const r = await warm;
     if (r !== null) return r;
-    return this.session && !this.stale ? null : this.ensureSession(true);
+    return this.session && !this.stale ? null : this.ensureSession(true, turn);
   }
 
   /** One llm_attempt per selector omp refused at spawn, keyed `<run>:0:<k>` (never `<run>:0`, the n = 0 dispatch row's key). */
@@ -1037,10 +1042,19 @@ export class PlannerSupervisor {
     });
   }
 
-  /** 3 crash exits within 10 min latch the guard (incident once); it holds until resetCrashGuard(). */
-  private crashLooping(): boolean {
+  /** planner.crash_guard (spec R4 §4.1): one clock read for the capture and the raw guard, which drives; no row after the turn ended (§4.0). */
+  private crashGuard(turn: GuardTurn): boolean {
+    const now = Date.now();
+    const input: CrashGuardInput = { latched: this.crashLatched, recent: this.exits.filter((t) => t > now - CRASH_WINDOW_MS).length };
+    const halt = this.crashLooping(now);
+    if (!turn.finished) this.record(PLANNER_CRASH_GUARD, input, turn.req.run_id);
+    return halt;
+  }
+
+  /** CRASH_LIMIT crash exits within CRASH_WINDOW_MS latch the guard (incident once); it holds until resetCrashGuard(). */
+  private crashLooping(now: number): boolean {
     if (this.crashLatched) return true;
-    const cutoff = Date.now() - CRASH_WINDOW_MS;
+    const cutoff = now - CRASH_WINDOW_MS;
     this.exits = this.exits.filter((t) => t > cutoff);
     if (this.exits.length < CRASH_LIMIT) return false;
     this.crashLatched = true;

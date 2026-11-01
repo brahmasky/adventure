@@ -398,6 +398,8 @@ entry, not a locked rule inside it. Remainder order and slices: spec `2026-10-30
 
 **Note (2026-11-01, remainder R3, Paco's Decisions 1-A, 2-A; ADR 0030 amendment):** A10 `intake.bare_ack` (locked) and A9 `intake.steer_or_queue` are registered, recorded at the incoming run's claim. Spec `2026-11-01-ladder-remainder-r3-ack-steer-design.md`.
 
+**Note (2026-11-01, remainder R4, Paco's Decisions 1-A, 2-A; ADR 0030 amendment):** D2 `planner.crash_guard` and D9 `turn.retry` are registered (stage `supervision`), recorded with the consulting turn's run. Spec `2026-11-01-ladder-remainder-r4-crash-retry-design.md`.
+
 ### 6.2 Move, don't improve
 
 For every migrated entry:

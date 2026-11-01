@@ -65,6 +65,15 @@ export function frameErrorText(frame: OmpFrame): string {
 /** Error kinds that move a call to the next model string (spec §8); every other kind is final for that call. */
 export const RETRYABLE_ERROR_KINDS: ReadonlySet<LlmErrorKind> = new Set<LlmErrorKind>(["quota", "auth", "transport", "timeout", "model_missing"]);
 
+/**
+ * turn.retry's predicate (spec R4 §4.2), shared by PlannerSupervisor.mayRetry and the entry's rule: a retryable kind, or
+ * `other` once, on a routed turn, while no tool has run (a failure after a side effect is never re-spent on another model).
+ */
+export function mayRetryOf(i: { kind: LlmErrorKind; routed: boolean; usedTool: boolean; retriedOther: boolean }): boolean {
+  if (RETRYABLE_ERROR_KINDS.has(i.kind)) return true;
+  return i.kind === "other" && i.routed && !i.usedTool && !i.retriedOther;
+}
+
 export function classifyOmpError(text: string): LlmErrorKind {
   const t = text.toLowerCase();
   if (/\b429\b|rate.?limit|quota|usage limit|limit reached|resets in/.test(t)) return "quota";

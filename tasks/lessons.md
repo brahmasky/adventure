@@ -621,3 +621,11 @@ The clean-room merge rebuilt `dist/` (new `omp/shell-wrapper.sh`) and the kickst
 - **"Not live" is not "idle".** `this.turn` exists before it is live and after; a drain is busy between turns. When mirroring a branch, enumerate the object's lifecycle states, not just the predicate's operands.
 - **A plan reviewer's passing draft is worth keeping.** The senior ran Tasks 1–2 and left green code; saving it to the scratchpad and pointing implementers at it cut both tasks to a check-and-tighten pass.
 - **A comparator that strips ids by key name hides ownership.** The shared differential drops every `run_id`; a corpus about which run owns a record must add its own stable label beside the id.
+
+## 2026-11-01 — Stage 3 remainder slice R4 (crash guard + retry)
+- **A decision read through `this.turn` after an await can belong to another turn.** The crash guard sits behind two awaits in `ensureSession`; the senior spec review showed `this.turn` could be the next turn by then. Thread the consulting turn as a parameter into every caller, and record only while it is unfinished.
+- **Capture and decide from one clock read.** `crashLooping()` read its own `Date.now()`; a capture with a second read can disagree at the window's edge. Pass one `now` to both, and test it with a clock that advances per read — a frozen fake clock cannot see two reads.
+- **Share the predicate instead of mirroring it.** `mayRetryOf` is called by the supervisor and by the entry's rule, so the record cannot drift from the decision; the ⇔ test over all 72 inputs is then a check, not the only guard.
+- **A guard on every spawn changes every exact tally on a spawn path.** Measured, not inferred: one extra call per spawning turn in 17 corpus items and 3 unit cases. The plan reviewer ran the corpus against the old build to get the numbers.
+- **Mutation testing finds call sites the scenarios never reach.** Three of five survivors were `ensureSession` callers whose threaded turn no test pinned; each needed a seam test that halts on that path.
+- **Gate prints: fixed codes only, everywhere.** Two task reviews in a row found `error_ref` / `e.message` in a failure path; audit every print in a new gate and its shared helpers, not only the lines the brief names.

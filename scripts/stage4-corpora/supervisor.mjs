@@ -108,28 +108,28 @@ const preClaimedNudge = async (x) => {
   sup.setAwaitingApprovalForTest(false); h.end(); await sup.whenIdle();
 };
 
-const SQ = "intake.steer_or_queue"; const BA = "intake.bare_ack";
+const CG = "planner.crash_guard"; const SQ = "intake.steer_or_queue"; const BA = "intake.bare_ack";
 const W = (reason, run) => [SQ, "wait", reason, run]; const STEER = (run) => [SQ, "steer", "live_turn", run]; const NUDGE = (run) => [BA, "nudge", "ack_while_card_waits", run];
-// calls: the recorder's exact tally on the new side. Every run the supervisor claims consults steer_or_queue once (the first, idle run included, P12); a bare_ack
+// calls: the recorder's exact tally on the new side. Only the first turn spawns, so each item consults planner.crash_guard once (R4); every run the supervisor claims consults steer_or_queue once (the first, idle run included, P12); a bare_ack
 // consult is made for a non-ack with a card waiting (pass, no row) and for the nudge itself; a media message is never live, so it never consults bare_ack.
 const ITEMS = [
-  { key: "idle", tags: ["idle"], drive: idle, rows: [], calls: { [SQ]: 1 } },
-  { key: "turn_not_live", tags: ["turn_not_live"], drive: turnNotLive, rows: [W("turn_not_live", "b")], calls: { [SQ]: 2 } },
-  { key: "queued_behind", tags: ["queued_behind"], drive: queuedBehind, rows: [W("turn_not_live", "b"), W("queued_behind", "c")], calls: { [SQ]: 3 } },
-  { key: "duplicate_submit", tags: ["duplicate"], drive: duplicate, rows: [STEER("b")], calls: { [SQ]: 2 } },
-  { key: "bare_ack_media_during_card", tags: ["media"], drive: mediaDuringCard, rows: [W("needs_ingest", "p"), W("needs_ingest", "q")], calls: { [SQ]: 3 } },
-  { key: "steer_running", tags: ["steer"], drive: duringCard("none", "x"), rows: [STEER("b")], calls: { [SQ]: 2 } },
-  { key: "steer_awaiting_approval", tags: ["steer", "card"], drive: duringCard("awaiting", "why?"), rows: [STEER("b")], calls: { [SQ]: 2, [BA]: 1 } },
-  { key: "bare_ack_awaiting", tags: ["nudge"], drive: duringCard("awaiting", "好"), rows: [NUDGE("b")], calls: { [SQ]: 1, [BA]: 1 } },
-  { key: "bare_ack_running_card", tags: ["nudge", "card"], drive: duringCard("running", "好"), rows: [NUDGE("b")], calls: { [SQ]: 1, [BA]: 1 } },
-  { key: "bare_ack_running_no_card", tags: ["steer"], drive: duringCard("none", "好"), rows: [STEER("b")], calls: { [SQ]: 2 } },
-  { key: "non_ack_running_card", tags: ["steer", "card"], drive: duringCard("running", "why?"), rows: [STEER("b")], calls: { [SQ]: 2, [BA]: 1 } },
-  { key: "turn_schedule_born", tags: ["schedule_born"], drive: scheduleBorn, rows: [W("turn_schedule_born", "m")], calls: { [SQ]: 2 } },
-  { key: "message_scheduled", tags: ["message_scheduled"], drive: messageScheduled, rows: [W("message_scheduled", "s")], calls: { [SQ]: 2 } },
-  { key: "needs_ingest", tags: ["needs_ingest"], drive: needsIngest, rows: [W("needs_ingest", "p")], calls: { [SQ]: 2 } },
-  { key: "not_running_aborting", tags: ["not_running"], drive: notRunning, rows: [W("not_running", "b")], calls: { [SQ]: 2 } },
-  { key: "preclaimed_steer", tags: ["preclaimed"], drive: preClaimedSteer, rows: [], calls: { [SQ]: 1 } },
-  { key: "preclaimed_nudge", tags: ["preclaimed"], drive: preClaimedNudge, rows: [], calls: { [SQ]: 1 } }
+  { key: "idle", tags: ["idle"], drive: idle, rows: [], calls: { [CG]: 1, [SQ]: 1 } },
+  { key: "turn_not_live", tags: ["turn_not_live"], drive: turnNotLive, rows: [W("turn_not_live", "b")], calls: { [CG]: 1, [SQ]: 2 } },
+  { key: "queued_behind", tags: ["queued_behind"], drive: queuedBehind, rows: [W("turn_not_live", "b"), W("queued_behind", "c")], calls: { [CG]: 1, [SQ]: 3 } },
+  { key: "duplicate_submit", tags: ["duplicate"], drive: duplicate, rows: [STEER("b")], calls: { [CG]: 1, [SQ]: 2 } },
+  { key: "bare_ack_media_during_card", tags: ["media"], drive: mediaDuringCard, rows: [W("needs_ingest", "p"), W("needs_ingest", "q")], calls: { [CG]: 1, [SQ]: 3 } },
+  { key: "steer_running", tags: ["steer"], drive: duringCard("none", "x"), rows: [STEER("b")], calls: { [CG]: 1, [SQ]: 2 } },
+  { key: "steer_awaiting_approval", tags: ["steer", "card"], drive: duringCard("awaiting", "why?"), rows: [STEER("b")], calls: { [CG]: 1, [SQ]: 2, [BA]: 1 } },
+  { key: "bare_ack_awaiting", tags: ["nudge"], drive: duringCard("awaiting", "好"), rows: [NUDGE("b")], calls: { [CG]: 1, [SQ]: 1, [BA]: 1 } },
+  { key: "bare_ack_running_card", tags: ["nudge", "card"], drive: duringCard("running", "好"), rows: [NUDGE("b")], calls: { [CG]: 1, [SQ]: 1, [BA]: 1 } },
+  { key: "bare_ack_running_no_card", tags: ["steer"], drive: duringCard("none", "好"), rows: [STEER("b")], calls: { [CG]: 1, [SQ]: 2 } },
+  { key: "non_ack_running_card", tags: ["steer", "card"], drive: duringCard("running", "why?"), rows: [STEER("b")], calls: { [CG]: 1, [SQ]: 2, [BA]: 1 } },
+  { key: "turn_schedule_born", tags: ["schedule_born"], drive: scheduleBorn, rows: [W("turn_schedule_born", "m")], calls: { [CG]: 1, [SQ]: 2 } },
+  { key: "message_scheduled", tags: ["message_scheduled"], drive: messageScheduled, rows: [W("message_scheduled", "s")], calls: { [CG]: 1, [SQ]: 2 } },
+  { key: "needs_ingest", tags: ["needs_ingest"], drive: needsIngest, rows: [W("needs_ingest", "p")], calls: { [CG]: 1, [SQ]: 2 } },
+  { key: "not_running_aborting", tags: ["not_running"], drive: notRunning, rows: [W("not_running", "b")], calls: { [CG]: 1, [SQ]: 2 } },
+  { key: "preclaimed_steer", tags: ["preclaimed"], drive: preClaimedSteer, rows: [], calls: { [CG]: 1, [SQ]: 1 } },
+  { key: "preclaimed_nudge", tags: ["preclaimed"], drive: preClaimedNudge, rows: [], calls: { [CG]: 1, [SQ]: 1 } }
 ];
 const BRANCHES = ["idle", "turn_not_live", "queued_behind", "duplicate", "media", "steer", "card", "nudge", "schedule_born", "message_scheduled", "needs_ingest", "not_running", "preclaimed"];
 
