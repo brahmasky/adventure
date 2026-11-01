@@ -231,13 +231,14 @@ async function line7() {
 // ---- line 8: /status and the lock ----
 async function line8() {
   const sv = await import(join(DIST, "decisions/status-view.js")); const reg = await import(join(DIST, "decisions/registry.js"));
-  const lines = sv.decisionStatusLines(G.store, wall()); const parts = []; let ok = true;
+  const now = wall(); const since = new Date(Date.parse(now) - 24 * 3_600_000).toISOString(); // digest.ts decisionWindow: DIGEST_WINDOW_MS = 24 h, rows with since < created_at <= now
+  const lines = sv.decisionStatusLines(G.store, now); const parts = []; let ok = true;
   for (const id of IDS) {
     const mine = lines.filter((l) => l.startsWith(`· ${id} `));
     const shown = mine.length === 1 ? Number(/^· \S+ (\d+) — /.exec(mine[0])?.[1] ?? NaN) : NaN;
-    const total = idRows(id); const want = G.prior[id] + WROTE[id]; // rows already on the copy + the rows lines 1-6 wrote (the faulted rows of line 7 never landed)
-    if (!(mine.length === 1 && total === want && shown === want)) ok = false;
-    parts.push(`${id} lines ${mine.length} (want 1), count ${Number.isNaN(shown) ? "none" : shown} (want ${want}; rows ${total})`);
+    const total = idRows(id); const inWindow = G.priorAt[id].filter((t) => t > since && t <= now).length; const want = inWindow + WROTE[id]; // in-window rows already on the copy + the rows lines 1-6 wrote (the faulted rows of line 7 never landed)
+    if (!(mine.length === 1 && shown === want && total === G.priorAt[id].length + WROTE[id])) ok = false;
+    parts.push(`${id} lines ${mine.length} (want 1), count ${Number.isNaN(shown) ? "none" : shown} (want ${want}; in-window baseline ${inWindow}; all rows ${total})`);
   }
   const move = (entry_id) => G.store.insertLadderMove({ entry_id, scope: "g", from_rung: "paco", to_rung: "rule", evidence: [], granted_by: "paco", granted_via: "gate", paco_callback_id: "cb", revocable: true });
   const before = countOf("SELECT COUNT(*) AS n FROM ladder_moves WHERE entry_id = 'intake.sender'");
@@ -276,8 +277,13 @@ async function setup() {
   G.work = join(root, "work"); mkdirSync(G.work, { recursive: true });
   // The copy's outbox must not hold anything the poll cycle's dispatch flush would send through the stub (sendMessage counts are then exact).
   const pending = parkOutbox();
-  G.prior = Object.fromEntries(IDS.map((id) => [id, idRows(id)]));
-  const prior = IDS.map((id) => G.prior[id]);
+  // Line 8's baseline must be what /status counts: rows inside its window. One synthetic intake.sender row dated 2 days ago is seeded on the copy
+  // (before line 1) so a baseline over ALL rows fails line 8; the status window ignores it.
+  const reg = await import(join(DIST, "decisions/registry.js")); const senderEntry = reg.entryById("intake.sender");
+  G.store.insertDecision({ entry_id: "intake.sender", entry_version: senderEntry.version, run_id: null, tool_call_id: null, stage: senderEntry.stage, rung: "rule", verdict: "deny", p: null, reason_code: "user_not_allowlisted",
+    fallback_reason: null, fallback_rung: null, armed_mode: "on", latency_ms: 0, created_at: new Date(Date.now() - 2 * 24 * 3_600_000).toISOString() });
+  G.priorAt = Object.fromEntries(IDS.map((id) => [id, all("SELECT created_at FROM decisions WHERE entry_id = ?", id).map((r) => r.created_at)]));
+  const prior = IDS.map((id) => G.priorAt[id].length);
   note(`copy: ${pending} non-final outbox row(s) parked on the copy; prior rows of the new ids ${prior.join(",")}`);
 }
 function closeAll() { try { G.store?.close(); } catch { /* a closed handle is not a finding */ } G.store = null; }
