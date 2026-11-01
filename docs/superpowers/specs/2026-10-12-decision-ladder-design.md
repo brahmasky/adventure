@@ -396,6 +396,8 @@ entry, not a locked rule inside it. Remainder order and slices: spec `2026-10-30
 
 **Note (2026-11-01, remainder R2, Paco's Decisions 1-B, 3-A; ADR 0030 amendment):** A1 `intake.sender` (locked) and A7 `turn.contract` are registered. `turn.contract` records refusals and the schedule-provenance strip (`restrict`) only; the rest of the turn envelope is a constant (mechanics). Spec `2026-11-01-ladder-remainder-r2-sender-contract-design.md`.
 
+**Note (2026-11-01, remainder R3, Paco's Decisions 1-A, 2-A; ADR 0030 amendment):** A10 `intake.bare_ack` (locked) and A9 `intake.steer_or_queue` are registered, recorded at the incoming run's claim. Spec `2026-11-01-ladder-remainder-r3-ack-steer-design.md`.
+
 ### 6.2 Move, don't improve
 
 For every migrated entry:
