@@ -5,6 +5,10 @@ import { BudgetLedger } from "../budget/budget-ledger.js";
 import type { InjectionJudge } from "../decisions/injection-judge.js";
 import { rankOf, type TrustLevel } from "../decisions/entries/turn-trust.js";
 import { TurnTrust } from "../decisions/trust.js";
+import { decideSync } from "../decisions/decide.js";
+import { INTAKE_BARE_ACK } from "../decisions/entries/intake-bare-ack.js";
+import { INTAKE_STEER_OR_QUEUE, type SteerOrQueueInput, type SteerReason } from "../decisions/entries/intake-steer-or-queue.js";
+import type { DecisionRecorder, Entry } from "../decisions/types.js";
 import { errorCode, safeReason } from "../domain/error-code.js";
 import type { Identity } from "../domain/types.js";
 import type { Effort, TurnRole } from "../jev/tree-policy.js";
@@ -53,6 +57,8 @@ export interface TurnRequest {
   needsIngest?: boolean;
   /** Who may answer this turn's tool approvals when that is not the requester: the operator, for a schedule-born turn (B2). */
   approver?: Identity;
+  /** intake.steer_or_queue's input, captured in submit for a queued request; recorded at runTurn's claim (spec R3 §4.0). */
+  steerDecision?: SteerOrQueueInput;
 }
 export interface TurnOutcomeSink {
   complete(i: { run_id: string; worker_id: string; text: string; attachments: string[]; duration_ms: number; tool_calls: number; merged_into?: string; buttons?: NotificationButton[] }): void;
@@ -112,6 +118,20 @@ export interface SupervisorDeps {
   settleClient: (run_id: string) => (r: JevRequest) => Promise<JevResult>;
   /** Live-gate seam only (never set by the daemon): forwarded to the bridge handler (judge_read) and used by settleRequest. */
   gateHold?: GateHold;
+  /** Records intake.bare_ack / intake.steer_or_queue at the incoming run's claim (spec R3 §4.3); absent → no rows. */
+  recorder?: DecisionRecorder;
+}
+
+/** The steer/queue branch's own inputs, named; first match wins (spec R3 §4.2). Mirrors submit's `live && (RUNNING || AWAITING)`. */
+export function steerOrQueueInput(t: { live: boolean; req: { source: "telegram" | "schedule" } } | undefined, st: SupervisorState, busy: boolean, req: TurnRequest): SteerOrQueueInput {
+  const wait = (reason: SteerReason): SteerOrQueueInput => ({ outcome: "wait", reason });
+  if (t === undefined) return busy ? wait("queued_behind") : { outcome: "queue", reason: "idle" };
+  if (!t.live) return wait("turn_not_live");
+  if (t.req.source !== "telegram") return wait("turn_schedule_born");
+  if (req.source !== "telegram") return wait("message_scheduled");
+  if (req.needsIngest) return wait("needs_ingest");
+  if (st !== "RUNNING" && st !== "AWAITING_APPROVAL") return wait("not_running");
+  return { outcome: "steer", reason: "live_turn" };
 }
 
 export const RETRY_NOTE = "(The previous model was unavailable. Continue answering my last message.)";
@@ -361,13 +381,24 @@ export class PlannerSupervisor {
     const live = t?.live && t.req.source === "telegram" && req.source === "telegram" && !req.needsIngest;
     // Slot A (ADR 0029 §5.1): a bare ack while an approval card waits is consent to nothing — nudge, never steer or queue.
     // A trust card can still wait in RUNNING (its bounded pause ran out, or none was left): `approvals` counts open cards.
-    if (live && (this.st === "AWAITING_APPROVAL" || t.approvals > 0) && isBareAck(req.text)) { this.nudgeAck(t, req); return; }
+    if (live && (this.st === "AWAITING_APPROVAL" || t.approvals > 0)) {
+      const acked = isBareAck(req.text);
+      if (acked) { this.nudgeAck(t, req); return; }
+      this.record(INTAKE_BARE_ACK, { acked }, req.run_id); // pass: the default, never a row
+    }
+    const decision = steerOrQueueInput(t, this.st, this.busy, req);
     if (live && (this.st === "RUNNING" || this.st === "AWAITING_APPROVAL")) {
-      void this.steer(t, req).catch((e) => this.incident("planner_steer_failed", { run_id: req.run_id, reason: rpcCode(e) }));
+      void this.steer(t, req, decision).catch((e) => this.incident("planner_steer_failed", { run_id: req.run_id, reason: rpcCode(e) }));
       return;
     }
-    this.queue.push(req);
+    this.queue.push({ ...req, steerDecision: decision });
     if (!this.busy) this.draining = this.drain();
+  }
+
+  /** decideSync for a rule-only entry: never throws, writes per shouldRecord; no recorder → nothing (spec R3 §4.3). */
+  private record<S, V extends string>(entry: Entry<S, V>, s: S, run_id: string): void {
+    const recorder = this.d.recorder;
+    if (recorder) decideSync(entry, s, { run_id, tool_call_id: null, recorder });
   }
 
   /** The nudged run completes on its own, code-owned, with zero tool calls; the waiting turn is untouched. */
@@ -375,6 +406,7 @@ export class PlannerSupervisor {
     const { store, chatId, cfg, outcome } = this.d;
     const worker = `planner:${chatId}:nudge:${randomUUID()}`;
     if (!store.claimRun(req.run_id, worker, cfg.leaseTtlS)) return;
+    this.record(INTAKE_BARE_ACK, { acked: true }, req.run_id);
     store.recordChatTurn({ chat_id: chatId, run_id: req.run_id, role: "user", text: req.text });
     store.appendRunLedgerEvent(req.run_id, "ack_nudged", "core", { approval_run_id: waiting.req.run_id });
     store.recordChatTurn({ chat_id: chatId, run_id: req.run_id, role: "assistant", text: ACK_NUDGE_TEXT, intent: "loop" });
@@ -450,9 +482,10 @@ export class PlannerSupervisor {
   }
 
   /** A Telegram message during a live turn: claimed under the turn's owner, then steered in (spec §7.3). */
-  private async steer(turn: Turn, req: TurnRequest): Promise<void> {
+  private async steer(turn: Turn, req: TurnRequest, decision: SteerOrQueueInput): Promise<void> {
     const { store, cfg, chatId } = this.d;
     if (!store.claimRun(req.run_id, turn.worker, cfg.leaseTtlS)) return;
+    this.record(INTAKE_STEER_OR_QUEUE, decision, req.run_id);
     turn.merged.push(req.run_id);
     store.recordChatTurn({ chat_id: chatId, run_id: req.run_id, role: "user", text: req.text });
     try {
@@ -469,6 +502,7 @@ export class PlannerSupervisor {
     const worker = `planner:${this.d.chatId}:${randomUUID()}`;
     const claim = this.d.store.claimRun(req.run_id, worker, this.d.cfg.leaseTtlS);
     if (!claim) return;
+    if (req.steerDecision) this.record(INTAKE_STEER_OR_QUEUE, req.steerDecision, req.run_id);
     clearTimeout(this.idleExit);
     const turn = this.newTurnOrFail(req, worker, claim);
     if (!turn) return;
