@@ -280,13 +280,15 @@ describe("PlannerSupervisor — detached turns (spec §7)", () => {
     expect(gap).toBeLessThan(400);
   });
 
+  /** R4: ensureSession takes its consulting turn; outside a turn the seam passes one that already finished (no crash-guard row, spec R4 §4.0). */
+  const SEAM_TURN = { finished: true, req: { run_id: "seam" } };
   // The awaited check opens a window before the spawn: a second start arriving in it must join the first, never spawn twice.
   it("two starts during a pending version check spawn one child", async () => {
     const session = fakeSession();
     const slow = () => new Promise<{ ok: true; version: string }>((r) => setTimeout(() => r({ ok: true, version: "18.7.0" }), 30));
     const { sup } = harness(session, {}, { versionCheck: slow });
-    const ensure = (sup as never as { ensureSession: (fresh: boolean) => Promise<unknown> }).ensureSession.bind(sup);
-    expect(await Promise.all([ensure(true), ensure(true)])).toEqual([null, null]);
+    const ensure = (sup as never as { ensureSession: (fresh: boolean, turn: unknown) => Promise<unknown> }).ensureSession.bind(sup);
+    expect(await Promise.all([ensure(true, SEAM_TURN), ensure(true, SEAM_TURN)])).toEqual([null, null]);
     expect(session.options).toHaveLength(1);
   });
 
@@ -298,7 +300,7 @@ describe("PlannerSupervisor — detached turns (spec §7)", () => {
       let answer: (v: { ok: true; version: string }) => void = () => undefined;
       const pending = () => new Promise<{ ok: true; version: string }>((r) => { answer = r; });
       const { sup } = harness(session, {}, { versionCheck: pending });
-      const start = (sup as never as { ensureSession: (fresh: boolean) => Promise<unknown> }).ensureSession.call(sup, true);
+      const start = (sup as never as { ensureSession: (fresh: boolean, turn: unknown) => Promise<unknown> }).ensureSession.call(sup, true, SEAM_TURN);
       await new Promise((r) => setImmediate(r)); // the check is now pending
       await stop(sup);
       answer({ ok: true, version: "18.7.0" });
