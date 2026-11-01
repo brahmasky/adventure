@@ -45,7 +45,6 @@ const check = (name, ok, detail = "") => { console.log(`${ok ? "PASS" : "FAIL"} 
 const sleepSync = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 const handles = [];
 const yieldLoop = () => new Promise((r) => setImmediate(r)); // lets a SIGINT/SIGTERM handler run during an otherwise synchronous run
-const wall = () => new Date().toISOString();
 
 const ERROR_NAMES = new Set(["Error", "TypeError", "RangeError", "SyntaxError", "ReferenceError", "AssertionError", "AbortError"]);
 const SYSTEM_CODES = new Set(["ERR_SQLITE_ERROR", "ERR_MODULE_NOT_FOUND", "ERR_INVALID_ARG_TYPE", "ERR_INVALID_STATE", "ERR_ASSERTION",
@@ -101,7 +100,6 @@ function windowCounts(path, now) {
   return ro(path, (db) => Object.fromEntries(NEW_IDS.map((id) => [id, db.prepare("SELECT COUNT(*) AS n FROM decisions WHERE entry_id = ? AND created_at > ? AND created_at <= ?").get(id, since, now).n])));
 }
 const lineTotals = (lines) => Object.fromEntries(NEW_IDS.map((id) => [id, lines.filter((l) => COUNT_RE.exec(l)?.[1] === id).map((l) => Number(COUNT_RE.exec(l)[2]))]));
-const totalsMatch = (lines, want) => { const got = lineTotals(lines); return NEW_IDS.every((id) => (want[id] === 0 ? got[id].length === 0 : got[id].length === 1 && got[id][0] === want[id])); };
 /** The exact count line (digest.ts countLines format) for `id`, built from SQL rung counts over the same window and `now`; null when the window holds no row. */
 const RUNG_ORDER = ["rule", "system_one", "model", "paco", "fail"]; const RUNG_LABEL = { rule: "code", system_one: "Jev", model: "model", paco: "you", fail: "fallback" };
 function expectedLine(path, id, now) {
@@ -317,7 +315,7 @@ export async function main() {
     console.log(failures.length === 0 ? "\nROLLBACK CHECK: PASS" : `\nROLLBACK CHECK: FAIL\n  - ${failures.join("\n  - ")}`);
     process.exitCode = failures.length === 0 ? 0 : 1;
   } catch (e) {
-    console.error(`setup error: ${e instanceof SetupError ? e.message.split("\n")[0] : `withheld (${errCode(e)})`}`);
+    console.error("setup_failed");
     process.exitCode = 2;
   } finally {
     for (const h of handles.splice(0)) closeStore(h);
