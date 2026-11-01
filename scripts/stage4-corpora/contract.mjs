@@ -34,21 +34,21 @@ const memLaneAsk = (d, ctx) => d.buildTypedTaskEvent({ source: "telegram", type:
   notify: { kind: "telegram", chat_id: MEM_CHAT }, idempotency_key: "mla:1", source_reference: "mla:1",
   metadata: { telegram_update_id: 1, telegram_callback_id: "mla:1", run_id: ctx.original } });
 
-// rows: the turn.contract rows expected, in order. calls: the exact turn.contract consultations. events: turn() specs or (d, ctx) => event.
+// rows: the turn.contract rows expected, in order. calls: the exact turn.contract consultations of each intake, in order. events: turn() specs or (d, ctx) => event.
 const ITEMS = [
-  { key: "telegram_turn", tags: ["compile"], events: [turn("a")], rows: [], calls: 1 },
-  { key: "scheduled_turn", tags: ["restrict"], events: [sched("s:1")], rows: [RESTRICT], calls: 1 },
-  { key: "duplicate", tags: ["duplicate"], events: [sched("s:2"), sched("s:2")], rows: [RESTRICT], calls: 1 },
-  { key: "fuse", tags: ["fuse"], caps: { runs: 0 }, events: [sched("s:3"), sched("s:3")], rows: [], calls: 0 },
-  { key: "ask", tags: ["compile"], events: [turn("a", "synthetic question", { type: "ask", extra: { program: "ask" } })], rows: [], calls: 1 },
-  { key: "run:research-brief", tags: ["compile_other"], events: [run("a", "research-brief")], rows: [], calls: 1 },
-  { key: "run:web-research", tags: ["compile_other"], events: [run("a", "web-research")], rows: [], calls: 1 },
-  { key: "empty_telegram", tags: ["goal_missing"], events: [turn("a", " ")], rows: [REFUSE("goal_missing")], calls: 1 },
-  { key: "empty_scheduled", tags: ["goal_missing"], events: [sched("s:4", " ")], rows: [REFUSE("goal_missing")], calls: 1 },
-  { key: "run:nosuch", tags: ["unknown_program"], events: [run("a", "nosuch")], rows: [REFUSE("unknown_program")], calls: 1 },
-  { key: "unsupported_type", tags: ["unsupported_type"], events: [turn("a", "synthetic", { type: "bogus" })], rows: [REFUSE("unsupported_type")], calls: 1 },
-  { key: "via_rating", tags: ["via_rating"], setup: (d, s) => seedAsk(s, WHO, NOW, 10, true), events: [turn("a", "2，synthetic")], rows: [], calls: 1 },
-  { key: "via_memlane", tags: ["via_memlane"], setup: seedMemLane, events: [memLaneAsk], rows: [], calls: 1 }
+  { key: "telegram_turn", tags: ["compile"], events: [turn("a")], rows: [], calls: [1] },
+  { key: "scheduled_turn", tags: ["restrict"], events: [sched("s:1")], rows: [RESTRICT], calls: [1] },
+  { key: "duplicate", tags: ["duplicate"], events: [sched("s:2"), sched("s:2")], rows: [RESTRICT], calls: [1, 0] },
+  { key: "fuse", tags: ["fuse"], caps: { runs: 0 }, events: [sched("s:3"), sched("s:3")], rows: [], calls: [0, 0] },
+  { key: "ask", tags: ["compile"], events: [turn("a", "synthetic question", { type: "ask", extra: { program: "ask" } })], rows: [], calls: [1] },
+  { key: "run:research-brief", tags: ["compile_other"], events: [run("a", "research-brief")], rows: [], calls: [1] },
+  { key: "run:web-research", tags: ["compile_other"], events: [run("a", "web-research")], rows: [], calls: [1] },
+  { key: "empty_telegram", tags: ["goal_missing"], events: [turn("a", " ")], rows: [REFUSE("goal_missing")], calls: [1] },
+  { key: "empty_scheduled", tags: ["goal_missing"], events: [sched("s:4", " ")], rows: [REFUSE("goal_missing")], calls: [1] },
+  { key: "run:nosuch", tags: ["unknown_program"], events: [run("a", "nosuch")], rows: [REFUSE("unknown_program")], calls: [1] },
+  { key: "unsupported_type", tags: ["unsupported_type"], events: [turn("a", "synthetic", { type: "bogus" })], rows: [REFUSE("unsupported_type")], calls: [1] },
+  { key: "via_rating", tags: ["via_rating"], setup: (d, s) => seedAsk(s, WHO, NOW, 10, true), events: [turn("a", "2，synthetic")], rows: [], calls: [1] },
+  { key: "via_memlane", tags: ["via_memlane"], setup: seedMemLane, events: [memLaneAsk], rows: [], calls: [1] }
 ];
 const BRANCHES = ["compile", "restrict", "duplicate", "fuse", "compile_other", "goal_missing", "unknown_program", "unsupported_type", "via_rating", "via_memlane"];
 
@@ -86,8 +86,15 @@ const runLabel = (results, runId) => { if (runId === null) return null; const n 
 
 function runEvents(d, store, item, ctx, recorder) {
   const caps = { ...d.DEFAULT_GLOBAL_BUDGET_CAPS, ...item.caps };
-  const gateway = new d.Gateway(store, caps, undefined, undefined, undefined, { ...(ctx?.dataDir ? { dataDir: ctx.dataDir } : {}), ...(recorder ? { decisionRecorder: recorder } : {}) });
-  return item.events.map((e) => gateway.intake(typeof e === "function" ? e(d, ctx) : intakeEvent(d, WHO, e), NOW)); // Gateway.intake returns error results and never throws
+  const gateway = new d.Gateway(store, caps, undefined, undefined, undefined, { ...(ctx?.dataDir ? { dataDir: ctx.dataDir } : {}), ...(recorder ? { decisionRecorder: recorder.recorder } : {}) });
+  const perIntake = []; // turn.contract consultations made by each intake (the live tally's delta around it)
+  const results = item.events.map((e) => {
+    const before = recorder?.calls["turn.contract"] ?? 0;
+    const out = gateway.intake(typeof e === "function" ? e(d, ctx) : intakeEvent(d, WHO, e), NOW); // Gateway.intake returns error results and never throws
+    perIntake.push((recorder?.calls["turn.contract"] ?? 0) - before);
+    return out;
+  });
+  return { results, perIntake };
 }
 
 async function project(d, item) {
@@ -102,7 +109,7 @@ async function project(d, item) {
       const seedMax = store.db.prepare("SELECT COALESCE(MAX(rowid), 0) AS m FROM decisions").get().m; // an empty table gives NULL, and rowid > NULL selects nothing
       const isNew = d.dir === DISTS.new;
       const counting = isNew ? countingRecorder(d.storeRecorder(store)) : null;
-      const results = runEvents(d, store, item, ctx, counting?.recorder ?? null);
+      const { results, perIntake } = runEvents(d, store, item, ctx, counting ?? null);
       const rows = all(store, `SELECT entry_id, verdict, reason_code, run_id FROM decisions WHERE rowid > ${Number(seedMax)} AND entry_id IN (${idList}) ORDER BY rowid`);
       if (!isNew && rows.length) throw new Error("control failed: the old build wrote turn.contract / intake.sender rows");
       const newRows = rows.map((r) => [r.entry_id, r.verdict, r.reason_code, runLabel(results, r.run_id)]);
@@ -110,7 +117,7 @@ async function project(d, item) {
       const want = tableCounts(store);
       checkCoverage(db, want);
       omittedRowSelfTest(db, want);
-      return { ...scrubIds(relabelClocks({ results, db }, isClockKey)), newRows, calls: counting?.calls ?? {}, __strip: ["newRows", "calls"] };
+      return { ...scrubIds(relabelClocks({ results, db }, isClockKey)), newRows, calls: counting?.calls ?? {}, perIntake, __strip: ["newRows", "calls", "perIntake"] };
     }));
   } finally { try { store?.close(); } catch { /* closed */ } }
 }
@@ -118,7 +125,7 @@ async function project(d, item) {
 function required(d, item, proj) {
   const want = item.rows.map((r) => ["turn.contract", ...r]);
   requireNew(corpus, item, "turn.contract rows (exact: entry, verdict, reason, run label; refusals null)", canon(proj.newRows) === canon(want), `got ${canon(proj.newRows)}, want ${canon(want)}`);
-  requireNew(corpus, item, "turn.contract consultations (exact)", (proj.calls["turn.contract"] ?? 0) === item.calls, `got ${proj.calls["turn.contract"] ?? 0}, want ${item.calls}`);
+  requireNew(corpus, item, "turn.contract consultations per intake (exact)", canon(proj.perIntake) === canon(item.calls), `got ${canon(proj.perIntake)}, want ${canon(item.calls)}`);
 }
 
 // Determinism self-test: the same item twice on the new build must project identically, or the old/new comparison would flag its own noise.
