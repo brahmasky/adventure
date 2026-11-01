@@ -24,6 +24,10 @@ function withRecorder(session: ReturnType<typeof fakeSession>, extra: Parameters
   const h = harness(session, {}, { recorder, ...extra }); cell.store = h.store;
   return { ...h, counts: cell.counts };
 }
+type Q = { prepare(q: string): { all(...a: unknown[]): Array<Record<string, unknown>> } };
+const q = (store: RunStore) => (store as unknown as { db: Q }).db;
+const outboxN = (store: RunStore) => q(store).prepare("SELECT COUNT(*) AS n FROM notification_outbox").all()[0]?.n as number;
+const incidentsN = (store: RunStore) => q(store).prepare("SELECT COUNT(*) AS n FROM incidents WHERE kind='decision_record_failed' AND state='open'").all()[0]?.n as number;
 const dones = (o: { done: unknown[] }) => o.done as Array<{ run_id: string; text: string }>;
 
 describe("R3 rows", () => {
@@ -49,6 +53,9 @@ describe("R3 rows", () => {
     await until(() => dones(outcome).some((d) => d.run_id === r2));
     expect(h.session.steers).toEqual([]); expect(counts).toEqual(["intake.steer_or_queue", "intake.bare_ack"]); // r1's idle consult, then the nudge; none for r2's steer branch
     expect(rows(store)).toEqual([["intake.bare_ack", "nudge", "ack_while_card_waits", r2, null]]);
+    expect(dones(outcome).find((d) => d.run_id === r2)?.text).toContain("waiting for your tap");
+    expect(store.getLedgerEvents().some((e) => e.event_type === "ack_nudged" && e.payload.approval_run_id === r1)).toBe(true);
+    expect(store.getRunState(r2)).toBe("completed");
     sup.setAwaitingApprovalForTest(false); h.end(); await untilState(sup, "IDLE");
   });
   it("4 non-ack while a card waits: steer row, no bare_ack row, pass consulted", async () => {
@@ -78,16 +85,17 @@ describe("R3 rows", () => {
     expect(rows(store)).toEqual([["intake.steer_or_queue", "wait", "message_scheduled", s, null]]);
   });
   it("7 media message during a live turn; and a media ack while a card waits is not nudged", async () => {
-    const h = heldSession(); const { store, sup } = withRecorder(h.session);
-    const a = createQueuedTurnRun(store); const p = createQueuedTurnRun(store, "photo"); const q = createQueuedTurnRun(store, "好");
+    const h = heldSession(); const { store, sup, outcome } = withRecorder(h.session);
+    const a = createQueuedTurnRun(store); const p = createQueuedTurnRun(store, "photo"); const qq = createQueuedTurnRun(store, "好");
     sup.submit(req(a, "u")); await h.live();
     sup.submit({ ...req(p, "photo"), needsIngest: true });
     sup.setAwaitingApprovalForTest(true);
-    sup.submit({ ...req(q, "好"), needsIngest: true });
+    sup.submit({ ...req(qq, "好"), needsIngest: true });
     expect(h.session.steers).toEqual([]);
     sup.setAwaitingApprovalForTest(false);
     h.end(); await h.live(2); h.end(); await h.live(3); h.end(); await sup.whenIdle();
-    expect(rows(store)).toEqual([["intake.steer_or_queue", "wait", "needs_ingest", p, null], ["intake.steer_or_queue", "wait", "needs_ingest", q, null]]);
+    expect(rows(store)).toEqual([["intake.steer_or_queue", "wait", "needs_ingest", p, null], ["intake.steer_or_queue", "wait", "needs_ingest", qq, null]]);
+    expect(dones(outcome).filter((d) => d.text.includes("waiting for your tap"))).toEqual([]); // no nudge reply for either run
   });
   it("8 message while the first turn's start is held: turn_not_live", async () => {
     let release!: () => void; const gate = new Promise<void>((r) => { release = r; });
@@ -125,7 +133,7 @@ describe("R3 rows", () => {
     const a = createQueuedTurnRun(store); const b = createQueuedTurnRun(store);
     sup.submit(req(a, "u")); await h.live(); sup.submit(req(b, "x")); sup.submit(req(b, "x"));
     expect(h.session.steers).toEqual(["x"]);
-    expect(rows(store)).toHaveLength(1);
+    expect(rows(store)).toEqual([["intake.steer_or_queue", "steer", "live_turn", b, null]]);
     h.end(); await sup.whenIdle();
   });
   it("11 pre-claimed nudge and pre-claimed steer write no rows", async () => {
@@ -157,21 +165,29 @@ describe("R3 rows", () => {
     expect(h.session.steers).toEqual(["x"]); expect(rows(store)).toEqual([]);
     h.end(); await sup.whenIdle();
   });
-  it("14 insert fault and throwing recorder do not change the steer", async () => {
-    vi.stubEnv("HOUGE_TELEGRAM_CHAT_ID", "");
-    const h = heldSession(); const w = withRecorder(h.session);
-    vi.spyOn(w.store, "insertDecision").mockImplementation(() => { throw new Error("disk"); });
-    const a = createQueuedTurnRun(w.store); const b = createQueuedTurnRun(w.store);
-    w.sup.submit(req(a, "u")); await h.live(); w.sup.submit(req(b, "x"));
-    expect(h.session.steers).toEqual(["x"]);
-    expect((w.store as unknown as { db: { prepare(s: string): { all(): unknown[] } } }).db.prepare("SELECT kind FROM incidents WHERE kind='decision_record_failed'").all().length).toBeGreaterThan(0);
-    h.end(); await w.sup.whenIdle();
-    const h2 = heldSession(); const boom: DecisionRecorder = { record: () => { throw new Error("boom"); } };
-    const w2 = harness(h2.session, {}, { recorder: boom });
-    const c = createQueuedTurnRun(w2.store); const d = createQueuedTurnRun(w2.store);
-    w2.sup.submit(req(c, "u")); await h2.live(); w2.sup.submit(req(d, "y"));
-    expect(h2.session.steers).toEqual(["y"]);
-    h2.end(); await w2.sup.whenIdle();
+  it("14 insert fault opens one alerted incident; a throwing recorder opens none; the steer is unchanged in both", async () => {
+    vi.stubEnv("HOUGE_TELEGRAM_CHAT_ID", "stub-chat"); // the alert targets the stub; restored by vi.unstubAllEnvs
+    try {
+      const h = heldSession(); const w = withRecorder(h.session);
+      vi.spyOn(w.store, "insertDecision").mockImplementation(() => { throw new Error("disk"); });
+      const a = createQueuedTurnRun(w.store); const b = createQueuedTurnRun(w.store);
+      w.sup.submit(req(a, "u")); await h.live();
+      const out0 = outboxN(w.store); w.sup.submit(req(b, "x"));
+      expect(h.session.steers).toEqual(["x"]);
+      expect(incidentsN(w.store)).toBe(1);
+      expect(outboxN(w.store) - out0).toBe(1);
+      expect(q(w.store).prepare("SELECT target_json FROM notification_outbox WHERE idempotency_key LIKE 'incident_opened:%'").all()).toHaveLength(1);
+      h.end(); await w.sup.whenIdle();
+      const h2 = heldSession(); const boom: DecisionRecorder = { record: () => { throw new Error("boom"); } };
+      const w2 = harness(h2.session, {}, { recorder: boom });
+      const c = createQueuedTurnRun(w2.store); const d = createQueuedTurnRun(w2.store);
+      w2.sup.submit(req(c, "u")); await h2.live();
+      const out1 = outboxN(w2.store); w2.sup.submit(req(d, "y"));
+      expect(h2.session.steers).toEqual(["y"]);
+      expect(incidentsN(w2.store)).toBe(0);
+      expect(outboxN(w2.store) - out1).toBe(0);
+      h2.end(); await w2.sup.whenIdle();
+    } finally { vi.unstubAllEnvs(); }
   });
   it("15 steerOrQueueInput mirrors the branch", () => {
     const ts = [undefined, { live: false, req: { source: "telegram" as const } }, { live: true, req: { source: "telegram" as const } }, { live: true, req: { source: "schedule" as const } }];
