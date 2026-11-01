@@ -128,6 +128,8 @@ async function scenario(drive, { recorder } = {}) {
   return { log: logFacts(rig.session.log), done: o.done.map((c) => `${label(c.run_id)}:${c.text}`), failed: o.failed.map((c) => `${label(c.run_id)}:${c.error_type}:${c.error_ref}`),
     incidents: o.incidents.map((i) => i.k), rows, calls: counting.calls, perRun, outbox: outboxN() - out0, label };
 }
+/** `run:error_type` of each failed run: the error_ref is never printed. */
+const failedCodes = (s) => s.failed.map((f) => f.split(":").slice(0, 2).join(":")).join(",");
 const strs = (rows) => rows.map((r) => `${r[0] === CG ? "cg" : "tr"}:${r[1]}/${r[2]}@${r[3]}`);
 const rowsOf = (s, id) => s.rows.filter((r) => r[0] === id);
 const count = (arr, v) => arr.filter((x) => x === v).length;
@@ -166,7 +168,7 @@ async function line2() {
   const s = await scenario(refusalScenario);
   const want = [[TR, "final", "model_refusal", "a", null]];
   const ok = canon(s.rows) === canon(want) && canon(s.failed) === canon(["a:model_error:model_refusal"]) && s.done.length === 0 && canon(s.log) === canon([OPUS, "prompt:hi"]) && s.perRun.a.state === "failed" && s.calls[TR] === 1;
-  return { ok, detail: `rows ${s.rows.length} [${strs(s.rows)}] (want 1 [tr:final/model_refusal@a]) · failed ${canon(s.failed)} (want a:model_error:model_refusal) · done ${s.done.length} (want 0) · prompts ${count(s.log, "prompt:hi")} + RETRY_NOTE ${count(s.log, "prompt:RETRY_NOTE")} (want 1 + 0) · a ${s.perRun.a.state} (want failed) · consults ${s.calls[TR]} (want 1)` };
+  return { ok, detail: `rows ${s.rows.length} [${strs(s.rows)}] (want 1 [tr:final/model_refusal@a]) · failed ${failedCodes(s)} (want a:model_error) · done ${s.done.length} (want 0) · prompts ${count(s.log, "prompt:hi")} + RETRY_NOTE ${count(s.log, "prompt:RETRY_NOTE")} (want 1 + 0) · a ${s.perRun.a.state} (want failed) · consults ${s.calls[TR]} (want 1)` };
 }
 
 // ---- line 3: a routed 'other' error retries once, then is final ----
@@ -174,7 +176,7 @@ async function line3() {
   const s = await scenario(otherTwiceScenario);
   const want = [[TR, "retry", "other_once", "a", null], [TR, "final", "other_retried", "a", null]];
   const ok = canon(s.rows) === canon(want) && canon(s.failed) === canon(["a:model_error:other"]) && s.done.length === 0 && canon(s.log) === canon([OPUS, "prompt:hi", ALT, "prompt:RETRY_NOTE"]) && s.calls[TR] === 2 && s.perRun.a.state === "failed";
-  return { ok, detail: `rows ${s.rows.length} [${strs(s.rows)}] (want 2 [tr:retry/other_once@a, tr:final/other_retried@a]) · failed ${canon(s.failed)} (want a:model_error:other) · RETRY_NOTE prompts ${count(s.log, "prompt:RETRY_NOTE")} (want 1) · child log exact ${canon(s.log) === canon([OPUS, "prompt:hi", ALT, "prompt:RETRY_NOTE"])} · consults ${s.calls[TR]} (want 2) · a ${s.perRun.a.state} (want failed)` };
+  return { ok, detail: `rows ${s.rows.length} [${strs(s.rows)}] (want 2 [tr:retry/other_once@a, tr:final/other_retried@a]) · failed ${failedCodes(s)} (want a:model_error) · RETRY_NOTE prompts ${count(s.log, "prompt:RETRY_NOTE")} (want 1) · child log exact ${canon(s.log) === canon([OPUS, "prompt:hi", ALT, "prompt:RETRY_NOTE"])} · consults ${s.calls[TR]} (want 2) · a ${s.perRun.a.state} (want failed)` };
 }
 
 // ---- line 4: the crash chain: halt/limit_reached once, halt/latched, a reset, zero new rows ----
@@ -284,7 +286,7 @@ async function line8() {
   for (const id of IDS) {
     const mine = lines.filter((l) => l.startsWith(`· ${id} `));
     const shown = mine.length === 1 ? Number(/^· \S+ (\d+) — /.exec(mine[0])?.[1] ?? NaN) : NaN;
-    const inWindow = all("SELECT created_at FROM decisions WHERE entry_id = ?", id).filter((r) => r.created_at > since && r.created_at <= now).length;
+    const inWindow = countOf("SELECT COUNT(*) AS n FROM decisions WHERE entry_id = ? AND created_at > ? AND created_at <= ?", id, since, now); // the store's own listDecisionsBetween predicate, which /status reads
     const total = idRows(id); const baseline = G.priorAt[id].filter((t) => t > since && t <= now).length; const want = baseline + WROTE[id];
     if (!(mine.length === 1 && shown === want && inWindow === want && total === G.priorAt[id].length + WROTE[id])) ok = false;
     parts.push(`${id} lines ${mine.length} (want 1), count ${Number.isNaN(shown) ? "none" : shown} (want ${want}; in-window baseline ${baseline} + wrote ${WROTE[id]}; SQL in window ${inWindow}; all rows ${total})`);
