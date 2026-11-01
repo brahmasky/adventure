@@ -3,7 +3,7 @@
 // Compared: each step's result, episodic_facts, memory_changes, ledger events and decisions. memory.correct_preflight rows are filtered by the
 // harness (NEW_ROW_IDS.s4b) and REQUIRED on the new side, read through the dist's real storeRecorder (the default `allow` is not stored).
 import { join } from "node:path";
-import { DISTS, mkStore, mkTemp, relabelClocks, requireNew } from "../stage4-diff-lib.mjs";
+import { DISTS, R2_IDS, mkStore, mkTemp, relabelClocks, requireNew } from "../stage4-diff-lib.mjs";
 import { scrubIds, makeRun } from "../stage4-bind-fixture.mjs";
 
 const CHAT = "555";
@@ -58,11 +58,15 @@ async function project(d, item) {
     const run_id = makeRun(d, store, item.source ?? "user", 1, false);
     if (item.tainted) store.appendRunLedgerEvent(run_id, "loop_step", "core", { step: 1, action: "x", capability: "web_fetch", ok: true, result_digest: "1 bytes" });
     const steps = await runSteps(d, store, item, run_id);
-    const decisions = rows(store, `SELECT entry_id, tool_call_id, stage, rung, verdict, reason_code, armed_mode, fallback_reason FROM decisions ORDER BY rowid`);
+    const decisions = rows(store, `SELECT entry_id, tool_call_id, stage, rung, verdict, reason_code, armed_mode, fallback_reason FROM decisions WHERE entry_id NOT IN ('intake.sender', 'turn.contract') ORDER BY rowid`);
+    // Slice R2 (P10): a schedule-born run writes exactly one turn.contract|restrict|schedule_born row on that run, a Paco turn none; read apart from the compared view
+    // (dropped before relabelClocks) and asserted exactly in required(); the old build must hold none.
+    const r2 = rows(store, `SELECT entry_id, verdict, reason_code, run_id FROM decisions WHERE entry_id IN (${R2_IDS.map((i) => `'${i}'`).join(",")}) ORDER BY rowid`).map((r) => [r.entry_id, r.verdict, r.reason_code, r.run_id === run_id ? "run" : r.run_id]);
+    if (d.dir !== DISTS.new && r2.length) throw new Error("control failed: the old build wrote intake.sender / turn.contract rows");
     if (d.dir !== DISTS.new && decisions.some((r) => r.entry_id === "memory.correct_preflight")) throw new Error("control failed: the old build wrote memory.correct_preflight rows");
     return { ...scrubIds(relabelClocks({ steps, episodic_facts: rows(store, `SELECT * FROM episodic_facts ORDER BY id`),
       memory_changes: rows(store, `SELECT * FROM memory_changes ORDER BY rowid`), ledger: rows(store, `SELECT event_type, actor, sequence, payload_json FROM ledger_events ORDER BY rowid`), decisions }, isClock)),
-      run_ok: store.db.prepare("SELECT run_id, tool_call_id FROM decisions WHERE entry_id = ?").all("memory.correct_preflight").every((r) => r.run_id === run_id && r.tool_call_id === null), __strip: ["run_ok"] }; // per-side check for required(): every new row sits on this item's own run
+      run_ok: store.db.prepare("SELECT run_id, tool_call_id FROM decisions WHERE entry_id = ?").all("memory.correct_preflight").every((r) => r.run_id === run_id && r.tool_call_id === null), r2, __strip: ["run_ok", "r2"] }; // per-side check for required(): every new row sits on this item's own run
   } finally { try { store.close(); } catch { /* closed */ } }
 }
 
@@ -70,6 +74,8 @@ function required(d, item, proj) {
   const got = proj.decisions.filter((r) => r.entry_id === "memory.correct_preflight").map((r) => [r.verdict, r.reason_code]);
   requireNew(corpus, item, "memory.correct_preflight rows", JSON.stringify(got) === JSON.stringify(item.expect), `got ${JSON.stringify(got)}, want ${JSON.stringify(item.expect)}`);
   requireNew(corpus, item, "memory.correct_preflight rows attached to the item's own run with no tool call id", proj.run_ok === true);
+  const wantR2 = (item.source ?? "user") === "schedule" ? [["turn.contract", "restrict", "schedule_born", "run"]] : [];
+  requireNew(corpus, item, "R2 decision rows (exact: entry, verdict, reason, run)", JSON.stringify(proj.r2) === JSON.stringify(wantR2), `got ${JSON.stringify(proj.r2)}, want ${JSON.stringify(wantR2)}`);
   const other = proj.decisions.filter((r) => r.entry_id !== "memory.correct_preflight");
   requireNew(corpus, item, "no other decision rows", other.length === 0, [...new Set(other.map((r) => r.entry_id))].join(","));
 }

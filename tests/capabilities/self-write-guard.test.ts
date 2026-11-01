@@ -112,6 +112,7 @@ describe("checkSelfWriteDiff — every protected class is hard-denied", () => {
     ["improvement taps (chat-bound and state-fenced)", entry({ status: "M", path: "src/gateway/improvement-commands.ts" })],
     ["capability-policy under policy dir", entry({ status: "M", path: "src/policy/capability-policy.ts" })],
     ["task-contract", entry({ status: "M", path: "src/contracts/task-contract.ts" })],
+    ["telegram-auth (the sender allowlist predicate, locked intake.sender, R2 Decision 3-A)", entry({ status: "M", path: "src/triggers/telegram-auth.ts" })],
     ["capability-runner", entry({ status: "M", path: "src/capabilities/capability-runner.ts" })],
     ["capability-policy (spec-listed path)", entry({ status: "M", path: "src/capabilities/capability-policy.ts" })],
     ["run-store", entry({ status: "M", path: "src/run/run-store.ts" })],

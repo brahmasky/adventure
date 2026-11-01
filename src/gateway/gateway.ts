@@ -49,6 +49,7 @@ import { handleDecisionReview } from "./decision-commands.js";
 import { handleImprovementTap } from "./improvement-commands.js";
 import { handleJevAcceptTap } from "./jev-accept-commands.js";
 import { decideSync } from "../decisions/decide.js";
+import { TURN_CONTRACT } from "../decisions/entries/turn-contract.js";
 import { INTAKE_BUDGET_FUSE } from "../decisions/entries/intake-budget-fuse.js";
 import { INTAKE_RATING_REPLY, type RatingReplyOutcome } from "../decisions/entries/intake-rating-reply.js";
 import { INTAKE_RATE_LIMIT } from "../decisions/entries/intake-rate-limit.js";
@@ -155,8 +156,8 @@ export class Gateway {
   private readonly skillStore: SkillStore;
   private readonly hooks: GatewayHooks;
   private recorderCache?: DecisionRecorder;
-  /** Lazy, like CoreWorker's (core-worker.ts:560): the intake entries' rows have no run (spec 2026-10-30 R1 §4). No env: a record failure pages HOUGE_TELEGRAM_CHAT_ID. */
-  private get decisionRecorder(): DecisionRecorder { return (this.recorderCache ??= storeRecorder(this.runStore)); }
+  /** Lazy, like CoreWorker's (core-worker.ts:560): the intake entries' rows have no run (spec 2026-10-30 R1 §4). No env: a record failure pages HOUGE_TELEGRAM_CHAT_ID. Injectable for the differential and the gate (spec R2 §4.2). */
+  private get decisionRecorder(): DecisionRecorder { return (this.recorderCache ??= this.options.decisionRecorder ?? storeRecorder(this.runStore)); }
 
   constructor(
     private readonly runStore: RunStore,
@@ -164,7 +165,7 @@ export class Gateway {
     projectRoot?: string,
     skillStore?: SkillStore,
     hooks?: GatewayHooks,
-    private readonly options: { dataDir?: string; roles?: ModelsRoles } = {}
+    private readonly options: { dataDir?: string; roles?: ModelsRoles; decisionRecorder?: DecisionRecorder } = {}
   ) {
     this.caps = caps ?? resolveGlobalBudgetCaps(process.env);
     this.projectRoot = projectRoot ?? process.cwd();
@@ -1096,7 +1097,10 @@ export class Gateway {
 
   private handleTaskIntake(event: TypedTaskEvent, now: string): GatewayIntakeResult {
     const contract = compileTaskContract(event);
-    if (!contract.ok) return this.refuseContract(event, contract.error);
+    if (!contract.ok) {
+      decideSync(TURN_CONTRACT, { refused: contract.reason, restricted: false }, { run_id: null, tool_call_id: null, recorder: this.decisionRecorder });
+      return this.refuseContract(event, contract.error);
+    }
 
     // Global autonomy circuit-breaker: refuse new run admissions once any
     // rolling-24h cap is reached. Status/approve/deny never reach here, so
@@ -1169,6 +1173,8 @@ export class Gateway {
 
     const queued = this.attachAndQueue(created.run_id, contract.contract);
     if (queued.ok) {
+      // turn.contract (spec 2026-11-01 R2 §4.2): first, so no later write in this block can cost the row; one per admitted run.
+      decideSync(TURN_CONTRACT, { refused: null, restricted: event.type === "turn" && !contract.contract.allowed_actions.includes("schedule_task") }, { run_id: created.run_id, tool_call_id: null, recorder: this.decisionRecorder });
       // Count the admitted run against the global breaker, and re-arm the fuse
       // (admissions are back under cap). Only genuinely-new runs reach here;
       // duplicates resume above without double-counting.

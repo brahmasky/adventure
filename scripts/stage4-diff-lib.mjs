@@ -4,7 +4,7 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-export const DISTS = { new: null, s3: null, s4a: null, s4b: null, r1: null }; // filled by the CLI
+export const DISTS = { new: null, s3: null, s4a: null, s4b: null, r1: null, r2: null }; // filled by the CLI
 export const CORPORA = [];                               // filled by the CLI from scripts/stage4-corpora/*.mjs
 /** Async teardown callbacks (a corpus's open sockets); the CLI runs them in a finally, on success and on error alike. */
 export const closers = [];
@@ -37,7 +37,9 @@ const EXPORTS = {
   createMemoryWriteAdapter: "capabilities/lesson-write.js", memoryWritePreflight: "capabilities/memory-correct.js",
   executeMemoryCorrect: "capabilities/memory-correct.js", memorySources: "capabilities/memory-sources.js",
   // Slice R1: the global budget caps the intake corpus pins
-  DEFAULT_GLOBAL_BUDGET_CAPS: "budget/global-budget-ledger.js"
+  DEFAULT_GLOBAL_BUDGET_CAPS: "budget/global-budget-ledger.js",
+  // Slice R2: the Telegram long-poll adapter and the one-shot poll runner the sender corpus drives
+  createTelegramLongPollingAdapter: "triggers/telegram-trigger-adapter.js", runTelegramPollOnce: "telegram/telegram-poll-runner.js"
 };
 const distCache = new Map();
 
@@ -142,12 +144,20 @@ export function redactForPrint(s) {
 
 /** The three Slice R1 intake decision rows (Gateway.intake). The branch build is the new side of EVERY pair, so every pair filters them: an older corpus whose fixture intakes through Gateway could otherwise trip a limiter or fuse and show a spurious difference (spec R1 §6). */
 export const INTAKE_IDS = ["intake.rate_limit", "intake.rating_reply", "intake.budget_fuse"];
-/** Decision rows one pair's NEW build records and the OLD build cannot: excluded from both sides before comparing (per old build, P1). */
+/** The two Slice R2 decision rows: intake.sender (a denied Telegram sender) and turn.contract (every admitted run's contract verdict). */
+export const R2_IDS = ["intake.sender", "turn.contract"];
+/**
+ * Decision rows one pair's NEW build records and the OLD build cannot: excluded from both sides before comparing (per old build, P1).
+ * The branch build is the new side of every pair, so R2_IDS are in every set. The corpora that intake scheduled turns through Gateway
+ * (R1 intake.mjs `source: "schedule"` items, 4B memadmit.mjs) would otherwise show a spurious `restrict` row in a raw-decisions read;
+ * they assert that row exactly instead (P10). 4C's schedule.mjs never touches Gateway.
+ */
 export const NEW_ROW_IDS = {
-  s3: new Set(["approval.bind", "secret.redact", ...INTAKE_IDS]),
-  s4a: new Set(["approval.bind", "secret.redact", ...INTAKE_IDS]),
-  s4b: new Set(["memory.lesson_admit", "schedule.admit", "memory.correct_preflight", ...INTAKE_IDS]),
-  r1: new Set(INTAKE_IDS)
+  s3: new Set(["approval.bind", "secret.redact", ...INTAKE_IDS, ...R2_IDS]),
+  s4a: new Set(["approval.bind", "secret.redact", ...INTAKE_IDS, ...R2_IDS]),
+  s4b: new Set(["memory.lesson_admit", "schedule.admit", "memory.correct_preflight", ...INTAKE_IDS, ...R2_IDS]),
+  r1: new Set([...INTAKE_IDS, ...R2_IDS]),
+  r2: new Set(R2_IDS)
 };
 
 /** Every ordinary table: sqlite_* internals, virtual tables and their shadow tables (`<virtual>_*`) as sqlite_master reports them are excluded; a name alone (e.g. "_fts") never excludes one. */

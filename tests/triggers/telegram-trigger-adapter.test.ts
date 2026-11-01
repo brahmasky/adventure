@@ -444,7 +444,8 @@ describe("normalizeTelegramUpdate", () => {
 
     expect(result).toEqual({
       ok: false,
-      error: { code: "TELEGRAM_AUTH_DENIED", message: "Forwarded commands are not accepted" }
+      error: { code: "TELEGRAM_AUTH_DENIED", message: "Forwarded commands are not accepted" },
+      reason: "forwarded"
     });
   });
 });

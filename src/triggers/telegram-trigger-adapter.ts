@@ -5,6 +5,9 @@ import { authorizeTelegramUpdate } from "./telegram-auth.js";
 import type { ApprovalCallback, SelfWriteCallbackAction, TelegramCommand } from "./telegram-command-parser.js";
 import type { ImprovementTap } from "./telegram-command-parser.js";
 import { parseApprovalCallback, parseDecisionReviewCallback, parseImprovementCallback, parseJevAcceptCallback, parseMemLaneCallback, parseMemoryUndoCallback, parseSelfWriteCallback, parseTelegramCommand } from "./telegram-command-parser.js";
+import { decideSync } from "../decisions/decide.js";
+import { INTAKE_SENDER, type SenderDenialReason } from "../decisions/entries/intake-sender.js";
+import type { DecisionRecorder } from "../decisions/types.js";
 
 export interface TelegramUpdate {
   update_id: number;
@@ -83,7 +86,7 @@ export interface TelegramAcknowledgement {
 
 export type TelegramNormalizeResult =
   | { ok: true; event: TelegramNormalizedEvent }
-  | { ok: false; error: { code: string; message: string }; acknowledgement?: TelegramAcknowledgement };
+  | { ok: false; error: { code: string; message: string }; acknowledgement?: TelegramAcknowledgement; reason?: SenderDenialReason };
 
 /**
  * Reply for a text-less/caption-less message while multimodal ingest is OFF (today's text, unchanged).
@@ -104,7 +107,7 @@ export function normalizeTelegramUpdate(
   options: { mediaIngestEnabled?: boolean } = {}
 ): TelegramNormalizeResult {
   if (update.channel_post) {
-    return { ok: false, error: { code: "TELEGRAM_AUTH_DENIED", message: "Channel posts are not accepted" } };
+    return { ok: false, error: { code: "TELEGRAM_AUTH_DENIED", message: "Channel posts are not accepted" }, reason: "channel_post" };
   }
 
   if (update.callback_query) {
@@ -558,6 +561,8 @@ export interface TelegramLongPollingAdapterOptions {
   client: TelegramGetUpdatesClient;
   offsetStore: TelegramOffsetStore;
   skippedUpdateStore?: TelegramSkippedUpdateStore;
+  /** Records intake.sender on a denied update (spec 2026-11-01 R2 §4.1); absent (eval, tests) → no row, the denial unchanged. */
+  decisionRecorder?: DecisionRecorder;
   acknowledgeSink?: TelegramAcknowledgeSink;
   timeout_seconds?: number;
   /** Multimodal ingest flag, read per poll so `/disarm` takes effect without a restart. */
@@ -618,6 +623,10 @@ export function createTelegramLongPollingAdapter(
           });
           options.offsetStore.setOffset(TELEGRAM_OFFSET_SOURCE, update.update_id + 1);
           skipped += 1;
+          // After the skip row and the offset (the durable truth); never throws (decideSync catches), never replies.
+          if (normalized.error.code === "TELEGRAM_AUTH_DENIED" && options.decisionRecorder) {
+            decideSync(INTAKE_SENDER, { denied: normalized.reason ?? null }, { run_id: null, tool_call_id: null, recorder: options.decisionRecorder });
+          }
           // No-ghost reply for a text-less message. Best-effort and idempotent (the ack's
           // key is derived from the update): a throw here must never break the poll loop
           // since the offset has already advanced and the skip is already recorded.

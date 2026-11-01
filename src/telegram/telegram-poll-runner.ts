@@ -7,6 +7,7 @@ import type { PlannerSupervisor } from "../omp/planner-supervisor.js";
 import { evolutionLaneSettled } from "../core/evolution-lane.js";
 import type { TelegramAllowlist, TypedTaskEvent } from "../domain/types.js";
 import { Gateway } from "../gateway/gateway.js";
+import { storeRecorder } from "../decisions/record.js";
 import { resolveMediaIngestEnabled } from "../media/media-config.js";
 import { LocalNotificationAdapter } from "../notifications/local-notification-adapter.js";
 import { NotificationDispatcher } from "../notifications/notification-dispatcher.js";
@@ -172,6 +173,7 @@ export async function runTelegramPollOnce(
     skippedUpdateStore: {
       recordSkippedTelegramUpdate: (input) => options.store.recordSkippedTelegramUpdate(input)
     },
+    decisionRecorder: storeRecorder(options.store), // intake.sender (spec 2026-11-01 R2 §4.1); no env: a record failure pages HOUGE_TELEGRAM_CHAT_ID
     mediaIngestEnabled: () => resolveMediaIngestEnabled(process.env),
     // No-ghost reply for a text-less message: enqueue on the existing outbox; the
     // dispatch flush at the end of this cycle delivers it. Deterministic key → idempotent.
