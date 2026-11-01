@@ -72,9 +72,10 @@ describe("intake.sender in pollOnce", () => {
   });
   it("a recorder that throws past itself changes nothing and opens no incident", async () => {
     const store = RunStore.openInMemory();
-    const r = rig(store, [msg(10, 999)], { record: () => { throw new Error("planted"); } });
+    const r = rig(store, [msg(10, 999), msg(11, 111)], { record: () => { throw new Error("planted"); } });
     await r.poll();
-    expect(store.getOffset("telegram")).toBe(11);
+    expect(r.emitted).toHaveLength(1);
+    expect(store.getOffset("telegram")).toBe(12);
     const n = (store as unknown as { db: { prepare(s: string): { get(): { n: number } } } }).db.prepare("SELECT count(*) AS n FROM incidents").get().n;
     expect(n).toBe(0);
   });

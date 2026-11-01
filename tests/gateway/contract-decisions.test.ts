@@ -56,6 +56,12 @@ describe("turn.contract at handleTaskIntake", () => {
       .prepare("SELECT contract_json FROM runs WHERE run_id = ?").get(out.run_id).contract_json;
     expect(JSON.parse(contract).allowed_actions).not.toContain("schedule_task");
   });
+  it("a schedule-born non-turn envelope (ask) → consulted once, zero rows: the restriction comes from the compiled contract, not the source", () => {
+    const r = rig(); const out = r.g.intake(ev({ source: "schedule", type: "ask", program: "ask", key: "schedule:sch_1:8" }), NOW);
+    if (!out.ok) throw new Error(JSON.stringify(out));
+    expect(r.contractCalls()).toBe(1);
+    expect(rows(r.store)).toEqual([]);
+  });
   it("the same scheduled occurrence replayed (duplicate) → still one row, one call", () => {
     const r = rig();
     r.g.intake(ev({ source: "schedule", key: "schedule:sch_1:2" }), NOW);
