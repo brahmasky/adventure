@@ -235,7 +235,7 @@ async function line6() {
   const cMine = crash.rows.filter((r) => r.run_id === crash.runs[3]).map((r) => [r.entry_id, r.verdict, r.reason_code, r.tool_call_id]);
   const ok = canon(qMine) === canon([[TR, "retry", "quota", null]]) && quota.rows.length === 1 && quota.state === "completed" && quota.prompts === 2
     && canon(cMine) === canon([[CG, "halt", "limit_reached", null]]) && crash.rows.length === 1 && crash.failure?.error_type === "planner_exit" && crash.failure?.error_ref === "crash_loop";
-  return { ok, detail: `quota run: rows ${quota.rows.length} [${qMine.map((r) => `${r[1]}/${r[2]}`)}] (want 1 [retry/quota]) state ${quota.state} (want completed) prompts to the child ${quota.prompts} (want 2: first + RETRY_NOTE) · crash run: rows ${crash.rows.length} [${cMine.map((r) => `${r[1]}/${r[2]}`)}] (want 1 [halt/limit_reached] on the 4th run) first three runs' rows ${crash.rows.filter((r) => crash.runs.slice(0, 3).includes(r.run_id)).length} (want 0) failure ${crash.failure?.error_type}/${crash.failure?.error_ref} (want planner_exit/crash_loop) · tool_call null ${[...quota.rows, ...crash.rows].every((r) => r.tool_call_id === null)}` };
+  return { ok, detail: `quota run: rows ${quota.rows.length} [${qMine.map((r) => `${r[1]}/${r[2]}`)}] (want 1 [retry/quota]) state ${quota.state} (want completed) prompts to the child ${quota.prompts} (want 2: first + RETRY_NOTE) · crash run: rows ${crash.rows.length} [${cMine.map((r) => `${r[1]}/${r[2]}`)}] (want 1 [halt/limit_reached] on the 4th run) first three runs' rows ${crash.rows.filter((r) => crash.runs.slice(0, 3).includes(r.run_id)).length} (want 0) failure error_type/error_ref ${crash.failure?.error_type === "planner_exit" && crash.failure?.error_ref === "crash_loop" ? "match" : "mismatch"} (want match) · tool_call null ${[...quota.rows, ...crash.rows].every((r) => r.tool_call_id === null)}` };
 }
 
 // ---- line 7: record faults never change what happens ----
@@ -347,7 +347,7 @@ try {
   note(`${passed}/8 PASS · houge.kill in cwd/main checkout ${tomb} (want 0)`);
   process.exitCode = out.length === 8 && passed === 8 ? 0 : 1;
 } catch (e) {
-  console.error(`setup error: ${e instanceof SetupError ? e.message : "withheld"}`);
+  console.error("setup_failed");
   process.exitCode = 2;
 } finally {
   const root = G.root;
