@@ -148,6 +148,14 @@ describe("R3 rows", () => {
     expect(dones(outcome).some((d) => d.run_id === n1)).toBe(false);
     sup.setAwaitingApprovalForTest(false); h.end(); await sup.whenIdle();
   });
+  it("11b a queued request whose run is claimed elsewhere before it drains writes no row", async () => {
+    const h = heldSession(); const { store, sup } = withRecorder(h.session);
+    const a = createQueuedTurnRun(store); sup.submit(req(a, "u")); await h.live();
+    const s = createQueuedTurnRun(store); sup.submit({ ...req(s, "b", "schedule"), goal: "g" }); // message_scheduled: queued with a wait decision, row not yet written
+    expect(store.claimRun(s, "other", 120)).toBeTruthy();
+    h.end(); await sup.whenIdle();
+    expect(rows(store)).toEqual([]);
+  });
   it("12 a queued request failed by abortAll before it runs writes no row", async () => {
     const dir = mkdtempSync(join(tmpdir(), "r3-kill-")); // P2: pin the tombstone paths; nothing may land in the cwd
     vi.stubEnv("HOUGE_TOMBSTONE_PATH", join(dir, "houge.kill")); vi.stubEnv("HOUGE_DISARM_PATH", join(dir, "houge.disarm"));
@@ -190,7 +198,9 @@ describe("R3 rows", () => {
     } finally { vi.unstubAllEnvs(); }
   });
   it("15 steerOrQueueInput mirrors the branch", () => {
-    const ts = [undefined, { live: false, req: { source: "telegram" as const } }, { live: true, req: { source: "telegram" as const } }, { live: true, req: { source: "schedule" as const } }];
+    const r0 = { run_id: "r", text: "x", source: "telegram", requester: { kind: "user", id: "paco" } } as TurnRequest;
+    expect(steerOrQueueInput({ live: false, req: { source: "schedule" } }, "RUNNING", false, r0).reason).toBe("turn_not_live"); // first match wins over turn_schedule_born
+    const ts = [undefined, { live: false, req: { source: "telegram" as const } }, { live: false, req: { source: "schedule" as const } }, { live: true, req: { source: "telegram" as const } }, { live: true, req: { source: "schedule" as const } }];
     const sts: SupervisorState[] = ["STARTING", "IDLE", "RUNNING", "AWAITING_APPROVAL", "ABORTING", "STOPPED"];
     for (const t of ts) for (const st of sts) for (const busy of [false, true]) for (const source of ["telegram", "schedule"] as const) for (const needsIngest of [false, true]) {
       const r = { run_id: "r", text: "x", source, needsIngest, requester: { kind: "user", id: "paco" } } as TurnRequest;
