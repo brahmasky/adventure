@@ -30,6 +30,8 @@ const BIG = 1_000_000_000; // caps no real copy reaches
 const ALLOWLIST = { users: [{ telegram_user_id: PACO, identity_id: "paco" }], chats: [{ telegram_chat_id: CHAT, label: "synthetic", allowed_identity_ids: ["paco"] }] };
 const SET_PINS = ["HOUGE_TOMBSTONE_PATH", "HOUGE_DISARM_PATH", "HOUGE_TELEGRAM_CHAT_ID"];
 const DELETE_PINS = ["HOUGE_SCHEDULER_ENABLED", "HOUGE_RADAR_ENABLED", "HOUGE_RADAR_PANEL_ENABLED", "HOUGE_MEDIA_INGEST_ENABLED", "HOUGE_LLM_MEDIA_PROVIDERS", "HOUGE_RATING_PENDING_MINUTES"];
+// Rows this gate writes before line 8: intake.sender = line 1 (1) + line 2 (forward, channel post) + line 3 (1); turn.contract = line 5 (1 restrict) + line 6 (1 refuse).
+const WROTE = { "intake.sender": 4, "turn.contract": 2 };
 const out = [];
 const G = { d: null, root: null, base: null, store: null, saved: null, work: null, nid: 0 };
 const note = (s) => console.error(`# ${s}`);
@@ -120,9 +122,9 @@ async function line2() {
     const id = nextId(); const s = snap();
     const sent = await pollRun([senderUpdate(kind, { id, ...opts })]);
     const rows = rowsAfter(s.mark, "intake.sender");
-    const good = rows.length === 1 && pair(rows) === want && skipCode(id) === "TELEGRAM_AUTH_DENIED" && sent.length === 0;
+    const good = rows.length === 1 && pair(rows) === want && nullIds(rows) && skipCode(id) === "TELEGRAM_AUTH_DENIED" && sent.length === 0;
     if (!good) ok = false;
-    parts.push(`${kind}: rows ${rows.length} [${pair(rows)}] (want 1 [${want}]) · sendMessage ${sent.length} (want 0)`);
+    parts.push(`${kind}: rows ${rows.length} [${pair(rows)}] (want 1 [${want}]) · sendMessage ${sent.length} (want 0) · run_id/tool_call_id null ${nullIds(rows)}`);
   }
   return { ok, detail: parts.join(" | ") };
 }
@@ -143,8 +145,8 @@ async function line3() {
   update.callback_query.data = `approval:approve:${approval.approval_id}`;
   const sent = await pollRun([update]);
   const rows = rowsAfter(s.mark, "intake.sender"); const after = stateOf();
-  const ok = before === "pending" && after === "pending" && rows.length === 1 && pair(rows) === "deny/user_not_allowlisted" && skipCode(id) === "TELEGRAM_AUTH_DENIED" && sent.length === 0 && outboxN() - s.outbox === 0;
-  return { ok, detail: `approval ${before} -> ${after} (want pending -> pending) · rows ${rows.length} [${pair(rows)}] (want 1 [deny/user_not_allowlisted]) · sendMessage ${sent.length} (want 0) · outbox +${outboxN() - s.outbox} (want 0)` };
+  const ok = before === "pending" && after === "pending" && rows.length === 1 && pair(rows) === "deny/user_not_allowlisted" && nullIds(rows) && skipCode(id) === "TELEGRAM_AUTH_DENIED" && sent.length === 0 && outboxN() - s.outbox === 0;
+  return { ok, detail: `approval ${before} -> ${after} (want pending -> pending) · rows ${rows.length} [${pair(rows)}] (want 1 [deny/user_not_allowlisted]) · run_id/tool_call_id null ${nullIds(rows)} · sendMessage ${sent.length} (want 0) · outbox +${outboxN() - s.outbox} (want 0)` };
 }
 
 // ---- line 4: Paco's own text is not a sender decision ----
@@ -208,7 +210,8 @@ async function line7() {
   const faultOutbox = outboxN() - out0;
   const open = failedIncidents().filter((i) => i.state === "open").map((i) => i.subject).sort(); const newAlerts = incidentAlerts().slice(alerts0);
   const runs = runOf(sch.schedule_id);
-  const faultOk = fired >= 2 && open.length - open0 === 2 && open.join(",") === "intake.sender,turn.contract" && faultOutbox === 2 && newAlerts.length === 2 && newAlerts.every((t) => t === STUB_CHAT)
+  const faultOk = fired === 2 && // exactly two insert attempts: the denial's intake.sender row and the fire's turn.contract row
+     open.length - open0 === 2 && open.join(",") === "intake.sender,turn.contract" && faultOutbox === 2 && newAlerts.length === 2 && newAlerts.every((t) => t === STUB_CHAT)
     && chatOutbox(String(CHAT)) - c222 === 0 && !sent.includes(String(CHAT)) && skipCode(id) === "TELEGRAM_AUTH_DENIED" && G.store.getOffset("telegram") === id + 1
     && res.fired === 1 && runs.length === 1 && stripped(runs[0]) && rowsAfter(s.mark, "turn.contract").length === 0 && rowsAfter(s.mark, "intake.sender").length === 0;
   // a recorder that throws past the store recorder (decide.ts:173): no incident, no alert, same results, the error logged
@@ -222,7 +225,7 @@ async function line7() {
   const runs2 = runOf(sch2.schedule_id);
   const throwOk = failedIncidents().length - inc1 === 0 && outboxN() - out1 === 0 && poll.value.emitted.length === 0 && skipCode(id2) === "TELEGRAM_AUTH_DENIED" && poll.value.offset === id2 + 1
     && fire.value.fired === 1 && runs2.length === 1 && stripped(runs2[0]) && logSender === 1 && logContract === 1;
-  return { ok: faultOk && throwOk, detail: `store fault: open incidents +${open.length - open0} [${open.join(",")}] (want 2 [intake.sender,turn.contract]) · outbox +${faultOutbox} (want 2) · alerts +${newAlerts.length} (want 2) all to ${STUB_CHAT} ${newAlerts.every((t) => t === STUB_CHAT)} · rows to chat ${CHAT} +${chatOutbox(String(CHAT)) - c222} (want 0) · skip ${skipCode(id)} · sent to ${CHAT} ${sent.includes(String(CHAT))} (want false) · fired ${fired >= 2 ? "both" : fired} · run ${runs.length} stripped ${runs.length ? stripped(runs[0]) : "n/a"} | recorder throw: incidents +${failedIncidents().length - inc1} (want 0) outbox +${outboxN() - out1} (want 0) fired ${fire.value.fired} (want 1) logged ${logSender},${logContract} (want 1,1)` };
+  return { ok: faultOk && throwOk, detail: `store fault: open incidents +${open.length - open0} [${open.join(",")}] (want 2 [intake.sender,turn.contract]) · outbox +${faultOutbox} (want 2) · alerts +${newAlerts.length} (want 2) all to ${STUB_CHAT} ${newAlerts.length === 2 && newAlerts.every((t) => t === STUB_CHAT)} · rows to chat ${CHAT} +${chatOutbox(String(CHAT)) - c222} (want 0) · skip ${skipCode(id)} · sent to ${CHAT} ${sent.includes(String(CHAT))} (want false) · insertDecision attempts ${fired} (want 2) · run ${runs.length} stripped ${runs.length ? stripped(runs[0]) : "n/a"} | recorder throw: incidents +${failedIncidents().length - inc1} (want 0) outbox +${outboxN() - out1} (want 0) fired ${fire.value.fired} (want 1) logged ${logSender},${logContract} (want 1,1)` };
 }
 
 // ---- line 8: /status and the lock ----
@@ -232,9 +235,9 @@ async function line8() {
   for (const id of IDS) {
     const mine = lines.filter((l) => l.startsWith(`· ${id} `));
     const shown = mine.length === 1 ? Number(/^· \S+ (\d+) — /.exec(mine[0])?.[1] ?? NaN) : NaN;
-    const total = idRows(id);
-    if (!(mine.length === 1 && total > 0 && shown === total)) ok = false;
-    parts.push(`${id} lines ${mine.length} (want 1), count ${Number.isNaN(shown) ? "none" : shown} (rows ${total})`);
+    const total = idRows(id); const want = G.prior[id] + WROTE[id]; // rows already on the copy + the rows lines 1-6 wrote (the faulted rows of line 7 never landed)
+    if (!(mine.length === 1 && total === want && shown === want)) ok = false;
+    parts.push(`${id} lines ${mine.length} (want 1), count ${Number.isNaN(shown) ? "none" : shown} (want ${want}; rows ${total})`);
   }
   const move = (entry_id) => G.store.insertLadderMove({ entry_id, scope: "g", from_rung: "paco", to_rung: "rule", evidence: [], granted_by: "paco", granted_via: "gate", paco_callback_id: "cb", revocable: true });
   const before = countOf("SELECT COUNT(*) AS n FROM ladder_moves WHERE entry_id = 'intake.sender'");
@@ -273,7 +276,8 @@ async function setup() {
   G.work = join(root, "work"); mkdirSync(G.work, { recursive: true });
   // The copy's outbox must not hold anything the poll cycle's dispatch flush would send through the stub (sendMessage counts are then exact).
   const pending = parkOutbox();
-  const prior = IDS.map((id) => idRows(id));
+  G.prior = Object.fromEntries(IDS.map((id) => [id, idRows(id)]));
+  const prior = IDS.map((id) => G.prior[id]);
   note(`copy: ${pending} non-final outbox row(s) parked on the copy; prior rows of the new ids ${prior.join(",")}`);
 }
 function closeAll() { try { G.store?.close(); } catch { /* a closed handle is not a finding */ } G.store = null; }
