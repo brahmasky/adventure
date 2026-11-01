@@ -22,6 +22,17 @@ describe("intake.bare_ack — a bare ack while an approval card waits is nudged,
     expect(INTAKE_BARE_ACK.alwaysRecord).toBeUndefined();
     expect(INTAKE_BARE_ACK.reasonCodes).toEqual(["ack_while_card_waits"]);
     expect(entryProblems(INTAKE_BARE_ACK as unknown as AnyEntry)).toEqual([]);
+    expect(INTAKE_BARE_ACK.id).toBe("intake.bare_ack");
+    expect(INTAKE_BARE_ACK.version).toBe(1);
+    expect(INTAKE_BARE_ACK.question).toBe("While an approval card waits, is this message a bare acknowledgement — nudged, never taken as consent (ADR 0029 §5.1)?");
+    expect(INTAKE_BARE_ACK.verdicts).toEqual(["nudge", "pass"]);
+    expect(INTAKE_BARE_ACK.ladder.map((r) => [r.kind, r.name])).toEqual([["rule", "isBareAck"]]);
+    expect(INTAKE_BARE_ACK.outcomes).toEqual([]);
+    expect(INTAKE_BARE_ACK.armed).toEqual({ rule: "on" });
+    expect(INTAKE_BARE_ACK.effects).toEqual({
+      nudge: { kind: "reply", reversible: true, announced: "none", what: "the code-owned nudge points at the card; nothing is approved" },
+      pass: { kind: "none", reversible: true, announced: "none" }
+    });
   });
   it("an ack → nudge/ack_while_card_waits, recorded", () => {
     expect(decideSync(INTAKE_BARE_ACK, { acked: true }, ctx)).toMatchObject({ verdict: "nudge", reason: "ack_while_card_waits" });

@@ -20,6 +20,19 @@ describe("intake.steer_or_queue — a message steered into a live turn, or held 
     expect(INTAKE_STEER_OR_QUEUE.fail).toBe("wait");
     expect(INTAKE_STEER_OR_QUEUE.reasonCodes).toEqual(["live_turn", "turn_schedule_born", "message_scheduled", "needs_ingest", "not_running", "turn_not_live", "queued_behind", "idle"]);
     expect(entryProblems(INTAKE_STEER_OR_QUEUE as unknown as AnyEntry)).toEqual([]);
+    expect(INTAKE_STEER_OR_QUEUE.id).toBe("intake.steer_or_queue");
+    expect(INTAKE_STEER_OR_QUEUE.version).toBe(1);
+    expect(INTAKE_STEER_OR_QUEUE.stage).toBe("intake");
+    expect(INTAKE_STEER_OR_QUEUE.question).toBe("Does this message steer into the live Telegram turn, wait behind a turn it may not join, or queue on an idle planner?");
+    expect(INTAKE_STEER_OR_QUEUE.verdicts).toEqual(["steer", "wait", "queue"]);
+    expect(INTAKE_STEER_OR_QUEUE.ladder.map((r) => [r.kind, r.name])).toEqual([["rule", "submit"]]);
+    expect(INTAKE_STEER_OR_QUEUE.outcomes).toEqual([]);
+    expect(INTAKE_STEER_OR_QUEUE.armed).toEqual({ rule: "on" });
+    expect(INTAKE_STEER_OR_QUEUE.effects).toEqual({
+      steer: { kind: "effect", reversible: false, announced: "none", what: "the message joins the running turn; one reply" },
+      wait: { kind: "none", reversible: true, announced: "none" },
+      queue: { kind: "none", reversible: true, announced: "none" }
+    });
   });
   it("a judge rung on this entry would be refused (the registry check Decision 2-A relies on)", () => {
     const jev = { kind: "system_one", name: "x", questions: [], bars: { kind: "provisional", question: "q", criteriaHash: "h", model: "m", p: 0.5, source: "mu" }, timeoutMs: 1 };
