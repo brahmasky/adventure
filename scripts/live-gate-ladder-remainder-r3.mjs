@@ -218,16 +218,20 @@ async function line6() {
 
 // ---- line 7: record faults never change what happens ----
 const failedIncidents = () => all("SELECT subject, state FROM incidents WHERE kind = 'decision_record_failed'");
-const incidentAlerts = () => all("SELECT target_json FROM notification_outbox WHERE idempotency_key LIKE 'incident_opened:%'").map((r) => String(JSON.parse(r.target_json).chat_id));
+const incidentIds = () => new Set(all("SELECT incident_id FROM incidents").map((r) => r.incident_id));
+const alertRows = () => all("SELECT notification_id, target_json FROM notification_outbox WHERE idempotency_key LIKE 'incident_opened:%'");
+const incidentAlerts = () => alertRows().map((r) => String(JSON.parse(r.target_json).chat_id));
 /** Runs `drive` with insertDecision faulting; returns { s, attempts, open (new open incident subjects), alerts (new alert chats) }. */
 async function faulted(drive) {
   const real = G.store.insertDecision.bind(G.store); let attempts = 0;
-  const open0 = failedIncidents().filter((i) => i.state === "open").length; const a0 = incidentAlerts().length;
+  const ids0 = incidentIds(); const alerts0 = new Set(alertRows().map((r) => r.notification_id));
   G.store.insertDecision = () => { attempts += 1; throw new Error("gate fault: insertDecision"); };
   let s;
   try { s = (await captured(() => scenario(drive))).value; } finally { G.store.insertDecision = real; }
-  const open = failedIncidents().filter((i) => i.state === "open"); const alerts = incidentAlerts().slice(a0);
-  return { s, attempts, open: open.length - open0, subjects: open.map((i) => i.subject), alerts };
+  // only what the fault itself added counts: incidents and alerts are scoped by id against the snapshot taken before it
+  const fresh = all("SELECT incident_id, kind, subject FROM incidents").filter((i) => !ids0.has(i.incident_id));
+  const alerts = alertRows().filter((r) => !alerts0.has(r.notification_id)).map((r) => String(JSON.parse(r.target_json).chat_id));
+  return { s, attempts, open: fresh.length, subjects: fresh.map((i) => `${i.kind}/${i.subject}`), alerts };
 }
 /** Runs `drive` with a recorder that throws past the store recorder; returns the scenario, the incident/alert deltas and the log lines per entry. */
 async function thrown(drive) {
@@ -241,11 +245,11 @@ async function line7() {
   for (const [name, drive, cleanS, subject] of [["steer", steerScenario, G.clean.steer, SQ], ["nudge", nudgeScenario, G.clean.nudge, BA]]) {
     const f = await faulted(drive);
     const sameEffects = effects({ ...f.s, outbox: f.s.outbox - 1 }) === effects(cleanS); // the one operator alert is the only outbox row more
-    const fOk = f.attempts === 1 && f.open === 1 && f.subjects.includes(subject) && f.alerts.length === 1 && f.alerts.every((c) => c === STUB_CHAT) && f.s.rows.length === 0 && sameEffects;
+    const fOk = f.attempts === 1 && f.open === 1 && canon(f.subjects) === canon([`decision_record_failed/${subject}`]) && f.alerts.length === 1 && f.alerts.every((c) => c === STUB_CHAT) && f.s.rows.length === 0 && sameEffects;
     const t = await thrown(drive);
     const tOk = t.incidents === 0 && t.alerts === 0 && t.s.rows.length === 0 && effects(t.s) === effects(cleanS) && t.logs[SQ] === t.s.calls[SQ] && t.logs[BA] === (t.s.calls[BA] ?? 0);
     if (!(fOk && tOk)) ok = false;
-    parts.push(`${name}: insert fault: attempts ${f.attempts} (want 1) incidents +${f.open} [${f.subjects.filter((s) => IDS.includes(s))}] (want 1 [${subject}]) alerts +${f.alerts.length} (want 1) to stub ${f.alerts.every((c) => c === STUB_CHAT)} rows ${f.s.rows.length} (want 0) effects unchanged ${sameEffects}; thrown recorder: incidents +${t.incidents} (want 0) alerts +${t.alerts} (want 0) rows ${t.s.rows.length} (want 0) effects unchanged ${effects(t.s) === effects(cleanS)} logged sq/ba ${t.logs[SQ]}/${t.logs[BA]} (want ${t.s.calls[SQ] ?? 0}/${t.s.calls[BA] ?? 0})`);
+    parts.push(`${name}: insert fault: attempts ${f.attempts} (want 1) new incidents ${f.open} [${f.subjects}] (want 1 [decision_record_failed/${subject}]) alerts +${f.alerts.length} (want 1) to stub ${f.alerts.every((c) => c === STUB_CHAT)} rows ${f.s.rows.length} (want 0) effects unchanged ${sameEffects}; thrown recorder: incidents +${t.incidents} (want 0) alerts +${t.alerts} (want 0) rows ${t.s.rows.length} (want 0) effects unchanged ${effects(t.s) === effects(cleanS)} logged sq/ba ${t.logs[SQ]}/${t.logs[BA]} (want ${t.s.calls[SQ] ?? 0}/${t.s.calls[BA] ?? 0})`);
   }
   return { ok, detail: parts.join(" | ") };
 }
