@@ -169,6 +169,21 @@ function scrubWorkers(v) {
   return JSON.parse(JSON.stringify(v).replace(BARE_UUID, (m) => { if (!seen.has(m)) seen.set(m, `uuid#${seen.size + 1}`); return seen.get(m); }));
 }
 
+/** What behaviour depends on is zero vs positive, not the wall-clock value (worker ids are kept: scrubWorkers relabels them with one map across sink calls and the dump). */
+const durationClass = (n) => (n === 0 ? 0 : "+");
+/** The only stored copy of a turn's duration is its run_completed ledger payload (runs keeps none): it must equal what the sink was handed. */
+function durationDisagreements(store, done, label) {
+  return done.flatMap((c) => {
+    const ev = store.getLedgerEvents(c.run_id).filter((e) => e.event_type === "run_completed");
+    const stored = ev.map((e) => e.payload.duration_ms);
+    return stored.length === 1 && stored[0] === c.duration_ms ? [] : [{ run: label(c.run_id), sink: c.duration_ms, stored }];
+  });
+}
+/** Ledger payload strings carry `"duration_ms":<n>`: classify each, textually, after the agreement check. */
+function classDurations(db) {
+  return JSON.parse(JSON.stringify(db).replace(/\\"duration_ms\\":(\d+)/g, (_m, n) => `\\"duration_ms\\":\\"${durationClass(Number(n))}\\"`));
+}
+
 async function project(d, item) {
   const dir = mkTemp(`supervisor-${item.key}`);
   let store = null;
@@ -182,10 +197,7 @@ async function project(d, item) {
       const x = {
         d, store,
         run: (name, text) => { const id = intakeRun(d, store, text, name); names.set(id, name); runs.set(name, id); return id; },
-        mk: (opts = {}) => { // a turn's wall-clock duration is stored in the run row and its ledger payload: pin it, it is not what is compared
-          const outcome = opts.outcome ?? sink(store); const complete = outcome.complete;
-          outcome.complete = (i) => complete({ ...i, duration_ms: 0 });
-          rig = mkSupervisor(d, store, { ...opts, outcome, ...(counting ? { recorder: counting.recorder } : {}) }); return rig; }
+        mk: (opts = {}) => { rig = mkSupervisor(d, store, { ...opts, ...(counting ? { recorder: counting.recorder } : {}) }); return rig; }
       };
       const seedMax = store.db.prepare("SELECT COALESCE(MAX(rowid), 0) AS m FROM decisions").get().m; // an empty table gives NULL, and rowid > NULL selects nothing
       try { await item.drive(x); } finally { await cleanup(); }
@@ -198,15 +210,17 @@ async function project(d, item) {
       const want = tableCounts(store);
       checkCoverage(db, want);
       omittedRowSelfTest(db, want);
-      const seen = (list) => list.map(({ worker_id: _w, run_id, ...rest }) => ({ ...rest, run_id: label(run_id) }));
       const { session, outcome } = rig;
-      const observed = { prompts: session.prompts, steers: session.steers, done: seen(outcome.done), failed: seen(outcome.failed), incidents: outcome.incidents, db };
-      return { ...scrubWorkers(scrubIds(relabelClocks(observed, isClockKey))), newRows, calls: counting?.calls ?? {}, __strip: ["newRows", "calls", "duration_ms"] };
+      const agreement = durationDisagreements(store, outcome.done, label); // BEFORE any normalising: the emitted value must be the stored one
+      const seen = (list) => list.map(({ run_id, ...rest }) => ({ ...rest, ...("duration_ms" in rest ? { duration_ms: durationClass(rest.duration_ms) } : {}), run_id: label(run_id) }));
+      const observed = { prompts: session.prompts, steers: session.steers, done: seen(outcome.done), failed: seen(outcome.failed), incidents: outcome.incidents, db: classDurations(db) };
+      return { ...scrubWorkers(scrubIds(relabelClocks(observed, isClockKey))), newRows, calls: counting?.calls ?? {}, agreement, __strip: ["newRows", "calls", "agreement"] };
     }));
   } finally { try { store?.close(); } catch { /* closed */ } }
 }
 
 function required(d, item, proj) {
+  requireNew(corpus, item, "emitted duration_ms equals the stored run_completed payload (exact)", proj.agreement.length === 0, `disagreements ${canon(proj.agreement)}`);
   const want = item.rows.map(([entry, verdict, reason, run]) => [entry, verdict, reason, run, null]);
   requireNew(corpus, item, "R3 rows (exact: entry, verdict, reason, the submitted run, tool_call null)", canon(proj.newRows) === canon(want), `got ${canon(proj.newRows)}, want ${canon(want)}`);
   requireNew(corpus, item, "recorder calls per entry (exact)", canon(proj.calls) === canon(item.calls), `got ${canon(proj.calls)}, want ${canon(item.calls)}`);
