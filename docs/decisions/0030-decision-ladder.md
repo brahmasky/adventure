@@ -658,7 +658,7 @@ This file is protected (ADR 0011); this amendment is drafted for Paco's hand. Sp
 - **Evidence.** Differential `scripts/check-ladder-stage4-differential.mjs` with a third pair at the merge base, proven by a build stamp with a dist hash (`scripts/stamp-dist.mjs`) and pinned to the merge base: zero differences over memadmit 35, memcorrect 19, schedule 34 items (and the 4B corpora unchanged); live gate `scripts/live-gate-ladder-stage4c.mjs` 8/8 (results compared with the merge-base build, transaction membership asserted, faults injected); rollback `scripts/check-ladder-stage4c-rollback.mjs` all lines PASS.
 - **Rollback.** No schema change: revert + rebuild. The previous build reads the new ids' rows, writes none, and refuses `review_ok` naming them.
 
-## Amendment (2026-10-30): Stage 3 remainder slice R1, `intake.rate_limit`, `intake.rating_reply` and `intake.budget_fuse` on the ladder; two §6.1 rows retired (awaiting Paco's signature)
+## Amendment (2026-10-30): Stage 3 remainder slice R1, `intake.rate_limit`, `intake.rating_reply` and `intake.budget_fuse` on the ladder; two §6.1 rows retired (signed off by Paco 2026-11-01)
 
 This file is protected (ADR 0011); this amendment is drafted for Paco's hand. Spec: `docs/superpowers/specs/2026-10-30-ladder-remainder-r1-gateway-intake-design.md` (Rev 1.3, approved 2026-10-30, Decisions 1-A, 2-A, 3-A). Plan: `docs/superpowers/plans/2026-10-30-remainder-r1-gateway-intake.md`.
 
@@ -672,9 +672,9 @@ This file is protected (ADR 0011); this amendment is drafted for Paco's hand. Sp
 - **Evidence.** Differential `scripts/check-ladder-stage4-differential.mjs` with a fourth stamped pair at the merge base (`--old-dist-r1`, provenance on `gateway/gateway.js`), corpus `intake` (35 items) compared over a whole-DB dump under a counting clock, with coverage and determinism self-tests: 0 differences; the nine earlier corpora unchanged. Live gate `scripts/live-gate-ladder-remainder-r1.mjs` 8/8 (the `kill` probe's tombstone pinned to a temp dir; alerts to a stub chat); rollback `scripts/check-ladder-remainder-r1-rollback.mjs` PASS.
 - **Rollback.** No schema change: revert + rebuild. The previous build reads the new `run_id`-null rows unchanged and refuses `review_ok` naming the new ids.
 
-## Amendment (2026-11-01): Stage 3 remainder slice R2, `intake.sender` and `turn.contract` on the ladder (awaiting Paco's signature)
+## Amendment (2026-11-01): Stage 3 remainder slice R2, `intake.sender` and `turn.contract` on the ladder (signed off by Paco 2026-11-01)
 
-This file is protected (ADR 0011); this amendment is drafted for Paco's hand. Spec: `docs/superpowers/specs/2026-11-01-ladder-remainder-r2-sender-contract-design.md` (Rev 1.2, approved 2026-11-01, Decisions 1-B, 2-A, 3-A). Plan: `docs/superpowers/plans/2026-11-01-remainder-r2-sender-contract.md`.
+This file is protected (ADR 0011); drafted for Paco's hand, signed off by Paco 2026-11-01. Spec: `docs/superpowers/specs/2026-11-01-ladder-remainder-r2-sender-contract-design.md` (Rev 1.2, approved 2026-11-01, Decisions 1-B, 2-A, 3-A). Plan: `docs/superpowers/plans/2026-11-01-remainder-r2-sender-contract.md`.
 
 - **Move, don't improve (R1).** The Telegram sender check and the task-contract compile become rule-only entries that record the code's answer where it already decides; the raw answer drives. Each check names its reason in a field beside its unchanged `error`, so skip rows, intake results, contracts, runs and outbox rows are identical to the merge base.
 - **A1 / `intake.sender`** (locked, `stage: "intake"`, refusals only): recorded once, in the long-poll adapter's denial branch, after the skip row and the offset advance; reasons in check order `channel_post`, `forwarded`, `anonymous`, `no_chat`, `user_not_allowlisted`, `chat_not_allowlisted`, `identity_not_for_chat`. A denied sender still gets nothing back. A row holds no sender id, chat id or text. Both production poll constructors (one-shot runner and daemon) pass the recorder.
