@@ -2,6 +2,9 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { CONTEXT_CATCH_UP } from "../../src/decisions/entries/context-catch-up.js";
+import { CONTEXT_RECALL } from "../../src/decisions/entries/context-recall.js";
+import { TURN_CLARIFY_CAP } from "../../src/decisions/entries/turn-clarify-cap.js";
 import { storeRecorder } from "../../src/decisions/record.js";
 import type { DecisionRecorder } from "../../src/decisions/types.js";
 import {
@@ -162,5 +165,27 @@ describe("R5 rows at prompt build (spec R5 §4.1, §4.2, §4.4) — the raw answ
     const snap = { text: "", lessonIds: [1, 2], lessonScopes: [], skillScopes: [], coreFactIds: [], skipped: [{ lesson_id: 3, chars: 900, cap: 100 }] } as unknown as PromptSnapshot;
     expect(lessonsInputOf(snap)).toEqual({ rendered: 2, skipped: 1, failed: false });
     expect(lessonsInputOf({ ...snap, lessonRenderFailed: true })).toEqual({ rendered: 2, skipped: 1, failed: true });
+  });
+  it("10 planted throw (P14) in the real entry's rule: one fail-rung row with the fail verdict on the run; prompt and loop_started identical to unplanted", async () => {
+    const recallR: TurnRetrieval = { facts: facts(1), pages: [], telemetry: { facts: tel({ admitted: 1, best_admitted: 0.7 }), pages: tel() } };
+    const plans: Array<[string, { ladder: readonly unknown[] }, (s: RunStore) => void, TurnRetrieval, string]> = [
+      ["context.recall", CONTEXT_RECALL, () => {}, recallR, "none"],
+      ["context.catch_up", CONTEXT_CATCH_UP, (s) => laneRow(s, 1), NONE, "none"],
+      ["turn.clarify_cap", TURN_CLARIFY_CAP, (s) => seedClarify(s), NONE, "allow"]
+    ];
+    const read = (store: RunStore, id: string) => q(store).prepare("SELECT entry_id, rung, verdict, run_id, tool_call_id FROM decisions WHERE entry_id = ? ORDER BY rowid").all(id)
+      .map((r) => [r.entry_id, r.rung, r.verdict, r.run_id, r.tool_call_id ?? null]);
+    for (const [id, entry, seed, retrieval, failVerdict] of plans) {
+      const base = RunStore.openInMemory(); seed(base);
+      const unplanted = await build(deps(base, { retrieval }).d, base);
+      const store = RunStore.openInMemory(); seed(store);
+      const rung = entry.ladder[0] as { decide: unknown }; const orig = rung.decide;
+      rung.decide = () => { throw new Error("planted"); };
+      let planted: Awaited<ReturnType<typeof build>>;
+      try { planted = await build(deps(store, { retrieval }).d, store); } finally { rung.decide = orig; }
+      expect(read(store, id), id).toEqual([[id, "fail", failVerdict, planted.run_id, null]]);
+      expect(planted.prompt, id).toBe(unplanted.prompt);
+      expect(loopStarted(store, planted.run_id), id).toEqual(loopStarted(base, unplanted.run_id));
+    }
   });
 });

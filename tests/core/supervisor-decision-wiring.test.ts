@@ -72,4 +72,14 @@ describe("production wiring: CoreWorker passes its recorder to the supervisor", 
       expect(store.listDecisionsForRun(run).filter((r) => r.entry_id === "context.lessons").map((r) => [r.verdict, r.reason_code])).toEqual([["capped", "char_cap"]]);
     } finally { delete process.env.HOUGE_LESSON_CHAR_CAP; }
   });
+  it("R5 (c): recall whose embed fails writes the context.recall none/embed_failed row on the run (ompTurnContext passes the recorder)", async () => {
+    process.env.HOUGE_EPISODIC_ENABLED = "1"; // after pinEnabledFlags(); resolveEpisodicEnabled reads it
+    try {
+      useFakeOmp({ "*": { rpcText: "ok" } }, tmp.dir);
+      worker = ompWorker(store, tmp.dir, { embed: async () => null });
+      const run = createQueuedTurnRun(store, "the pdf one"); worker.submitTurn(run);
+      await until(() => store.getRunState(run) === "completed");
+      expect(store.listDecisionsForRun(run).filter((r) => r.entry_id === "context.recall").map((r) => [r.verdict, r.reason_code, r.run_id, r.tool_call_id ?? null])).toEqual([["none", "embed_failed", run, null]]);
+    } finally { delete process.env.HOUGE_EPISODIC_ENABLED; }
+  });
 });

@@ -370,7 +370,7 @@ function record<S, V extends string>(d: TurnContextDeps, i: TurnPromptInput, ent
   if (!d.recorder || i.live?.() === false) return;
   try {
     decideSync(entry, s, { run_id: i.run_id, tool_call_id: null, recorder: d.recorder });
-  } catch (e) {
+  } catch (e) { // belt: decideSync already catches a recorder and a rule (decide.ts:166–171); a future change must not reach the prompt
     console.error(`[turn-context] decision record failed: ${e instanceof Error ? e.message : String(e)}`);
   }
 }
