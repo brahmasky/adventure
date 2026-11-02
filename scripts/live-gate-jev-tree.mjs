@@ -542,7 +542,10 @@ async function caseRolesTick(g) {
   clearTickLatch(g);
   const notes = []; const now = new Date().toISOString();
   const first = await g.m.runModelRolesTick({ store: g.store, roles: g.roles, now, notify: (t) => notes.push(t) });
-  check("9 tick: ran, no role unresolved", first.ran && first.unresolved.length === 0, JSON.stringify({ ...first, notes }));
+  // Spec 2026-11-02 §4.3/§4.4: judges:2 has no model until Paco taps the empty-tier card, so it alone may be unresolved.
+  const judge2Only = first.unresolved.length === 1 && first.unresolved[0] === "judges:2";
+  if (judge2Only) console.log("INFO 9 tick: judges:2 unresolved (empty gemini-pro tier, waiting on Paco's tap)");
+  check("9 tick: ran, no role unresolved but judges:2", first.ran && (first.unresolved.length === 0 || judge2Only), JSON.stringify({ ...first, notes }));
   const again = await g.m.runModelRolesTick({ store: g.store, roles: g.roles, now: new Date(Date.parse(now) + 60_000).toISOString(), notify: (t) => notes.push(t) });
   check("9 tick: latched within 24 h", again.ran === false, JSON.stringify(again));
 }
