@@ -3150,14 +3150,25 @@ export class RunStore {
   }
 
   /**
-   * Records it at a dispatched turn's end. With no row yet, a clean level writes nothing (null reads clean); a raised one
-   * creates the row with no fingerprint, which a later reset compares as '' (as with no row).
+   * Records it at a dispatched turn's end (and at every rise). `transcript_trust_at` is when the stored level last changed
+   * (plan P19), so /status can say since when the conversation carries it. With no row, a clean level writes nothing.
    */
   setTranscriptTrust(chat_id: string, level: string, now: string): void {
-    if (this.db.prepare(`UPDATE planner_session_state SET transcript_trust = ? WHERE chat_id = ?`).run(level, chat_id).changes === 1 || level === "clean") return;
+    const r = this.db.prepare(`
+      UPDATE planner_session_state SET transcript_trust_at = CASE WHEN transcript_trust IS ? THEN transcript_trust_at ELSE ? END, transcript_trust = ?
+      WHERE chat_id = ?
+    `).run(level, now, level, chat_id);
+    if (r.changes === 1 || level === "clean") return;
     this.db.prepare(`
-      INSERT INTO planner_session_state (chat_id, lesson_fingerprint, seed_pending, updated_at, transcript_trust) VALUES (?, '', 0, ?, ?)
-    `).run(chat_id, now, level);
+      INSERT INTO planner_session_state (chat_id, lesson_fingerprint, seed_pending, updated_at, transcript_trust, transcript_trust_at) VALUES (?, '', 0, ?, ?, ?)
+    `).run(chat_id, now, level, now);
+  }
+
+  /** Spec 2026-11-02 section 6.3: the stored level and since when; null without a row. */
+  getTranscriptTrustSince(chat_id: string): { level: string; at: string | null } | null {
+    const r = this.db.prepare(`SELECT transcript_trust, transcript_trust_at FROM planner_session_state WHERE chat_id = ?`)
+      .get<{ transcript_trust: string | null; transcript_trust_at: string | null }>(chat_id);
+    return r ? { level: r.transcript_trust ?? "clean", at: r.transcript_trust_at } : null;
   }
 
   /** The seed goes to one dispatch: true only for the first claim after a reset. */

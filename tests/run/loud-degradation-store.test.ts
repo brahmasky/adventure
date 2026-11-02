@@ -89,3 +89,18 @@ describe("hostile_schedule_turn event migration", () => {
     c.close();
   });
 });
+
+describe("transcript_trust_at", () => {
+  it("is set when the level changes and kept while it stays; a new row gets it too; a legacy row reads null", () => {
+    const s = RunStore.openInMemory();
+    s.setTranscriptTrust("42", "hostile", "2026-11-01T00:00:00.000Z");
+    s.setTranscriptTrust("42", "hostile", "2026-11-02T00:00:00.000Z");
+    expect(s.getTranscriptTrustSince("42")).toEqual({ level: "hostile", at: "2026-11-01T00:00:00.000Z" });
+    s.setTranscriptTrust("42", "untrusted", "2026-11-03T00:00:00.000Z");
+    expect(s.getTranscriptTrustSince("42")).toEqual({ level: "untrusted", at: "2026-11-03T00:00:00.000Z" });
+    db(s).prepare("UPDATE planner_session_state SET transcript_trust_at = NULL WHERE chat_id = '42'").run();
+    expect(s.getTranscriptTrustSince("42")).toEqual({ level: "untrusted", at: null });
+    expect(s.getTranscriptTrustSince("nope")).toBeNull();
+    s.close();
+  });
+});

@@ -1290,10 +1290,18 @@ export class Gateway {
   private statusPayload(event: TypedTaskEvent, run_id: string | undefined, now: string): NotificationPayload {
     if (event.metadata?.status_view === "decisions") return { text: decisionListText(this.runStore) };
     const status = queryStatus(this.runStore, run_id);
-    return { text: this.formatStatusText(status, now), status };
+    const chatId = event.notify.kind === "telegram" ? event.notify.chat_id : null;
+    return { text: this.formatStatusText(status, now, chatId), status };
   }
 
-  private formatStatusText(status: ReturnType<typeof queryStatus>, now: string): string {
+  /** Spec 2026-11-02 section 6.3: one line while the chat's planner transcript carries a raised level; /fresh is its exit. */
+  private carryLine(chatId: string | null, localOf: (iso: string) => string): string[] {
+    const t = chatId ? this.runStore.getTranscriptTrustSince(chatId) : null;
+    if (!t || (t.level !== "untrusted" && t.level !== "hostile")) return [];
+    return [`Conversation carries ${t.level}${t.at ? ` since ${localOf(t.at)}` : ""} · /fresh clears it`];
+  }
+
+  private formatStatusText(status: ReturnType<typeof queryStatus>, now: string, chatId: string | null): string {
     if (!status.ok) {
       return status.error.message;
     }
@@ -1382,6 +1390,7 @@ export class Gateway {
         "🟢 HEALTH",
         `Daemon: ${daemonText}`,
         `Self-check: swept ${sweptText} · ${incidentText}`,
+        ...this.carryLine(chatId, localOf),
         ...radarLine,
         ...panelLine,
         `Errors: ${errorsText}`,
