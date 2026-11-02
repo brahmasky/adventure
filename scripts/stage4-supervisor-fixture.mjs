@@ -131,17 +131,21 @@ export function seedClarify(store, chatId) {
 /**
  * Lane replies after a planner answer in `chatId`. Writes, oldest first: one lane row older than the answer (never "since"), a Telegram run with an
  * assistant chat_turn (what plannerLastAnsweredAt reads), then one delivered lane reply per text (verdict_id null: laneTurnsSince's LEFT JOIN keeps it).
- * Self-checks that laneTurnsSince(chat, plannerLastAnsweredAt(chat)) returns exactly `texts`, in order; throws otherwise. Returns the answer's timestamp.
+ * ADDS ONE RUN (the planner answer's, label "seed-answer"): intaken under the synthetic actor "seed-answer" (so paco's 5-per-minute intake budget is untouched), claimed and
+ * finished "completed" the way the outcome path does, so it holds no active-run slot; corpus run labels by submission order stay predictable only if the caller counts it.
+ * Self-checks that the seed run is terminal and that laneTurnsSince(chat, plannerLastAnsweredAt(chat)) returns exactly `texts`, in order; throws otherwise. Returns the answer's timestamp.
  */
 export function seedLaneRows(d, store, chatId, texts) {
   const now = Date.now(); const iso = (ms) => new Date(ms).toISOString();
   const lane = (run_id, catch_up, ms) => store.recordLaneReply({ run_id, chat_id: chatId, lane: "answer", verdict_id: null, catch_up, created_at: iso(ms) });
   lane("lane-old", "older than the planner answer", now - 20 * 60_000);
   const answered = iso(now - 10 * 60_000);
-  const run = intakeRun(d, store, "seed planner answer", `seed-answer:${chatId}`);
+  const run = intakeRun(d, store, "seed planner answer", `seed-answer:${chatId}`, "seed-answer");
+  if (!store.claimRun(run, "seed-answer", 120) || !store.finishRun({ run_id: run, expected_worker_id: "seed-answer", next: "completed", report_ref: "seed", duration_ms: 0, tool_calls: 0 })) throw new Error("fixture: seed run did not complete");
   store.recordChatTurn({ chat_id: chatId, run_id: run, role: "assistant", text: "planner answer", created_at: answered });
   texts.forEach((t, k) => lane(`lane-${k}`, t, now - (texts.length - k) * 30_000));
   const got = store.laneTurnsSince(chatId, store.plannerLastAnsweredAt(chatId)).map((r) => r.catch_up);
+  if (store.db.prepare("SELECT state FROM runs WHERE run_id = ?").get(run)?.state !== "completed") throw new Error("fixture: seed run is not terminal");
   if (store.plannerLastAnsweredAt(chatId) !== answered || JSON.stringify(got) !== JSON.stringify(texts)) throw new Error("fixture: seedLaneRows boundary check failed");
   return answered;
 }
