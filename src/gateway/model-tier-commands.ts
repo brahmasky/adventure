@@ -4,7 +4,7 @@ import type { TypedTaskEvent } from "../domain/types.js";
 import type { NotificationButton } from "../notifications/notification-types.js";
 import type { ProbeFn, ProbeOutcome } from "../omp/model-probe.js";
 import { keyNeedsModel, ledgerKind, type EmptyTierCard } from "../omp/model-roles-tick.js";
-import { soleKeysOf } from "../omp/model-roles.js";
+import { resolveModelRolesMode, soleKeysOf } from "../omp/model-roles.js";
 import type { OverrideKey } from "../omp/role-resolver.js";
 import { isTierId, proposalsFor, tierDef, type TierId } from "../omp/model-tiers.js";
 import { resolveOpenIncidents } from "../run/incident-alert.js";
@@ -42,6 +42,10 @@ export function enqueueTierCard(store: RunStore, chatId: string, now: string, c:
     correlation_id: "model-roles", payload: { text: tierCardText(c), ...(c.proposals.length > 0 ? { button_rows: [buttons] } : {}) } });
 }
 
+/** Final review Minor 2: a tap that cannot be checked says why ("Already handled." would be false); nothing is written. */
+export const TAP_STATIC_TEXT = "Nothing changed: HOUGE_MODEL_ROLES=static runs the code lists as written and applies no override.";
+export const TAP_NO_CATALOG_TEXT = "Nothing changed: omp's model catalog is unavailable right now. Tap the card again after the next catalog read.";
+
 /** `signal`: the daemon's stop (review W5): a stop kills the tap's probe child and the aborted probe commits nothing. */
 export interface TierTapDeps { roles?: ModelsRoles; probe?: ProbeFn; track: (p: Promise<void>) => void; signal?: AbortSignal }
 interface OpenTap { tier: TierId; keys: string[]; proposals: string[] }
@@ -58,6 +62,8 @@ export function handleModelTierTap(store: RunStore, deps: TierTapDeps, event: Ty
 
 function tapOnce(store: RunStore, deps: TierTapDeps, event: TypedTaskEvent, now: string): void {
   const reply = (text: string) => replyTo(store, event, "model_tier_tap", text);
+  if (deps.roles && resolveModelRolesMode(process.env) === "static") return reply(TAP_STATIC_TEXT);
+  if (deps.roles && !deps.roles.catalog()) return reply(TAP_NO_CATALOG_TEXT);
   const t = openTap(store, deps.roles, String(event.metadata?.tier ?? ""), now);
   if (!t) return reply(TAP_HANDLED_TEXT);
   const hash = event.metadata?.model_hash;

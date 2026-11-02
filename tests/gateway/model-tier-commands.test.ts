@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildTypedTaskEvent } from "../../src/domain/types.js";
 import { Gateway } from "../../src/gateway/gateway.js";
 import { TAP_HANDLED_TEXT } from "../../src/gateway/improvement-commands.js";
-import { enqueueTierCard, tierCallbackData, tierCardText, tierModelHash } from "../../src/gateway/model-tier-commands.js";
+import { enqueueTierCard, TAP_NO_CATALOG_TEXT, TAP_STATIC_TEXT, tierCallbackData, tierCardText, tierModelHash } from "../../src/gateway/model-tier-commands.js";
 import type { ProbeFn, ProbeOutcome } from "../../src/omp/model-probe.js";
 import { parseOmpCatalog } from "../../src/omp/model-catalog.js";
 import type { CatalogModel } from "../../src/omp/model-roles.js";
@@ -114,6 +114,18 @@ describe("a tap", () => {
     release({ result: "pass", kind: "ok" }); await gw.whenTierTapsSettled();
     expect(store.latestModelRoleOverrides().get("judges:2")).toBe("gpt-oss-120b");
     expect(texts().at(-1)).toBe("ℹ️ `gemini-4-argon` passed its check, but judges:2 got a model meanwhile; nothing changed.");
+  });
+  it("during a catalog outage, or in static mode, says why nothing changed instead of 'Already handled.' (final review Minor 2)", async () => {
+    // Paco taps the morning card after the catalog read failed: "Already handled." would tell him judges:2 is filled while it stays empty.
+    const calls: string[] = [];
+    const down = new RoleResolver({ store, env: () => ({ HOUGE_MODEL_ROLES: "resolved" }), readCatalog: async () => null }); await down.refreshCatalog();
+    const probe: ProbeFn = async (sel) => { calls.push(sel); return { result: "pass", kind: "ok" }; };
+    const gw = new Gateway(store, undefined, undefined, undefined, undefined, { roles: down, modelProbe: probe });
+    gw.intake(tap(tierCallbackData("gemini-pro", "gemini-4-argon"))); await gw.whenTierTapsSettled();
+    vi.stubEnv("HOUGE_MODEL_ROLES", "static"); // a catalog in hand, but static applies no override: writing one would be a silent no-op
+    const { gw: gw2 } = await gateway({ result: "pass", kind: "ok" }, calls);
+    gw2.intake(tap(tierCallbackData("gemini-pro", "gemini-4-argon"))); await gw2.whenTierTapsSettled();
+    expect([calls, texts(), store.latestModelRoleOverrides().has("judges:2")]).toEqual([[], [TAP_NO_CATALOG_TEXT, TAP_STATIC_TEXT], false]);
   });
   it("Not now only answers", async () => {
     const calls: string[] = []; const { gw } = await gateway({ result: "pass", kind: "ok" }, calls);
