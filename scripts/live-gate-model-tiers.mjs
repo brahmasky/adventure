@@ -139,7 +139,8 @@ async function runTick() {
     rejected_selector: r.rejected_selector, rejected_at: r.rejected_at }, catalog, G.now));
   G.mark = seqMark();
   const notices = []; const cards = [];
-  const result = await G.d.runModelRolesTick({ store: G.store, roles: G.roles, probe: G.d.ompProbe(G.store, G.cfg), now: G.now,
+  const result = await G.d.runModelRolesTick({ store: G.store, roles: G.roles, probe: argv.includes("--no-probes") ? undefined : G.d.ompProbe(G.store, G.cfg), now: G.now, // --no-probes: dev only, with --only 5 (no quota)
+   
     notify: (t) => notices.push(t), card: (c) => cards.push(c) });
   G.tick = { result, notices, cards, probes: probesAfter(G.mark), after: tierRows() };
   note(`tick ran=${result.ran} probes=${G.tick.probes.length} notices=${notices.length} cards=${cards.length}`);
@@ -194,19 +195,24 @@ async function line5() {
   const cards = G.tick.cards;
   const c = cards[0];
   const one = cards.length === 1 && c.tier === "gemini-pro" && canon(c.keys) === canon(["judges:2"]) && c.proposals[0] === PROPOSAL;
-  let rowOk = false; let n = -1;
+  let rowOk = false; let total = -1; let added = -1;
   if (one) {
     const date = G.d.formatInstantInZone(G.now, G.d.resolveDisplayZone(process.env)).slice(0, 10);
     const target = `model_tier_card:gemini-pro:${date}`;
-    const before = outboxByKey(target).length; // the copy may hold historical cards; only this run's change counts
+    // Dev seams, off by default: a card the daemon already sent today (pre-existing in the copy) and a duplicate under another key.
+    if (argv.includes("--sim-existing-card")) G.d.enqueueTierCard(G.store, STUB_CHAT, G.now, c);
+    const before = outboxByKey(`${target}%`).length; // the copy may already hold today's card; the key is idempotent
     G.d.enqueueTierCard(G.store, STUB_CHAT, G.now, c);
-    const found = outboxByKey(target);
-    n = found.length - before;
-    const r = found[found.length - 1];
-    rowOk = n === 1 && r.key === `model_tier_card:gemini-pro:${date}` && r.payload.text === G.d.tierCardText(c)
+    if (argv.includes("--sim-duplicate-card")) {
+      G.store.enqueueNotification({ target: { kind: "telegram", chat_id: STUB_CHAT }, intent_type: "progress", idempotency_key: `${target}-dup`, correlation_id: "model-roles", payload: { text: G.d.tierCardText(c) } });
+    }
+    const found = outboxByKey(`${target}%`);
+    total = found.length; added = total - before;
+    const r = found.find((x) => x.key === target);
+    rowOk = total === 1 && added <= 1 && r !== undefined && r.payload.text === G.d.tierCardText(c)
       && r.payload.button_rows?.[0]?.[0]?.data === G.d.tierCallbackData("gemini-pro", PROPOSAL);
   }
-  return { ok: one && rowOk, detail: `cards=${cards.length} (want 1) tier=${c?.tier ?? "none"} keys=[${c?.keys ?? ""}] first_proposal_is_${PROPOSAL}=${c?.proposals?.[0] === PROPOSAL} card_outbox_rows=${n} row_exact=${rowOk}` };
+  return { ok: one && rowOk, detail: `cards=${cards.length} (want 1) tier=${c?.tier ?? "none"} keys=[${c?.keys ?? ""}] first_proposal_is_${PROPOSAL}=${c?.proposals?.[0] === PROPOSAL} card_rows_for_key=${total} (want 1, pre-existing or new) added_by_run=${added} (want <=1) row_exact=${rowOk}` };
 }
 
 // ---- line 6: a simulated tap probes the proposal, writes the override, and judges:2 gets a head ----
