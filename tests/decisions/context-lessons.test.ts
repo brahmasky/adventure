@@ -38,6 +38,11 @@ describe("context.lessons (spec R5 §4.3)", () => {
     expect([r.verdict, r.reason]).toEqual(["none", "render_failed"]);
     expect(rows).toEqual([{ entry_id: "context.lessons", verdict: "none", reason_code: "render_failed", rung: "rule", run_id: "r" }]);
   });
+  it("{3,0,true} → none/render_failed: a failed render outranks the rendered count", () => {
+    const { r, rows } = run({ rendered: 3, skipped: 0, failed: true });
+    expect([r.verdict, r.reason]).toEqual(["none", "render_failed"]);
+    expect(rows).toEqual([{ entry_id: "context.lessons", verdict: "none", reason_code: "render_failed", rung: "rule", run_id: "r" }]);
+  });
   it("a throwing rule records its fail verdict (full) at the fail rung: one row, the only trace (spec §4.6)", () => {
     const { r, rows } = run({ rendered: 2, skipped: 1, failed: false }, throwing);
     expect([r.verdict, r.rung, r.fallbackReason]).toEqual(["full", "fail", "threw"]);
