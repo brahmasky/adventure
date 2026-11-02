@@ -7,8 +7,12 @@ import {
   resetEvolutionLaneForTests,
   tryStartEvolutionPipeline
 } from "../../src/core/evolution-lane.js";
+import { readFileSync } from "node:fs";
+import { parseOmpCatalog } from "../../src/omp/model-catalog.js";
+import type { ProbeFn } from "../../src/omp/model-probe.js";
+import { tierCallbackData } from "../../src/gateway/model-tier-commands.js";
 import { parseRatingHistory, RunStore } from "../../src/run/run-store.js";
-import { invariantSweepInput, JEV_JOB_SHUTDOWN_CAP_MS, runTelegramDaemon as runDaemon, settledWithin, sweepAndRearm } from "../../src/telegram/telegram-daemon.js";
+import { invariantSweepInput, JEV_JOB_SHUTDOWN_CAP_MS, TIER_TAP_SHUTDOWN_CAP_MS, runTelegramDaemon as runDaemon, settledWithin, sweepAndRearm } from "../../src/telegram/telegram-daemon.js";
 import { jevJobSettled, resetJevJobForTests } from "../../src/decisions/jev-version-job.js";
 import type { JevResult } from "../../src/jev/jev-client.js";
 import { seedJevAnchor } from "../helpers/jev-anchor.js";
@@ -56,6 +60,8 @@ const PINNED_ENV = [
 ] as const;
 let savedEnv: Record<string, string | undefined> = {};
 beforeEach(() => {
+  // These cases assert the chat's exact traffic; the daily roles tick's empty-tier card (the fake omp's catalog has no pro tier) is not under test here.
+  process.env.HOUGE_MODEL_ROLES = "static";
   savedEnv = {};
   for (const key of PINNED_ENV) {
     savedEnv[key] = process.env[key];
@@ -1200,6 +1206,7 @@ describe("the daemon's sweep wiring (M9)", () => {
   // Decision 4 / spec §4: the daemon reads omp's catalog once before the first turn. An unreadable catalog must be
   // visible (one ledger note) and must leave every role on its code list, never an empty chain.
   it("boot reads omp's model catalog once before the first poll; an unreadable catalog leaves one note", async () => {
+    process.env.HOUGE_MODEL_ROLES = "resolved"; // the catalog read is the subject (the suite default is static)
     const store = RunStore.openInMemory();
     const root = projectRoot();
     try {
@@ -1213,6 +1220,7 @@ describe("the daemon's sweep wiring (M9)", () => {
   });
 
   it("a readable catalog at boot leaves no unavailable note", async () => {
+    process.env.HOUGE_MODEL_ROLES = "resolved"; // the catalog read is the subject (the suite default is static)
     const store = RunStore.openInMemory();
     const root = projectRoot();
     try {
@@ -1474,6 +1482,42 @@ describe("runTelegramDaemon — shutdown during a slow tick (live 2026-10-02 01:
       expect(store.getActiveEpisodicFacts("222").map((f) => f.fact)).toEqual(["Paco owns a car"]);
     } finally {
       store.close();
+    }
+  });
+  it("a stop aborts an in-flight empty-tier tap probe: the daemon exits within the shutdown cap and no model_probe row exists (review W5)", async () => {
+    vi.stubEnv("HOUGE_MODEL_ROLES", "static"); // the daily tick stays idle: only the tap probes
+    const store = RunStore.openInMemory();
+    const controller = new AbortController();
+    const root = projectRoot();
+    const catalog = parseOmpCatalog(readFileSync(new URL("../fixtures/omp-catalog-2026-11-02.json", import.meta.url).pathname, "utf8"))!;
+    const roles = new RoleResolver({ store, env: () => ({ HOUGE_MODEL_ROLES: "resolved" }), readCatalog: async () => catalog });
+    let probing = false;
+    // Settles only when the daemon's stop reaches it: a probe that ignored the signal would be held to the cap instead.
+    const modelProbe: ProbeFn = (_sel, signal) => { probing = true; return new Promise((r) => signal?.addEventListener("abort", () => r("aborted"), { once: true })); };
+    const tapUpdate = { update_id: 90, callback_query: { id: "cbq_tier", from: { id: 111 }, message: { message_id: 5, chat: { id: 222 } }, data: tierCallbackData("gemini-pro", "gemini-4-argon") } };
+    let calls = 0;
+    try {
+      const t0 = Date.now(); let stoppedAt = 0;
+      await runTelegramDaemon({
+        store, projectRoot: root, omp: { ...fakeOmp(root), roles }, allowlist: ALLOWLIST, stopSignal: controller.signal, longPollTimeoutSeconds: 0, modelProbe,
+        llmAdapter: async (input) => okAnswer(input),
+        telegramClient: {
+          getUpdates: async () => {
+            calls += 1;
+            if (calls === 1) return [tapUpdate];
+            await until(() => probing); stoppedAt = Date.now(); controller.abort(); return [];
+          },
+          sendMessage: async () => ({ message_id: 1 })
+        }
+      });
+      expect(probing).toBe(true);
+      expect(Date.now() - stoppedAt).toBeLessThan(TIER_TAP_SHUTDOWN_CAP_MS + 1_000);
+      expect(Date.now() - t0).toBeGreaterThan(0);
+      expect(store.getLedgerEvents().filter((e) => e.event_type === "model_probe")).toEqual([]);
+      expect(store.latestModelRoleOverrides().has("judges:2")).toBe(false);
+    } finally {
+      store.close();
+      vi.unstubAllEnvs();
     }
   });
 });

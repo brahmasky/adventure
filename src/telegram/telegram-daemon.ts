@@ -16,8 +16,9 @@ import { newestMtimeMs } from "../capabilities/self-write-merge.js";
 import { maybeAskSessionRating } from "../capabilities/session-rating.js";
 import { CoreWorker, type OmpWorkerOptions } from "../core/core-worker.js";
 import { resolveOmpConfig, warnRetiredOmpChainVars } from "../omp/omp-config.js";
-import { ompProbe } from "../omp/model-probe.js";
-import { runModelRolesTick, type ModelRolesTickInput } from "../omp/model-roles-tick.js";
+import { ompProbe, type ProbeFn } from "../omp/model-probe.js";
+import { enqueueTierCard } from "../gateway/model-tier-commands.js";
+import { runModelRolesTick, type EmptyTierCard, type ModelRolesTickInput } from "../omp/model-roles-tick.js";
 import { createOmpProbeRunner, type OmpProbeRunner } from "../omp/omp-probe-runner.js";
 import { sharedOmpVersionCache } from "../omp/omp-version-cache.js";
 import { stableHash } from "../domain/canonical.js";
@@ -111,6 +112,8 @@ export interface RunTelegramDaemonOptions {
    * plus the contained codex/claude spawn seats via {@link buildPanelSeatBindings}.
    */
   panelSeats?: PanelSeatBindings;
+  /** Injectable for tests ONLY: the empty-tier tap's probe. Prod omits it and gets ompProbe. */
+  modelProbe?: ProbeFn;
   /** omp planner turns: the data dir (houge.sqlite's directory, default projectRoot) and dist dir. Tests use tmp dirs. */
   omp?: OmpWorkerOptions;
   /** How often detached turns' notifications (approval cards, replies) are flushed between polls (default 1 s). */
@@ -223,7 +226,8 @@ export async function runTelegramDaemon(
     options.projectRoot,
     undefined,
     options.requestShutdown ? { requestShutdown: options.requestShutdown } : {},
-    { dataDir: options.omp?.dataDir ?? options.projectRoot, roles: worker.modelRoles() }
+    { dataDir: options.omp?.dataDir ?? options.projectRoot, roles: worker.modelRoles(),
+      modelProbe: options.modelProbe ?? lazyTapProbe(options.store), stopSignal: options.stopSignal }
   );
   // Model roles (spec 2026-10-06 §4): one catalog read before the first turn, bounded by CATALOG_TIMEOUT_MS. A failed
   // read leaves one ledger note and the roles on their lists (Decision 4); the poll loop retries it hourly (F14).
@@ -379,6 +383,7 @@ export async function runTelegramDaemon(
   clearInterval(pump);
   clearInterval(recovery);
   await worker.shutdownPlanners();
+  await settledWithin(gateway.whenTierTapsSettled(), TIER_TAP_SHUTDOWN_CAP_MS);
   await settledWithin(jevJobSettled(), JEV_JOB_SHUTDOWN_CAP_MS); // capped: the check resumes from its rows, the flush and the evolution lane must not wait on Jev
   await flushLogged();
 
@@ -399,6 +404,12 @@ export async function runTelegramDaemon(
 export const OUTBOX_INCIDENT_WINDOW_MS = 10 * 60_000;
 /** Shutdown waits at most this long for the Jev version check (launchd's ExitTimeOut is 40 s; the check is resumable). */
 export const JEV_JOB_SHUTDOWN_CAP_MS = 5_000;
+
+/** The tap's probe, built per call: a malformed omp config must still reach the boot check's incident, not throw at Gateway construction. */
+const lazyTapProbe = (store: RunStore): ProbeFn => (selector, signal) => ompProbe(store, resolveOmpConfig(process.env))(selector, signal);
+
+/** Shutdown waits at most this long for in-flight empty-tier taps: a probe aborted by the stop settles at once; the cap only bounds a probe that ignores its signal. */
+export const TIER_TAP_SHUTDOWN_CAP_MS = 5_000;
 
 /** Resolves when `p` settles or after `ms`, whichever is first; a rejection is swallowed; the timer never holds the process. Exported for its test. */
 export function settledWithin(p: Promise<void>, ms: number): Promise<void> {
@@ -683,8 +694,8 @@ async function runModelTicks(
 }
 
 /** The roles tick's input (plan P26: the daemon always passes the probe and the resolver's catalog). Exported for the wiring test. */
-export function modelRolesTickInput(store: RunStore, roles: RoleResolver, now: string, notify: (text: string) => void, signal: AbortSignal): ModelRolesTickInput {
-  return { store, roles, probe: ompProbe(store, resolveOmpConfig(process.env)), now, signal, notify };
+export function modelRolesTickInput(store: RunStore, roles: RoleResolver, now: string, notify: (text: string) => void, signal: AbortSignal, card?: ModelRolesTickInput["card"]): ModelRolesTickInput {
+  return { store, roles, probe: ompProbe(store, resolveOmpConfig(process.env)), now, signal, notify, ...(card ? { card } : {}) };
 }
 
 /**
@@ -702,8 +713,9 @@ async function runRolesTick(
       idempotency_key: `model_roles:notice:${now}:${stableHash(text)}`, correlation_id: "model-roles", payload: { text }
     });
   };
+  const card = (c: EmptyTierCard): void => { if (chatId) enqueueTierCard(options.store, chatId, now, c); };
   try {
-    await runModelRolesTick(modelRolesTickInput(options.store, worker.modelRoles(), now, notify, signal));
+    await runModelRolesTick(modelRolesTickInput(options.store, worker.modelRoles(), now, notify, signal, card));
   } catch (error) {
     console.error(`[telegram-daemon] model roles tick failed: ${errorCode(error)}`);
   }

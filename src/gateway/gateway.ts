@@ -48,6 +48,8 @@ import { resolveQuietTriageOverrides } from "../jev/jev-incidents.js";
 import { handleDecisionReview } from "./decision-commands.js";
 import { handleImprovementTap } from "./improvement-commands.js";
 import { handleJevAcceptTap } from "./jev-accept-commands.js";
+import { handleModelTierTap, type TierTapDeps } from "./model-tier-commands.js";
+import type { ProbeFn } from "../omp/model-probe.js";
 import { decideSync } from "../decisions/decide.js";
 import { TURN_CONTRACT } from "../decisions/entries/turn-contract.js";
 import { INTAKE_BUDGET_FUSE } from "../decisions/entries/intake-budget-fuse.js";
@@ -88,6 +90,7 @@ export type GatewayIntakeResult =
   | { ok: true; status: "decision_reviewed"; run_id: string }
   | { ok: true; status: "improvement_tapped"; run_id: string }
   | { ok: true; status: "jev_accept_tapped"; run_id: string }
+  | { ok: true; status: "model_tier_tapped"; run_id: string }
   | { ok: true; status: "memories_returned"; run_id: string }
   | { ok: true; status: "memory_forgotten"; run_id: string }
   | { ok: true; status: "models_returned"; run_id: string }
@@ -148,7 +151,7 @@ const boundedEcho = (text: string): string => (text.length > CONTRACT_REFUSAL_EC
 const LOW_RATING_MAX = 1;
 
 /** ADR 0018 + decision ladder plan ruling 16: commands the per-chat rate limit never delays (kill; digest review taps). */
-export const RATE_LIMIT_EXEMPT: ReadonlySet<string> = new Set(["kill", "decision_review", "improvement_tap", "jev_accept_tap"]);
+export const RATE_LIMIT_EXEMPT: ReadonlySet<string> = new Set(["kill", "decision_review", "improvement_tap", "jev_accept_tap", "model_tier_tap"]); // + empty-tier card taps (spec 2026-11-02 §4.4)
 
 export class Gateway {
   private readonly caps: GlobalBudgetCaps;
@@ -159,13 +162,18 @@ export class Gateway {
   /** Lazy, like CoreWorker's (core-worker.ts:560): the intake entries' rows have no run (spec 2026-10-30 R1 §4). No env: a record failure pages HOUGE_TELEGRAM_CHAT_ID. Injectable for the differential and the gate (spec R2 §4.2). */
   private get decisionRecorder(): DecisionRecorder { return (this.recorderCache ??= this.options.decisionRecorder ?? storeRecorder(this.runStore)); }
 
+  /** Empty-tier taps in flight (plan P16): the probe runs off the intake path; tests, gates and shutdown await them. */
+  private readonly tierTaps = new Set<Promise<void>>();
+  whenTierTapsSettled(): Promise<void> { return Promise.all([...this.tierTaps]).then(() => undefined); }
+  private trackTierTap = (p: Promise<void>): void => { this.tierTaps.add(p); void p.finally(() => this.tierTaps.delete(p)); };
+
   constructor(
     private readonly runStore: RunStore,
     caps?: GlobalBudgetCaps,
     projectRoot?: string,
     skillStore?: SkillStore,
     hooks?: GatewayHooks,
-    private readonly options: { dataDir?: string; roles?: ModelsRoles; decisionRecorder?: DecisionRecorder } = {}
+    private readonly options: { dataDir?: string; roles?: ModelsRoles; decisionRecorder?: DecisionRecorder; modelProbe?: ProbeFn; stopSignal?: AbortSignal } = {}
   ) {
     this.caps = caps ?? resolveGlobalBudgetCaps(process.env);
     this.projectRoot = projectRoot ?? process.cwd();
@@ -173,6 +181,11 @@ export class Gateway {
     // injectable so tests point at a temp dir.
     this.skillStore = skillStore ?? new SkillStore({ root: join(this.projectRoot, "skills") });
     this.hooks = hooks ?? {};
+  }
+
+  private tierTapDeps(): TierTapDeps {
+    return { ...(this.options.roles ? { roles: this.options.roles } : {}), ...(this.options.modelProbe ? { probe: this.options.modelProbe } : {}),
+      ...(this.options.stopSignal ? { signal: this.options.stopSignal } : {}), track: this.trackTierTap };
   }
 
   intake(inbound: TypedTaskEvent, now: string = new Date().toISOString()): GatewayIntakeResult {
@@ -219,6 +232,7 @@ export class Gateway {
     if (event.type === "decision_review") return this.accepted(event, now, handleDecisionReview(this.runStore, event, now));
     if (event.type === "improvement_tap") return this.accepted(event, now, handleImprovementTap(this.runStore, this.skillStore, event, now));
     if (event.type === "jev_accept_tap") return this.accepted(event, now, handleJevAcceptTap(this.runStore, event, now));
+    if (event.type === "model_tier_tap") return this.accepted(event, now, handleModelTierTap(this.runStore, this.tierTapDeps(), event, now));
 
     if (event.type === "status") {
       return this.handleStatus(event, now);

@@ -375,6 +375,15 @@ export function parseJevAcceptCallback(data: unknown): { model_hash: string; gen
   return m ? { model_hash: m[1]!, generation: Number(m[2]) } : null;
 }
 
+const MODEL_TIER_CB = /^mt:([a-z@-]{1,24}):(?:([0-9a-f]{12}):use|no)$/;
+
+/** An empty-tier card's tap (spec 2026-11-02 §4.4): the tier and the proposal's hash, or null for "Not now". */
+export function parseModelTierCallback(data: unknown): { tier: string; hash: string | null } | null {
+  if (typeof data !== "string") return null;
+  const m = MODEL_TIER_CB.exec(data);
+  return m ? { tier: m[1]!, hash: m[2] ?? null } : null;
+}
+
 type SplitShellWordsResult = { ok: true; words: string[] } | { ok: false; error: { code: "TELEGRAM_COMMAND_INVALID"; message: string } };
 
 function splitShellWords(input: string): SplitShellWordsResult {

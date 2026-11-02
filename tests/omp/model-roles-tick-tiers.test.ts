@@ -162,3 +162,23 @@ describe("daemon wiring", () => {
     expect(typeof input.roles.catalog).toBe("function");
   });
 });
+
+describe("empty-tier cards (spec §4.4)", () => {
+  it("one card a day for gemini-pro, naming judges:2, proposals by price; none once an override fills the seat", async () => {
+    const r = roles(); const cards: unknown[] = [];
+    const run = (now: string) => runModelRolesTick({ store, roles: r, now, notify: () => {}, card: (c) => cards.push(c) });
+    await run(day(0));
+    expect(cards).toEqual([{ tier: "gemini-pro", keys: ["judges:2"], proposals: ["gemini-4-argon", "gpt-oss-120b"] }]);
+    await run(day(1));
+    expect(cards).toHaveLength(2);
+    store.recordModelRoleOverride({ key: "judges:2", pattern: "gemini-4-argon", actor: "paco" });
+    await run(day(2));
+    expect(cards).toHaveLength(2);
+  });
+  it("a tier that empties but leaves every key resolved sends no card (P15)", async () => {
+    const r = roles(); const cards: unknown[] = [];
+    catalog = () => FIX().filter((m) => !(m.provider === "google-antigravity" && m.id === "claude-sonnet-5-5"));
+    await runModelRolesTick({ store, roles: r, now: day(0), notify: () => {}, card: (c) => cards.push(c) });
+    expect(cards.map((c) => (c as { tier: string }).tier)).toEqual(["gemini-pro"]);
+  });
+});

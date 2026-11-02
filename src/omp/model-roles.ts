@@ -66,6 +66,13 @@ export function keysOfTier(tier: TierId): Array<RoleName | `judges:${number}`> {
   return [...roles, ...seats];
 }
 
+/** The keys `tier` alone serves (plan P15): judge seats bound to it, and roles whose every leg is it. An empty-tier card names these. */
+export function soleKeysOf(tier: TierId): Array<RoleName | `judges:${number}`> {
+  const roles = ROLE_NAMES.filter((r) => r !== "judges" && ROLE_LEGS[r].every((l) => l.tier === tier));
+  const seats = ROLE_LEGS.judges.flatMap((l, i): Array<`judges:${number}`> => (l.tier === tier ? [`judges:${i}`] : []));
+  return [...roles, ...seats];
+}
+
 /**
  * The lists `static` mode runs (spec 2026-11-02 §4.3, D4-A: the rollback switch): re-pinned at this ship to the seeded tier
  * heads, gpt-5.5 -> gpt-6.1-sol. Static adds no model: Fast and Thinking are the Default list. Judge seat 2 has no static

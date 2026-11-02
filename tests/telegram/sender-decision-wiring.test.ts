@@ -11,7 +11,7 @@ pinOmpEnv();
 // P11: an armed ambient flag sends unrelated operator alerts, so silence is asserted to the sender's chat (222) only.
 const PINNED = ["HOUGE_TELEGRAM_CHAT_ID", "HOUGE_SCHEDULER_ENABLED", "HOUGE_RADAR_ENABLED", "HOUGE_RADAR_PANEL_ENABLED", "HOUGE_MEDIA_INGEST_ENABLED", "HOUGE_LLM_MEDIA_PROVIDERS"];
 const savedEnv = new Map<string, string | undefined>();
-beforeEach(() => { for (const k of PINNED) { savedEnv.set(k, process.env[k]); delete process.env[k]; } });
+beforeEach(() => { process.env.HOUGE_MODEL_ROLES = "static"; /* the empty-tier card is not under test: exact chat traffic is */ for (const k of PINNED) { savedEnv.set(k, process.env[k]); delete process.env[k]; } });
 afterEach(() => { for (const [k, v] of savedEnv) { if (v === undefined) delete process.env[k]; else process.env[k] = v; } savedEnv.clear(); });
 
 const ALLOW = { users: [{ telegram_user_id: 111, identity_id: "paco" }], chats: [{ telegram_chat_id: 222, label: "p", allowed_identity_ids: ["paco"] }] };

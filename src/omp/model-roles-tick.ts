@@ -4,8 +4,8 @@ import type { ModelProbeKind, ModelRolesResolvedRow, RunStore } from "../run/run
 import type { ResolvedRole, RoleResolver } from "./role-resolver.js";
 import { escapeForTelegram } from "../capabilities/text-hygiene.js";
 import type { ProbeFn, ProbeOutcome } from "./model-probe.js";
-import { keysOfTier, resolveModelRolesMode, staticSelectorKeys, type CatalogModel } from "./model-roles.js";
-import { isTierId, type TierId } from "./model-tiers.js";
+import { keysOfTier, resolveModelRolesMode, soleKeysOf, staticSelectorKeys, type CatalogModel } from "./model-roles.js";
+import { isTierId, proposalsFor, tierDef, type TierId } from "./model-tiers.js";
 import { applyProbe, planTier, selectorOf, type TierPlan, type TierState } from "./tier-step.js";
 
 /**
@@ -29,7 +29,11 @@ export interface ModelRolesTickInput {
   now: string;
   signal?: AbortSignal;
   notify: (text: string) => void;
+  /** Spec §4.4: an empty tier whose sole keys have no head asks Paco (the daemon enqueues the card). */
+  card?: (c: EmptyTierCard) => void;
 }
+
+export interface EmptyTierCard { tier: TierId; keys: string[]; proposals: string[] }
 
 /**
  * Spec 2026-11-02 §4.2: read the catalog, plan each tier, probe outside any transaction (one at a time), then commit the
@@ -80,7 +84,16 @@ function settle(i: ModelRolesTickInput, catalogOk: boolean, catalog: readonly Ca
   for (const line of shadowLines(i.store, roles, written.moved)) i.notify(line);
   const unresolved = syncUnresolved(i.store, roles, i.now);
   if (catalog) syncStaticStale(i.store, catalog, i.now);
+  if (catalog && i.card) for (const c of emptyTierCards(written.empty, roles, catalog, i.now)) i.card(c);
   return { ran: true, changed: changed.map((c) => c.key), unresolved };
+}
+
+/** Spec §4.4 / P15: an empty tier whose sole keys still have no head asks Paco; the tick runs once a day, so one card a day. */
+function emptyTierCards(empty: readonly TierId[], roles: ResolvedRole[], catalog: readonly CatalogModel[], now: string): EmptyTierCard[] {
+  return empty.flatMap((tier) => {
+    const keys = soleKeysOf(tier).filter((k) => roles.find((r) => r.key === k)?.head === null);
+    return keys.length === 0 ? [] : [{ tier, keys, proposals: proposalsFor(tierDef(tier), catalog, Date.parse(now)) }];
+  });
 }
 
 const STATIC_STALE: ReadonlySet<string> = new Set(["static_list_stale"]);
@@ -96,23 +109,24 @@ function syncStaticStale(store: RunStore, catalog: readonly CatalogModel[], now:
   for (const open of store.listOpenIncidents()) if (open.kind === "static_list_stale" && !pinned.includes(open.subject)) store.resolveIncident(open.incident_id, now);
 }
 
-interface Written { failed: Array<{ selector: string; stay: string | null }>; moved: Array<{ tier: TierId; head: string }> }
+interface Written { failed: Array<{ selector: string; stay: string | null }>; moved: Array<{ tier: TierId; head: string }>; empty: TierId[] }
 
 function writeTiers(i: ModelRolesTickInput, plans: readonly TierPlan[], outcomes: ReadonlyArray<ProbeOutcome | null>): Written {
-  const w: Written = { failed: [], moved: [] };
+  const w: Written = { failed: [], moved: [], empty: [] };
   plans.forEach((p, n) => {
     const o = outcomes[n] ?? null;
     if (p.probe && o) i.store.recordModelProbe({ tier: p.state.tier, selector: p.probe.selector, purpose: p.probe.purpose, result: o.result, kind: ledgerKind(o.kind) });
     const next = applyProbe(p, o, i.now);
     if (!sameTier(next, p.before)) i.store.writeModelTier(next, i.now); // review suggestion: an unchanged tier keeps its row and updated_at
     if (p.probe && o?.result === "model_missing") w.failed.push({ selector: p.probe.selector, stay: selectorOf(next.tier, next.adopted) });
+    if (next.adopted === null) w.empty.push(next.tier);
     if (next.adopted !== null && next.adopted !== p.before.adopted) w.moved.push({ tier: next.tier, head: selectorOf(next.tier, next.adopted)! });
   });
   return w;
 }
 
 /** The ledger takes closed codes only; the probe's own labels (empty, unavailable, threw) are "other" there. */
-const ledgerKind = (k: string): ModelProbeKind => ((MODEL_PROBE_KINDS as readonly string[]).includes(k) ? (k as ModelProbeKind) : "other");
+export const ledgerKind = (k: string): ModelProbeKind => ((MODEL_PROBE_KINDS as readonly string[]).includes(k) ? (k as ModelProbeKind) : "other");
 
 const sameTier = (a: TierState, b: TierState): boolean => a.adopted === b.adopted && a.previous === b.previous && a.adopted_at === b.adopted_at
   && a.rejected_selector === b.rejected_selector && a.rejected_at === b.rejected_at;
