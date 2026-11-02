@@ -803,7 +803,8 @@ export class PlannerSupervisor {
 
   /**
    * Security re-review 1: every rise is persisted at once, so a daemon that dies mid-turn (crash, OOM, SIGKILL) still leaves
-   * the transcript's level behind. Monotone here: it never lowers a stored level (only endTrust, at a turn end, may).
+   * the transcript's level behind. Monotone here: it never lowers a stored level (only endTrust, at a turn end, may). It
+   * persists the in-turn level; endTrust lowers it to the carry level at the turn end (plan P20).
    */
   private persistRise(level: TrustLevel): void {
     const { store, chatId } = this.d;
@@ -813,8 +814,9 @@ export class PlannerSupervisor {
   }
 
   /**
-   * Every turn end: turn_trust_final once, then (a dispatched turn only) the level the transcript now carries. A fresh
-   * transcript that was never committed is not the one a respawn resumes, so the old level is kept unless this one is higher.
+   * Every turn end: turn_trust_final once, then (a dispatched turn only) the level the transcript now carries — the carry
+   * level (D2-A, spec 2026-11-02 §6.1), not the in-turn level. A fresh transcript that was never committed is not the one a
+   * respawn resumes, so the old level is kept unless this one carries higher.
    */
   private endTrust(t: Turn): void {
     const trust = t.active.trust;
@@ -822,9 +824,10 @@ export class PlannerSupervisor {
     if (!trust || !t.dispatched) return;
     const { store, chatId } = this.d;
     try {
+      const carry = trust.carryLevel();
       const stored = store.getTranscriptTrust(chatId);
-      const keepOld = t.freshTranscript && !t.committedFresh && (stored === "untrusted" || stored === "hostile") && rankOf(stored) > rankOf(trust.level());
-      store.setTranscriptTrust(chatId, keepOld ? stored : trust.level(), new Date().toISOString());
+      const keepOld = t.freshTranscript && !t.committedFresh && (stored === "untrusted" || stored === "hostile") && rankOf(stored) > rankOf(carry);
+      store.setTranscriptTrust(chatId, keepOld ? stored : carry, new Date().toISOString());
     } catch (e) {
       console.error(`planner supervisor: transcript_trust_not_written (${message(e)})`);
     }

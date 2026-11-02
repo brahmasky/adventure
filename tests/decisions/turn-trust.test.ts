@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { entryById, entryProblems } from "../../src/decisions/registry.js";
-import { CAUSE_LEVEL, TRUST_ORDER, trustRule, type TrustCause, type TrustLevel } from "../../src/decisions/entries/turn-trust.js";
+import { CARRY_LEVEL, CAUSE_LEVEL, TRUST_ORDER, trustRule, type TrustCause, type TrustLevel } from "../../src/decisions/entries/turn-trust.js";
 import { HOSTILE_CARD_TEXT, resolveTrustAskTtlMs, TRUST_ASK_TTL_DEFAULT_MS, TurnTrust, turnTrustFinal } from "../../src/decisions/trust.js";
 import type { AnyEntry } from "../../src/decisions/types.js";
 import { RunStore } from "../../src/run/run-store.js";
@@ -106,5 +106,46 @@ describe("turn.trust", () => {
     trust.raise("injection_withheld");
     for (const cause of causes) trust.raise(cause);
     expect(trust.level()).toBe("hostile");
+  });
+});
+
+// Spec 2026-11-02 §6.1 (D2-A, senior B1): a caught, withheld passage never reached the planner, so after the turn the
+// transcript carries `untrusted`, not `hostile` — but only when the withhold is the turn's ONLY hostile cause. raise() used to
+// drop a cause that did not raise the level, so a withhold followed by unjudged outside text was indistinguishable.
+describe("carry level (D2-A)", () => {
+  const carryOf = (causes: TrustCause[], carried: string | null = null) => {
+    const { trust } = setup(); trust.carry(carried); for (const c of causes) trust.raise(c, "tc"); return [trust.level(), trust.carryLevel()];
+  };
+  it("withhold only → hostile in the turn, untrusted carried", () => expect(carryOf(["injection_withheld"])).toEqual(["hostile", "untrusted"]));
+  it("withhold, then unjudged outside text (bridge-handler.ts:539/540) → hostile carried", () => expect(carryOf(["injection_withheld", "unjudged_outside"])).toEqual(["hostile", "hostile"]));
+  it("withhold, then a judgement lost on outside text → hostile carried", () => expect(carryOf(["injection_withheld", "judge_lost_outside"])).toEqual(["hostile", "hostile"]));
+  it("a carried-hostile turn that withholds still carries hostile (D2 alone never lowers today's transcript)", () => expect(carryOf(["injection_withheld"], "hostile")).toEqual(["hostile", "hostile"]));
+  it("untrusted causes carry untrusted; nothing carries clean", () => {
+    expect(carryOf(["unjudged_local", "judge_timeout"])).toEqual(["untrusted", "untrusted"]);
+    expect(carryOf([])).toEqual(["clean", "clean"]);
+  });
+  it("in the turn nothing changes: one turn_trust row per rise, none for the non-rising second cause", () => {
+    const { trust, events } = setup(); trust.raise("injection_withheld", "a"); trust.raise("unjudged_outside", "b");
+    expect(events("turn_trust")).toEqual([{ level: "hostile", cause: "injection_withheld" }]);
+  });
+  it("a cause asked after finalize is not kept", () => {
+    const { trust } = setup(); trust.raise("injection_withheld"); trust.finalize(); trust.raise("unjudged_outside");
+    expect(trust.carryLevel()).toBe("untrusted");
+  });
+  it("CARRY_LEVEL differs from CAUSE_LEVEL only at injection_withheld", () => {
+    expect(Object.keys(CAUSE_LEVEL).filter((c) => CARRY_LEVEL[c as TrustCause] !== CAUSE_LEVEL[c as TrustCause])).toEqual(["injection_withheld"]);
+  });
+});
+
+// Spec 2026-11-02 §6.4 (D3-A): the turn that read the text paged; a schedule turn that only carries it pages nothing (the
+// 10-31 and 11-01 mornings each re-paged the same event).
+describe("D3-A", () => {
+  it("a carried-hostile schedule turn opens no hostile_schedule_turn and queues no page", () => {
+    const sc = setup("schedule"); sc.trust.carry("hostile");
+    expect(sc.store.getLedgerEvents().filter((e) => e.event_type === "incident_opened")).toEqual([]);
+  });
+  it("a schedule turn that itself raises hostile still pages once", () => {
+    const sc = setup("schedule"); sc.trust.raise("injection_withheld");
+    expect(sc.store.getLedgerEvents().filter((e) => e.event_type === "incident_opened").map((e) => (e.payload as { kind: string }).kind)).toEqual(["hostile_schedule_turn"]);
   });
 });

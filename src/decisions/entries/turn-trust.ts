@@ -20,6 +20,12 @@ export type TrustCause = "wall_read" | "shell_netread" | "judge_timeout" | "inje
 export const CAUSE_LEVEL: Readonly<Record<TrustCause, TrustLevel>> = { wall_read: "untrusted", shell_netread: "untrusted", judge_timeout: "untrusted",
   injection_withheld: "hostile", unjudged_outside: "hostile", unjudged_local: "untrusted", judge_lost_outside: "hostile",
   carried_untrusted: "untrusted", carried_hostile: "hostile" };
+/**
+ * D2-A (spec 2026-11-02 §6.1): the level a cause leaves on the planner transcript after its turn. A withheld passage was
+ * replaced by WITHHELD_TEXT before the planner saw it, so it carries `untrusted`; every other cause carries its own level.
+ * The turn itself is unchanged: CAUSE_LEVEL still sets the in-turn level.
+ */
+export const CARRY_LEVEL: Readonly<Record<TrustCause, TrustLevel>> = { ...CAUSE_LEVEL, injection_withheld: "untrusted" };
 export interface TurnTrustState { current: TrustLevel; cause: TrustCause }
 
 export const rankOf = (l: TrustLevel): number => TRUST_ORDER.indexOf(l);
