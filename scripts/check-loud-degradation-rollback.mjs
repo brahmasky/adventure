@@ -32,7 +32,8 @@ const TINY_TO = "kimi-code/k3:low";
 const SET_PINS = ["HOUGE_TOMBSTONE_PATH", "HOUGE_DISARM_PATH", "HOUGE_TELEGRAM_CHAT_ID"];
 const DELETE_PINS = ["HOUGE_SCHEDULER_ENABLED", "HOUGE_RADAR_ENABLED", "HOUGE_RADAR_PANEL_ENABLED", "HOUGE_MEDIA_INGEST_ENABLED", "HOUGE_LLM_MEDIA_PROVIDERS", "HOUGE_RATING_PENDING_MINUTES", "HOUGE_MODEL_ROLES"];
 /** /status lines whose number the seeding legitimately moves (the seeding wrote ledger events, one tier row, a trust level): compared with the digits masked, named in the detail. */
-const ACTIVITY_LABELS = ["Self-check"]; // the one line whose count the seeding moves (observed; widen only with a reason)
+/** The one /status line whose number the seeding moves: the open-incident count. Only that count is masked, so a changed "swept <age> ago" still fails. Code-owned name for the detail. */
+const COUNT_LINES = [{ name: "self_check_open_incident_count", re: /^(Self-check: swept .+ ago · )\d+( open incidents?)$/ }];
 const failures = [];
 const saved = {};
 const J = (o) => JSON.stringify(o);
@@ -88,9 +89,10 @@ const columnsOf = (path, table) => ro(path, (db) => db.prepare(`PRAGMA table_inf
 const versionsOf = (path) => ro(path, (db) => db.prepare("SELECT version FROM schema_migrations ORDER BY version").all().map((r) => r.version));
 const minus = (a, b) => a.filter((x) => !b.includes(x));
 const objKey = (o) => `${o.type} ${o.name}`;
-const labelOf = (line) => line.replace(/\d+/g, "#").slice(0, 28);
-const maskDigits = (line) => line.replace(/\d+/g, "#");
-const isActivity = (line) => ACTIVITY_LABELS.some((l) => line.startsWith(l) || line.startsWith(`· ${l}`));
+/** The code-owned name of the count line `line` is, or null; `masked` replaces only its count. */
+const countLineOf = (line) => COUNT_LINES.find((c) => c.re.test(line)) ?? null;
+const maskCount = (line) => { const c = countLineOf(line); return c ? line.replace(c.re, "$1#$2") : line; };
+const migrationRowsOf = (path) => ro(path, (db) => db.prepare("SELECT * FROM schema_migrations ORDER BY version").all().map((r) => ({ ...r })));
 
 // ---- this build seeds F ----
 async function loadCatalog(dNew) {
@@ -210,9 +212,9 @@ async function setup() {
 
 async function run(ctx) {
   const { A, F } = ctx;
-  phase = "snapshot"; const before = { objA: objectsOf(A), colsA: columnsOf(A, "planner_session_state"), verA: versionsOf(A) };
+  phase = "snapshot"; const before = { objA: objectsOf(A), colsA: columnsOf(A, "planner_session_state"), verA: versionsOf(A), rowsA: migrationRowsOf(A), rowsF0: migrationRowsOf(F) };
   phase = "seed F"; const seed = await seedF(ctx);
-  const newObjF = objectsOf(F);
+  const newObjF = objectsOf(F); const rowsFSeeded = migrationRowsOf(F);
   await yieldLoop();
   const now = new Date(Date.parse(seed.tickNow) + 30 * 60_000).toISOString(); // one instant for both copies' /status
   phase = "old build on A"; const oa = await oldRender(ctx, A, now);
@@ -225,19 +227,22 @@ async function run(ctx) {
   const addedCols = minus(columnsOf(F, "planner_session_state"), columnsOf(A, "planner_session_state"));
   const addedVers = minus(versionsOf(F), versionsOf(A));
   const removed = minus(objA2.map(objKey), objF2.map(objKey));
-  const oldRan = same(objA2, before.objA) && same(columnsOf(A, "planner_session_state"), before.colsA) && same(versionsOf(A), before.verA) && same(objF2, newObjF);
-  check("schema_stable — the old build opened F without throwing; F minus A is exactly {table model_tiers}, {fresh_requested_at, transcript_trust_at} on planner_session_state, and the two new migration rows; the old build ran no migration of its own",
+  const [rowsA2, rowsF2] = [migrationRowsOf(A), migrationRowsOf(F)];
+  const preExisting = rowsF2.filter((r) => !NEW_VERSIONS.includes(r.version));
+  const rowsKept = same(rowsA2, before.rowsA) && same(rowsF2, rowsFSeeded) && same(preExisting, rowsA2) && same(preExisting, before.rowsF0);
+  const oldRan = rowsKept && same(objA2, before.objA) && same(columnsOf(A, "planner_session_state"), before.colsA) && same(versionsOf(A), before.verA) && same(objF2, newObjF);
+  check("schema_stable — the old build opened F without throwing; F minus A is exactly {table model_tiers}, {fresh_requested_at, transcript_trust_at} on planner_session_state, and the two new migration rows; every pre-existing schema_migrations row (version and applied_at) unchanged by the old build; the old build ran no migration of its own",
     addedObjs.includes("table model_tiers") && addedObjs.every(ownedByTiers) && removed.length === 0 && same([...addedCols].sort(), NEW_COLUMNS) && same([...addedVers].sort(), NEW_VERSIONS) && oldRan,
     `objects +${J(addedObjs)} -${removed.length} · columns +${J(addedCols)} · migrations +${J(addedVers)} · old build migrated A/F: ${!oldRan}`);
   check("models_renders — the old modelsListText (old RoleResolver over the fixture catalog) renders on F and equals A's render (the old build ignores model_tiers)",
     typeof of.models === "string" && of.models.length > 0 && of.models === oa.models, `${of.models.split("\n").length} lines on F, ${oa.models.split("\n").length} on A`);
   const diffs = []; const n = Math.max(oa.status.length, of.status.length);
   for (let i = 0; i < n; i++) if (oa.status[i] !== of.status[i]) diffs.push([oa.status[i] ?? "", of.status[i] ?? ""]);
-  const masked = diffs.filter(([a, f]) => isActivity(a || f) && maskDigits(a) === maskDigits(f));
+  const masked = diffs.filter(([a, f]) => countLineOf(a) !== null && maskCount(a) === maskCount(f));
   const unmasked = diffs.filter((d) => !masked.includes(d));
-  check("status_renders — the old /status for chat 42 renders on F; every line equals A's except the activity counts the seeding added (those compared with digits masked)",
+  check("status_renders — the old /status for chat 42 renders on F; every line equals A's except the open-incident count on the Self-check line (only that count masked; the swept age must match)",
     of.status.length > 0 && oa.status.length === of.status.length && unmasked.length === 0,
-    `${of.status.length} lines · masked counts [${masked.map(([a, f]) => labelOf(a || f)).join(" | ")}]${unmasked.length ? ` · UNEXPECTED [${unmasked.map(([a, f]) => labelOf(a || f)).join(" | ")}]` : ""}`);
+    `${of.status.length} lines · masked counts [${masked.map(([a]) => countLineOf(a).name).join(" | ")}]${unmasked.length ? ` · UNEXPECTED ${unmasked.length} line(s) differ beyond the masked counts` : ""}`);
   phase = "old tick on F"; const tk = await oldTick(ctx, TINY_TO);
   check(`old_change_diff_reads_new_payload — the old runModelRolesTick on F (the new row's keys, tiny moved to ${TINY_TO}, now = the new row + 25 h) returns changed ["tiny"] and exactly one notice, the old changeLine`,
     tk.res.ran === true && same(tk.res.changed, ["tiny"]) && tk.notes.length === 1 && tk.notes[0] === tk.want, `ran ${tk.res.ran} · changed ${J(tk.res.changed)} · notices ${tk.notes.length} · from ${tk.fromHead}`);
