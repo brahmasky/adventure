@@ -8,6 +8,8 @@ import { join } from "node:path";
 
 const MEMORY_ROOT = new URL("../memory", import.meta.url).pathname;
 const cleanups = [];
+const dataDirs = new Set(); // every supervisor data dir created (/tmp/hsv-*) and not yet removed
+
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /** The extension's load-time handshake (src/omp/extension/bridge-client.ts): hello with the minted token, then one manifest request. */
@@ -90,8 +92,9 @@ export function mkSupervisor(d, store, opts = {}) {
   store.recordPlannerSessionReset("42", d.lessonSetFingerprint(store), new Date().toISOString());
   store.claimSessionSeed("42"); store.promotePlannerSession("42");
   const data = mkdtempSync(join(tmpdir(), "hsv-")); // short: the bridge socket path must fit sun_path (104 bytes)
+  dataDirs.add(data);
   let sup;
-  cleanups.push(async () => { try { await sup?.shutdown(); } finally { rmSync(data, { recursive: true, force: true }); } }); // registered before construction: a constructor throw still removes the dir
+  cleanups.push(async () => { try { await sup?.shutdown(); } finally { rmSync(data, { recursive: true, force: true }); dataDirs.delete(data); } }); // registered before construction: a constructor throw still removes the dir
   const outcome = opts.outcome ?? sink(store);
   const session = opts.session ?? fakeSession();
   sup = new d.PlannerSupervisor({
@@ -157,3 +160,6 @@ export function seedLaneRows(d, store, chatId, texts) {
   if (store.plannerLastAnsweredAt(chatId) !== answered || JSON.stringify(got) !== JSON.stringify(texts)) throw new Error("fixture: seedLaneRows boundary check failed");
   return answered;
 }
+
+/** Synchronously removes every fixture data dir still present: the last resort of an exit path whose bounded wait for cleanupSettled() expired. */
+export function removeDataDirsSync() { for (const d of [...dataDirs]) { try { rmSync(d, { recursive: true, force: true }); dataDirs.delete(d); } catch { /* best effort at exit */ } } }

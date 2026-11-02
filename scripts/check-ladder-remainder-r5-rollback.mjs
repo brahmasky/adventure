@@ -333,10 +333,12 @@ async function run(ctx) {
 }
 
 function restoreEnv() { for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; } delete process.env.HOUGE_OMP_BIN; }
+// PlannerSupervisor.shutdown can wait ~5 s on a draining turn before it stops the session (src/omp/planner-supervisor.ts:461); the bound covers that plus margin.
+const SETTLE_BOUND_MS = 15_000;
 /** Every exit path: handles closed, the fixture's /tmp/hsv-* workdirs removed (fx.cleanup), the copies removed, env restored. */
 function onSignal(code) {
   for (const h of handles.splice(0)) closeStore(h);
-  Promise.race([fx.cleanupSettled().catch(() => undefined), new Promise((r) => setTimeout(r, 5_000))]).finally(() => { cleanupTemp(); restoreEnv(); process.exit(code); });
+  Promise.race([fx.cleanupSettled().catch(() => undefined), new Promise((r) => setTimeout(r, SETTLE_BOUND_MS))]).finally(() => { fx.removeDataDirsSync(); cleanupTemp(); restoreEnv(); process.exit(code); });
 }
 for (const [sig, code] of [["SIGINT", 130], ["SIGTERM", 143], ["SIGHUP", 129], ["SIGQUIT", 131]]) process.on(sig, () => onSignal(code));
 for (const ev of ["uncaughtException", "unhandledRejection"]) process.on(ev, (e) => { console.error(`${ev}: ${errCode(e)}`); onSignal(2); });
