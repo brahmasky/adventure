@@ -2,7 +2,8 @@
 // Live gate — decision ladder remainder R5, context.recall + context.catch_up + context.lessons + turn.clarify_cap (spec 2026-11-02 R5 §7; plan Task 6).
 //   From the worktree after `npm run build` THERE (never in the main checkout: the daemon runs its dist/):
 //   HOUGE_ENV_FILE=/Users/xiaochuan/Projects/adventure/.env node scripts/live-gate-ladder-remainder-r5.mjs [--live-db <path>] [--base-dist <merge-base dist>]
-// --base-dist: the merge-base build line 1 compares the loop_started payload's keys against (default .worktrees/base-9c23f084be37/dist).
+// --base-dist: the merge-base build line 1 compares the child's prompt (byte-equal) and the loop_started payload's values against, the run id and
+//   timestamps scrubbed (default .worktrees/base-9c23f084be37/dist).
 // Eight lines on stdout, each `PASS`/`FAIL <n> <name> — <detail>`; exit 0 only when all eight PASS (1 FAIL, 2 setup error).
 // Everything else goes to stderr, prefixed `# `. Only counts, booleans, codes and run labels are printed, never message or prompt text, any wiki
 // title, or any id of the live DB.
@@ -168,16 +169,20 @@ async function waitTerminal(store, run, ms = 30_000) {
   const end = Date.now() + ms;
   while (!TERMINAL.has(store.getRunState(run))) { if (Date.now() > end) throw new Error("gate: run did not finish"); await new Promise((r) => setTimeout(r, 20)); }
 }
-/** Every key path of a JSON value ("a.b", arrays as "[]"), sorted and unique: the shape, never the values. */
-function keyShape(v) {
-  const paths = new Set();
-  const walk = (x, p) => {
-    if (Array.isArray(x)) { for (const e of x) walk(e, `${p}[]`); return; }
-    if (x === null || typeof x !== "object") return;
-    for (const [k, e] of Object.entries(x)) { paths.add(`${p}.${k}`); walk(e, `${p}.${k}`); }
-  };
-  walk(v, "");
-  return [...paths].sort();
+const ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/;
+/** A loop_started payload with the turn's own run id and every ISO timestamp scrubbed: everything else (scores, counts, ids) must match exactly. */
+const scrubLoop = (p, run) => JSON.parse(JSON.stringify(p ?? null, (_k, v) => (typeof v !== "string" ? v : v === run ? "<run>" : ISO.test(v) ? "<ts>" : v)));
+/** Where two texts first part, as counts only (never the text): the 1-based line, or 0 when equal. */
+function firstDiffLine(a, b) {
+  const x = (a ?? "").split("\n"); const y = (b ?? "").split("\n");
+  for (let i = 0; i < Math.max(x.length, y.length); i++) if (x[i] !== y[i]) return i + 1;
+  return 0;
+}
+/** The loop_started key paths whose scrubbed values differ between the two builds (paths only, never values). */
+function diffPaths(a, b, p = "") {
+  if (canon(a) === canon(b)) return [];
+  if (a === null || b === null || typeof a !== "object" || typeof b !== "object" || Array.isArray(a) !== Array.isArray(b)) return [p || "."];
+  return [...new Set([...Object.keys(a), ...Object.keys(b)])].flatMap((k) => diffPaths(a[k], b[k], `${p}.${k}`));
 }
 const MEMORY_FLAGS = { HOUGE_EPISODIC_ENABLED: "1", HOUGE_WIKI_ENABLED: "1" };
 const hasContext = (p) => p.includes("[context]\n");
@@ -200,18 +205,21 @@ function recallFacts(t) {
     detail: `rows ${t.rows.length} [${strs(t.rows, (r) => (r === t.run ? "run" : "?"))}] (want 1 context.recall on the run, tool_call null) · prompts ${t.prompts.length} (want 1) [context] ${ctx} · include ⇔ [context] ${agree} · state ${t.state} (want completed) · loop_started ${t.loops.length} (want 1)` };
 }
 
-// ---- line 1: real retrieval over the copy; the merge-base build's loop_started has the same keys ----
+// ---- line 1: real retrieval over the copy; the merge-base build, same turn on a twin copy, sends the same prompt and writes the same loop_started ----
 async function line1() {
   const t = await workerTurn({ tag: "l1", text: PROBE, env: MEMORY_FLAGS });
   const b = await workerTurn({ d: G.bd, store: G.baseStore, distDir: BASE_DIST, tag: "l1-base", text: PROBE, env: MEMORY_FLAGS });
   const f = recallFacts(t);
-  const newShape = keyShape(t.loops[0]); const baseShape = keyShape(b.loops[0]);
-  const same = t.loops.length === 1 && b.loops.length === 1 && canon(newShape) === canon(baseShape);
-  const telemetry = newShape.includes(".retrieval.facts.embedding");
+  const newLoop = scrubLoop(t.loops[0], t.run); const baseLoop = scrubLoop(b.loops[0], b.run);
+  const loopSame = t.loops.length === 1 && b.loops.length === 1 && canon(newLoop) === canon(baseLoop);
+  const loopDiff = diffPaths(newLoop, baseLoop);
+  const promptSame = t.prompts.length === 1 && b.prompts.length === 1 && t.prompts[0] === b.prompts[0];
+  const promptAt = firstDiffLine(t.prompts[0], b.prompts[0]);
+  const telemetry = newLoop?.retrieval?.facts?.embedding !== undefined;
   const admitted = probeAdmitted(t, G.probe.new); const baseAdmitted = probeAdmitted(b, G.probe.base);
   const include = f.row?.[1] === "include" && f.row?.[2] === "embedded"; // Ollama answers on this machine: a real embedding, the probe admitted on FTS
-  const ok = f.ok && include && admitted && baseAdmitted && same && telemetry && b.rows.length === 0 && b.state === "completed";
-  return { ok, detail: `probe page admitted: new ${admitted} merge base ${baseAdmitted} (want true, true: title in the [context] block, id in wiki_page_ids) · loop_started key paths ${newShape.length} vs merge base ${baseShape.length} identical ${same} (retrieval telemetry ${telemetry}) · ${f.detail} · verdict/reason ${f.row ? `${f.row[1]}/${f.row[2]}` : "none"} (want include/embedded) · merge base: R5 rows ${b.rows.length} (want 0) state ${b.state} [context] ${b.prompts.length === 1 && hasContext(b.prompts[0])} (want same as new ${f.ctx})` };
+  const ok = f.ok && include && admitted && baseAdmitted && promptSame && loopSame && telemetry && G.probe.new === G.probe.base && b.rows.length === 0 && b.state === "completed";
+  return { ok, detail: `probe page admitted: new ${admitted} merge base ${baseAdmitted} (want true, true: title in the [context] block, id in wiki_page_ids; same id on both copies ${G.probe.new === G.probe.base}) · prompt byte-equal to the merge base's ${promptSame} (chars ${t.prompts[0]?.length ?? "none"} vs ${b.prompts[0]?.length ?? "none"}, first differing line ${promptAt}) · loop_started values equal (run id, timestamps scrubbed) ${loopSame} differing paths [${loopDiff.join(" ")}] (retrieval telemetry ${telemetry}) · ${f.detail} · verdict/reason ${f.row ? `${f.row[1]}/${f.row[2]}` : "none"} (want include/embedded) · merge base: R5 rows ${b.rows.length} (want 0) state ${b.state}` };
 }
 
 // ---- line 2: the embedder unreachable -> embed_failed or fts_only, never embedded ----
@@ -384,7 +392,7 @@ for (const ev of ["uncaughtException", "unhandledRejection"]) process.on(ev, (e)
 
 try {
   await setup();
-  const lines = [[1, "real recall over the copy, merge-base loop_started keys", line1], [2, "embedder unreachable is never embedded", line2], [3, "catch-up of two lane rows", line3],
+  const lines = [[1, "real recall over the copy, merge-base prompt and loop_started equal", line1], [2, "embedder unreachable is never embedded", line2], [3, "catch-up of two lane rows", line3],
     [4, "clarify cap reached", line4], [5, "lessons over a lowered cap at a spawn", line5], [6, "CoreWorker wiring writes the cap row", line6], [7, "record faults", line7],
     [8, "/status and the registry", line8]];
   for (const [n, name, fn] of lines) await runLine(n, name, fn);
