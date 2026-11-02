@@ -1529,7 +1529,9 @@ describe("runTelegramDaemon — shutdown during a slow tick (live 2026-10-02 01:
     }
   });
   it("a stop aborts an in-flight empty-tier tap probe: the daemon exits within the shutdown cap and no model_probe row exists (review W5)", async () => {
-    vi.stubEnv("HOUGE_MODEL_ROLES", "static"); // the daily tick stays idle: only the tap probes
+    // Resolved: a static-mode tap is refused before any probe (final review Minor 2). The daily tick then probes too, on the same
+    // seam, and its probes also settle only on the stop; `probing` tracks the tap's selector alone.
+    vi.stubEnv("HOUGE_MODEL_ROLES", "resolved");
     const store = RunStore.openInMemory();
     const controller = new AbortController();
     const root = projectRoot();
@@ -1537,7 +1539,7 @@ describe("runTelegramDaemon — shutdown during a slow tick (live 2026-10-02 01:
     const roles = new RoleResolver({ store, env: () => ({ HOUGE_MODEL_ROLES: "resolved" }), readCatalog: async () => catalog });
     let probing = false;
     // Settles only when the daemon's stop reaches it: a probe that ignored the signal would be held to the cap instead.
-    const modelProbe: ProbeFn = (_sel, signal) => { probing = true; return new Promise((r) => signal?.addEventListener("abort", () => r("aborted"), { once: true })); };
+    const modelProbe: ProbeFn = (sel, signal) => { if (sel === "google-antigravity/gemini-4-argon") probing = true; return new Promise((r) => signal?.addEventListener("abort", () => r("aborted"), { once: true })); };
     const tapUpdate = { update_id: 90, callback_query: { id: "cbq_tier", from: { id: 111 }, message: { message_id: 5, chat: { id: 222 } }, data: tierCallbackData("gemini-pro", "gemini-4-argon") } };
     let calls = 0;
     try {
