@@ -139,6 +139,18 @@ const lessonsStale = async (x) => {
   release(); await sup.whenIdle();
 };
 
+/** The same stale re-check inside ONE run (codex final review): turn a spawns, its own prompt build is held while the child's bridge drops, so a respawns. */
+const lessonsStaleOneRun = async (x) => {
+  overCap(x);
+  let release = () => undefined; let calls = 0;
+  const retrieve = async () => { calls++; await new Promise((r) => { release = r; }); return { facts: [], pages: [] }; };
+  const { sup, session } = x.mk({ turnContext: { env: CAP40, retrieve } });
+  const a = x.run("a", "hi"); sup.submit(req(a, "hi")); await until(() => calls === 1);
+  await session.stop(); // the first child's bridge drops during a's own prompt build: the supervisor marks itself stale
+  await until(() => sup.stale === true);
+  release(); await sup.whenIdle();
+};
+
 // cap -------------------------------------------------------------------------------------------------------------------------------------------------------
 const clarify = (x) => seedClarify(x.store, CHAT);
 const capReached = oneTurn({}, clarify);
@@ -205,6 +217,10 @@ const ITEMS = [
     calls: { [SQ]: 2, [CG]: 2, [LS]: 2, [CC]: 2 }, order: [SQ, CG, LS, CC, SQ, CC, CG, LS],
     facts: { done: ["a:answer", "b:answer"], failed: [], incidents: [], storeIncidents: ["lesson_dropped"], spawns: 2, notes: {},
       log: ["set_model:anthropic/claude-opus-5-5", "prompt:-:hi", "set_model:anthropic/claude-opus-5-5", "prompt:-:hi"] } },
+  { key: "lessons_stale_respawn_one_run", tags: ["stale_one_run"], drive: lessonsStaleOneRun, rows: [R(LS, "capped", "char_cap", "a"), R(LS, "capped", "char_cap", "a")],
+    calls: { [SQ]: 1, [CG]: 2, [LS]: 2, [CC]: 1 }, order: [SQ, CG, LS, CC, CG, LS],
+    facts: { done: ["a:answer"], failed: [], incidents: [], storeIncidents: ["lesson_dropped"], spawns: 2, notes: {},
+      log: ["set_model:anthropic/claude-opus-5-5", "prompt:-:hi"] } },
   { key: "cap_reached", tags: ["cap"], drive: capReached, rows: [R(CC, "cap", "cap_reached")], calls: TURN, facts: answered("cap:hi") },
   { key: "cap_loop_after_clarify", tags: ["cap_loop"], drive: capLoopAfter, rows: [], calls: TURN, facts: answered("-:hi") },
   { key: "cap_max_zero", tags: ["cap_zero"], drive: capMaxZero, rows: [R(CC, "cap", "cap_reached")], calls: TURN, facts: answered("cap:hi") },
