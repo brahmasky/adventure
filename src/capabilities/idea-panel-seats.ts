@@ -4,20 +4,25 @@
 // a healthy-leg fallback would silently void model diversity and the quorum semantics. The CHAIR
 // rides the Chair role. Both the daemon tick and `houge radar-panel` build their seats HERE, so
 // the two sites cannot drift apart (the CLI site once kept firing metered APIs after the daemon moved).
+import { formatModelString } from "../omp/model-string.js";
 import { judgeSeat, oneShotAdapter, seatChain, type OneShotAdapterOptions } from "../llm/registry.js";
-import { resolveOmpConfig } from "../omp/omp-config.js";
-import type { RoleChains } from "../omp/model-roles.js";
+import { readOmpCatalog } from "../omp/model-catalog.js";
+import { resolveOmpCatalogConfig, resolveOmpConfig } from "../omp/omp-config.js";
+import type { CatalogModel, RoleChains } from "../omp/model-roles.js";
+import { RoleResolver } from "../omp/role-resolver.js";
 import type { RunStore } from "../run/run-store.js";
 import type { PanelSeat } from "./idea-panel.js";
 import type { RadarLlm } from "./idea-radar.js";
 
-/** Which Judges-role seat serves which named judge (kimi-code/k3, the openai-codex seat, gemini-3.1-pro; src/omp/model-roles.ts). */
+/** Which Judges-role seat serves which named judge (kimi-code/k3, the openai-codex seat, the gemini-pro tier's adopted head; src/omp/model-roles.ts). */
 export const PANEL_JUDGE_SEAT_INDEX = { kimi: 0, codex: 1, gemini: 2 } as const;
 
 export interface PanelSeatBindings {
   judges: { kimi: RadarLlm; gemini: RadarLlm };
   codexJudge: PanelSeat;
   chair: PanelSeat;
+  /** Each judge seat's model id (null = empty seat); optional so injected test bindings need not supply it. */
+  judgeModels?: Record<"kimi" | "codex" | "gemini", string | null>;
 }
 
 export interface OmpPanelSeatsInput {
@@ -25,12 +30,24 @@ export interface OmpPanelSeatsInput {
   /** The run-less audit scope (`tick:idea_panel`, `cli:radar-panel`). */
   correlation_id: string;
   env: NodeJS.ProcessEnv;
-  /** The daemon's resolved chains (`roles.chains()`); absent = the static role lists (the CLI). */
+  /** The resolved chains (`roles.chains()`: the daemon's resolver, or {@link resolvedPanelChains} for the CLI); absent = the static role lists. */
   chains?: RoleChains;
   /** Tests only: bypass the `omp --version` spawn. */
   versionCheck?: OneShotAdapterOptions["versionCheck"];
   /** The daemon's stop: aborts an in-flight seat call (absent for the CLI). */
   signal?: AbortSignal;
+}
+
+/**
+ * The CLI's chains (final review, codex): the daemon's resolution (overrides, tiers, one catalog read), so `houge radar-panel`
+ * keeps Paco's `judges:2` tap instead of the static lists' empty seat. A failed read leaves each role on its static list
+ * (RoleResolver.chains), and records the resolver's usual `model_catalog_unavailable` note; static mode reads nothing.
+ */
+export async function resolvedPanelChains(store: RunStore, env: NodeJS.ProcessEnv,
+  readCatalog: () => Promise<CatalogModel[] | null> = () => readOmpCatalog(resolveOmpCatalogConfig(env))): Promise<RoleChains> {
+  const roles = new RoleResolver({ store, env: () => env, readCatalog });
+  await roles.refreshCatalog();
+  return roles.chains();
 }
 
 /** The four panel seats on omp. A seat never throws into the tick: every failure is `{ok:false}`. */
@@ -50,6 +67,10 @@ export function buildOmpPanelSeats(input: OmpPanelSeatsInput): PanelSeatBindings
     };
   };
   const judge = (name: keyof typeof PANEL_JUDGE_SEAT_INDEX) => seat("judge", judgeSeat(cfg, PANEL_JUDGE_SEAT_INDEX[name]));
+  const modelOf = (name: keyof typeof PANEL_JUDGE_SEAT_INDEX): string | null => {
+    const m = judgeSeat(cfg, PANEL_JUDGE_SEAT_INDEX[name])[0];
+    return m ? formatModelString(m) : null;
+  };
   const kimi = judge("kimi");
   const gemini = judge("gemini");
   const codex = judge("codex");
@@ -60,6 +81,7 @@ export function buildOmpPanelSeats(input: OmpPanelSeatsInput): PanelSeatBindings
       gemini: async (i) => { const r = await gemini(i.question, i.system); return r.ok ? r : { ok: false }; }
     },
     codexJudge: (i) => codex(i.digest, i.system),
-    chair: (i) => chair(i.digest, i.system)
+    chair: (i) => chair(i.digest, i.system),
+    judgeModels: { kimi: modelOf("kimi"), codex: modelOf("codex"), gemini: modelOf("gemini") }
   };
 }

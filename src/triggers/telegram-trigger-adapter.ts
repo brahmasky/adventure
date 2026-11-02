@@ -4,7 +4,7 @@ import { MEDIA_MIME, MEDIA_PLACEHOLDER, type TelegramMediaRef } from "../media/m
 import { authorizeTelegramUpdate } from "./telegram-auth.js";
 import type { ApprovalCallback, SelfWriteCallbackAction, TelegramCommand } from "./telegram-command-parser.js";
 import type { ImprovementTap } from "./telegram-command-parser.js";
-import { parseApprovalCallback, parseDecisionReviewCallback, parseImprovementCallback, parseJevAcceptCallback, parseMemLaneCallback, parseMemoryUndoCallback, parseSelfWriteCallback, parseTelegramCommand } from "./telegram-command-parser.js";
+import { parseApprovalCallback, parseDecisionReviewCallback, parseImprovementCallback, parseJevAcceptCallback, parseMemLaneCallback, parseMemoryUndoCallback, parseModelTierCallback, parseSelfWriteCallback, parseTelegramCommand } from "./telegram-command-parser.js";
 import { decideSync } from "../decisions/decide.js";
 import { INTAKE_SENDER, type SenderDenialReason } from "../decisions/entries/intake-sender.js";
 import type { DecisionRecorder } from "../decisions/types.js";
@@ -281,6 +281,8 @@ function normalizeCallbackQuery(
   if (improvement) return { ok: true, event: buildImprovementTapEvent(update, callback, message.chat.id, auth.identity, improvement) };
   const jevAccept = parseJevAcceptCallback(callback.data);
   if (jevAccept) return { ok: true, event: buildJevAcceptTapEvent(update, callback, message.chat.id, auth.identity, jevAccept) };
+  const tierTap = parseModelTierCallback(callback.data);
+  if (tierTap) return { ok: true, event: buildModelTierTapEvent(update, callback, message.chat.id, auth.identity, tierTap) };
 
   const parsed = parseSelfWriteCallback(callback.data);
   if (!parsed) {
@@ -398,6 +400,19 @@ function buildJevAcceptTapEvent(update: TelegramUpdate, callback: TelegramCallba
   });
 }
 
+/** An empty-tier card's tap (spec 2026-11-02 §4.4): the tier and, for a Use button, the proposal's hash ride in metadata. */
+function buildModelTierTapEvent(update: TelegramUpdate, callback: TelegramCallbackQuery, chat_id: number, identity: Identity, tap: { tier: string; hash: string | null }): TypedTaskEvent {
+  return buildTypedTaskEvent({
+    source: "telegram",
+    type: "model_tier_tap",
+    requested_by: identity,
+    notify: { kind: "telegram", chat_id: String(chat_id) },
+    idempotency_key: `telegram:${update.update_id}:callback:${callback.id}`,
+    source_reference: `telegram:update:${update.update_id}:callback:${callback.id}`,
+    metadata: { telegram_update_id: update.update_id, telegram_callback_id: callback.id, tier: tap.tier, ...(tap.hash ? { model_hash: tap.hash } : {}) }
+  });
+}
+
 type TelegramMessage = NonNullable<TelegramUpdate["message"]>;
 
 interface TelegramEventBase {
@@ -499,6 +514,7 @@ function buildTelegramEvent(command: TelegramCommand, base: TelegramEventBase): 
     case "disarm":
     case "rearm":
     case "approvals":
+    case "fresh":
       return buildTypedTaskEvent({ ...base, type: command.type });
     case "memories":
       // The optional query rides `program` (the /lessons scope precedent).

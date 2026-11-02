@@ -22,6 +22,7 @@ export type TelegramCommand =
   | { type: "kill"; reason?: string }
   | { type: "disarm" }
   | { type: "rearm" }
+  | { type: "fresh" }
   | { type: "approvals" }
   | { type: "memories"; query?: string }
   | { type: "forget_memory"; id: number }
@@ -78,6 +79,8 @@ export function parseTelegramCommand(text: string): TelegramCommandParseResult {
   if (command === "/kill") return parseKill(rest);
   if (command === "/disarm") return parseNoArgs("disarm", rest);
   if (command === "/rearm") return parseNoArgs("rearm", rest);
+  // Spec 2026-11-02 §6.2: a new planner transcript at the next start; slash-only, never a turn the model reads.
+  if (command === "/fresh") return parseNoArgs("fresh", rest);
   // Unknown slash-prefixed text: if the first token is a CLEAN command word (letters,
   // digits, underscore only — no inner slashes or dots), the user attempted a command
   // that doesn't exist (a typo/removed command). Guide them with the command list rather
@@ -219,7 +222,7 @@ const MODELS_USAGE = "/models usage: /models · /models set <role> <pattern> · 
 const MODELS_PATTERN_MAX = 64;
 
 /**
- * `/models` (spec §4.2). The role must be one of ROLE_NAMES; only judges take a seat (0-based, the ROLE_LISTS.judges index). A
+ * `/models` (spec §4.2). The role must be one of ROLE_NAMES; only judges take a seat (0-based, the ROLE_LEGS.judges index). A
  * role-level `set judges <pattern>` parses so the handler can refuse it with its reason. The parser never echoes the words back.
  */
 function parseModels(words: string[]): TelegramCommandParseResult {
@@ -245,8 +248,8 @@ function parseKill(words: string[]): TelegramCommandParseResult {
   return { ok: true, command: { type: "kill", ...(reason ? { reason } : {}) } };
 }
 
-/** `/disarm` and `/rearm` take no arguments — reject extras so a typo can't half-apply. */
-function parseNoArgs(type: Extract<TaskEventType, "disarm" | "rearm" | "approvals">, words: string[]): TelegramCommandParseResult {
+/** `/disarm`, `/rearm`, `/approvals` and `/fresh` take no arguments — reject extras so a typo can't half-apply. */
+function parseNoArgs(type: Extract<TaskEventType, "disarm" | "rearm" | "approvals" | "fresh">, words: string[]): TelegramCommandParseResult {
   if (words.length > 0) return invalid(`/${type} takes no arguments`);
   return { ok: true, command: { type } };
 }
@@ -373,6 +376,15 @@ export function parseJevAcceptCallback(data: unknown): { model_hash: string; gen
   if (typeof data !== "string") return null;
   const m = DEC_JEV_ACCEPT.exec(data);
   return m ? { model_hash: m[1]!, generation: Number(m[2]) } : null;
+}
+
+const MODEL_TIER_CB = /^mt:([a-z@-]{1,24}):(?:([0-9a-f]{12}):use|no)$/;
+
+/** An empty-tier card's tap (spec 2026-11-02 §4.4): the tier and the proposal's hash, or null for "Not now". */
+export function parseModelTierCallback(data: unknown): { tier: string; hash: string | null } | null {
+  if (typeof data !== "string") return null;
+  const m = MODEL_TIER_CB.exec(data);
+  return m ? { tier: m[1]!, hash: m[2] ?? null } : null;
 }
 
 type SplitShellWordsResult = { ok: true; words: string[] } | { ok: false; error: { code: "TELEGRAM_COMMAND_INVALID"; message: string } };

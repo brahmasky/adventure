@@ -8,6 +8,7 @@ import { resolveOmpConfig } from "../../src/omp/omp-config.js";
 import { PlannerSupervisor, RETRY_NOTE, isModelRefusal, parseAttachments, settlesTurn, writeHougeConfigFile, type SupervisorDeps } from "../../src/omp/planner-supervisor.js";
 import type { OmpFrame } from "../../src/omp/omp-frames.js";
 import { PlannerRpcError, type PlannerSessionOptions } from "../../src/omp/planner-session.js";
+import type { TrustCause } from "../../src/decisions/entries/turn-trust.js";
 import { ToolRegistry } from "../../src/tools/tool-registry.js";
 import { BridgeServer } from "../../src/omp/bridge-server.js";
 import { chatWorkspace } from "../../src/omp/workspace.js";
@@ -1932,7 +1933,7 @@ describe("PlannerSupervisor — trust is sticky within a planner transcript", ()
   const finalOf = (store: RunStore, run_id: string) => store.getLedgerEvents(run_id).find((e) => e.event_type === "turn_trust_final")?.payload;
 
   it("turn N hostile → turn N+1 starts hostile (carried_hostile); after a fresh session the next turn is clean", async () => {
-    let cause: "injection_withheld" | "wall_read" | null = "injection_withheld";
+    let cause: "unjudged_outside" | "wall_read" | null = "unjudged_outside";
     let sup: PlannerSupervisor | undefined;
     const session = fakeSession({ onPrompt: (_t, e) => {
       e({ type: "turn_start" }); if (cause) sup?.activeTurnForTest()?.trust?.raise(cause); session.assistant("ok"); e({ type: "agent_end" });
@@ -1954,6 +1955,37 @@ describe("PlannerSupervisor — trust is sticky within a planner transcript", ()
     await run();
     cause = null;
     expect(trustEvents(store, await run())).toEqual([{ level: "untrusted", cause: "carried_untrusted" }]);
+  });
+
+  it("D2-A: a withhold-only turn stores untrusted; the next turn carries untrusted, and standing credit is no longer barred", async () => {
+    let cause: TrustCause | null = "injection_withheld";
+    let sup: PlannerSupervisor | undefined;
+    const session = fakeSession({ onPrompt: (_t, e) => { e({ type: "turn_start" }); if (cause) sup?.activeTurnForTest()?.trust?.raise(cause, "tc"); session.assistant("ok"); e({ type: "agent_end" }); } });
+    const h = harness(session); sup = h.sup; const { store } = h;
+    const run = async () => { const id = createQueuedTurnRun(store); h.sup.submit(req(id)); await h.sup.whenIdle(); return id; };
+    const first = await run();
+    expect(finalOf(store, first)).toEqual({ max_level: "hostile" }); // in-turn behaviour unchanged
+    expect(store.getTranscriptTrust("42")).toBe("untrusted");
+    cause = null;
+    expect(trustEvents(store, await run())).toEqual([{ level: "untrusted", cause: "carried_untrusted" }]);
+  });
+  it("the double raise from one result (withhold, then unjudged_outside) stores hostile", async () => {
+    let sup: PlannerSupervisor | undefined;
+    const session = fakeSession({ onPrompt: (_t, e) => { e({ type: "turn_start" }); const t = sup?.activeTurnForTest()?.trust; t?.raise("injection_withheld", "tc"); t?.raise("unjudged_outside", "tc"); session.assistant("ok"); e({ type: "agent_end" }); } });
+    const h = harness(session); sup = h.sup;
+    h.sup.submit(req(createQueuedTurnRun(h.store))); await h.sup.whenIdle();
+    expect(h.store.getTranscriptTrust("42")).toBe("hostile");
+  });
+  it("an uncommitted fresh transcript that withholds only keeps the old stored hostile (carry untrusted is lower)", async () => {
+    let sup: PlannerSupervisor | undefined;
+    // the prompt RPC rejects, but the turn already withheld a passage (the getter runs as the RPC is made, inside the turn)
+    const session = fakeSession({ get promptError() { sup?.activeTurnForTest()?.trust?.raise("injection_withheld", "tc"); return "command_failed:prompt"; } });
+    const h = harness(session, {}, {}, { sessionState: "none" }); sup = h.sup; const { store } = h;
+    store.addLesson({ scope: "ask", text: "answer briefly", source: "user_feedback" }); // a pending reset: a fresh, uncommitted transcript
+    store.setTranscriptTrust("42", "hostile", new Date().toISOString());
+    h.sup.submit(req(createQueuedTurnRun(store))); await h.sup.whenIdle();
+    expect(store.getPlannerSessionState("42")).toMatchObject({ lesson_fingerprint: "" }); // never committed
+    expect(store.getTranscriptTrust("42")).toBe("hostile");
   });
 
   // security re-review 1: the turn-end write alone loses the level when the daemon dies mid-turn (crash, OOM, SIGKILL) —

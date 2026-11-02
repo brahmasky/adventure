@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { changeLine, runModelRolesTick } from "../../src/omp/model-roles-tick.js";
-import { ROLE_LISTS, selectorKey, type CatalogModel } from "../../src/omp/model-roles.js";
+import { selectorKey, type CatalogModel } from "../../src/omp/model-roles.js";
 import { parseModelString } from "../../src/omp/model-string.js";
 import { RoleResolver, type OverrideKey, type ResolvedRole } from "../../src/omp/role-resolver.js";
 import { RunStore } from "../../src/run/run-store.js";
+import { SEED_LISTS } from "../helpers/model-roles.js";
 
 // Spec §4.1: model resolution changes silently when a provider retires a model (Opus 4 → 5.5 happened in months). The daily
 // tick turns that into one Telegram line per changed role, and a role left with no candidate into a `role_unresolved` incident
@@ -53,6 +54,14 @@ describe("runModelRolesTick", () => {
     expect(f.refreshes()).toBe(1);
     expect((await tick(f, at(1))).ran).toBe(true);
     expect(f.refreshes()).toBe(2);
+  });
+
+  it("a key the baseline does not have (judges:2 after an upgrade) is no change: no 'was nothing' line (M50)", async () => {
+    const f = fakeRoles(HEADS); const notices: string[] = [];
+    await tick(f, at(0));
+    f.set({ ...HEADS, "judges:2": "google-antigravity/gemini-4-argon" });
+    await tick(f, at(1), notices);
+    expect(notices).toEqual([]);
   });
 
   it("one line per changed role, naming the new and the old head; unchanged roles stay silent", async () => {
@@ -108,7 +117,7 @@ describe("runModelRolesTick", () => {
   it("against the real resolver: a retired Thinking head produces the Thinking notice naming the next catalogued selector", async () => {
     // Every list selector catalogued, so each head is its list's first entry; then the Thinking head's provider/id disappears.
     const all = new Map<string, CatalogModel>();
-    for (const list of Object.values(ROLE_LISTS)) for (const s of list) {
+    for (const s of Object.values(SEED_LISTS).flat()) {
       const m = parseModelString(s);
       all.set(selectorKey(m), { provider: m.provider, id: m.model, thinking: ["low", "medium", "high"] });
     }
@@ -116,11 +125,11 @@ describe("runModelRolesTick", () => {
     const roles = new RoleResolver({ store, env: () => ({ HOUGE_MODEL_ROLES: "resolved" }), readCatalog: async () => catalog });
     const notices: string[] = [];
     await runModelRolesTick({ store, roles, now: at(0), notify: (t) => notices.push(t) });
-    const retired = selectorKey(parseModelString(ROLE_LISTS.thinking[0]!));
+    const retired = "anthropic/claude-opus-5-5";
     catalog = catalog.filter((m) => selectorKey({ provider: m.provider, model: m.id }) !== retired);
     const r = await runModelRolesTick({ store, roles, now: at(1), notify: (t) => notices.push(t) });
     expect(r.changed).toContain("thinking");
     const line = notices.find((t) => t.startsWith("🔁 Thinking "));
-    expect(line).toContain(parseModelString(ROLE_LISTS.thinking[1]!).model);
+    expect(line).toContain("google-antigravity/claude-opus-5-5");
   });
 });

@@ -338,7 +338,8 @@ describe("idea_panel_tick ledger event", () => {
     cards_scored: 8,
     shortlist_ids: [3, 7, 11],
     week_key: "2026-W30",
-    brief_written: true
+    brief_written: true,
+    judge_models: { kimi: "kimi-code/k3.1-pro", codex: "openai-codex/gpt-6.1-sol", gemini: null }
   };
 
   it("a full payload validates", () => {
@@ -379,7 +380,8 @@ describe("idea_panel_tick ledger event", () => {
       cards_scored: 0,
       shortlist_ids: [],
       week_key: "2026-W30",
-      brief_written: false
+      brief_written: false,
+      judge_models: null
     });
     const events = store.getLedgerEvents().filter((e) => e.event_type === "idea_panel_tick");
     expect(events.length).toBe(1);
@@ -394,7 +396,8 @@ describe("idea_panel_tick ledger event", () => {
       cards_scored: 0,
       shortlist_ids: [],
       week_key: "2026-W30",
-      brief_written: false
+      brief_written: false,
+      judge_models: null
     });
   });
 });

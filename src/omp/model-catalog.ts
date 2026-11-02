@@ -2,7 +2,7 @@ import { execFileAsync } from "../run/exec-file-async.js";
 import { childTmpRoot } from "../run/daemon-tmp.js";
 import { buildChildEnv } from "./child-env.js";
 import { parseModelString, type OmpEffort } from "./model-string.js";
-import type { CatalogModel } from "./model-roles.js";
+import type { CatalogModel, CatalogPrice } from "./model-roles.js";
 import type { OmpConfig } from "./omp-config.js";
 
 /** The exec seam (tests inject a fake; production is the promisified execFile). */
@@ -12,16 +12,30 @@ export const CATALOG_TIMEOUT_MS = 15_000;
 const CATALOG_MAX_BYTES = 8 * 1024 * 1024;
 const EFFORTS: ReadonlySet<string> = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
 
+/** `cost.output` and `cost.timeBased.effectiveRates` (spec §4.4, plan P8); null when `cost` has no finite output. */
+function priceOf(cost: unknown): CatalogPrice | null {
+  if (typeof cost !== "object" || cost === null) return null;
+  const { output, timeBased } = cost as Record<string, unknown>;
+  if (typeof output !== "number" || !Number.isFinite(output)) return null;
+  const raw = typeof timeBased === "object" && timeBased !== null ? (timeBased as { effectiveRates?: unknown }).effectiveRates : undefined;
+  const rates = Array.isArray(raw) ? raw.flatMap((r) => {
+    const { effectiveFrom, output: o } = (typeof r === "object" && r !== null ? r : {}) as Record<string, unknown>;
+    return typeof effectiveFrom === "number" && typeof o === "number" && Number.isFinite(o) ? [{ from: effectiveFrom, output: o }] : [];
+  }) : [];
+  return { output, rates };
+}
+
 /** One catalog entry, or null. An id the selector syntax cannot carry (e.g. ollama's `name:tag`) is never a candidate. */
 function catalogEntry(raw: unknown): CatalogModel | null {
   if (typeof raw !== "object" || raw === null) return null;
-  const { provider, id, thinking } = raw as Record<string, unknown>;
+  const { provider, id, thinking, cost } = raw as Record<string, unknown>;
   if (typeof provider !== "string" || typeof id !== "string") return null;
   try { parseModelString(`${provider}/${id}`); } catch { return null; }
-  if (thinking === null || thinking === undefined) return { provider, id, thinking: null };
+  const priced = (e: CatalogModel): CatalogModel => { const p = priceOf(cost); return p ? { ...e, price: p } : e; };
+  if (thinking === null || thinking === undefined) return priced({ provider, id, thinking: null });
   if (!Array.isArray(thinking)) return null;
   const levels = thinking.filter((t): t is OmpEffort => typeof t === "string" && EFFORTS.has(t));
-  return { provider, id, thinking: levels.length > 0 ? levels : null };
+  return priced({ provider, id, thinking: levels.length > 0 ? levels : null });
 }
 
 /** `omp models --json` output → validated entries; null when it is not `{models: [...]}` with at least one usable entry. */

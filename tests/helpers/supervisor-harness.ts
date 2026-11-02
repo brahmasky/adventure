@@ -42,6 +42,8 @@ export type Script = {
   promptError?: string;
   /** Replaces getState(): the todo phases and steer queue. */
   getState?: () => Promise<PlannerState>;
+  /** Awaited inside the prompt RPC before it is accepted: lets a test act between the spawn's reset and commitReset. */
+  beforePrompt?: (text: string) => Promise<void>;
 };
 export const never = () => new Promise<never>(() => undefined);
 export type Fake = PlannerSessionLike & {
@@ -123,7 +125,7 @@ export function fakeSession(script: Script = {}): Fake {
     prompts: [], steers: [], models: [], pins: [], options: [], resets: 0,
     bind: (o) => { s.options.push(o); return s; },
     start: () => startFake(s, script, sockets, (m) => { current = m; }),
-    prompt: async (t: string) => { if (script.promptError) throw new PlannerRpcError(script.promptError); s.prompts.push(t); script.log?.push(`prompt:${s.options.length}`); setTimeout(() => (script.onPrompt ?? ((_t, e) => { e({ type: "turn_start" }); assistant("answer"); e({ type: "agent_end" }); }))(t, emit), 5); },
+    prompt: async (t: string) => { if (script.promptError) throw new PlannerRpcError(script.promptError); if (script.beforePrompt) await script.beforePrompt(t); s.prompts.push(t); script.log?.push(`prompt:${s.options.length}`); setTimeout(() => (script.onPrompt ?? ((_t, e) => { e({ type: "turn_start" }); assistant("answer"); e({ type: "agent_end" }); }))(t, emit), 5); },
     steer: async (t: string) => { s.steers.push(t); },
     getState: async () => getStateFn?.() ?? script.getState?.() ?? { todoPhases: [], queuedMessageCount: 0, queuedMessages: { steering: [], followUp: [] } },
     abort: async () => { setTimeout(() => emit({ type: "agent_end", aborted: true }), 5); },

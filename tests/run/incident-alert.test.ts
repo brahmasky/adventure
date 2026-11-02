@@ -70,6 +70,15 @@ describe("clearable omp-check incidents (fix round 2)", () => {
     expect(store.listOpenIncidents()).toEqual([]);
   });
 
+  it("an event pages every time, even inside the flap-quiet window (M80: event kinds always page, spec §5)", () => {
+    // Each hostile_schedule_turn is its own occurrence; flap damping is for a condition reopening, not for a new event.
+    const at = (min: number) => new Date(Date.parse("2026-10-01T00:00:00.000Z") + min * 60_000).toISOString();
+    const input = { kind: "hostile_schedule_turn", subject: "schedule:s1", detail: {}, chat_id: "555", event: true };
+    openAlertedIncident(store, { ...input, now: at(0) });
+    openAlertedIncident(store, { ...input, now: at(2) });
+    expect(notes()).toHaveLength(2);
+  });
+
   it("an event incident is resolved right after its alert is queued", () => {
     expect(openAlertedIncident(store, { kind: "turn_outside_planner", subject: "run:x", detail: {}, chat_id: "555", event: true })).toBe(true);
     expect(store.listOpenIncidents()).toEqual([]);

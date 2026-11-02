@@ -28,6 +28,9 @@ import { NOTIFICATION_MAX_ATTEMPTS, type NotificationButton, type NotificationIn
 import {
   appendLedgerEvent,
   createLedgerEvent,
+  MODEL_PROBE_KINDS,
+  MODEL_PROBE_PURPOSES,
+  MODEL_PROBE_RESULTS,
   readLedgerEvents,
   readLedgerEventsByCorrelation,
   readLedgerEventsByTypeSince,
@@ -38,6 +41,7 @@ import {
 import { canTransitionProject, canTransitionRun } from "./state-machines.js";
 import type { LlmAttempt, LlmAuditSink } from "../llm/audit.js";
 import { isOverrideKey } from "../omp/model-roles.js";
+import { SEED_HEADS, TIER_IDS } from "../omp/model-tiers.js";
 import type { OverrideKey } from "../omp/role-resolver.js";
 import { computeCostUsd, METERED_PROVIDERS } from "../llm/metered-pricing.js";
 import { blobToFloat32, cosineSimilarity, float32ToBlob } from "../llm/embeddings.js";
@@ -95,7 +99,9 @@ export type LlmCallRole =
   // the tree's cascade pick between two categories (plan 2026-10-07 Decision 14): a Tiny-role one-shot on the turn's run
   | "cascade"
   // stage B lanes (spec §4–§5): the compose (Fast candidates) and the lookup's query rewrite (Tiny candidates); the planner stays "compose"
-  | "lane";
+  | "lane"
+  // a model probe before adoption (spec 2026-11-02 §4.2): its own role so probe traffic is readable apart
+  | "probe";
 
 /** Where an audited attempt belongs: a run, or a run-less correlation (`tick:*`, `cli:*`, `rating:*`). */
 export type LlmAuditScope =
@@ -387,6 +393,14 @@ export interface ModelRolesResolvedRow {
   catalog_ok: boolean;
   roles: Array<{ key: string; head: string | null; candidates: string[]; source: "list" | "override" }>;
 }
+
+export interface ModelTierRow {
+  tier: string; adopted: string | null; previous: string | null; adopted_at: string | null;
+  rejected_selector: string | null; rejected_at: string | null; updated_at: string;
+}
+export type ModelProbeResult = (typeof MODEL_PROBE_RESULTS)[number];
+export type ModelProbeKind = (typeof MODEL_PROBE_KINDS)[number];
+export interface ModelProbeRow { tier: string; selector: string; purpose: (typeof MODEL_PROBE_PURPOSES)[number]; result: ModelProbeResult; kind: ModelProbeKind }
 
 export interface ChatTurnRow {
   turn_id: string;
@@ -1160,6 +1174,11 @@ const DECISION_LADDER_DDL = `
     offered_json TEXT NOT NULL,
     created_at TEXT NOT NULL
   );`;
+
+/** Spec 2026-11-02 §4.2: one row per tier. `adopted`/`previous` are catalog ids (the provider is the tier's); `rejected_selector` is provider/id. */
+const MODEL_TIERS_DDL = `CREATE TABLE IF NOT EXISTS model_tiers (
+  tier TEXT PRIMARY KEY, adopted TEXT, previous TEXT, adopted_at TEXT, rejected_selector TEXT, rejected_at TEXT, updated_at TEXT NOT NULL
+)`;
 
 const STANDING_APPROVAL_DDL = `
   CREATE TABLE IF NOT EXISTS standing_approvals (
@@ -2656,7 +2675,7 @@ export class RunStore {
       WHERE actor_id = ?
         AND chat_id = ?
         AND decision = 'accepted'
-        AND command NOT IN ('decision_review', 'improvement_tap', 'jev_accept_tap') -- review, improvement and Jev Accept taps are exempt and never count (ruling 16; 2b-ii §6.3; jev version check §2.6)
+        AND command NOT IN ('decision_review', 'improvement_tap', 'jev_accept_tap', 'model_tier_tap') -- review, improvement and Jev Accept taps are exempt and never count (ruling 16; 2b-ii §6.3; jev version check §2.6); empty-tier card taps (spec 2026-11-02 §4.4)
         AND occurred_at > ?
     `).get<{ count: number }>(input.actor_id, input.chat_id, windowStart);
     if ((windowRow?.count ?? 0) >= TELEGRAM_MAX_COMMANDS_PER_WINDOW) {
@@ -3091,14 +3110,18 @@ export class RunStore {
     `).get<PlannerSessionState>(chat_id);
   }
 
-  /** A fresh omp session was started for this lesson set: store it as PENDING, mark the seed pending, ledger the reset. */
-  recordPlannerSessionReset(chat_id: string, lesson_fingerprint: string, now: string): void {
+  /**
+   * A fresh omp session was started for this lesson set: store it as PENDING and ledger the reset. A lesson reset marks the
+   * seed pending for the next dispatch; a /fresh one does not (plan P31: Paco asked for no earlier turns).
+   */
+  recordPlannerSessionReset(chat_id: string, lesson_fingerprint: string, now: string, reason: "lesson_change" | "fresh" = "lesson_change"): void {
+    const seed = reason === "fresh" ? 0 : 1;
     this.inTransaction(() => {
       this.db.prepare(`
-        INSERT INTO planner_session_state (chat_id, lesson_fingerprint, pending_fingerprint, seed_pending, updated_at) VALUES (?, '', ?, 1, ?)
-        ON CONFLICT(chat_id) DO UPDATE SET pending_fingerprint = excluded.pending_fingerprint, seed_pending = 1, updated_at = excluded.updated_at
-      `).run(chat_id, lesson_fingerprint, now);
-      this.recordMemoryEvent("planner_session_reset", { reason: "lesson_change", chat_id }, `planner:${chat_id}`);
+        INSERT INTO planner_session_state (chat_id, lesson_fingerprint, pending_fingerprint, seed_pending, updated_at) VALUES (?, '', ?, ?, ?)
+        ON CONFLICT(chat_id) DO UPDATE SET pending_fingerprint = excluded.pending_fingerprint, seed_pending = excluded.seed_pending, updated_at = excluded.updated_at
+      `).run(chat_id, lesson_fingerprint, seed, now);
+      this.recordMemoryEvent("planner_session_reset", { reason, chat_id }, `planner:${chat_id}`);
     });
   }
 
@@ -3131,14 +3154,48 @@ export class RunStore {
   }
 
   /**
-   * Records it at a dispatched turn's end. With no row yet, a clean level writes nothing (null reads clean); a raised one
-   * creates the row with no fingerprint, which a later reset compares as '' (as with no row).
+   * Records it at a dispatched turn's end (and at every rise). `transcript_trust_at` is when the stored level last changed
+   * (plan P19), so /status can say since when the conversation carries it. With no row, a clean level writes nothing.
    */
   setTranscriptTrust(chat_id: string, level: string, now: string): void {
-    if (this.db.prepare(`UPDATE planner_session_state SET transcript_trust = ? WHERE chat_id = ?`).run(level, chat_id).changes === 1 || level === "clean") return;
+    const r = this.db.prepare(`
+      UPDATE planner_session_state SET transcript_trust_at = CASE WHEN transcript_trust IS ? THEN transcript_trust_at ELSE ? END, transcript_trust = ?
+      WHERE chat_id = ?
+    `).run(level, now, level, chat_id);
+    if (r.changes === 1 || level === "clean") return;
     this.db.prepare(`
-      INSERT INTO planner_session_state (chat_id, lesson_fingerprint, seed_pending, updated_at, transcript_trust) VALUES (?, '', 0, ?, ?)
-    `).run(chat_id, now, level);
+      INSERT INTO planner_session_state (chat_id, lesson_fingerprint, seed_pending, updated_at, transcript_trust, transcript_trust_at) VALUES (?, '', 0, ?, ?, ?)
+    `).run(chat_id, now, level, now);
+  }
+
+  /** /fresh (spec 2026-11-02 §6.2): the request's instant, persisted so a restart or a child exit cannot lose it. An upsert (P21b). */
+  requestFreshTranscript(chat_id: string, now: string): void {
+    this.db.prepare(`
+      INSERT INTO planner_session_state (chat_id, lesson_fingerprint, seed_pending, updated_at, fresh_requested_at) VALUES (?, '', 0, ?, ?)
+      ON CONFLICT(chat_id) DO UPDATE SET fresh_requested_at = excluded.fresh_requested_at
+    `).run(chat_id, now, now);
+  }
+
+  /** The pending /fresh request's instant, or null when none is pending. */
+  freshRequestedAt(chat_id: string): string | null {
+    return this.db.prepare(`SELECT fresh_requested_at FROM planner_session_state WHERE chat_id = ?`).get<{ fresh_requested_at: string | null }>(chat_id)?.fresh_requested_at ?? null;
+  }
+
+  /**
+   * The commit of a reset that served a /fresh (spec §6.2, N2): one statement clears the marker and stores `clean` (since
+   * `now`) only while the stored request is still the one served. False when a later /fresh replaced it (it stays pending).
+   */
+  commitFreshTranscript(chat_id: string, served: string, now: string): boolean {
+    return this.db.prepare(`
+      UPDATE planner_session_state SET fresh_requested_at = NULL, transcript_trust = 'clean', transcript_trust_at = ? WHERE chat_id = ? AND fresh_requested_at = ?
+    `).run(now, chat_id, served).changes === 1;
+  }
+
+  /** Spec 2026-11-02 section 6.3: the stored level and since when; null without a row. */
+  getTranscriptTrustSince(chat_id: string): { level: string; at: string | null } | null {
+    const r = this.db.prepare(`SELECT transcript_trust, transcript_trust_at FROM planner_session_state WHERE chat_id = ?`)
+      .get<{ transcript_trust: string | null; transcript_trust_at: string | null }>(chat_id);
+    return r ? { level: r.transcript_trust ?? "clean", at: r.transcript_trust_at } : null;
   }
 
   /** The seed goes to one dispatch: true only for the first claim after a reset. */
@@ -4393,6 +4450,7 @@ export class RunStore {
     shortlist_ids: number[];
     week_key: string;
     brief_written: boolean;
+    judge_models: Record<string, string | null> | null;
   }): void {
     this.appendLedgerEvent(
       createLedgerEvent({
@@ -6310,6 +6368,31 @@ export class RunStore {
     this.appendLedgerEvent(createLedgerEvent({
       correlation_id: "model-roles", event_type: "model_roles_resolved", actor: "system", sequence: this.nextLedgerSequence(),
       payload: { resolved_at: r.resolved_at, catalog_ok: r.catalog_ok, roles: r.roles }
+    }));
+  }
+
+  listModelTiers(): ModelTierRow[] {
+    return this.db.prepare(`SELECT tier, adopted, previous, adopted_at, rejected_selector, rejected_at, updated_at FROM model_tiers ORDER BY tier`).all<ModelTierRow>();
+  }
+
+  getModelTier(tier: string): ModelTierRow | undefined {
+    return this.db.prepare(`SELECT tier, adopted, previous, adopted_at, rejected_selector, rejected_at, updated_at FROM model_tiers WHERE tier = ?`).get<ModelTierRow>(tier);
+  }
+
+  /** The daily tick's (and only its) write of one tier's state (spec §4.2 step 4). */
+  writeModelTier(r: Omit<ModelTierRow, "updated_at">, now: string): void {
+    this.db.prepare(`
+      INSERT INTO model_tiers (tier, adopted, previous, adopted_at, rejected_selector, rejected_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(tier) DO UPDATE SET adopted = excluded.adopted, previous = excluded.previous, adopted_at = excluded.adopted_at,
+        rejected_selector = excluded.rejected_selector, rejected_at = excluded.rejected_at, updated_at = excluded.updated_at
+    `).run(r.tier, r.adopted, r.previous, r.adopted_at, r.rejected_selector, r.rejected_at, now);
+  }
+
+  /** One probe's outcome (spec §4.2, plan P17): codes only, never the model's reply or omp's text. */
+  recordModelProbe(p: ModelProbeRow): void {
+    this.appendLedgerEvent(createLedgerEvent({
+      correlation_id: "model-roles", event_type: "model_probe", actor: "system", sequence: this.nextLedgerSequence(),
+      payload: { tier: p.tier, selector: p.selector, purpose: p.purpose, result: p.result, kind: p.kind }
     }));
   }
 
@@ -8426,6 +8509,40 @@ export class RunStore {
     this.applyImproveRouteMigration();
     this.applyJevVersionCheckMigration();
     this.applyStandingApprovalMigration();
+    this.applyLoudDegradationMigration();
+    this.applyHostileScheduleEventMigration();
+  }
+
+  /** Spec 2026-11-02 §5 (plan P22): hostile_schedule_turn became an event; the rows a previous build left open are resolved once. */
+  private applyHostileScheduleEventMigration(): void {
+    const version = "2026-11-02-hostile-schedule-event";
+    this.inTransaction(() => {
+      if (this.db.prepare(`SELECT version FROM schema_migrations WHERE version = ?`).get<{ version: string }>(version)) return;
+      const now = new Date().toISOString();
+      for (const open of this.listOpenIncidents()) if (open.kind === "hostile_schedule_turn") this.resolveIncident(open.incident_id, now);
+      this.db.prepare(`INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)`).run(version, now);
+    });
+  }
+
+  /** Loud degradation (spec 2026-11-02 §4.2, §6.2, §6.3): the tier table, seeded once, and two nullable columns. Additive: the old build ignores all three. */
+  private applyLoudDegradationMigration(): void {
+    const version = "2026-11-02-loud-degradation";
+    this.inTransaction(() => {
+      const applied = this.db.prepare(`SELECT version FROM schema_migrations WHERE version = ?`).get<{ version: string }>(version);
+      this.db.exec(MODEL_TIERS_DDL);
+      const cols = this.tableColumns("planner_session_state");
+      if (!cols.has("fresh_requested_at")) this.db.exec(`ALTER TABLE planner_session_state ADD COLUMN fresh_requested_at TEXT`);
+      if (!cols.has("transcript_trust_at")) this.db.exec(`ALTER TABLE planner_session_state ADD COLUMN transcript_trust_at TEXT`);
+      if (applied) return;
+      this.seedModelTiers(new Date().toISOString());
+      this.db.prepare(`INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)`).run(version, new Date().toISOString());
+    });
+  }
+
+  /** W4: the known-good heads, so the first resolution after this build never sees an empty table. INSERT OR IGNORE: never over a tick's row. */
+  private seedModelTiers(now: string): void {
+    const ins = this.db.prepare(`INSERT OR IGNORE INTO model_tiers (tier, adopted, previous, adopted_at, rejected_selector, rejected_at, updated_at) VALUES (?, ?, NULL, ?, NULL, NULL, ?)`);
+    for (const t of TIER_IDS) ins.run(t, SEED_HEADS[t], SEED_HEADS[t] === null ? null : now, now);
   }
 
   /** Stage 4A: additive tables only (IF NOT EXISTS); the previous build never reads them and keeps asking (spec §5 rollback). */

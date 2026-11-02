@@ -2,7 +2,8 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import os from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { buildOmpPanelSeats, PANEL_JUDGE_SEAT_INDEX } from "../../src/capabilities/idea-panel-seats.js";
+import { buildOmpPanelSeats, PANEL_JUDGE_SEAT_INDEX, resolvedPanelChains } from "../../src/capabilities/idea-panel-seats.js";
+import { parseOmpCatalog } from "../../src/omp/model-catalog.js";
 import { resolveOmpConfig } from "../../src/omp/omp-config.js";
 import { formatModelString, parseModelChain } from "../../src/omp/model-string.js";
 import { staticRoleChains } from "../../src/omp/model-roles.js";
@@ -32,17 +33,25 @@ const modelOf = (argv: string[]) => argv[argv.indexOf("--model") + 1];
 const rows = (role: string) => store.getLedgerEventsByCorrelation("tick:idea_panel").filter((e) => e.event_type === "llm_attempt" && e.payload.role === role).map((e) => e.payload);
 
 describe("buildOmpPanelSeats — the four panel seats on omp", () => {
-  it("each judge seat spawns exactly its own HOUGE_OMP_JUDGES string, one leg, digest on stdin", async () => {
+  it("each judge seat spawns exactly its own HOUGE_OMP_JUDGES string, one leg, digest on stdin; the empty static seat 2 answers failed with no spawn", async () => {
     const env = fake({ "*": { text: '{"scores":[]}' } });
     const cfg = resolveOmpConfig(env);
     const seats = buildOmpPanelSeats({ store, correlation_id: "tick:idea_panel", env });
     expect(await seats.judges.kimi({ question: "DIGEST-K", system: "lens" })).toEqual({ ok: true, answer: '{"scores":[]}' });
     await seats.codexJudge({ digest: "DIGEST-C", system: "lens" });
-    await seats.judges.gemini({ question: "DIGEST-G", system: "lens" });
+    // Static judge seat 2 is empty (spec 2026-11-02 D4-A): that seat fails alone, and nothing is spawned for it.
+    expect(await seats.judges.gemini({ question: "DIGEST-G", system: "lens" })).toEqual({ ok: false });
     const want = (name: keyof typeof PANEL_JUDGE_SEAT_INDEX) => { const m = cfg.judges[PANEL_JUDGE_SEAT_INDEX[name]]!; return `${m.provider}/${m.model}`; };
-    expect(spawns().map((s) => modelOf(s.argv))).toEqual([want("kimi"), want("codex"), want("gemini")]);
+    expect(spawns().map((s) => modelOf(s.argv))).toEqual([want("kimi"), want("codex")]);
     expect(spawns()[0]?.stdin).toBe("lens\n\nDIGEST-K");
-    expect(rows("judge")).toHaveLength(3);
+    expect(rows("judge")).toHaveLength(2);
+  });
+
+  it("judgeModels names each seat's model; an empty seat is null (spec 2026-11-02 §12)", () => {
+    const m = (x: string) => parseModelChain(x)[0]!;
+    const chains = { ...staticRoleChains(), judges: [m("kimi-code/k3.1-pro"), m("openai-codex/gpt-6.1-sol"), undefined] } as never;
+    const seats = buildOmpPanelSeats({ store, correlation_id: "tick:idea_panel", env: fake({}), chains });
+    expect(seats.judgeModels).toEqual({ kimi: "kimi-code/k3.1-pro", codex: "openai-codex/gpt-6.1-sol", gemini: null });
   });
 
   it("a dead judge model is a failed seat, NEVER a fall-through to another model (quorum diversity)", async () => {
@@ -96,5 +105,19 @@ describe("buildOmpPanelSeats — the daemon's stop", () => {
     expect(await seats.judges.kimi({ question: "D", system: "lens" })).toEqual({ ok: false });
     expect(await seats.chair({ digest: "D", system: "chair" })).toEqual({ ok: false });
     expect(spawns()).toEqual([]);
+  });
+});
+
+describe("resolvedPanelChains — the CLI's panel resolves its seats as the daemon's does (final review, codex)", () => {
+  // `houge radar-panel` built its seats on the static lists, whose judge seat 2 is empty (D4-A): after Paco tapped
+  // "Use gemini-4-argon" the daemon's panel had three judges and a manual run still had two, with no model recorded.
+  const FIX = () => parseOmpCatalog(readFileSync(new URL("../fixtures/omp-catalog-2026-11-02.json", import.meta.url).pathname, "utf8"))!;
+  it("Paco's judges:2 override fills the gemini seat; a failed catalog read leaves the static lists (seat 2 empty)", async () => {
+    store.recordModelRoleOverride({ key: "judges:2", pattern: "gemini-4-argon", actor: "paco" });
+    const env = { ...fake({}), HOUGE_MODEL_ROLES: "resolved" };
+    const seats = async (read: () => Promise<ReturnType<typeof FIX> | null>) =>
+      buildOmpPanelSeats({ store, correlation_id: "cli:radar-panel", env, chains: await resolvedPanelChains(store, env, read) }).judgeModels;
+    expect((await seats(async () => FIX()))?.gemini).toMatch(/^google-antigravity\/gemini-4-argon(:|$)/);
+    expect((await seats(async () => null))?.gemini).toBeNull();
   });
 });

@@ -68,7 +68,7 @@ reach a real omp. The defaults below are copied from `src/omp/omp-config.ts`.
 | `HOUGE_OMP_BIN` | `omp` | The omp binary. Give the daemon an absolute path, because launchd runs it on a restricted PATH. | yes |
 | `HOUGE_OMP_PROFILE` | `houge` | `--profile` for every spawn; never the default profile. The OAuth store lives at `~/.omp/profiles/houge`, which is a secret path ([ADR 0015 amendment](../decisions/0015-secrets-firewall.md)). | yes |
 | `HOUGE_OMP_SANDBOX` | `1` | `0` runs the planner without `sandbox-exec` (tests only). With `1`, a missing `sandbox-exec` or a profile that fails to render stops the planner and opens incident `sandbox_unavailable`. | yes |
-| `HOUGE_MODEL_ROLES` | `resolved` | `resolved` \| `static`. `resolved` resolves each role's code list against omp's live catalog, applies `/models` overrides and clamps effort. `static` is the **model-list rollback**: today's seven chains as written, with no catalog check, no override, no daily tick and no clamp. Read per call from `process.env`; `.env` is parsed once at boot, so a change needs a kickstart. Pinned in tests: yes. |
+| `HOUGE_MODEL_ROLES` | `resolved` | `resolved` \| `static`. `resolved` resolves each role's code list against omp's live catalog, applies `/models` overrides and clamps effort. `static` is the **model-list rollback**: the re-pinned `STATIC_ROLE_LISTS` as written (the seeded tier heads; judge seat 2 is **empty** until Paco's tap and a code re-pin), with no catalog check, no override, no probe, no daily tick and no clamp. Resolved mode checks each static selector against the catalog daily and opens `static_list_stale` for a missing one. Read per call from `process.env`; `.env` is parsed once at boot, so a change needs a kickstart. Pinned in tests: yes. |
 | `HOUGE_OMP_ENV_PASSTHROUGH` | `KIMI_CODE_OAUTH_HOST,KIMI_CODE_BASE_URL` | Extra env var **names** passed to every omp child, on top of `PATH HOME TERM LANG USER`. The default is the Kimi pair, kept for token refresh against kimi.ai. Never list a secret here. | yes |
 | `HOUGE_OMP_TURN_TIMEOUT_MS` | `600000` | The turn deadline, paused while a card awaits `/approve`. Expiry writes `loop_halted{turn_timeout}` and sends the partial answer. | yes |
 | `HOUGE_OMP_FRAME_IDLE_MS` | `180000` | Watchdog: no omp frame and no bridge activity for this long while a turn runs → abort (`frame_idle`). Keep it above 90 s: Houge's omp config caps omp's own retry waits at 60 s (decision ladder 2a, S2b), and a lower watchdog would abort a turn during one. | yes |
@@ -126,27 +126,34 @@ Spec: [2026-10-06-jev-decision-tree-design.md](../superpowers/specs/2026-10-06-j
 `_TICKS`, `_JUDGES`, `_CHAIR` and `_REVIEWER` chain variables are **retired**: a set value is ignored, and the daemon
 names it once at boot (`[omp-config] … no longer read`). Delete them from `.env`.
 
-| Role | Seats | Code list (`ROLE_LISTS`, `src/omp/model-roles.ts`) |
+| Role | Seats | Code legs (`ROLE_LEGS`, `src/omp/model-roles.ts`; each leg is a tier, resolved to its adopted head) |
 |------|-------|-----------------------------------------------|
-| `fast` | planner, light gear | `anthropic/claude-sonnet-5-5:low`, `google-antigravity/claude-sonnet-5-5:low`, `google-antigravity/gemini-3.8-flash:low` |
-| `default` | planner, standard gear; the Jev-down fallback | `anthropic/claude-opus-5-5:medium`, `google-antigravity/claude-opus-5-5:medium`, `google-antigravity/claude-opus-4-6:medium`, `kimi-code/k3:low` |
-| `thinking` | planner, heavy gear | `anthropic/claude-opus-5-5:high`, `google-antigravity/claude-opus-5-5:high`, `google-antigravity/claude-opus-4-6:high`, `kimi-code/k3:high` |
-| `reader` | the quarantined reader ([ADR 0014](../decisions/0014-dual-llm-privilege-separation.md)) | `google-antigravity/gemini-3.8-flash:low`, `kimi-code/k3:low`, `openai-codex/gpt-6.1-sol:low` |
-| `vision` | the photo seat | `google-antigravity/gemini-3.8-flash:low` |
-| `tiny` | memory ticks and the Jev cascade | `kimi-code/k3:low`, `google-antigravity/gemini-3.8-flash:low` |
-| `judges` | idea-panel judges, one selector per seat index, no fallback | seat 0 `kimi-code/k3`, seat 1 `openai-codex/gpt-6.1-sol`, seat 2 `google-antigravity/gemini-3.1-pro` |
-| `chair` | idea-panel chair | `anthropic/claude-opus-5-5:low` |
-| `reviewer` | self-write checker 3 | `kimi-code/k3:high`, `google-antigravity/claude-opus-5-5:medium`, `google-antigravity/claude-opus-4-6:medium` |
+| `fast` | planner, light gear | `sonnet@anthropic:low`, `sonnet@antigravity:low`, `gemini-flash:low` |
+| `default` | planner, standard gear; the Jev-down fallback | `opus@anthropic:medium`, `opus@antigravity:medium`, `kimi:low` |
+| `thinking` | planner, heavy gear | `opus@anthropic:high`, `opus@antigravity:high`, `kimi:high` |
+| `reader` | the quarantined reader ([ADR 0014](../decisions/0014-dual-llm-privilege-separation.md)) | `gemini-flash:low`, `kimi:low`, `codex-sol:low` |
+| `vision` | the photo seat | `gemini-flash:low` |
+| `tiny` | memory ticks and the Jev cascade | `kimi:low`, `gemini-flash:low` |
+| `judges` | idea-panel judges, one tier head per seat index, never a chain | seat 0 `kimi`, seat 1 `codex-sol`, seat 2 `gemini-pro` (empty until Paco's tap) |
+| `chair` | idea-panel chair | `opus@anthropic:low` |
+| `reviewer` | self-write checker 3 | `kimi:high`, `opus@antigravity:medium` |
 
-Changing a list is a code edit. The catalog is the authority (Paco, 2026-10-07): a selector it does not list is dropped, so
-the lists keep both Antigravity Opus generations. Kimi is not renewed next year: every list keeps a non-Kimi leg, and
-judge seat 0 needs a replacement then. The `static` lists are the pre-stage-A chains string for string (`STATIC_ROLE_LISTS`,
-including a selector the catalog has since dropped).
+**Tiers (spec 2026-11-02, [ADR 0028 amendment 2026-11-02](../decisions/0028-omp-runtime.md)).** A leg names a tier, not a version:
+`opus@anthropic`, `opus@antigravity`, `sonnet@anthropic`, `sonnet@antigravity`, `gemini-flash`, `gemini-pro`, `codex-sol`, `kimi`
+(`src/omp/model-tiers.ts`: a provider and an anchored pattern, newest by the version in the id; dated snapshots, `-lite`,
+`-highspeed`, `-256k` and previews match none). A leg resolves to its tier's **adopted head**, then its **previous** adopted head.
+A new head is adopted only after a probe (a one-leg call through the one-shot seat): a pass adopts, `model_missing` keeps the tier
+and is not retried for 7 days, any other failure retries at the next tick. State is `model_tiers`; outcomes are `model_probe`
+rows. A judge seat resolves to its tier's head only, never a chain; when the head leaves the catalog the daily tick moves the seat
+to its previous head. An empty tier (`gemini-pro` today) gets one tap card a day proposing same-provider ids by price. A tap probes
+first and writes the `/models` override only on a pass. No new env var. Changing a family inside a tier is a code edit or `/models`;
+Kimi is not renewed next year, so every list keeps a non-Kimi leg and judge seat 0 needs a replacement then. The `static` lists
+(`STATIC_ROLE_LISTS`) are re-pinned to the seeded heads, with judge seat 2 empty.
 
 **Resolution order** (`resolved` mode): the catalog (`omp --profile houge models --json`, read at boot, daily and on
 `/models set`) is filtered to the provider allow-list `anthropic`, `google-antigravity`, `kimi-code`, `openai-codex`
 before any matching, and chat roles (`fast`, `default`, `thinking`, `vision`, `tiny`) never take `openai-codex`; then
-Paco's override for the key; then the role's list, each selector kept only when the catalog lists its `provider/id`; then
+Paco's override for the key; then the role's legs, each tier resolved to its adopted head (then its previous head), kept only when the catalog lists its `provider/id`; then
 selectors the running child refused (`model_missing` at spawn or pin) are skipped for that child's life. Effort is clamped
 to the model's catalogued thinking levels (nearest, ties round up; a model with no levels gets no `set_thinking_level`).
 For the reader, candidates of a different family from the planner's run first (D10 as a skip rule, `resolved` mode only).
@@ -159,8 +166,11 @@ For the reader, candidates of a different family from the planner's run first (D
 | `/models set <role> <pattern>` | Override the role with a case-insensitive substring over `provider/id` of the allow-listed, seat-eligible catalog. Refused when the pattern matches nothing, matches only models outside the role's providers, the catalog is unavailable, the mode is `static`, or the role is `judges`. |
 | `/models set judges <n> <pattern>` | Override judge seat `n` (0-based). |
 | `/models reset <role> [n]` | Clear the override (`reset judges` clears every seat). |
+| `/fresh` | Start a fresh planner conversation at the next message (clears a carried trust level; see [ADR 0030](../decisions/0030-decision-ladder.md) amendment 2026-11-02). Persisted, so a restart does not lose it; `/status` shows the carry while it stands. A failed reset keeps the marker, opens `planner_session_reset_failed` and prefixes the replies. |
 
 The override's matches serve first, then the catalogued list, so a retired override degrades to the list.
+
+**Daily reminder.** Separately from the tick (so it runs in `static` mode and through a catalog outage, before the model ticks), once a day one message lists every open `role_unresolved`, `static_list_stale`, `model_catalog_unavailable` and `planner_session_reset_failed` incident older than 24 h, with its age and the action to take. No env var.
 
 **Daily tick.** Once per 24 h (latched on the last `model_roles_resolved` row) the daemon re-reads the catalog and posts one
 line per role whose head moved ("Thinking now resolves to X, was Y"). A role with no candidate opens the alerted incident

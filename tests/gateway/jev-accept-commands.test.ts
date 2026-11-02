@@ -44,6 +44,17 @@ describe("parseJevAcceptCallback", () => {
   });
 });
 
+describe("the empty-tier card tap through the adapter", () => {
+  it("normalizes an allowlisted mt: callback to a model_tier_tap with the tier and no model_hash, and refuses a stranger", () => {
+    const allowlist = { users: [{ telegram_user_id: 111, identity_id: "paco" }], chats: [{ telegram_chat_id: 222, label: "p", allowed_identity_ids: ["paco"] }] };
+    const u = (from: number) => normalizeTelegramUpdate({ update_id: 3001, callback_query: { id: "cbq_10", from: { id: from }, message: { message_id: 5, chat: { id: 222 } }, data: "mt:gemini-pro:no" } }, allowlist);
+    const r = u(111);
+    expect(r).toMatchObject({ ok: true, event: { type: "model_tier_tap", notify: { chat_id: "222" }, metadata: { telegram_callback_id: "cbq_10", tier: "gemini-pro" } } });
+    expect((r as { event: { metadata: Record<string, unknown> } }).event.metadata).not.toHaveProperty("model_hash");
+    expect(u(999)).toMatchObject({ ok: false, error: { code: "TELEGRAM_AUTH_DENIED" } });
+  });
+});
+
 describe("handleJevAcceptTap", () => {
   it("from the card's chat: drifted → accepted, the model's incident resolves, one reply", () => {
     const s = RunStore.openInMemory(); drifted(s);

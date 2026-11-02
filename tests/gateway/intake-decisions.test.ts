@@ -77,8 +77,8 @@ describe("intake.rate_limit at Gateway.intake", () => {
     expect(spy.mock.calls.filter(([e]) => (e as { id: string }).id === "intake.rate_limit")).toEqual([]);
     expect(intakeRows(store).filter((r) => r.entry_id === "intake.rate_limit")).toEqual([]);
   });
-  it("the exempt set is exactly kill and the three digest taps (dropping one would silently rate-limit it)", () => {
-    expect([...RATE_LIMIT_EXEMPT].sort()).toEqual(["decision_review", "improvement_tap", "jev_accept_tap", "kill"]);
+  it("the exempt set is exactly kill, the three digest taps and the empty-tier card tap (dropping one would silently rate-limit it)", () => {
+    expect([...RATE_LIMIT_EXEMPT].sort()).toEqual(["decision_review", "improvement_tap", "jev_accept_tap", "kill", "model_tier_tap"]);
   });
   it("the TS exemption and the SQL window exclusion agree: every exempt command except kill never counts toward the window", () => {
     for (const cmd of RATE_LIMIT_EXEMPT) {

@@ -1,5 +1,6 @@
 import { buildIncidentOpenedText } from "./invariant-sweep.js";
-import type { RunStore } from "./run-store.js";
+import { formatInstantInZone, resolveDisplayZone } from "./schedule-spec.js";
+import type { IncidentRow, RunStore } from "./run-store.js";
 
 /**
  * Incidents opened OUTSIDE the invariant sweep (omp_unavailable,
@@ -7,6 +8,7 @@ import type { RunStore } from "./run-store.js";
  * the incident AND sends ONE Telegram alert on the open transition, through the outbox (the
  * telegram adapter renders it with the rich renderer). Throttled exactly like the incident: while
  * an incident with the same kind+subject is open, nothing is opened or sent again.
+ * `hostile_schedule_turn` is an event (spec 2026-11-02 §5).
  */
 export interface AlertedIncidentInput {
   kind: string;
@@ -90,4 +92,42 @@ export function resolveOpenIncidents(store: RunStore, kinds: ReadonlySet<string>
     if (store.resolveIncident(open.incident_id, now)) resolved += 1;
   }
   return resolved;
+}
+
+/**
+ * Spec 2026-11-02 §5: the alerted kinds a daily reminder repeats until fixed, each with the action that fixes it. Left out
+ * on purpose: undelivered_notification and every delivery-health kind (a reminder would multiply during an outage),
+ * trust_tap_budget (per day, rolls over itself), omp_contract_drift and planner_no_leg (each re-detects or pages on its own path).
+ */
+export const REMIND_KINDS: ReadonlyMap<string, string> = new Map([
+  ["role_unresolved", "tap the card, or `/models set <key> <pattern>`"],
+  ["static_list_stale", "re-pin `STATIC_ROLE_LISTS`"],
+  ["model_catalog_unavailable", "check `omp --profile houge models`"],
+  ["planner_session_reset_failed", "send `/fresh`, or check the omp session dir"]
+]);
+export const REMIND_AFTER_MS = 24 * 60 * 60_000;
+
+const age = (ms: number): string => `${Math.floor(ms / 86_400_000)}d${Math.floor((ms % 86_400_000) / 3_600_000)}h`;
+
+/** Code-owned text: kinds, subjects (role keys, selectors, chat ids), ages and action lines; null when nothing qualifies. */
+export function reminderText(open: ReadonlyArray<Pick<IncidentRow, "incident_id" | "kind" | "subject" | "first_seen_at">>, now: string): string | null {
+  const t = Date.parse(now);
+  const due = open.filter((i) => REMIND_KINDS.has(i.kind) && t - Date.parse(i.first_seen_at) > REMIND_AFTER_MS)
+    .sort((a, b) => Date.parse(a.first_seen_at) - Date.parse(b.first_seen_at) || (a.incident_id < b.incident_id ? -1 : a.incident_id > b.incident_id ? 1 : 0)); // deterministic for one millisecond
+  if (due.length === 0) return null;
+  return ["🔔 **Still open** (daily reminder)", ...due.map((i) => `- ${i.kind} · ${i.subject} · open ${age(t - Date.parse(i.first_seen_at))} — ${REMIND_KINDS.get(i.kind)}`)].join("\n");
+}
+
+/**
+ * The daily reminder (spec §5, plan P23): one message a display-zone day, keyed `incident_remind:<date>`. The outbox answers
+ * `duplicate` (same text) or `conflict` (a later text the same day) for a second send: both mean "already sent today".
+ */
+export function runIncidentReminder(i: { store: RunStore; chatId: string | null; env: NodeJS.ProcessEnv; now: string }): "sent" | "none" | "already" | "no_chat" {
+  if (!i.chatId) return "no_chat";
+  const text = reminderText(i.store.listOpenIncidents(), i.now);
+  if (text === null) return "none";
+  const date = formatInstantInZone(i.now, resolveDisplayZone(i.env)).slice(0, 10);
+  const r = i.store.enqueueNotification({ target: { kind: "telegram", chat_id: i.chatId }, intent_type: "progress",
+    idempotency_key: `incident_remind:${date}`, correlation_id: "incident-remind", payload: { text } });
+  return r.status === "queued" ? "sent" : "already";
 }

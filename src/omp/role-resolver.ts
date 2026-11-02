@@ -1,8 +1,9 @@
 import { formatModelString, type ModelString } from "./model-string.js";
 import {
-  clampEffort, overrideCandidates, resolveModelRolesMode, resolveRole, ROLE_LISTS, ROLE_NAMES, selectorKey,
+  clampEffort, overrideCandidates, resolveModelRolesMode, resolveRole, JUDGE_SEATS, ROLE_NAMES, selectorKey,
   type CatalogModel, type ModelRolesMode, type RoleChains, type RoleName
 } from "./model-roles.js";
+import { seedTierHeads, tierHeadsOf, type TierHeads } from "./model-tiers.js";
 import { openAlertedIncident, resolveOpenIncidents } from "../run/incident-alert.js";
 import type { RunStore } from "../run/run-store.js";
 
@@ -22,7 +23,7 @@ const CATALOG_INCIDENT: ReadonlySet<string> = new Set(["model_catalog_unavailabl
 type RoutedEffort = "low" | "medium" | "high";
 interface CandidateOptions { refused?: ReadonlySet<string>; effort?: RoutedEffort | null; seat?: number }
 /** One resolution's view: the mode and the overrides, read once so a chains() call is consistent across its seven roles. */
-interface Snapshot { mode: ModelRolesMode; overrides: Map<OverrideKey, string> }
+interface Snapshot { mode: ModelRolesMode; overrides: Map<OverrideKey, string>; tiers: TierHeads }
 interface ResolverDeps {
   store: RunStore; env?: () => NodeJS.ProcessEnv; readCatalog: () => Promise<CatalogModel[] | null>;
   /** Injectable clock (ms) for the retry and refresh windows; default Date.now. */
@@ -95,7 +96,7 @@ export class RoleResolver {
     const or = (role: RoleName, seat?: number): ModelString[] => this.resolveWith(s, role, seatOpt(seat)) ?? this.fallback(role, seatOpt(seat));
     return {
       planner: or("default"), reader: or("reader"), media: or("vision"), ticks: or("tiny"),
-      judges: ROLE_LISTS.judges.map((_, seat) => or("judges", seat)[0] as ModelString),
+      judges: Array.from({ length: JUDGE_SEATS }, (_, seat) => or("judges", seat)[0] as ModelString),
       chair: or("chair"), reviewer: or("reviewer")
     };
   }
@@ -104,12 +105,12 @@ export class RoleResolver {
   resolveAll(): ResolvedRole[] {
     const s = this.snapshot();
     const slots = ROLE_NAMES.flatMap<{ role: RoleName; seat?: number }>((role) =>
-      (role === "judges" ? ROLE_LISTS.judges.map((_, seat) => ({ role, seat })) : [{ role }]));
+      (role === "judges" ? Array.from({ length: JUDGE_SEATS }, (_, seat) => ({ role, seat })) : [{ role }]));
     return slots.map(({ role, seat }) => {
       const key = keyOf(role, seat);
       const c = this.resolveWith(s, role, seatOpt(seat)) ?? [];
       const override = s.mode === "resolved" ? s.overrides.get(key) ?? null : null;
-      const source: ResolvedRole["source"] = overrideCandidates(role, seat, override, this.cat).length > 0 ? "override" : "list";
+      const source: ResolvedRole["source"] = overrideCandidates(role, seat, override, this.cat, s.tiers).length > 0 ? "override" : "list";
       return { key, head: c[0] ? formatModelString(c[0]) : null, candidates: c.map(formatModelString), source };
     });
   }
@@ -148,31 +149,46 @@ export class RoleResolver {
 
   private snapshot(): Snapshot {
     const mode = resolveModelRolesMode(this.env());
-    if (mode === "static") return { mode, overrides: new Map() };
-    try {
-      return { mode, overrides: this.d.store.latestModelRoleOverrides() };
-    } catch (error) {
+    if (mode === "static") return { mode, overrides: new Map(), tiers: seedTierHeads() };
+    return { mode, overrides: this.readOverrides(), tiers: this.readTiers() };
+  }
+
+  private readOverrides(): Map<OverrideKey, string> {
+    try { return this.d.store.latestModelRoleOverrides(); } catch (error) {
       console.warn(`[model-roles] override read failed, resolving on the lists: ${why(error)}`);
-      return { mode, overrides: new Map() };
+      return new Map();
+    }
+  }
+
+  /** model_tiers, read at every resolution like the overrides (spec §4.2: no restart); a failed read resolves on the seeded heads. */
+  private readTiers(): TierHeads {
+    try { return tierHeadsOf(this.d.store.listModelTiers()); } catch (error) {
+      console.warn(`[model-roles] tier read failed, resolving on the seeded heads: ${why(error)}`);
+      return seedTierHeads();
     }
   }
 
   /** The role resolved, refused skipped, efforts clamped; null when it resolved EMPTY before the refused filter (F7). */
   private resolveWith(s: Snapshot, role: RoleName, o: CandidateOptions): ModelString[] | null {
     const override = s.mode === "resolved" ? s.overrides.get(keyOf(role, o.seat)) ?? null : null;
-    const all = resolveRole({ role, ...seatOpt(o.seat), catalog: this.cat, override, refused: NOTHING_REFUSED, mode: s.mode });
+    const all = resolveRole({ role, ...seatOpt(o.seat), catalog: this.cat, override, refused: NOTHING_REFUSED, mode: s.mode, tiers: s.tiers });
     if (all.length === 0) return null;
     const refused = o.refused ?? NOTHING_REFUSED;
     return all.filter((m) => !refused.has(selectorKey(m))).map((m) => clampEffort(m, o.effort ?? null, this.cat, s.mode));
   }
 
-  /** F7: the role's static list, unfiltered and unclamped (minus what the child refused), noted once per role per catalog read. */
+  /**
+   * F7: the role's static list, unfiltered and unclamped (minus what the child refused), noted once per role per catalog read.
+   * An empty static list is no fallback (final review Minor 3: judge seat 2 under D4-A); the tick's role_unresolved names it.
+   */
   private fallback(role: RoleName, o: CandidateOptions): ModelString[] {
     const key = keyOf(role, o.seat);
-    if (!this.fellBack.has(key)) {
+    const asStatic = (refused: ReadonlySet<string>) => resolveRole({ role, ...seatOpt(o.seat), catalog: null, override: null, refused, mode: "static" });
+    // Static IS the list: only resolved mode notes one.
+    if (asStatic(NOTHING_REFUSED).length > 0 && resolveModelRolesMode(this.env()) !== "static" && !this.fellBack.has(key)) {
       this.fellBack.add(key);
       try { this.d.store.recordMemoryEvent("model_roles_fallback", { role: key }, "model_roles"); } catch (e) { console.warn(`[model-roles] could not record model_roles_fallback: ${why(e)}`); }
     }
-    return resolveRole({ role, ...seatOpt(o.seat), catalog: null, override: null, refused: o.refused ?? NOTHING_REFUSED, mode: "static" });
+    return asStatic(o.refused ?? NOTHING_REFUSED);
   }
 }

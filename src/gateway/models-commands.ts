@@ -1,6 +1,6 @@
 import { escapeForTelegram } from "../capabilities/text-hygiene.js";
 import type { TypedTaskEvent } from "../domain/types.js";
-import { ALLOWED_PROVIDERS, matchOverride, resolveModelRolesMode, ROLE_LISTS, ROLE_NAMES, selectorKey, type CatalogModel, type RoleName }
+import { ALLOWED_PROVIDERS, matchOverride, resolveModelRolesMode, JUDGE_SEATS, ROLE_NAMES, selectorKey, type CatalogModel, type RoleName }
   from "../omp/model-roles.js";
 import { parseModelString } from "../omp/model-string.js";
 import type { OverrideKey, ResolvedRole, RoleResolver } from "../omp/role-resolver.js";
@@ -79,7 +79,7 @@ function setRefusal(roles: ModelsRoles, t: Target): ModelsRefusal | null {
   if (!t.pattern) return "bad_command";
   if (resolveModelRolesMode(process.env) === "static") return "static_mode";
   if (t.role === "judges" && t.seat === undefined) return "role_judges";
-  if (t.seat !== undefined && t.seat >= ROLE_LISTS.judges.length) return "no_seat";
+  if (t.seat !== undefined && t.seat >= JUDGE_SEATS) return "no_seat";
   const catalog = roles.catalog();
   if (!catalog) return "catalog_unavailable";
   if (matchOverride(t.pattern, t.role, catalog).length > 0) return null;

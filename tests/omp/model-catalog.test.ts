@@ -25,6 +25,16 @@ describe("parseOmpCatalog — omp's catalog is validated, never trusted", () => 
       expect(parseOmpCatalog(raw)).toBeNull();
     });
 
+  it("carries cost.output and timeBased.effectiveRates as price; an entry without cost has no price key (spec §4.4)", () => {
+    const c = parseOmpCatalog(JSON.stringify({ models: [
+      { provider: "google-antigravity", id: "gemini-4-argon", thinking: null, cost: { output: 10, timeBased: { effectiveRates: [{ effectiveFrom: 0, output: 10 }, { effectiveFrom: 5, output: 20 }, { effectiveFrom: "x", output: 1 }] } } },
+      { provider: "anthropic", id: "claude-opus-5-5", thinking: null }
+    ] }));
+    expect(c).toEqual([
+      { provider: "google-antigravity", id: "gemini-4-argon", thinking: null, price: { output: 10, rates: [{ from: 0, output: 10 }, { from: 5, output: 20 }] } },
+      { provider: "anthropic", id: "claude-opus-5-5", thinking: null }
+    ]);
+  });
   it("drops an entry with a malformed thinking field and filters unknown levels out of a good one", () => {
     const c = parseOmpCatalog(JSON.stringify({ models: [
       { provider: "kimi-code", id: "k3", thinking: "high" },

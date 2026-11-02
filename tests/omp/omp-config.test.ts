@@ -12,16 +12,16 @@ afterEach(() => { for (const k of PINNED) { if (saved[k] === undefined) delete p
 
 // With no RoleResolver, the chains are the static role lists: today's HOUGE_OMP_* defaults (spec §4.3 rollback parity).
 describe("omp config — defaults are the decided seat chains (spec §8, D7, D10)", () => {
-  it("defaults the planner to Opus 5.5 then Opus 4.6 via Antigravity then k3", () => {
+  it("defaults the planner to Opus 5.5 then Opus 5.5 via Antigravity then k3", () => {
     const c = resolveOmpConfig({});
     expect(c.planner.map((m) => `${m.provider}/${m.model}`)).toEqual([
-      "anthropic/claude-opus-5-5", "google-antigravity/claude-opus-4-6", "kimi-code/k3"
+      "anthropic/claude-opus-5-5", "google-antigravity/claude-opus-5-5", "kimi-code/k3"
     ]);
   });
 
   it("keeps a GPT reader leg last so planner/reader family collapse stays rare (D10)", () => {
     const families = resolveOmpConfig({}).reader.map((m) => m.model);
-    expect(families.at(-1)).toBe("gpt-5.5");
+    expect(families.at(-1)).toBe("gpt-6.1-sol");
   });
 
   it("runs sandboxed by default — production must not start unsandboxed by omission", () => {

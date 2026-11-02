@@ -48,6 +48,8 @@ import { resolveQuietTriageOverrides } from "../jev/jev-incidents.js";
 import { handleDecisionReview } from "./decision-commands.js";
 import { handleImprovementTap } from "./improvement-commands.js";
 import { handleJevAcceptTap } from "./jev-accept-commands.js";
+import { handleModelTierTap, type TierTapDeps } from "./model-tier-commands.js";
+import type { ProbeFn } from "../omp/model-probe.js";
 import { decideSync } from "../decisions/decide.js";
 import { TURN_CONTRACT } from "../decisions/entries/turn-contract.js";
 import { INTAKE_BUDGET_FUSE } from "../decisions/entries/intake-budget-fuse.js";
@@ -61,6 +63,7 @@ import type { NotificationButton, NotificationPayload } from "../notifications/n
 import { standingScheduleSection } from "../decisions/standing-approval.js";
 import { handleForgetMemory, handleMemories, handleMemoryUndo } from "./memory-commands.js";
 import { handleModels, modelsUnavailable, type ModelsRoles } from "./models-commands.js";
+import { handleFresh } from "./fresh-command.js";
 import type { IdeaRow, ShortlistRow } from "../run/run-store.js";
 import { invalidCommandReply } from "../triggers/telegram-trigger-adapter.js";
 
@@ -88,6 +91,7 @@ export type GatewayIntakeResult =
   | { ok: true; status: "decision_reviewed"; run_id: string }
   | { ok: true; status: "improvement_tapped"; run_id: string }
   | { ok: true; status: "jev_accept_tapped"; run_id: string }
+  | { ok: true; status: "model_tier_tapped"; run_id: string }
   | { ok: true; status: "memories_returned"; run_id: string }
   | { ok: true; status: "memory_forgotten"; run_id: string }
   | { ok: true; status: "models_returned"; run_id: string }
@@ -95,6 +99,7 @@ export type GatewayIntakeResult =
   | { ok: true; status: "killed"; run_id: string }
   | { ok: true; status: "disarmed"; run_id: string }
   | { ok: true; status: "rearmed"; run_id: string }
+  | { ok: true; status: "fresh_requested"; run_id: string }
   | {
       ok: true;
       status: "rating_captured";
@@ -148,7 +153,7 @@ const boundedEcho = (text: string): string => (text.length > CONTRACT_REFUSAL_EC
 const LOW_RATING_MAX = 1;
 
 /** ADR 0018 + decision ladder plan ruling 16: commands the per-chat rate limit never delays (kill; digest review taps). */
-export const RATE_LIMIT_EXEMPT: ReadonlySet<string> = new Set(["kill", "decision_review", "improvement_tap", "jev_accept_tap"]);
+export const RATE_LIMIT_EXEMPT: ReadonlySet<string> = new Set(["kill", "decision_review", "improvement_tap", "jev_accept_tap", "model_tier_tap"]); // + empty-tier card taps (spec 2026-11-02 §4.4)
 
 export class Gateway {
   private readonly caps: GlobalBudgetCaps;
@@ -159,13 +164,18 @@ export class Gateway {
   /** Lazy, like CoreWorker's (core-worker.ts:560): the intake entries' rows have no run (spec 2026-10-30 R1 §4). No env: a record failure pages HOUGE_TELEGRAM_CHAT_ID. Injectable for the differential and the gate (spec R2 §4.2). */
   private get decisionRecorder(): DecisionRecorder { return (this.recorderCache ??= this.options.decisionRecorder ?? storeRecorder(this.runStore)); }
 
+  /** Empty-tier taps in flight (plan P16): the probe runs off the intake path; tests, gates and shutdown await them. */
+  private readonly tierTaps = new Set<Promise<void>>();
+  whenTierTapsSettled(): Promise<void> { return Promise.all([...this.tierTaps]).then(() => undefined); }
+  private trackTierTap = (p: Promise<void>): void => { this.tierTaps.add(p); void p.finally(() => this.tierTaps.delete(p)); };
+
   constructor(
     private readonly runStore: RunStore,
     caps?: GlobalBudgetCaps,
     projectRoot?: string,
     skillStore?: SkillStore,
     hooks?: GatewayHooks,
-    private readonly options: { dataDir?: string; roles?: ModelsRoles; decisionRecorder?: DecisionRecorder } = {}
+    private readonly options: { dataDir?: string; roles?: ModelsRoles; decisionRecorder?: DecisionRecorder; modelProbe?: ProbeFn; stopSignal?: AbortSignal } = {}
   ) {
     this.caps = caps ?? resolveGlobalBudgetCaps(process.env);
     this.projectRoot = projectRoot ?? process.cwd();
@@ -173,6 +183,11 @@ export class Gateway {
     // injectable so tests point at a temp dir.
     this.skillStore = skillStore ?? new SkillStore({ root: join(this.projectRoot, "skills") });
     this.hooks = hooks ?? {};
+  }
+
+  private tierTapDeps(): TierTapDeps {
+    return { ...(this.options.roles ? { roles: this.options.roles } : {}), ...(this.options.modelProbe ? { probe: this.options.modelProbe } : {}),
+      ...(this.options.stopSignal ? { signal: this.options.stopSignal } : {}), track: this.trackTierTap };
   }
 
   intake(inbound: TypedTaskEvent, now: string = new Date().toISOString()): GatewayIntakeResult {
@@ -219,6 +234,7 @@ export class Gateway {
     if (event.type === "decision_review") return this.accepted(event, now, handleDecisionReview(this.runStore, event, now));
     if (event.type === "improvement_tap") return this.accepted(event, now, handleImprovementTap(this.runStore, this.skillStore, event, now));
     if (event.type === "jev_accept_tap") return this.accepted(event, now, handleJevAcceptTap(this.runStore, event, now));
+    if (event.type === "model_tier_tap") return this.accepted(event, now, handleModelTierTap(this.runStore, this.tierTapDeps(), event, now));
 
     if (event.type === "status") {
       return this.handleStatus(event, now);
@@ -293,6 +309,8 @@ export class Gateway {
     if (event.type === "rearm") {
       return this.handleRearm(event, now);
     }
+
+    if (event.type === "fresh") return this.accepted(event, now, handleFresh(this.runStore, event, now));
 
     if (memLaneAsk) return this.admitMemLaneAsk(event, memLaneAsk.original_run_id, now);
 
@@ -1276,10 +1294,18 @@ export class Gateway {
   private statusPayload(event: TypedTaskEvent, run_id: string | undefined, now: string): NotificationPayload {
     if (event.metadata?.status_view === "decisions") return { text: decisionListText(this.runStore) };
     const status = queryStatus(this.runStore, run_id);
-    return { text: this.formatStatusText(status, now), status };
+    const chatId = event.notify.kind === "telegram" ? event.notify.chat_id : null;
+    return { text: this.formatStatusText(status, now, chatId), status };
   }
 
-  private formatStatusText(status: ReturnType<typeof queryStatus>, now: string): string {
+  /** Spec 2026-11-02 section 6.3: one line while the chat's planner transcript carries a raised level; /fresh is its exit. */
+  private carryLine(chatId: string | null, localOf: (iso: string) => string): string[] {
+    const t = chatId ? this.runStore.getTranscriptTrustSince(chatId) : null;
+    if (!t || (t.level !== "untrusted" && t.level !== "hostile")) return [];
+    return [`Conversation carries ${t.level}${t.at ? ` since ${localOf(t.at)}` : ""} · /fresh clears it`];
+  }
+
+  private formatStatusText(status: ReturnType<typeof queryStatus>, now: string, chatId: string | null): string {
     if (!status.ok) {
       return status.error.message;
     }
@@ -1368,6 +1394,7 @@ export class Gateway {
         "🟢 HEALTH",
         `Daemon: ${daemonText}`,
         `Self-check: swept ${sweptText} · ${incidentText}`,
+        ...this.carryLine(chatId, localOf),
         ...radarLine,
         ...panelLine,
         `Errors: ${errorsText}`,
@@ -1600,6 +1627,7 @@ export const HELP_TEXT = [
   "/memories [query] — 查看记住的事实（最多 10 条）",
   "/forget_memory <id> — 忘掉一条记忆（附撤销按钮）",
   "/models — 模型角色（/models set <role> <pattern> · /models set judges <n> <pattern> · /models reset <role>）",
+  "/fresh — 开始新对话（规划器不再看到之前的对话，清除携带的信任级别）",
   "/approve <id> — 批准待处理操作",
   "/deny <id> — 拒绝待处理操作",
   "/approvals — 列出待批准的操作",

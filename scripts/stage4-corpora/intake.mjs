@@ -6,7 +6,7 @@
 // from the dump before relabelling and asserted EXACTLY on the new side (each item's `expectR2`, default none); the old build must hold none.
 import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { DISTS, INTAKE_IDS, R2_IDS, canon, diffPaths, dumpDb, mkStore, mkTemp, regularTables, relabelClocks, requireNew } from "../stage4-diff-lib.mjs";
+import { DISTS, INTAKE_IDS, R2_IDS, canon, diffPaths, dumpDb, mkStore, mkTemp, regularTables, extraDropFilter, relabelClocks, requireNew } from "../stage4-diff-lib.mjs";
 import { scrubIds } from "../stage4-bind-fixture.mjs";
 import { NOW, intakeEvent, saturateWindow, seedActiveRuns, seedAsk, seedPendingApprovals, withCountingClock, withPinnedEnv } from "../stage4-intake-fixture.mjs";
 
@@ -78,7 +78,7 @@ function tableCounts(store) {
   const ids = [...INTAKE_IDS, ...R2_IDS].map((i) => `'${i}'`).join(",");
   const counts = {};
   for (const { name } of regularTables(store)) {
-    const n = store.db.prepare(`SELECT COUNT(*) AS n FROM "${name}"${name === "decisions" ? ` WHERE entry_id NOT IN (${ids})` : ""}`).get().n;
+    const n = store.db.prepare(`SELECT COUNT(*) AS n FROM "${name}"${name === "decisions" ? ` WHERE entry_id NOT IN (${ids})` : extraDropFilter(name)}`).get().n;
     if (n > 0) counts[name] = n;
   }
   return counts;

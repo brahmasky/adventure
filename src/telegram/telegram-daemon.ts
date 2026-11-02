@@ -16,7 +16,9 @@ import { newestMtimeMs } from "../capabilities/self-write-merge.js";
 import { maybeAskSessionRating } from "../capabilities/session-rating.js";
 import { CoreWorker, type OmpWorkerOptions } from "../core/core-worker.js";
 import { resolveOmpConfig, warnRetiredOmpChainVars } from "../omp/omp-config.js";
-import { runModelRolesTick } from "../omp/model-roles-tick.js";
+import { ompProbe, type ProbeFn } from "../omp/model-probe.js";
+import { enqueueTierCard } from "../gateway/model-tier-commands.js";
+import { runModelRolesTick, type EmptyTierCard, type ModelRolesTickInput } from "../omp/model-roles-tick.js";
 import { createOmpProbeRunner, type OmpProbeRunner } from "../omp/omp-probe-runner.js";
 import { sharedOmpVersionCache } from "../omp/omp-version-cache.js";
 import { stableHash } from "../domain/canonical.js";
@@ -41,6 +43,7 @@ import { NotificationDispatcher, type NotificationAdapters } from "../notificati
 import { NotificationOutbox } from "../notifications/notification-outbox.js";
 import { resolveBackupEnabled, runDbBackupTick } from "../run/db-backup.js";
 import type { LlmCallRole, ReloadMarker, RunStore } from "../run/run-store.js";
+import { runIncidentReminder } from "../run/incident-alert.js";
 import { maybeFireScheduledTasks } from "../run/schedule-tick.js";
 import { SkillStore } from "../skills/skill-store.js";
 import { runInvariantSweep, type InvariantSweepInput, type InvariantSweepResult } from "../run/invariant-sweep.js";
@@ -110,6 +113,8 @@ export interface RunTelegramDaemonOptions {
    * plus the contained codex/claude spawn seats via {@link buildPanelSeatBindings}.
    */
   panelSeats?: PanelSeatBindings;
+  /** Injectable for tests ONLY: the empty-tier tap's and the daily roles tick's probe. Prod omits it and gets ompProbe. */
+  modelProbe?: ProbeFn;
   /** omp planner turns: the data dir (houge.sqlite's directory, default projectRoot) and dist dir. Tests use tmp dirs. */
   omp?: OmpWorkerOptions;
   /** How often detached turns' notifications (approval cards, replies) are flushed between polls (default 1 s). */
@@ -222,7 +227,8 @@ export async function runTelegramDaemon(
     options.projectRoot,
     undefined,
     options.requestShutdown ? { requestShutdown: options.requestShutdown } : {},
-    { dataDir: options.omp?.dataDir ?? options.projectRoot, roles: worker.modelRoles() }
+    { dataDir: options.omp?.dataDir ?? options.projectRoot, roles: worker.modelRoles(),
+      modelProbe: options.modelProbe ?? lazyTapProbe(options.store), stopSignal: options.stopSignal }
   );
   // Model roles (spec 2026-10-06 §4): one catalog read before the first turn, bounded by CATALOG_TIMEOUT_MS. A failed
   // read leaves one ledger note and the roles on their lists (Decision 4); the poll loop retries it hourly (F14).
@@ -289,6 +295,7 @@ export async function runTelegramDaemon(
   let cycles = 0;
   let failures = 0;
   let parkMarkerCleared = false;
+  const rolesTick = detachedJob();
 
   while (!options.stopSignal.aborted) {
     try {
@@ -344,7 +351,7 @@ export async function runTelegramDaemon(
       // ⓪·3 S2: the signal path rides the poll loop (before the outbox flush, so a
       // rating ask enqueued this cycle is delivered this cycle). B10b threads the
       // gateway + worker in so the scheduler tick fires due tasks down the SAME path.
-      await runSignalPathTick(options, gateway, worker, t);
+      await runSignalPathTick(options, gateway, worker, t, rolesTick);
       await flushLogged({ retry: true }); // a failed drain is logged + incident'd, never a poll failure: the next flush retries
 
       options.store.recordPollHeartbeat({ now: now(), ok: true });
@@ -378,6 +385,8 @@ export async function runTelegramDaemon(
   clearInterval(pump);
   clearInterval(recovery);
   await worker.shutdownPlanners();
+  await settledWithin(gateway.whenTierTapsSettled(), TIER_TAP_SHUTDOWN_CAP_MS);
+  await settledWithin(rolesTick.settled(), ROLES_TICK_SHUTDOWN_CAP_MS); // the stop aborts its probe; the 24 h latch re-runs the whole unit next boot
   await settledWithin(jevJobSettled(), JEV_JOB_SHUTDOWN_CAP_MS); // capped: the check resumes from its rows, the flush and the evolution lane must not wait on Jev
   await flushLogged();
 
@@ -398,6 +407,29 @@ export async function runTelegramDaemon(
 export const OUTBOX_INCIDENT_WINDOW_MS = 10 * 60_000;
 /** Shutdown waits at most this long for the Jev version check (launchd's ExitTimeOut is 40 s; the check is resumable). */
 export const JEV_JOB_SHUTDOWN_CAP_MS = 5_000;
+
+/** The tap's probe, built per call: a malformed omp config must still reach the boot check's incident, not throw at Gateway construction. */
+const lazyTapProbe = (store: RunStore): ProbeFn => (selector, signal) => ompProbe(store, resolveOmpConfig(process.env))(selector, signal);
+
+/** Shutdown waits at most this long for in-flight empty-tier taps: a probe aborted by the stop settles at once; the cap only bounds a probe that ignores its signal. */
+export const TIER_TAP_SHUTDOWN_CAP_MS = 5_000;
+
+/** Shutdown waits at most this long for the detached roles tick: its probe takes the stop signal, so the cap only bounds a probe that ignores it. */
+export const ROLES_TICK_SHUTDOWN_CAP_MS = 5_000;
+
+/** One detached job at a time: a start while the last run is in flight is a no-op; `settled()` is for shutdown. Exported for its test. */
+export interface DetachedJob { start(run: () => Promise<void>): void; settled(): Promise<void> }
+export function detachedJob(): DetachedJob {
+  let running: Promise<void> | undefined;
+  return {
+    start(run) {
+      if (running) return;
+      const p: Promise<void> = run().catch(() => undefined).finally(() => { if (running === p) running = undefined; });
+      running = p;
+    },
+    settled: () => running ?? Promise.resolve()
+  };
+}
 
 /** Resolves when `p` settles or after `ms`, whichever is first; a rejection is swallowed; the timer never holds the process. Exported for its test. */
 export function settledWithin(p: Promise<void>, ms: number): Promise<void> {
@@ -486,9 +518,15 @@ export function throttledIncident(store: Pick<RunStore, "openIncident">, windowM
 
 /**
  * `/kill` stops every live planner turn without blocking the poll loop (the tombstone is already
- * written, the ack queued); `/rearm` clears the planners' crash-loop latch (spec §7).
+ * written, the ack queued); `/rearm` clears the planners' crash-loop latch (spec §7); `/fresh` stops an idle
+ * planner child (spec 2026-11-02 §6.2). Exported for tests.
  */
-function onPlannerControl(status: string, worker: CoreWorker, store: RunStore): void {
+export function onPlannerControl(status: string, worker: CoreWorker, store: RunStore): void {
+  if (status === "fresh_requested") {
+    // The marker is persisted; an idle child stops now so the next turn spawns and resets. A turn in flight is never cancelled.
+    for (const s of worker.plannerSupervisors()) void s.onFreshRequested().catch((e) => console.error(`[telegram-daemon] /fresh stop failed: ${errorCode(e)}`));
+    return;
+  }
   if (status === "rearmed") {
     for (const s of worker.plannerSupervisors()) s.resetCrashGuard();
     return;
@@ -512,11 +550,16 @@ function onPlannerControl(status: string, worker: CoreWorker, store: RunStore): 
  * the metered-$ ceiling check and the invariant sweep. NEVER throws (like
  * notifyReloadOnBoot): a signal-path error must not stop the daemon.
  */
+export function runReminderStep(store: RunStore, chatId: string | null, now: string): void {
+  try { runIncidentReminder({ store, chatId, env: process.env, now }); } catch (error) { console.error(`[telegram-daemon] incident reminder failed: ${errorCode(error)}`); }
+}
+
 async function runSignalPathTick(
   options: RunTelegramDaemonOptions,
   gateway: Gateway,
   worker: CoreWorker,
-  now: string
+  now: string,
+  rolesTick: DetachedJob
 ): Promise<void> {
   try {
     options.store.runLessonDecayTick(now);
@@ -535,7 +578,10 @@ async function runSignalPathTick(
     const chat = options.allowlist.chats[0];
     const chatId = chat ? String(chat.telegram_chat_id) : null;
     if (chatId) maybeAskSessionRating({ store: options.store, chatId, now });
-    await runModelTicks(options, gateway, worker, now, chatId);
+    // Spec 2026-11-02 §5 (B3, N5): the daily reminder, before the model ticks and independent of HOUGE_MODEL_ROLES, so a
+    // slow or stopped model tick (or a catalog outage) cannot delay that day's reminder. Its own catch.
+    runReminderStep(options.store, chatId, now);
+    await runModelTicks(options, gateway, worker, now, chatId, rolesTick);
     // ADR 0019: the metered-$ ceiling check — drives the alert-dedupe latch (the chain
     // builder's cheap enforcement read) once per cycle; the 0→1 transition enqueues ONE
     // alert, delivered by the outbox flush right after this tick.
@@ -664,11 +710,13 @@ function tickLlm(options: RunTelegramDaemonOptions, name: string, role: LlmCallR
  * ExitTimeOut SIGKILLed the daemon). Each is flag-gated and never throws into the daemon.
  */
 async function runModelTicks(
-  options: RunTelegramDaemonOptions, gateway: Gateway, worker: CoreWorker, now: string, chatId: string | null
+  options: RunTelegramDaemonOptions, gateway: Gateway, worker: CoreWorker, now: string, chatId: string | null, rolesTick: DetachedJob
 ): Promise<void> {
   const signal = options.stopSignal;
-  // First: the memory and council ticks below then resolve their seats against today's catalog.
-  await runRolesTick(options, worker, now, chatId, signal);
+  // Final review I1: the roles tick probes one model at a time (60 s each on a slow provider), so it runs detached from the
+  // poll loop, one at a time (its 24 h latch is written only when it settles). The ticks below resolve their seats on the
+  // tiers in force; a tick that moves a head serves them from the next cycle.
+  rolesTick.start(() => runRolesTick(options, worker, now, chatId, signal));
   if (signal.aborted) return;
   await runMemoryTicks(options, now, signal, worker.modelRoles());
   if (signal.aborted) return;
@@ -679,6 +727,11 @@ async function runModelTicks(
   // run's final report is enqueued during executeRun, so the outbox flush right
   // after this tick delivers it the same cycle.
   await maybeFireScheduledTasks({ store: options.store, gateway, worker, now, signal });
+}
+
+/** The roles tick's input (plan P26: the daemon always passes the probe and the resolver's catalog). Exported for the wiring test. */
+export function modelRolesTickInput(store: RunStore, roles: RoleResolver, now: string, notify: (text: string) => void, signal: AbortSignal, card?: ModelRolesTickInput["card"], probe?: ProbeFn): ModelRolesTickInput {
+  return { store, roles, probe: probe ?? ompProbe(store, resolveOmpConfig(process.env)), now, signal, notify, ...(card ? { card } : {}) };
 }
 
 /**
@@ -696,8 +749,9 @@ async function runRolesTick(
       idempotency_key: `model_roles:notice:${now}:${stableHash(text)}`, correlation_id: "model-roles", payload: { text }
     });
   };
+  const card = (c: EmptyTierCard): void => { if (chatId) enqueueTierCard(options.store, chatId, now, c); };
   try {
-    await runModelRolesTick({ store: options.store, roles: worker.modelRoles(), now, signal, notify });
+    await runModelRolesTick(modelRolesTickInput(options.store, worker.modelRoles(), now, notify, signal, card, options.modelProbe));
   } catch (error) {
     console.error(`[telegram-daemon] model roles tick failed: ${errorCode(error)}`);
   }

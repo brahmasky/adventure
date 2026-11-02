@@ -1,7 +1,7 @@
 import type { RunStore } from "../run/run-store.js";
 import { openAlertedIncident } from "../run/incident-alert.js";
 import { decideSync, message } from "./decide.js";
-import { CAUSE_LEVEL, rankOf, TURN_TRUST, type TrustCause, type TrustLevel } from "./entries/turn-trust.js";
+import { CARRY_LEVEL, CAUSE_LEVEL, rankOf, TURN_TRUST, type TrustCause, type TrustLevel } from "./entries/turn-trust.js";
 import { storeRecorder } from "./record.js";
 import { enqueueUrgentCard } from "./urgent.js";
 
@@ -27,6 +27,7 @@ export class TurnTrust {
   // ES private fields, not TS `private`: no cast or reflection can reach the level to lower it (monotone, spec §7.2)
   #current: TrustLevel = "clean";
   #ended = false;
+  #causes = new Set<TrustCause>();
   constructor(private readonly d: TurnTrustDeps) {}
 
   level(): TrustLevel { return this.#current; }
@@ -34,9 +35,14 @@ export class TurnTrust {
   /** True once finalize() ran: a judgement completing after this is recorded late and raises nothing. */
   ended(): boolean { return this.#ended; }
 
-  /** True when the level rose. Locked code decides (turn.trust); the row is recorded through the store recorder. */
+  /**
+   * True when the level rose. Locked code decides (turn.trust); the row is recorded through the store recorder. Every cause
+   * asked is kept for the carry (spec 2026-11-02 §6.1, B1), even one that does not raise the level.
+   */
   raise(cause: TrustCause, tool_call_id: string | null = null): boolean {
-    if (this.#ended || rankOf(CAUSE_LEVEL[cause]) <= rankOf(this.#current)) return false;
+    if (this.#ended) return false;
+    this.#causes.add(cause);
+    if (rankOf(CAUSE_LEVEL[cause]) <= rankOf(this.#current)) return false;
     const r = decideSync(TURN_TRUST, { current: this.#current, cause }, { run_id: this.d.run_id, tool_call_id,
       recorder: storeRecorder(this.d.store, this.d.env ? { env: this.d.env } : {}) });
     this.#current = r.verdict;
@@ -44,6 +50,13 @@ export class TurnTrust {
     try { this.d.onRise?.(this.#current); } catch (e) { console.error(`trust: transcript level not persisted for ${this.d.run_id}: ${message(e)}`); }
     if (this.#current === "hostile") this.onHostile(cause === "carried_hostile");
     return true;
+  }
+
+  /** Spec 2026-11-02 §6.1: what the transcript carries after this turn — the highest CARRY_LEVEL over every cause asked. */
+  carryLevel(): TrustLevel {
+    let best: TrustLevel = "clean";
+    for (const c of this.#causes) if (rankOf(CARRY_LEVEL[c]) > rankOf(best)) best = CARRY_LEVEL[c];
+    return best;
   }
 
   /** Security final I-3: start at the level the planner transcript carries (a stored value; anything unknown carries nothing). */
@@ -64,12 +77,12 @@ export class TurnTrust {
   }
 
   /**
-   * Spec §8.2: one urgent card per hostile turn; a schedule-born one (nobody to tap) also pages hostile_schedule_turn once. A
-   * carried level sends no card (the turn that read the text already did) but still pages a schedule-born turn.
+   * Spec §8.2: one urgent card per hostile turn; a schedule-born one (nobody to tap) also pages hostile_schedule_turn, an
+   * event. A carried level sends no card and, D3-A (spec 2026-11-02 §6.4), no page: the turn that read the text already paged.
    */
   private onHostile(carried: boolean): void {
-    if (this.d.born === "schedule") this.page("hostile_schedule_turn");
     if (carried) return;
+    if (this.d.born === "schedule") this.page("hostile_schedule_turn");
     try { enqueueUrgentCard(this.d.store, { chat_id: this.d.chat_id, key: `trust_hostile:${this.d.run_id}`, text: HOSTILE_CARD_TEXT }); }
     catch (e) {
       // Paco must still learn the turn is hostile: the card's failure becomes an incident row (and its own page)
@@ -79,7 +92,8 @@ export class TurnTrust {
   }
 
   private page(kind: "trust_card_failed" | "hostile_schedule_turn"): void {
-    try { openAlertedIncident(this.d.store, { kind, subject: this.d.run_id, detail: { run_id: this.d.run_id }, ...(this.d.env ? { env: this.d.env } : {}) }); }
+    // spec 2026-11-02 §5: hostile_schedule_turn is an event, resolved after its page — a carried turn re-paged the same morning twice
+    try { openAlertedIncident(this.d.store, { kind, subject: this.d.run_id, detail: { run_id: this.d.run_id }, ...(kind === "hostile_schedule_turn" ? { event: true } : {}), ...(this.d.env ? { env: this.d.env } : {}) }); }
     catch (e) { console.error(`trust: ${kind} not opened: ${message(e)}`); }
   }
 }

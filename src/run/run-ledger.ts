@@ -25,6 +25,7 @@ export type LedgerEventType =
   | "quote_unresolved"
   | "model_roles_fallback"
   | "omp_contract_probe"
+  | "model_probe"
   | "trigger_received"
   | "idempotency_conflict"
   | "schedule_fired"
@@ -282,7 +283,9 @@ const requiredPayloadFields = {
     "cards_scored",
     "shortlist_ids",
     "week_key",
-    "brief_written"
+    "brief_written",
+    // model ids per seat (spec 2026-11-02 §2), code-owned catalog strings
+    "judge_models"
   ],
   // Skill retirement spec (2026-07-29): one summary per weekly re-verify tick — counts only,
   // no skill text (bodies-out-of-the-ledger invariant).
@@ -349,6 +352,9 @@ const requiredPayloadFields = {
   model_roles_fallback: ["role"],
   // The contract probe's verdict per omp version (fixed outcome codes only, never omp's text).
   omp_contract_probe: ["version", "result", "checks"],
+  // Spec 2026-11-02 §4.2: one probe before a tier adopts a model. Codes only (plan P17): purpose head|previous|tap,
+  // result pass|model_missing|inconclusive, kind a closed failure code — never the model's reply or omp's text.
+  model_probe: ["tier", "selector", "purpose", "result", "kind"],
   improve_signal_skipped: ["signal", "code"],
   improve_tick: ["phase", "local_date"],
   improvement_job: ["job_id", "from", "to", "attempt"],
@@ -371,6 +377,22 @@ export function createLedgerEvent(
   };
 }
 
+/** Closed codes of a `model_probe` event (plan P17): `ok` for a pass, else an `LlmErrorKind` value. Free text never enters the ledger. */
+export const MODEL_PROBE_PURPOSES = ["head", "previous", "tap"] as const;
+export const MODEL_PROBE_RESULTS = ["pass", "model_missing", "inconclusive"] as const;
+export const MODEL_PROBE_KINDS = [
+  "ok", "auth", "model_missing", "timeout", "spawn", "transport", "parse", "other", "quota", "model_refusal", "aborted",
+  "wall_collapse", "shutdown", "rate_limited", "overloaded", "malformed_question"
+] as const;
+
+function modelProbeError(p: Record<string, unknown>): string | null {
+  const closed: Array<[string, readonly string[]]> = [["purpose", MODEL_PROBE_PURPOSES], ["result", MODEL_PROBE_RESULTS], ["kind", MODEL_PROBE_KINDS]];
+  for (const [field, allowed] of closed) {
+    if (typeof p[field] !== "string" || !allowed.includes(p[field] as string)) return `model_probe ${field} is not a closed code`;
+  }
+  return null;
+}
+
 export function validateLedgerEvent(
   event: LedgerEvent
 ): { ok: true } | { ok: false; error: string } {
@@ -381,6 +403,11 @@ export function validateLedgerEvent(
         error: `${event.event_type} missing required payload field: ${field}`
       };
     }
+  }
+
+  if (event.event_type === "model_probe") {
+    const error = modelProbeError(event.payload as Record<string, unknown>);
+    if (error) return { ok: false, error };
   }
 
   return { ok: true };

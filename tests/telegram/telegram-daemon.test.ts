@@ -7,8 +7,12 @@ import {
   resetEvolutionLaneForTests,
   tryStartEvolutionPipeline
 } from "../../src/core/evolution-lane.js";
+import { readFileSync } from "node:fs";
+import { parseOmpCatalog } from "../../src/omp/model-catalog.js";
+import type { ProbeFn } from "../../src/omp/model-probe.js";
+import { tierCallbackData } from "../../src/gateway/model-tier-commands.js";
 import { parseRatingHistory, RunStore } from "../../src/run/run-store.js";
-import { invariantSweepInput, JEV_JOB_SHUTDOWN_CAP_MS, runTelegramDaemon as runDaemon, settledWithin, sweepAndRearm } from "../../src/telegram/telegram-daemon.js";
+import { invariantSweepInput, JEV_JOB_SHUTDOWN_CAP_MS, ROLES_TICK_SHUTDOWN_CAP_MS, TIER_TAP_SHUTDOWN_CAP_MS, runTelegramDaemon as runDaemon, settledWithin, sweepAndRearm } from "../../src/telegram/telegram-daemon.js";
 import { jevJobSettled, resetJevJobForTests } from "../../src/decisions/jev-version-job.js";
 import type { JevResult } from "../../src/jev/jev-client.js";
 import { seedJevAnchor } from "../helpers/jev-anchor.js";
@@ -52,15 +56,18 @@ const PINNED_ENV = [
   // Multimodal ingest (spec 2026-09-29): an ambient armed flag would route media updates
   // into the ingest step; the media tests arm it locally.
   "HOUGE_MEDIA_INGEST_ENABLED",
-  "HOUGE_LLM_MEDIA_PROVIDERS"
+  "HOUGE_LLM_MEDIA_PROVIDERS",
+  "HOUGE_MODEL_ROLES"
 ] as const;
 let savedEnv: Record<string, string | undefined> = {};
 beforeEach(() => {
+  // These cases assert the chat's exact traffic; the daily roles tick's empty-tier card (the fake omp's catalog has no pro tier) is not under test here.
   savedEnv = {};
   for (const key of PINNED_ENV) {
     savedEnv[key] = process.env[key];
     delete process.env[key];
   }
+  process.env.HOUGE_MODEL_ROLES = "static"; // restored by afterEach with the rest of PINNED_ENV
 });
 afterEach(() => {
   for (const key of PINNED_ENV) {
@@ -592,6 +599,49 @@ describe("runTelegramDaemon — the signal path (⓪·3 S2)", () => {
     }
   });
 
+  // Spec 2026-11-02 §5 (B3, N5): the daily reminder runs before the model ticks in the REAL tick, so a stalled or failing
+  // model-roles catalog read (the first await of the tick) cannot delay it. The boot read (call 0) is let through.
+  describe("the daily incident reminder in the daemon tick", () => {
+    const reminderKeys = (store: RunStore) => (store as unknown as { db: { prepare(q: string): { all(): Array<{ idempotency_key: string }> } } }).db
+      .prepare(`SELECT idempotency_key FROM notification_outbox WHERE idempotency_key LIKE 'incident_remind:%'`).all().map((r) => r.idempotency_key);
+    const openOld = (store: RunStore) => store.openIncident({ kind: "role_unresolved", subject: "judges:2", detail: {}, now: new Date(Date.now() - 30 * 3_600_000).toISOString() });
+    const runDaemonWith = (store: RunStore, controller: AbortController, getUpdates: () => Promise<never[]>) => runTelegramDaemon({
+      store, projectRoot: projectRoot(), allowlist: ALLOWLIST, stopSignal: controller.signal, longPollTimeoutSeconds: 0,
+      llmAdapter: async (input: Record<string, unknown>) => okAnswer(input),
+      telegramClient: { getUpdates, sendMessage: async () => ({ message_id: 1 }) }
+    });
+    afterEach(() => { vi.restoreAllMocks(); });
+
+    it("a catalog read that never resolves: the reminder is already enqueued while the model tick is stalled", async () => {
+      delete process.env.HOUGE_MODEL_ROLES; // resolved mode: the roles tick awaits the catalog first
+      const store = RunStore.openInMemory();
+      let release!: () => void; let calls = 0;
+      vi.spyOn(RoleResolver.prototype, "refreshCatalog").mockImplementation(() => (calls++ === 0 ? Promise.resolve(false)
+        : new Promise<boolean>((resolve) => { release = () => resolve(false); })));
+      try {
+        openOld(store);
+        const controller = new AbortController();
+        const done = runDaemonWith(store, controller, stopOnSecondPoll(controller));
+        await until(() => calls >= 2); // the tick is parked inside the roles tick's catalog read
+        expect(reminderKeys(store)).toHaveLength(1);
+        release();
+        await done;
+      } finally { store.close(); }
+    });
+
+    it("a catalog read that fails: the reminder is still enqueued", async () => {
+      delete process.env.HOUGE_MODEL_ROLES;
+      const store = RunStore.openInMemory();
+      let calls = 0; // the boot read resolves false (a failed read, as the real resolver reports it); the tick's read then throws
+      vi.spyOn(RoleResolver.prototype, "refreshCatalog").mockImplementation(() => (calls++ === 0 ? Promise.resolve(false) : Promise.reject(new Error("catalog down"))));
+      try {
+        openOld(store);
+        await idleCycle(store);
+        expect(reminderKeys(store)).toHaveLength(1);
+      } finally { store.close(); }
+    });
+  });
+
   it("a signal-path store error NEVER crashes the loop — the heartbeat still lands", async () => {
     const store = RunStore.openInMemory();
     try {
@@ -1040,8 +1090,8 @@ describe("runTelegramDaemon — the audit chokepoint (slice 2)", () => {
           sendMessage: async ({ text }) => { sent.push(text); return { message_id: 1 }; }
         }
       });
-      // The daily golden-set ticks audit their own attempts (roles "injection", "memory_kind" and "settle", no run); this test is about the planner's run-scoped rows.
-      const attempts = store.getLedgerEvents().filter((e) => e.event_type === "llm_attempt" && e.payload.role !== "injection" && e.payload.role !== "memory_kind" && e.payload.role !== "settle");
+      // The daily golden-set ticks audit their own attempts (roles "injection", "memory_kind", "settle" and the roles tick's model "probe", no run); this test is about the planner's run-scoped rows.
+      const attempts = store.getLedgerEvents().filter((e) => e.event_type === "llm_attempt" && e.payload.role !== "injection" && e.payload.role !== "memory_kind" && e.payload.role !== "settle" && e.payload.role !== "probe");
       expect(attempts.length).toBeGreaterThan(0);
       expect(attempts.every((e) => typeof e.run_id === "string")).toBe(true);
       expect(err.mock.calls.flat().some((l) => String(l).includes("memory.kind golden set skipped"))).toBe(true);
@@ -1200,6 +1250,7 @@ describe("the daemon's sweep wiring (M9)", () => {
   // Decision 4 / spec §4: the daemon reads omp's catalog once before the first turn. An unreadable catalog must be
   // visible (one ledger note) and must leave every role on its code list, never an empty chain.
   it("boot reads omp's model catalog once before the first poll; an unreadable catalog leaves one note", async () => {
+    process.env.HOUGE_MODEL_ROLES = "resolved"; // the catalog read is the subject (the suite default is static)
     const store = RunStore.openInMemory();
     const root = projectRoot();
     try {
@@ -1213,6 +1264,7 @@ describe("the daemon's sweep wiring (M9)", () => {
   });
 
   it("a readable catalog at boot leaves no unavailable note", async () => {
+    process.env.HOUGE_MODEL_ROLES = "resolved"; // the catalog read is the subject (the suite default is static)
     const store = RunStore.openInMemory();
     const root = projectRoot();
     try {
@@ -1474,6 +1526,91 @@ describe("runTelegramDaemon — shutdown during a slow tick (live 2026-10-02 01:
       expect(store.getActiveEpisodicFacts("222").map((f) => f.fact)).toEqual(["Paco owns a car"]);
     } finally {
       store.close();
+    }
+  });
+  it("a stop aborts an in-flight empty-tier tap probe: the daemon exits within the shutdown cap and no model_probe row exists (review W5)", async () => {
+    // Resolved: a static-mode tap is refused before any probe (final review Minor 2). The daily tick then probes too, on the same
+    // seam, and its probes also settle only on the stop; `probing` tracks the tap's selector alone.
+    vi.stubEnv("HOUGE_MODEL_ROLES", "resolved");
+    const store = RunStore.openInMemory();
+    const controller = new AbortController();
+    const root = projectRoot();
+    const catalog = parseOmpCatalog(readFileSync(new URL("../fixtures/omp-catalog-2026-11-02.json", import.meta.url).pathname, "utf8"))!;
+    const roles = new RoleResolver({ store, env: () => ({ HOUGE_MODEL_ROLES: "resolved" }), readCatalog: async () => catalog });
+    let probing = false;
+    // Settles only when the daemon's stop reaches it: a probe that ignored the signal would be held to the cap instead.
+    const modelProbe: ProbeFn = (sel, signal) => { if (sel === "google-antigravity/gemini-4-argon") probing = true; return new Promise((r) => signal?.addEventListener("abort", () => r("aborted"), { once: true })); };
+    const tapUpdate = { update_id: 90, callback_query: { id: "cbq_tier", from: { id: 111 }, message: { message_id: 5, chat: { id: 222 } }, data: tierCallbackData("gemini-pro", "gemini-4-argon") } };
+    let calls = 0;
+    try {
+      const t0 = Date.now(); let stoppedAt = 0;
+      await runTelegramDaemon({
+        store, projectRoot: root, omp: { ...fakeOmp(root), roles }, allowlist: ALLOWLIST, stopSignal: controller.signal, longPollTimeoutSeconds: 0, modelProbe,
+        llmAdapter: async (input) => okAnswer(input),
+        telegramClient: {
+          getUpdates: async () => {
+            calls += 1;
+            if (calls === 1) return [tapUpdate];
+            await until(() => probing); stoppedAt = Date.now(); controller.abort(); return [];
+          },
+          sendMessage: async () => ({ message_id: 1 })
+        }
+      });
+      expect(probing).toBe(true);
+      expect(Date.now() - stoppedAt).toBeLessThan(TIER_TAP_SHUTDOWN_CAP_MS + 1_000);
+      expect(Date.now() - t0).toBeGreaterThan(0);
+      expect(store.getLedgerEvents().filter((e) => e.event_type === "model_probe")).toEqual([]);
+      expect(store.latestModelRoleOverrides().has("judges:2")).toBe(false);
+    } finally {
+      store.close();
+      vi.unstubAllEnvs();
+    }
+  });
+});
+
+describe("runTelegramDaemon — the daily roles tick runs off the poll loop (final review I1)", () => {
+  // The tick probes one model at a time, up to 60 s each on a slow provider. Awaited in the poll loop, that held every
+  // message (a /kill included) for minutes once a day. Detached, it must also never run twice: its 24 h latch is written
+  // only when it settles, so without an in-flight guard every poll cycle would start another tick probing the same models.
+  it("a probe that never answers does not hold intake, a later poll starts no second tick, and the stop ends it within the cap", async () => {
+    vi.stubEnv("HOUGE_MODEL_ROLES", "resolved");
+    const store = RunStore.openInMemory();
+    const controller = new AbortController();
+    const root = projectRoot();
+    const catalog = parseOmpCatalog(readFileSync(new URL("../fixtures/omp-catalog-2026-11-02.json", import.meta.url).pathname, "utf8"))!;
+    let reads = 0;
+    const roles = new RoleResolver({ store, env: () => ({ HOUGE_MODEL_ROLES: "resolved" }), readCatalog: async () => { reads += 1; return catalog; } });
+    const probes: string[] = [];
+    // Settles only when the daemon's stop reaches it: the tick is parked in its first probe for the whole test.
+    const modelProbe: ProbeFn = (sel, signal) => { probes.push(sel); return new Promise((r) => signal?.addEventListener("abort", () => r("aborted"), { once: true })); };
+    const notNow = { update_id: 91, callback_query: { id: "cbq_nn", from: { id: 111 }, message: { message_id: 5, chat: { id: 222 } }, data: "mt:gemini-pro:no" } };
+    const sent: string[] = [];
+    let polls = 0; let stoppedAt = 0;
+    const stall = setTimeout(() => controller.abort(), 4_000); // an awaited tick never reaches poll 2: stop it so the assertions fail, not hang
+    try {
+      await runTelegramDaemon({
+        store, projectRoot: root, omp: { ...fakeOmp(root), roles }, allowlist: ALLOWLIST, stopSignal: controller.signal, longPollTimeoutSeconds: 0, modelProbe,
+        llmAdapter: async (input) => okAnswer(input),
+        telegramClient: {
+          getUpdates: async () => {
+            polls += 1;
+            if (polls === 1) return [];
+            if (polls === 2) { await until(() => probes.length > 0); return [notNow]; }
+            if (polls === 3) return []; // one more full cycle while the first tick is still probing
+            stoppedAt = Date.now(); controller.abort(); return [];
+          },
+          sendMessage: async ({ text }) => { sent.push(text); return { message_id: sent.length }; }
+        }
+      });
+      expect(polls).toBe(4);
+      expect(sent).toContain("👍 Not now: judges:2 stays empty; the daily reminder lists it until it is filled.");
+      expect([probes.length, reads]).toEqual([1, 2]); // the boot read and one tick's read; no second tick
+      expect(Date.now() - stoppedAt).toBeLessThan(ROLES_TICK_SHUTDOWN_CAP_MS + 1_000);
+      expect(store.getLedgerEvents().filter((e) => e.event_type === "model_roles_resolved" || e.event_type === "model_probe")).toEqual([]);
+    } finally {
+      clearTimeout(stall);
+      store.close();
+      vi.unstubAllEnvs();
     }
   });
 });

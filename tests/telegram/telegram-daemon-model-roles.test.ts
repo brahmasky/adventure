@@ -6,6 +6,7 @@ import { modelsRefusalText } from "../../src/gateway/models-commands.js";
 import { RunStore } from "../../src/run/run-store.js";
 import { runTelegramDaemon } from "../../src/telegram/telegram-daemon.js";
 import { pinEnabledFlags, pinOmpEnv } from "../helpers/omp-env.js";
+import { until } from "../helpers/omp-worker.js";
 
 // PINNED_ENV: no omp variable from the real .env; HOUGE_OMP_BIN is a non-executable path, so the catalog read fails (null)
 // without spawning anything real, and the tick takes its catalog-unavailable branch.
@@ -20,14 +21,15 @@ let dirs: string[] = [];
 beforeEach(() => { vi.stubEnv("HOUGE_MODEL_ROLES", "resolved"); });
 afterEach(() => { vi.unstubAllEnvs(); for (const d of dirs) rmSync(d, { recursive: true, force: true }); dirs = []; });
 
-async function cycle(store: RunStore, updates: unknown[] = []): Promise<string[]> {
+/** `settled`: the roles tick runs detached from the poll loop (final review I1), so a case that asserts its rows stops the daemon only once they exist. */
+async function cycle(store: RunStore, updates: unknown[] = [], settled: () => boolean = () => true): Promise<string[]> {
   const root = mkdtempSync(join(tmpdir(), "houge-daemon-roles-")); dirs.push(root);
   const controller = new AbortController(); const sent: string[] = []; let calls = 0;
   await runTelegramDaemon({
     store, projectRoot: root, allowlist: ALLOWLIST, stopSignal: controller.signal, longPollTimeoutSeconds: 0,
     llmAdapter: async (input) => ({ ok: true as const, output: { question: input.question, answer: "A", model: "fake" } }),
     telegramClient: {
-      getUpdates: async () => { calls += 1; if (calls === 1) return updates as never[]; controller.abort(); return []; },
+      getUpdates: async () => { calls += 1; if (calls === 1) return updates as never[]; await until(settled).catch(() => undefined); controller.abort(); return []; },
       sendMessage: async ({ text }) => { sent.push(text); return { message_id: sent.length }; }
     }
   });
@@ -50,7 +52,7 @@ describe("daemon: model roles", () => {
   it("the tick runs on the first cycle and not again within the day", async () => {
     const store = RunStore.openInMemory();
     try {
-      await cycle(store);
+      await cycle(store, [], () => rows(store).length > 0);
       expect(rows(store)).toHaveLength(1);
       expect(rows(store)[0]!.payload.catalog_ok).toBe(false); // NO_OMP_BIN: the catalog read failed, the latch still advanced
       // The boot read and the tick's read are two consecutive failures: Task 7's resolver pages Paco once (a sustained
