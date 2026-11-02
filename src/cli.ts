@@ -578,12 +578,12 @@ if (command === "run") {
   // root), but chatId null → no push (the daemon owns the weekly digest).
   const dryRun = rest.includes("--dry-run");
   const { renderPanelProposals, runIdeaPanelTick } = await import("./capabilities/idea-panel.js");
-  const { buildOmpPanelSeats } = await import("./capabilities/idea-panel-seats.js");
+  const { buildOmpPanelSeats, resolvedPanelChains } = await import("./capabilities/idea-panel-seats.js");
 
   const store = RunStore.open("houge.sqlite", storeOptions);
   try {
-    // The SAME seat builder the daemon uses (idea-panel-seats), so the two panel sites cannot drift.
-    const seats = buildOmpPanelSeats({ store, correlation_id: "cli:radar-panel", env: process.env });
+    // The SAME seat builder the daemon uses (idea-panel-seats), on the same resolved chains, so the two panel sites cannot drift.
+    const seats = buildOmpPanelSeats({ store, correlation_id: "cli:radar-panel", env: process.env, chains: await resolvedPanelChains(store, process.env) });
 
     if (dryRun) {
       // §13.1: say the cost out loud — run this deliberately, not in a loop.

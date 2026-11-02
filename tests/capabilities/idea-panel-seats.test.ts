@@ -2,7 +2,8 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import os from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { buildOmpPanelSeats, PANEL_JUDGE_SEAT_INDEX } from "../../src/capabilities/idea-panel-seats.js";
+import { buildOmpPanelSeats, PANEL_JUDGE_SEAT_INDEX, resolvedPanelChains } from "../../src/capabilities/idea-panel-seats.js";
+import { parseOmpCatalog } from "../../src/omp/model-catalog.js";
 import { resolveOmpConfig } from "../../src/omp/omp-config.js";
 import { formatModelString, parseModelChain } from "../../src/omp/model-string.js";
 import { staticRoleChains } from "../../src/omp/model-roles.js";
@@ -104,5 +105,19 @@ describe("buildOmpPanelSeats — the daemon's stop", () => {
     expect(await seats.judges.kimi({ question: "D", system: "lens" })).toEqual({ ok: false });
     expect(await seats.chair({ digest: "D", system: "chair" })).toEqual({ ok: false });
     expect(spawns()).toEqual([]);
+  });
+});
+
+describe("resolvedPanelChains — the CLI's panel resolves its seats as the daemon's does (final review, codex)", () => {
+  // `houge radar-panel` built its seats on the static lists, whose judge seat 2 is empty (D4-A): after Paco tapped
+  // "Use gemini-4-argon" the daemon's panel had three judges and a manual run still had two, with no model recorded.
+  const FIX = () => parseOmpCatalog(readFileSync(new URL("../fixtures/omp-catalog-2026-11-02.json", import.meta.url).pathname, "utf8"))!;
+  it("Paco's judges:2 override fills the gemini seat; a failed catalog read leaves the static lists (seat 2 empty)", async () => {
+    store.recordModelRoleOverride({ key: "judges:2", pattern: "gemini-4-argon", actor: "paco" });
+    const env = { ...fake({}), HOUGE_MODEL_ROLES: "resolved" };
+    const seats = async (read: () => Promise<ReturnType<typeof FIX> | null>) =>
+      buildOmpPanelSeats({ store, correlation_id: "cli:radar-panel", env, chains: await resolvedPanelChains(store, env, read) }).judgeModels;
+    expect((await seats(async () => FIX()))?.gemini).toMatch(/^google-antigravity\/gemini-4-argon(:|$)/);
+    expect((await seats(async () => null))?.gemini).toBeNull();
   });
 });

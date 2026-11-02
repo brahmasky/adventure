@@ -6,8 +6,10 @@
 // the two sites cannot drift apart (the CLI site once kept firing metered APIs after the daemon moved).
 import { formatModelString } from "../omp/model-string.js";
 import { judgeSeat, oneShotAdapter, seatChain, type OneShotAdapterOptions } from "../llm/registry.js";
-import { resolveOmpConfig } from "../omp/omp-config.js";
-import type { RoleChains } from "../omp/model-roles.js";
+import { readOmpCatalog } from "../omp/model-catalog.js";
+import { resolveOmpCatalogConfig, resolveOmpConfig } from "../omp/omp-config.js";
+import type { CatalogModel, RoleChains } from "../omp/model-roles.js";
+import { RoleResolver } from "../omp/role-resolver.js";
 import type { RunStore } from "../run/run-store.js";
 import type { PanelSeat } from "./idea-panel.js";
 import type { RadarLlm } from "./idea-radar.js";
@@ -28,12 +30,24 @@ export interface OmpPanelSeatsInput {
   /** The run-less audit scope (`tick:idea_panel`, `cli:radar-panel`). */
   correlation_id: string;
   env: NodeJS.ProcessEnv;
-  /** The daemon's resolved chains (`roles.chains()`); absent = the static role lists (the CLI). */
+  /** The resolved chains (`roles.chains()`: the daemon's resolver, or {@link resolvedPanelChains} for the CLI); absent = the static role lists. */
   chains?: RoleChains;
   /** Tests only: bypass the `omp --version` spawn. */
   versionCheck?: OneShotAdapterOptions["versionCheck"];
   /** The daemon's stop: aborts an in-flight seat call (absent for the CLI). */
   signal?: AbortSignal;
+}
+
+/**
+ * The CLI's chains (final review, codex): the daemon's resolution (overrides, tiers, one catalog read), so `houge radar-panel`
+ * keeps Paco's `judges:2` tap instead of the static lists' empty seat. A failed read leaves each role on its static list
+ * (RoleResolver.chains), and records the resolver's usual `model_catalog_unavailable` note; static mode reads nothing.
+ */
+export async function resolvedPanelChains(store: RunStore, env: NodeJS.ProcessEnv,
+  readCatalog: () => Promise<CatalogModel[] | null> = () => readOmpCatalog(resolveOmpCatalogConfig(env))): Promise<RoleChains> {
+  const roles = new RoleResolver({ store, env: () => env, readCatalog });
+  await roles.refreshCatalog();
+  return roles.chains();
 }
 
 /** The four panel seats on omp. A seat never throws into the tick: every failure is `{ok:false}`. */

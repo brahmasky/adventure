@@ -55,6 +55,10 @@ describe("panel seat binding sites", () => {
     expect(callers.sort()).toEqual([join("src", "capabilities", "idea-panel-seats.ts"), join("src", "cli.ts"), join("src", "telegram", "telegram-daemon.ts")].sort());
   });
 
+  it("the CLI site passes resolved chains, as the daemon does (final review, codex: the static lists drop Paco's judges:2 tap)", () => {
+    expect(readFileSync(join(process.cwd(), "src", "cli.ts"), "utf8")).toContain("chains: await resolvedPanelChains(store, process.env)");
+  });
+
   it("names no metered provider anywhere outside the LLM layer", () => {
     // The pricing table legitimately names them; nothing else should, or the
     // CLI-only guarantee is one forgotten call site away from being false again.
