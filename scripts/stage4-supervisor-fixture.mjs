@@ -128,7 +128,7 @@ export function intakeRun(d, store, goal, key = goal, actor = "paco") {
 }
 export const req = (run_id, text = "hi", source = "telegram") => ({ run_id, text, source, requester: { kind: "user", id: "paco" } });
 
-// R5 seed helpers (ported from tests/omp/turn-context.test.ts and tests/omp/context-decisions.test.ts). They write through the RunStore API only.
+// R5 seed helpers (ported from tests/omp/turn-context.test.ts and tests/omp/context-decisions.test.ts). They write through the RunStore API (seedLaneRows reads store.db for its self-check).
 /** `n` active "ask" lessons of `chars` characters each (the renderer's HOUGE_LESSON_CHAR_CAP, read from turnContext.env, caps their sum). Returns the lesson ids. */
 export function seedLessons(store, n, chars) {
   return Array.from({ length: n }, (_, i) => store.addLesson({ scope: "ask", text: `${String.fromCharCode(97 + (i % 26))}`.repeat(chars), source: "user_feedback" }));
