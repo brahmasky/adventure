@@ -94,6 +94,7 @@ export const keyNeedsModel = (resolved: readonly ResolvedRole[], key: string): b
 /** Spec §4.4 / P15: an empty tier whose sole keys still have no head asks Paco; the tick runs once a day, so one card a day. */
 function emptyTierCards(empty: readonly TierId[], roles: ResolvedRole[], catalog: readonly CatalogModel[], now: string): EmptyTierCard[] {
   return empty.flatMap((tier) => {
+    if (!listsProvider(catalog, tierDef(tier).provider)) return []; // P13: a read with none of the provider is partial, not an empty tier
     const keys = soleKeysOf(tier).filter((k) => keyNeedsModel(roles, k));
     return keys.length === 0 ? [] : [{ tier, keys, proposals: proposalsFor(tierDef(tier), catalog, Date.parse(now)) }];
   });
@@ -101,11 +102,15 @@ function emptyTierCards(empty: readonly TierId[], roles: ResolvedRole[], catalog
 
 const STATIC_STALE: ReadonlySet<string> = new Set(["static_list_stale"]);
 
+/** P13 (final review Minor 7): a read that lists nothing of a provider is partial for it; no tier, card or stale check reads it as retired. */
+const listsProvider = (catalog: readonly CatalogModel[], provider: string): boolean => catalog.some((m) => m.provider === provider);
+
 /** Spec §4.3 (D4-A) and plan P28: one alerted incident per static selector the catalog no longer lists; resolved on return or re-pin. */
 function syncStaticStale(store: RunStore, catalog: readonly CatalogModel[], now: string): void {
   const listed = new Set(catalog.map((c) => `${c.provider}/${c.id}`));
   const pinned = staticSelectorKeys();
   for (const s of pinned) {
+    if (!listsProvider(catalog, s.slice(0, s.indexOf("/")))) continue; // P13: neither opened nor resolved on a partial read
     if (listed.has(s)) resolveOpenIncidents(store, STATIC_STALE, s, now);
     else openAlertedIncident(store, { kind: "static_list_stale", subject: s, detail: { selector: s }, now });
   }

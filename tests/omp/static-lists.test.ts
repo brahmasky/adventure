@@ -68,6 +68,17 @@ describe("static_list_stale (resolved mode only)", () => {
     await tick(day(1));
     expect(stale()).toEqual([]);
   });
+  it("a read listing nothing of a provider is partial (P13): no stale page and no card for it; its open rows stay open (final review Minor 7)", async () => {
+    // Antigravity auth lapsed for one morning: the tiers rightly stay put, so paging "re-pin STATIC_ROLE_LISTS" and asking
+    // Paco to fill gemini-pro would be false; a gone selector of a provider the read did list still pages.
+    store.openIncident({ kind: "static_list_stale", subject: "google-antigravity/gemini-3.8-flash", detail: {}, now: day(-1) });
+    catalog = () => FIX().filter((m) => m.provider !== "google-antigravity" && m.id !== "k3");
+    const cards: unknown[] = [];
+    await runModelRolesTick({ store, roles: new RoleResolver({ store, env: () => ({ HOUGE_MODEL_ROLES: "resolved" }), readCatalog: async () => catalog() }),
+      now: day(0), notify: () => {}, card: (c) => cards.push(c) });
+    // k3 gone from a listed provider empties the kimi tier (its card is due); gemini-pro, whose provider was not read, sends none
+    expect([stale(), cards.map((c) => (c as { tier: string }).tier)]).toEqual([["google-antigravity/gemini-3.8-flash", "kimi-code/k3"], ["kimi"]]);
+  });
   it("does not run in static mode (no tick at all) nor on a catalog outage", async () => {
     catalog = () => [] as CatalogModel[]; // parse → null → outage
     await tick(day(0));
