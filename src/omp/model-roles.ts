@@ -59,7 +59,9 @@ export const ALLOWED_PROVIDERS: readonly string[] = ["anthropic", "google-antigr
 const CODEX_PROVIDER = "openai-codex";
 export const CHAT_ROLES: ReadonlySet<RoleName> = new Set<RoleName>(["fast", "default", "thinking", "vision", "tiny"]);
 
-export interface CatalogModel { provider: string; id: string; thinking: readonly OmpEffort[] | null }
+/** A catalog entry's output price per million tokens (spec §4.4): the flat rate, and any time-based steps (epoch ms). */
+export interface CatalogPrice { output: number; rates: ReadonlyArray<{ from: number; output: number }> }
+export interface CatalogModel { provider: string; id: string; thinking: readonly OmpEffort[] | null; price?: CatalogPrice }
 export type ModelRolesMode = "static" | "resolved";
 
 /** `HOUGE_MODEL_ROLES` (spec §4.3), read per call: `static` is the rollback switch, anything else is `resolved`. */
