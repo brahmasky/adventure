@@ -13,7 +13,7 @@
 // Env, set once, in this order, before the copy is made and before any store opens: loadHougeEnv() -> smokeEnv (HOUGE_TELEGRAM_* deleted, every disarm
 // flag false, tombstone / park marker / disarm path under the temp root) -> the pins (HOUGE_TELEGRAM_CHAT_ID=-1003 last). No .env value overrides a pin.
 // --only <n>[,<n>]: assert only those lines (the setup always runs; line 6 alone spends quota). --sim-leak: dev seam, prints the operator chat id so line 7 must FAIL.
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { SetupError, canon, cleanupTemp, initTemp, loadDist, redactForPrint } from "./stage4-diff-lib.mjs";
@@ -125,7 +125,7 @@ function mkFake(env) {
 async function line1() {
   const b = G.boot;
   const openAfter = countOf("SELECT COUNT(*) AS n FROM incidents WHERE kind = ? AND state = 'open'", HOSTILE);
-  const wantResolved = b.applied ? 0 : b.n0; const wantOpen = b.applied ? b.n0 : 0;
+  const wantResolved = b.applied ? 0 : b.n0; const wantOpen = 0; // zero open after RunStore.open, whether or not the migration had run
   const ev = eventsAfter("incident_resolved", b.mark);
   const idsOk = ev.every((e) => b.openIds.includes(e.p.incident_id));
   const versionRow = countOf("SELECT COUNT(*) AS n FROM schema_migrations WHERE version = ?", HOSTILE_MIGRATION);
@@ -240,8 +240,16 @@ async function cheapRoles() {
   if (!cheap) throw new SetupError("no probe model");
   return new Proxy(roles, { get: (t, p) => (p === "candidates" ? () => [cheap] : typeof t[p] === "function" ? t[p].bind(t) : t[p]) });
 }
+/** The worker's projectRoot: a scratch repo under the temp root (reports land in its runs/, memory is a copy), never the live checkout. */
+function scratchRepo() {
+  const repo = join(G.root, "repo"); mkdirSync(repo, { recursive: true });
+  if (!existsSync(join(repo, "memory"))) cpSync(join(new URL("..", import.meta.url).pathname, "memory"), join(repo, "memory"), { recursive: true });
+  return repo;
+}
+const entriesOf = (dir) => (existsSync(dir) ? readdirSync(dir).sort() : []);
+const RUNS_DIRS = [join(MAIN_CHECKOUT, "runs"), join(new URL("..", import.meta.url).pathname, "runs")];
 function newWorker() {
-  const w = new G.d.CoreWorker(G.store, MAIN_CHECKOUT, ...Array(10).fill(undefined), { dataDir: G.root, distDir: DIST, roles: G.cheapRoles });
+  const w = new G.d.CoreWorker(G.store, argv.includes("--sim-live-root") ? MAIN_CHECKOUT : scratchRepo(), ...Array(10).fill(undefined), { dataDir: G.root, distDir: DIST, roles: G.cheapRoles });
   G.workers.push(w);
   return w;
 }
@@ -255,6 +263,7 @@ async function realTurn(worker) {
 async function line6() {
   G.cheapRoles = await cheapRoles();
   const dir = join(G.root, "omp", "sessions", `chat-${STUB_CHAT}`);
+  const runsBefore = RUNS_DIRS.map(entriesOf);
   const wA = newWorker(); const a = await realTurn(wA);
   const s1 = jsonlFiles(dir); const f1 = s1.length ? newest(s1) : undefined;
   note(`layout after turn A: files=${s1.length} depth=${depthOf(dir)}`);
@@ -272,11 +281,13 @@ async function line6() {
   const wC = newWorker(); const c = await realTurn(wC);
   const s3 = jsonlFiles(dir);
   await wC.shutdownPlanners();
+  const runsAfter = RUNS_DIRS.map(entriesOf);
+  const runsGrew = runsAfter.map((a, i) => a.filter((n) => !runsBefore[i].includes(n)).length);
   const aOk = a.state === "completed" && b.state === "completed" && c.state === "completed";
   const newTranscript = added.length === 1 && f1 !== undefined && f2 !== f1 && newest(s2) === f2 && s1.every((f) => s2.includes(f));
   const resumed = s3.length === s2.length && s3.every((f) => s2.includes(f));
-  const ok = aOk && fr.ok === true && markerSet && newTranscript && freshEvents === 1 && G.store.freshRequestedAt(STUB_CHAT) === null && bCarried.length === 0 && resumed && resetsAfter(afterB) === 0;
-  return { ok, detail: `turns=${a.state}/${b.state}/${c.state} (want completed x3) S1=${s1.length} S2=${s2.length} S3=${s3.length} new_files_at_B=${added.length} (want 1) f2_differs_from_f1=${f2 !== f1} f2_is_newest=${f2 !== undefined && newest(s2) === f2} fresh_intake=${fr.status ?? "refused"} fresh_reset_events=${freshEvents} (want 1) marker_after=${G.store.freshRequestedAt(STUB_CHAT) === null ? "null" : "set"} turnB_carried_rows=${bCarried.length} (want 0) turnC_resumed_same_set=${resumed} resets_after_B=${resetsAfter(afterB)} (want 0)` };
+  const ok = aOk && fr.ok === true && markerSet && newTranscript && freshEvents === 1 && G.store.freshRequestedAt(STUB_CHAT) === null && bCarried.length === 0 && resumed && resetsAfter(afterB) === 0 && runsGrew.every((n) => n === 0);
+  return { ok, detail: `turns=${a.state}/${b.state}/${c.state} (want completed x3) S1=${s1.length} S2=${s2.length} S3=${s3.length} new_files_at_B=${added.length} (want 1) f2_differs_from_f1=${f2 !== f1} f2_is_newest=${f2 !== undefined && newest(s2) === f2} fresh_intake=${fr.status ?? "refused"} fresh_reset_events=${freshEvents} (want 1) marker_after=${G.store.freshRequestedAt(STUB_CHAT) === null ? "null" : "set"} turnB_carried_rows=${bCarried.length} (want 0) turnC_resumed_same_set=${resumed} resets_after_B=${resetsAfter(afterB)} (want 0) live_runs_dir_new_entries=${runsGrew[0]} worktree_runs_new_entries=${runsGrew[1]} (want 0, 0)` };
 }
 
 // ---- line 7: the print contract held ----
@@ -305,12 +316,13 @@ function readEnvFile(file) {
       const m = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/.exec(line);
       if (!m) continue;
       const v = m[2].trim().replace(/^["']|["']$/g, "");
-      if (/TOKEN|KEY|SECRET|PASSWORD/.test(m[1]) && v.length >= 8) secrets.push(v);
+      if (/TOKEN|KEY|SECRET|PASSWORD/.test(m[1]) && v.length > 0 && !FLAG_VALUES.has(v.toLowerCase())) secrets.push(v); // every nonempty value; only a bare flag value (HOUGE_SECRETS_FIREWALL_ENABLED=true) is no secret
       if (m[1] === "HOUGE_TELEGRAM_CHAT_ID" && v) chat = v;
     }
   } catch { /* an unreadable env file leaves the checks empty, which line 7 fails on */ }
   return { secrets, chat };
 }
+const FLAG_VALUES = new Set(["true", "false", "on", "off", "yes", "no", "0", "1"]);
 const killFiles = () => [join(process.cwd(), "houge.kill"), join(MAIN_CHECKOUT, "houge.kill")].filter(existsSync).length;
 async function setup() {
   const envFile = resolve(process.env.HOUGE_ENV_FILE ?? join(process.cwd(), ".env"));
