@@ -245,14 +245,21 @@ async function line4() {
 // ---- line 5: lessons over a lowered cap at a spawn -> one capped/char_cap row on the spawning run; lesson_dropped as today ----
 // Each seeded lesson renders as one bullet "- [<theme>] <60 chars>", longer than the 40-char cap on its own: whatever the order and whatever the
 // copy's real lessons do, BOTH seeds are skipped. The expectation is derived from the seeds' sizes, not from the renderer under test.
+// The renderer only considers the first HOUGE_LESSON_CAP_PER_SCOPE lessons of each scope (reuse value, then oldest first): the line raises it to the
+// copy's whole active count, so the seeds are candidates however many live lessons rank ahead, and checks that as a precondition (store query, not the renderer).
 const SEED_CHARS = 60;
 const droppedSince = (mark) => all("SELECT payload_json FROM ledger_events WHERE event_type = 'lesson_dropped' AND rowid > ?", mark).map((r) => JSON.parse(r.payload_json));
 const ledgerMark = () => G.store.db.prepare("SELECT COALESCE(MAX(rowid), 0) AS m FROM ledger_events").get().m;
 async function line5() {
   const seeded = seedLessons(G.store, 2, SEED_CHARS);
   const subjects = seeded.map((id) => `lesson:${id}`);
+  const active = countOf("SELECT COUNT(*) AS n FROM lessons WHERE status = 'active'");
+  const env = { ...CAP40, HOUGE_LESSON_CAP_PER_SCOPE: String(active) };
+  const candidates = G.store.getActiveLessons("ask", active).map((l) => l.id);
+  const inSet = seeded.filter((id) => candidates.includes(id)).length;
+  if (inSet !== 2) return { ok: false, detail: `precondition failed: seeded lessons in the ask scope's candidate set ${inSet} of 2 at HOUGE_LESSON_CAP_PER_SCOPE=${active} (the seeds would never reach the renderer)` };
   const ids0 = new Set(all("SELECT incident_id FROM incidents").map((r) => r.incident_id)); const ev0 = ledgerMark();
-  const s = await fixtureTurn(null, { env: CAP40 });
+  const s = await fixtureTurn(null, { env });
   const fresh = all("SELECT incident_id, kind, subject FROM incidents").filter((i) => !ids0.has(i.incident_id) && i.kind === "lesson_dropped").map((i) => i.subject);
   const events = droppedSince(ev0);
   const seedEvents = seeded.map((id) => events.filter((e) => e.lesson_id === id && e.cap === 40).length);
@@ -260,7 +267,7 @@ async function line5() {
   const want = [[LS, "capped", "char_cap", "a", null]];
   const ok = canon(s.rows) === canon(want) && canon(seedEvents) === canon([1, 1]) && canon(seedIncidents) === canon([1, 1])
     && s.state === "completed" && canon(s.done) === canon(["a:answer"]);
-  return { ok, detail: `rows ${s.rows.length} [${strs(s.rows)}] (want 1 [ls:capped/char_cap@a], the spawning run) · seeded lessons' lesson_dropped events ${seedEvents} (want 1,1 at cap 40) · seeded lessons' new lesson_dropped incidents ${seedIncidents} (want 1,1: subject lesson:<seeded id>) · all drops this spawn: events ${events.length} new incidents ${fresh.length} (reported, not asserted: the copy's real lessons may already hold an open incident) · state ${s.state}` };
+  return { ok, detail: `rows ${s.rows.length} [${strs(s.rows)}] (want 1 [ls:capped/char_cap@a], the spawning run) · seeded lessons' lesson_dropped events ${seedEvents} (want 1,1 at cap 40) · seeded lessons' new lesson_dropped incidents ${seedIncidents} (want 1,1: subject lesson:<seeded id>) · all drops this spawn: events ${events.length} new incidents ${fresh.length} (reported, not asserted: the copy's real lessons may already hold an open incident) · state ${s.state} · precondition: both seeds in the candidate set at per-scope cap ${active} (the copy's active lessons) ${inSet === 2}` };
 }
 
 // ---- line 6: the production wiring, CoreWorker.submitTurn -> line 4's row ----
