@@ -97,47 +97,47 @@ const asyncOnly = withRoles(async (x) => {
 });
 const fastStepUp = withRoles(async (x) => { const { sup } = x.mk({ session: failing(["429 quota", "429 quota"]), extra: routed("fast") }); await turn(x, sup, "a"); });
 
-const CG = "planner.crash_guard"; const SQ = "intake.steer_or_queue"; const TR = "turn.retry";
+const CG = "planner.crash_guard"; const SQ = "intake.steer_or_queue"; const TR = "turn.retry"; const LS = "context.lessons"; const CC = "turn.clarify_cap"; // R5: one LS per spawn attempt that reaches preparePaths (none after a halt), one CC per live buildTurnPrompt (P4)
 const H = (reason, run) => [CG, "halt", reason, run]; const T = (verdict, reason, run = "a") => [TR, verdict, reason, run];
 const RN = "RETRY_NOTE"; const OPUS = "set_model:anthropic/claude-opus-5-5";
 const FAILED_START = (n) => Array(n).fill("planner_start_failed");
 // facts: the behaviour the scenario must reach, exact (kinds of incidents, the sink's calls, the ordered child log with RETRY_NOTE named).
 const ITEMS = [
-  { key: "crash_limit", tags: ["limit"], drive: crashLimit, rows: [H("limit_reached", "d")], calls: { [CG]: 4, [SQ]: 4 },
+  { key: "crash_limit", tags: ["limit"], drive: crashLimit, rows: [H("limit_reached", "d")], calls: { [CG]: 4, [SQ]: 4, [LS]: 3 },
     facts: { done: [], failed: ["t1:planner_exit:start_failed: fixture start failed", "t2:planner_exit:start_failed: fixture start failed", "t3:planner_exit:start_failed: fixture start failed", "d:planner_exit:crash_loop"], incidents: [...FAILED_START(3), "planner_crash_loop"], log: [] } },
-  { key: "crash_latched", tags: ["latched"], drive: crashLatched, rows: [H("limit_reached", "d"), H("latched", "e")], calls: { [CG]: 5, [SQ]: 5 },
+  { key: "crash_latched", tags: ["latched"], drive: crashLatched, rows: [H("limit_reached", "d"), H("latched", "e")], calls: { [CG]: 5, [SQ]: 5, [LS]: 3 },
     facts: { done: [], failed: ["t1:planner_exit:start_failed: fixture start failed", "t2:planner_exit:start_failed: fixture start failed", "t3:planner_exit:start_failed: fixture start failed", "d:planner_exit:crash_loop", "e:planner_exit:crash_loop"], incidents: [...FAILED_START(3), "planner_crash_loop"], log: [] } },
-  { key: "crash_reset", tags: ["reset"], drive: crashReset, rows: [H("limit_reached", "d")], calls: { [CG]: 5, [SQ]: 5 },
+  { key: "crash_reset", tags: ["reset"], drive: crashReset, rows: [H("limit_reached", "d")], calls: { [CG]: 5, [SQ]: 5, [LS]: 4, [CC]: 1 },
     facts: { done: ["e:answer"], failed: ["t1:planner_exit:start_failed: fixture start failed", "t2:planner_exit:start_failed: fixture start failed", "t3:planner_exit:start_failed: fixture start failed", "d:planner_exit:crash_loop"], incidents: [...FAILED_START(3), "planner_crash_loop"], log: [OPUS, "prompt:hi"] } },
-  { key: "ready_exits", tags: ["ready_exit"], drive: readyExits, rows: [H("limit_reached", "d")], calls: { [CG]: 4, [SQ]: 4 },
+  { key: "ready_exits", tags: ["ready_exit"], drive: readyExits, rows: [H("limit_reached", "d")], calls: { [CG]: 4, [SQ]: 4, [LS]: 3, [CC]: 3 },
     facts: { done: ["a:answer", "b:answer", "c:answer"], failed: ["d:planner_exit:crash_loop"], incidents: ["planner_crash_loop"], log: [OPUS, "prompt:hi", OPUS, "prompt:hi", OPUS, "prompt:hi"] } },
-  { key: "lane_while_latched", tags: ["lane"], drive: laneLatched, rows: [H("limit_reached", "d"), H("latched", "L")], calls: { [CG]: 5, [SQ]: 5 },
+  { key: "lane_while_latched", tags: ["lane"], drive: laneLatched, rows: [H("limit_reached", "d"), H("latched", "L")], calls: { [CG]: 5, [SQ]: 5, [LS]: 3 },
     facts: { done: ["L:lane text"], failed: ["t1:planner_exit:start_failed: fixture start failed", "t2:planner_exit:start_failed: fixture start failed", "t3:planner_exit:start_failed: fixture start failed", "d:planner_exit:crash_loop"], incidents: [...FAILED_START(3), "planner_crash_loop"], log: [] } },
-  { key: "two_fails_then_good", tags: ["below_limit"], drive: twoFailsThenGood, rows: [], calls: { [CG]: 3, [SQ]: 3 },
+  { key: "two_fails_then_good", tags: ["below_limit"], drive: twoFailsThenGood, rows: [], calls: { [CG]: 3, [SQ]: 3, [LS]: 3, [CC]: 1 },
     facts: { done: ["c:answer"], failed: ["t1:planner_exit:start_failed: fixture start failed", "t2:planner_exit:start_failed: fixture start failed"], incidents: FAILED_START(2), log: [OPUS, "prompt:hi"] } },
   { key: "claimed_elsewhere_latched", tags: ["claimed"], drive: claimedElsewhere, rows: [], calls: {},
     facts: { done: [], failed: [], incidents: [], log: [] } },
   { key: "late_consult", tags: ["late"], drive: lateConsult, rows: [H("latched", "a")], calls: { [CG]: 1, [SQ]: 1 },
     facts: { done: [], failed: ["a:planner_exit:crash_loop"], incidents: ["planner_crash_loop"], log: [] } },
-  { key: "late_consult_natural", tags: ["late_natural"], drive: lateNatural, rows: [], calls: { [CG]: 2, [SQ]: 2 },
+  { key: "late_consult_natural", tags: ["late_natural"], drive: lateNatural, rows: [], calls: { [CG]: 2, [SQ]: 2, [LS]: 2 },
     facts: { done: ["a:lane text", "b:lane text"], failed: [], incidents: [], log: [] } },
-  { key: "quota_then_ok", tags: ["quota"], drive: quotaThenOk, rows: [T("retry", "quota")], calls: { [CG]: 1, [SQ]: 1, [TR]: 1 },
+  { key: "quota_then_ok", tags: ["quota"], drive: quotaThenOk, rows: [T("retry", "quota")], calls: { [CG]: 1, [SQ]: 1, [TR]: 1, [LS]: 1, [CC]: 1 },
     facts: { done: ["a:ok"], failed: [], incidents: [], log: ["set_model:anthropic/claude-opus-5-5", "prompt:hi", "set_model:google-antigravity/claude-opus-4-6", `prompt:${RN}`] } },
-  { key: "timeout_every_leg", tags: ["timeout"], drive: timeoutExhausted, rows: [T("retry", "timeout"), T("retry", "timeout")], calls: { [CG]: 1, [SQ]: 1, [TR]: 2 },
+  { key: "timeout_every_leg", tags: ["timeout"], drive: timeoutExhausted, rows: [T("retry", "timeout"), T("retry", "timeout")], calls: { [CG]: 1, [SQ]: 1, [TR]: 2, [LS]: 1, [CC]: 1 },
     facts: { done: [], failed: ["a:no_planner_leg:timeout"], incidents: ["planner_no_leg"], log: ["set_model:anthropic/claude-opus-5-5", "prompt:hi", "set_model:google-antigravity/claude-opus-4-6", `prompt:${RN}`] } },
-  { key: "other_unrouted", tags: ["other"], drive: otherUnrouted, rows: [T("final", "other_unrouted")], calls: { [CG]: 1, [SQ]: 1, [TR]: 1 },
+  { key: "other_unrouted", tags: ["other"], drive: otherUnrouted, rows: [T("final", "other_unrouted")], calls: { [CG]: 1, [SQ]: 1, [TR]: 1, [LS]: 1, [CC]: 1 },
     facts: { done: [], failed: ["a:model_error:other"], incidents: [], log: ["set_model:anthropic/claude-opus-5-5", "prompt:hi"] } },
-  { key: "other_routed_twice", tags: ["other_retried"], drive: otherRoutedTwice, rows: [T("retry", "other_once"), T("final", "other_retried")], calls: { [CG]: 1, [SQ]: 1, [TR]: 2 },
+  { key: "other_routed_twice", tags: ["other_retried"], drive: otherRoutedTwice, rows: [T("retry", "other_once"), T("final", "other_retried")], calls: { [CG]: 1, [SQ]: 1, [TR]: 2, [LS]: 1, [CC]: 1 },
     facts: { done: [], failed: ["a:model_error:other"], incidents: [], log: ["set_model:anthropic/claude-opus-5-5", "prompt:hi", "set_model:google-antigravity/claude-opus-4-6", `prompt:${RN}`] } },
-  { key: "other_after_tool", tags: ["other_tool"], drive: otherAfterTool, rows: [T("final", "other_after_tool")], calls: { [CG]: 1, [SQ]: 1, [TR]: 1 },
+  { key: "other_after_tool", tags: ["other_tool"], drive: otherAfterTool, rows: [T("final", "other_after_tool")], calls: { [CG]: 1, [SQ]: 1, [TR]: 1, [LS]: 1, [CC]: 1 },
     facts: { done: [], failed: ["a:model_error:other"], incidents: [], log: ["set_model:anthropic/claude-sonnet-5-5", "prompt:hi"] } },
-  { key: "other_after_todo", tags: ["other_todo"], drive: otherAfterTodo, rows: [T("retry", "other_once")], calls: { [CG]: 1, [SQ]: 1, [TR]: 1 },
+  { key: "other_after_todo", tags: ["other_todo"], drive: otherAfterTodo, rows: [T("retry", "other_once")], calls: { [CG]: 1, [SQ]: 1, [TR]: 1, [LS]: 1, [CC]: 1 },
     facts: { done: ["a:ok"], failed: [], incidents: [], log: ["set_model:anthropic/claude-sonnet-5-5", "prompt:hi", OPUS, `prompt:${RN}`] } },
-  { key: "model_refusal", tags: ["refusal"], drive: modelRefusal, rows: [T("final", "model_refusal")], calls: { [CG]: 1, [SQ]: 1, [TR]: 1 },
+  { key: "model_refusal", tags: ["refusal"], drive: modelRefusal, rows: [T("final", "model_refusal")], calls: { [CG]: 1, [SQ]: 1, [TR]: 1, [LS]: 1, [CC]: 1 },
     facts: { done: [], failed: ["a:model_error:model_refusal"], incidents: [], log: ["set_model:anthropic/claude-opus-5-5", "prompt:hi"] } },
-  { key: "async_work_only_end", tags: ["async"], drive: asyncOnly, rows: [], calls: { [CG]: 1, [SQ]: 1 },
+  { key: "async_work_only_end", tags: ["async"], drive: asyncOnly, rows: [], calls: { [CG]: 1, [SQ]: 1, [LS]: 1, [CC]: 1 },
     facts: { done: [], failed: ["a:model_error:quota"], incidents: ["planner_async_wait"], log: ["set_model:anthropic/claude-opus-5-5", "prompt:hi"] } },
-  { key: "fast_quota_step_up", tags: ["step_up"], drive: fastStepUp, rows: [T("retry", "quota"), T("retry", "quota")], calls: { [CG]: 1, [SQ]: 1, [TR]: 2 },
+  { key: "fast_quota_step_up", tags: ["step_up"], drive: fastStepUp, rows: [T("retry", "quota"), T("retry", "quota")], calls: { [CG]: 1, [SQ]: 1, [TR]: 2, [LS]: 1, [CC]: 1 },
     facts: { done: ["a:ok"], failed: [], incidents: [], log: ["set_model:anthropic/claude-sonnet-5-5", "prompt:hi", "set_model:anthropic/claude-opus-5-5", `prompt:${RN}`, "set_model:google-antigravity/claude-opus-4-6", `prompt:${RN}`] } }
 ];
 const BRANCHES = ["limit", "latched", "reset", "ready_exit", "lane", "below_limit", "claimed", "late", "late_natural", "quota", "timeout", "other", "other_retried", "other_tool", "other_todo", "refusal", "async", "step_up"];

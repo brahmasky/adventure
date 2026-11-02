@@ -85,7 +85,7 @@ const fakeRoles = (d, lists = LISTS) => ({ requestRefresh() {}, candidates: (rol
 /** Every Jev question answered at 0.1, below each per-question bar, so a settle the rules pass settles. */
 const jev01 = async (r) => ({ ok: true, model: "jev-1.13.0", input_tokens: 1, latency_ms: 1, answers: Object.fromEntries(Object.keys(r.questions).map((id) => [id, { type: "noul", noul: 0.1 }])) });
 
-/** Seeds chat 42's planner session as current, as harness() does, then builds the supervisor. `opts`: { recorder, session, extra (SupervisorDeps overrides), outcome, roles ({ default, fast, thinking } lists; R4) }. */
+/** Seeds chat 42's planner session as current, as harness() does, then builds the supervisor. `opts`: { recorder (also passed as turnContext.recorder; R5), turnContext (a partial merged over the default turn context; R5), session, extra (SupervisorDeps overrides, incl. versionCheck), outcome, roles ({ default, fast, thinking } lists; R4) }. */
 export function mkSupervisor(d, store, opts = {}) {
   store.recordPlannerSessionReset("42", d.lessonSetFingerprint(store), new Date().toISOString());
   store.claimSessionSeed("42"); store.promotePlannerSession("42");
@@ -96,7 +96,8 @@ export function mkSupervisor(d, store, opts = {}) {
   const session = opts.session ?? fakeSession();
   sup = new d.PlannerSupervisor({
     chatId: "42", store, cfg: d.resolveOmpConfig({ HOUGE_OMP_SANDBOX: "0" }), ctx: { home: data, repo: data, data }, distDir: data, decls: [], env: {}, turnEnvelopeActions: ["shell"],
-    turnContext: { store, memoryRoot: MEMORY_ROOT, dataDir: data, skillsReader: () => undefined, coreBlock: () => undefined, retrieve: async () => ({ facts: [], pages: [] }), env: {} },
+    turnContext: { store, memoryRoot: MEMORY_ROOT, dataDir: data, skillsReader: () => undefined, coreBlock: () => undefined, retrieve: async () => ({ facts: [], pages: [] }), env: {},
+      ...(opts.recorder ? { recorder: opts.recorder } : {}), ...(opts.turnContext ?? {}) }, // R5: the recorder reaches the turn-context entries; a partial turnContext is merged last (as o.turnContext in the TS harness)
     buildTools: () => ({ registry: new d.ToolRegistry(), quarantine: async () => ({ digest: "", contains_instructions: false, source_meta: { tool: "x", bytes: 0 } }) }),
     posture: () => null, outcome, sessionFactory: (o) => session.bind(o), versionCheck: () => ({ ok: true, version: "18.4.4" }), skipPreflightForTest: true,
     manifestWaitMs: 5_000, roles: fakeRoles(d, opts.roles ?? LISTS), settleClient: () => jev01,
@@ -115,3 +116,19 @@ export function intakeRun(d, store, goal, key = goal, actor = "paco") {
   return r.run_id;
 }
 export const req = (run_id, text = "hi", source = "telegram") => ({ run_id, text, source, requester: { kind: "user", id: "paco" } });
+
+// R5 seed helpers (ported from tests/omp/turn-context.test.ts and tests/omp/context-decisions.test.ts). They write through the RunStore API only.
+/** `n` active "ask" lessons of `chars` characters each (the renderer's HOUGE_LESSON_CHAR_CAP, read from turnContext.env, caps their sum). Returns the lesson ids. */
+export function seedLessons(store, n, chars) {
+  return Array.from({ length: n }, (_, i) => store.addLesson({ scope: "ask", text: `${String.fromCharCode(97 + (i % 26))}`.repeat(chars), source: "user_feedback" }));
+}
+/** One clarifying assistant turn in `chatId` (a user question, then the assistant's `clarify` answer): the next turn's trailing-clarify count is 1. */
+export function seedClarify(store, chatId) {
+  const at = (s) => new Date(Date.now() - s * 1000).toISOString();
+  store.recordChatTurn({ chat_id: chatId, run_id: "r0", role: "user", text: "fix the file", created_at: at(30) });
+  store.recordChatTurn({ chat_id: chatId, run_id: "r0", role: "assistant", text: "Which file do you mean?", intent: "clarify", created_at: at(20) });
+}
+/** One delivered lane reply per text in `chatId` (verdict_id null: laneTurnsSince's LEFT JOIN keeps it). With no planner answer in the chat every row is "since"; the planner's last answer is what plannerLastAnsweredAt reads. */
+export function seedLaneRows(store, chatId, texts) {
+  texts.forEach((t, k) => store.recordLaneReply({ run_id: `lane-${k}`, chat_id: chatId, lane: "answer", verdict_id: null, catch_up: t, created_at: new Date(Date.now() - (texts.length - k) * 60_000).toISOString() }));
+}
