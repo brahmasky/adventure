@@ -499,9 +499,15 @@ export function throttledIncident(store: Pick<RunStore, "openIncident">, windowM
 
 /**
  * `/kill` stops every live planner turn without blocking the poll loop (the tombstone is already
- * written, the ack queued); `/rearm` clears the planners' crash-loop latch (spec §7).
+ * written, the ack queued); `/rearm` clears the planners' crash-loop latch (spec §7); `/fresh` stops an idle
+ * planner child (spec 2026-11-02 §6.2). Exported for tests.
  */
-function onPlannerControl(status: string, worker: CoreWorker, store: RunStore): void {
+export function onPlannerControl(status: string, worker: CoreWorker, store: RunStore): void {
+  if (status === "fresh_requested") {
+    // The marker is persisted; an idle child stops now so the next turn spawns and resets. A turn in flight is never cancelled.
+    for (const s of worker.plannerSupervisors()) void s.onFreshRequested().catch((e) => console.error(`[telegram-daemon] /fresh stop failed: ${errorCode(e)}`));
+    return;
+  }
   if (status === "rearmed") {
     for (const s of worker.plannerSupervisors()) s.resetCrashGuard();
     return;

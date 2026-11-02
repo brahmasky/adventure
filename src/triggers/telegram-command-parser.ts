@@ -22,6 +22,7 @@ export type TelegramCommand =
   | { type: "kill"; reason?: string }
   | { type: "disarm" }
   | { type: "rearm" }
+  | { type: "fresh" }
   | { type: "approvals" }
   | { type: "memories"; query?: string }
   | { type: "forget_memory"; id: number }
@@ -78,6 +79,8 @@ export function parseTelegramCommand(text: string): TelegramCommandParseResult {
   if (command === "/kill") return parseKill(rest);
   if (command === "/disarm") return parseNoArgs("disarm", rest);
   if (command === "/rearm") return parseNoArgs("rearm", rest);
+  // Spec 2026-11-02 §6.2: a new planner transcript at the next start; slash-only, never a turn the model reads.
+  if (command === "/fresh") return parseNoArgs("fresh", rest);
   // Unknown slash-prefixed text: if the first token is a CLEAN command word (letters,
   // digits, underscore only — no inner slashes or dots), the user attempted a command
   // that doesn't exist (a typo/removed command). Guide them with the command list rather
@@ -245,8 +248,8 @@ function parseKill(words: string[]): TelegramCommandParseResult {
   return { ok: true, command: { type: "kill", ...(reason ? { reason } : {}) } };
 }
 
-/** `/disarm` and `/rearm` take no arguments — reject extras so a typo can't half-apply. */
-function parseNoArgs(type: Extract<TaskEventType, "disarm" | "rearm" | "approvals">, words: string[]): TelegramCommandParseResult {
+/** `/disarm`, `/rearm`, `/approvals` and `/fresh` take no arguments — reject extras so a typo can't half-apply. */
+function parseNoArgs(type: Extract<TaskEventType, "disarm" | "rearm" | "approvals" | "fresh">, words: string[]): TelegramCommandParseResult {
   if (words.length > 0) return invalid(`/${type} takes no arguments`);
   return { ok: true, command: { type } };
 }

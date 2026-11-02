@@ -514,6 +514,7 @@ function buildTelegramEvent(command: TelegramCommand, base: TelegramEventBase): 
     case "disarm":
     case "rearm":
     case "approvals":
+    case "fresh":
       return buildTypedTaskEvent({ ...base, type: command.type });
     case "memories":
       // The optional query rides `program` (the /lessons scope precedent).

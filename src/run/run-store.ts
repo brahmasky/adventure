@@ -3110,14 +3110,18 @@ export class RunStore {
     `).get<PlannerSessionState>(chat_id);
   }
 
-  /** A fresh omp session was started for this lesson set: store it as PENDING, mark the seed pending, ledger the reset. */
-  recordPlannerSessionReset(chat_id: string, lesson_fingerprint: string, now: string): void {
+  /**
+   * A fresh omp session was started for this lesson set: store it as PENDING and ledger the reset. A lesson reset marks the
+   * seed pending for the next dispatch; a /fresh one does not (plan P31: Paco asked for no earlier turns).
+   */
+  recordPlannerSessionReset(chat_id: string, lesson_fingerprint: string, now: string, reason: "lesson_change" | "fresh" = "lesson_change"): void {
+    const seed = reason === "fresh" ? 0 : 1;
     this.inTransaction(() => {
       this.db.prepare(`
-        INSERT INTO planner_session_state (chat_id, lesson_fingerprint, pending_fingerprint, seed_pending, updated_at) VALUES (?, '', ?, 1, ?)
-        ON CONFLICT(chat_id) DO UPDATE SET pending_fingerprint = excluded.pending_fingerprint, seed_pending = 1, updated_at = excluded.updated_at
-      `).run(chat_id, lesson_fingerprint, now);
-      this.recordMemoryEvent("planner_session_reset", { reason: "lesson_change", chat_id }, `planner:${chat_id}`);
+        INSERT INTO planner_session_state (chat_id, lesson_fingerprint, pending_fingerprint, seed_pending, updated_at) VALUES (?, '', ?, ?, ?)
+        ON CONFLICT(chat_id) DO UPDATE SET pending_fingerprint = excluded.pending_fingerprint, seed_pending = excluded.seed_pending, updated_at = excluded.updated_at
+      `).run(chat_id, lesson_fingerprint, seed, now);
+      this.recordMemoryEvent("planner_session_reset", { reason, chat_id }, `planner:${chat_id}`);
     });
   }
 
@@ -3162,6 +3166,29 @@ export class RunStore {
     this.db.prepare(`
       INSERT INTO planner_session_state (chat_id, lesson_fingerprint, seed_pending, updated_at, transcript_trust, transcript_trust_at) VALUES (?, '', 0, ?, ?, ?)
     `).run(chat_id, now, level, now);
+  }
+
+  /** /fresh (spec 2026-11-02 §6.2): the request's instant, persisted so a restart or a child exit cannot lose it. An upsert (P21b). */
+  requestFreshTranscript(chat_id: string, now: string): void {
+    this.db.prepare(`
+      INSERT INTO planner_session_state (chat_id, lesson_fingerprint, seed_pending, updated_at, fresh_requested_at) VALUES (?, '', 0, ?, ?)
+      ON CONFLICT(chat_id) DO UPDATE SET fresh_requested_at = excluded.fresh_requested_at
+    `).run(chat_id, now, now);
+  }
+
+  /** The pending /fresh request's instant, or null when none is pending. */
+  freshRequestedAt(chat_id: string): string | null {
+    return this.db.prepare(`SELECT fresh_requested_at FROM planner_session_state WHERE chat_id = ?`).get<{ fresh_requested_at: string | null }>(chat_id)?.fresh_requested_at ?? null;
+  }
+
+  /**
+   * The commit of a reset that served a /fresh (spec §6.2, N2): one statement clears the marker and stores `clean` (since
+   * `now`) only while the stored request is still the one served. False when a later /fresh replaced it (it stays pending).
+   */
+  commitFreshTranscript(chat_id: string, served: string, now: string): boolean {
+    return this.db.prepare(`
+      UPDATE planner_session_state SET fresh_requested_at = NULL, transcript_trust = 'clean', transcript_trust_at = ? WHERE chat_id = ? AND fresh_requested_at = ?
+    `).run(now, chat_id, served).changes === 1;
   }
 
   /** Spec 2026-11-02 section 6.3: the stored level and since when; null without a row. */

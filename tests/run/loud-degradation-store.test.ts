@@ -104,3 +104,32 @@ describe("transcript_trust_at", () => {
     s.close();
   });
 });
+
+// Spec 2026-11-02 §6.2: /fresh must survive a restart, and only the reset that served the stored request may clear it (N2).
+describe("the /fresh marker", () => {
+  it("is an upsert, survives a reopen, and only the commit that serves the stored request clears it (N2)", () => {
+    const path = fileStore();
+    const a = RunStore.open(path);
+    a.requestFreshTranscript("42", "2026-11-02T01:00:00.000Z");                     // no row yet: inserted (P21b)
+    a.close();
+    const b = RunStore.open(path);
+    expect(b.freshRequestedAt("42")).toBe("2026-11-02T01:00:00.000Z");
+    b.requestFreshTranscript("42", "2026-11-02T02:00:00.000Z");                     // a second /fresh replaces it
+    b.setTranscriptTrust("42", "hostile", "2026-11-02T00:00:00.000Z");
+    expect(b.commitFreshTranscript("42", "2026-11-02T01:00:00.000Z", "2026-11-02T03:00:00.000Z")).toBe(false);
+    expect(b.freshRequestedAt("42")).toBe("2026-11-02T02:00:00.000Z");
+    expect(b.getTranscriptTrust("42")).toBe("hostile");                              // a commit that did not serve it lowers nothing
+    expect(b.commitFreshTranscript("42", "2026-11-02T02:00:00.000Z", "2026-11-02T03:00:00.000Z")).toBe(true);
+    expect([b.freshRequestedAt("42"), b.getTranscriptTrustSince("42")]).toEqual([null, { level: "clean", at: "2026-11-02T03:00:00.000Z" }]);
+    b.close();
+  });
+  it("a fresh reset records reason fresh and no seed (P31); a lesson reset still seeds", () => {
+    const s = RunStore.openInMemory();
+    s.recordPlannerSessionReset("42", "fp", "t", "fresh");
+    expect(s.getPlannerSessionState("42")).toMatchObject({ pending_fingerprint: "fp", seed_pending: 0 });
+    s.recordPlannerSessionReset("43", "fp", "t");
+    expect(s.getPlannerSessionState("43")).toMatchObject({ seed_pending: 1 });
+    expect(s.getLedgerEvents().filter((e) => e.event_type === "planner_session_reset").map((e) => (e.payload as { reason: string }).reason)).toEqual(["fresh", "lesson_change"]);
+    s.close();
+  });
+});

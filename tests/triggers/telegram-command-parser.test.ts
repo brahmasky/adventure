@@ -302,6 +302,11 @@ describe("parseTelegramCommand", () => {
     expect(parseTelegramCommand("/rearm")).toEqual({ ok: true, command: { type: "rearm" } });
   });
 
+  it("/fresh is a control command, never a turn the model reads (spec 2026-11-02 §6.2); extras are rejected", () => {
+    expect(parseTelegramCommand("/fresh")).toEqual({ ok: true, command: { type: "fresh" } });
+    expect(parseTelegramCommand("/fresh please").ok).toBe(false);
+  });
+
   it("takes a turn message literally, including apostrophes and quotes", () => {
     expect(parseTelegramCommand("what's new with Houge's design?")).toEqual({
       ok: true,

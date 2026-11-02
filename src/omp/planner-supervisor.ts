@@ -162,6 +162,8 @@ const ENDED = Symbol("ended");
 const START_SUPERSEDED = "start_failed: superseded";
 /** Memory A1 §6 (final-review ruling A4): the consecutive failed lesson-change resets after which a spawn serves resumed. */
 export const RESET_DEGRADE_AFTER = 3;
+/** Spec 2026-11-02 §6.2: the fixed first line of a reply served from the old transcript after a failed /fresh reset. */
+export const FRESH_FAILED_PREFIX = "Could not start a fresh conversation; this reply continues the old one.";
 /** A start whose child omp rejected for its --model (live, 18.4.4: exits before ready): Default's next candidate is tried. */
 const START_MODEL_MISSING = "exited:model_missing";
 /** The Default role has no candidate this child sequence has not refused: the spawn axis is spent (spec §4). */
@@ -336,6 +338,12 @@ export class PlannerSupervisor {
    * empty new one.
    */
   private resetGen = 0;
+  /** /fresh (spec 2026-11-02 §6.2, N2): the request this child's reset served, bound to its generation; only its commit clears that request. */
+  private servedFresh: { gen: number; at: string } | undefined;
+  /** The /fresh marker a start already tried (P21f): a live child is restarted at a turn start only for a marker it has not tried. */
+  private freshTried: string | undefined;
+  /** The child generation serving the old transcript after a failed /fresh reset: its replies carry FRESH_FAILED_PREFIX (N1). */
+  private freshFailedGen = 0;
   private stale = false;
   private turn: Turn | undefined;
   private readonly queue: TurnRequest[] = [];
@@ -374,6 +382,14 @@ export class PlannerSupervisor {
   state(): SupervisorState { return this.st; }
   markStale(): void { this.stale = true; }
   resetCrashGuard(): void { this.crashLatched = false; this.exits = []; }
+  /**
+   * /fresh (spec 2026-11-02 §6.2): the marker is already persisted. An idle live child stops now, so the next turn spawns and
+   * resets; a turn in flight (or a start) is never cancelled — freshDue restarts the child at the next turn start.
+   */
+  async onFreshRequested(): Promise<void> {
+    if (this.busy || this.startInFlight || !this.session) return;
+    await this.stopSession();
+  }
   whenIdle(): Promise<void> {
     return this.busy || this.queue.length > 0 ? new Promise((r) => this.idleWaiters.push(r)) : Promise.resolve();
   }
@@ -790,6 +806,16 @@ export class PlannerSupervisor {
     this.d.store.promotePlannerSession(this.d.chatId);
     this.resetGen = 0;
     turn.committedFresh = true;
+    this.commitFresh(turn);
+  }
+
+  /** Spec 2026-11-02 §6.2 (N2): clears the /fresh marker only when this child's reset served the request still stored. */
+  private commitFresh(turn: Turn): void {
+    const served = this.servedFresh;
+    if (!served || served.gen !== turn.childGen) return;
+    this.servedFresh = undefined;
+    try { this.d.store.commitFreshTranscript(this.d.chatId, served.at, new Date().toISOString()); }
+    catch (e) { console.error(`planner supervisor: fresh_commit_not_written (${message(e)})`); }
   }
 
   /**
@@ -965,7 +991,7 @@ export class PlannerSupervisor {
     while (this.startInFlight) if ((await this.startInFlight) === null && this.session) return null;
     // compared only at turn start: a new lesson, identity edit, skill change or UTC day restarts the child here.
     // A child on a later Default candidate is kept (spec §5): set_model moves it to any turn's candidate.
-    const refresh = this.stale || systemPromptFingerprint(turnContext, chatId) !== this.fingerprint;
+    const refresh = this.stale || this.freshDue() || systemPromptFingerprint(turnContext, chatId) !== this.fingerprint;
     if (this.session && refresh) await this.stopSession();
     if (this.session) return null;
     if (this.crashGuard(turn)) return "crash_loop";
@@ -1170,6 +1196,8 @@ export class PlannerSupervisor {
   private async resetForLessonChange(s: PlannerSessionLike, gen: number): Promise<string | null> {
     const { store, chatId, env } = this.d;
     const fingerprint = this.lessonFingerprint;
+    const fresh = store.freshRequestedAt(chatId); // before the flag: /fresh is honoured with the lesson reset off (P21a)
+    if (fresh !== null) return this.resetForFresh(s, gen, fresh);
     if (!resolveLessonSessionReset(env) || fingerprint === undefined) return null; // no read, no reset decision
     if (store.getPlannerSessionState(chatId)?.lesson_fingerprint === fingerprint) {
       store.dropPendingPlannerSession(chatId); // resuming the committed transcript: an unprompted reset no longer applies
@@ -1187,6 +1215,55 @@ export class PlannerSupervisor {
     if (gen !== this.gen || this.session !== s) return START_SUPERSEDED;
     this.resetGen = gen;
     return this.resetOk();
+  }
+
+  /**
+   * /fresh (spec 2026-11-02 §6.2): honoured at every start, whatever the lesson fingerprint. The lesson set is recorded and
+   * promoted as on the lesson path (P21c). A failure never degrades silently into "fresh" (N1, freshResetFailed).
+   */
+  private async resetForFresh(s: PlannerSessionLike, gen: number, at: string): Promise<string | null> {
+    const { store, chatId, env } = this.d;
+    this.freshTried = at;
+    const committed = store.getPlannerSessionState(chatId)?.lesson_fingerprint ?? "";
+    const fingerprint = this.lessonFingerprint ?? committed;
+    try {
+      if ((await s.newSession()).cancelled) throw new PlannerRpcError("new_session_cancelled");
+    } catch (e) {
+      if (gen !== this.gen || this.session !== s) return START_SUPERSEDED;
+      return this.freshResetFailed(gen, e, resolveLessonSessionReset(env) && fingerprint !== committed ? fingerprint : undefined);
+    }
+    store.recordPlannerSessionReset(chatId, fingerprint, new Date().toISOString(), "fresh");
+    if (gen !== this.gen || this.session !== s) return START_SUPERSEDED;
+    this.resetGen = gen;
+    this.servedFresh = { gen, at };
+    return this.resetOk();
+  }
+
+  /**
+   * A failed /fresh reset (N1): planner_session_reset_failed opens, the marker stays, and this child serves the resumed old
+   * transcript with its carry (no resetGen) and FRESH_FAILED_PREFIX on its replies. When the lesson set also changed, the
+   * lesson rule decides the spawn first (failures 1–2 fail it; P21d).
+   */
+  private freshResetFailed(gen: number, e: unknown, lessonFingerprint: string | undefined): string | null {
+    if (lessonFingerprint !== undefined) {
+      const refused = this.resetFailed(lessonFingerprint, e);
+      if (refused !== null) return refused;
+    } else {
+      this.incident("planner_session_reset_failed", { reason: rpcCode(e) });
+    }
+    this.freshFailedGen = gen;
+    return null;
+  }
+
+  /** A /fresh this child has not tried yet; an unreadable marker is no request (the next start reads it again). */
+  private freshDue(): boolean {
+    try {
+      const at = this.d.store.freshRequestedAt(this.d.chatId);
+      return at !== null && at !== this.freshTried;
+    } catch (e) {
+      console.error(`planner supervisor: fresh marker unreadable (${message(e)})`);
+      return false;
+    }
   }
 
   private resetOk(): null {
@@ -1520,7 +1597,9 @@ export class PlannerSupervisor {
     this.endTrust(t); // spec §7.2: turn_trust_final at every turn end, success or failure
     const { text } = delivered;
     const attachments = [...delivered.attachments];
-    const base = { worker_id: t.worker, text, duration_ms: Date.now() - t.startedAt, tool_calls: t.active.budget.usage().tool_calls };
+    // N1: a reply served from the old transcript after a failed /fresh says so; the stored turn stays the planner's own (P21e)
+    const sent = this.freshFailedGen !== 0 && this.freshFailedGen === t.childGen ? `${FRESH_FAILED_PREFIX}\n\n${text}` : text;
+    const base = { worker_id: t.worker, text: sent, duration_ms: Date.now() - t.startedAt, tool_calls: t.active.budget.usage().tool_calls };
     outcome.complete({ ...base, run_id: t.req.run_id, attachments, ...(t.laneButtons ? { buttons: t.laneButtons } : {}) });
     for (const m of t.merged) outcome.complete({ ...base, run_id: m, merged_into: t.req.run_id, attachments: [] });
     store.recordChatTurn({ chat_id: chatId, run_id: t.req.run_id, role: "assistant", text, intent: assistantIntentFor(text, t.usedTool) });

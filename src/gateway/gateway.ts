@@ -63,6 +63,7 @@ import type { NotificationButton, NotificationPayload } from "../notifications/n
 import { standingScheduleSection } from "../decisions/standing-approval.js";
 import { handleForgetMemory, handleMemories, handleMemoryUndo } from "./memory-commands.js";
 import { handleModels, modelsUnavailable, type ModelsRoles } from "./models-commands.js";
+import { handleFresh } from "./fresh-command.js";
 import type { IdeaRow, ShortlistRow } from "../run/run-store.js";
 import { invalidCommandReply } from "../triggers/telegram-trigger-adapter.js";
 
@@ -98,6 +99,7 @@ export type GatewayIntakeResult =
   | { ok: true; status: "killed"; run_id: string }
   | { ok: true; status: "disarmed"; run_id: string }
   | { ok: true; status: "rearmed"; run_id: string }
+  | { ok: true; status: "fresh_requested"; run_id: string }
   | {
       ok: true;
       status: "rating_captured";
@@ -307,6 +309,8 @@ export class Gateway {
     if (event.type === "rearm") {
       return this.handleRearm(event, now);
     }
+
+    if (event.type === "fresh") return this.accepted(event, now, handleFresh(this.runStore, event, now));
 
     if (memLaneAsk) return this.admitMemLaneAsk(event, memLaneAsk.original_run_id, now);
 
@@ -1623,6 +1627,7 @@ export const HELP_TEXT = [
   "/memories [query] — 查看记住的事实（最多 10 条）",
   "/forget_memory <id> — 忘掉一条记忆（附撤销按钮）",
   "/models — 模型角色（/models set <role> <pattern> · /models set judges <n> <pattern> · /models reset <role>）",
+  "/fresh — 开始新对话（规划器不再看到之前的对话，清除携带的信任级别）",
   "/approve <id> — 批准待处理操作",
   "/deny <id> — 拒绝待处理操作",
   "/approvals — 列出待批准的操作",
