@@ -78,6 +78,14 @@ export function countTrailingClarifyTurns(recentTurns: ChatTurnRow[]): number {
   return count;
 }
 
+/** The consecutive-clarify cap's two numbers (spec R5 §4.4): the trailing clarify turns and the configured maximum. */
+export interface ClarifyCapInput { trailing: number; max: number }
+
+/** The one predicate the prompt and the `turn.clarify_cap` rule share: `max = 0` caps every turn. */
+export function clarifyCapOf(s: ClarifyCapInput): boolean {
+  return s.trailing >= s.max;
+}
+
 /** ISO timestamp marking the start of the current session window. */
 export function chatContextSince(env: NodeJS.ProcessEnv, now: Date = new Date()): string {
   const ms = resolveChatContextWindowMinutes(env) * 60_000;
