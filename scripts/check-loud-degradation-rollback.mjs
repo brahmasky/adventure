@@ -33,7 +33,7 @@ const SET_PINS = ["HOUGE_TOMBSTONE_PATH", "HOUGE_DISARM_PATH", "HOUGE_TELEGRAM_C
 const DELETE_PINS = ["HOUGE_SCHEDULER_ENABLED", "HOUGE_RADAR_ENABLED", "HOUGE_RADAR_PANEL_ENABLED", "HOUGE_MEDIA_INGEST_ENABLED", "HOUGE_LLM_MEDIA_PROVIDERS", "HOUGE_RATING_PENDING_MINUTES", "HOUGE_MODEL_ROLES"];
 /** /status lines whose number the seeding legitimately moves (the seeding wrote ledger events, one tier row, a trust level): compared with the digits masked, named in the detail. */
 /** The one /status line whose number the seeding moves: the open-incident count. Only that count is masked, so a changed "swept <age> ago" still fails. Code-owned name for the detail. */
-const COUNT_LINES = [{ name: "self_check_open_incident_count", re: /^(Self-check: swept .+ ago · )\d+( open incidents?)$/ }];
+const COUNT_LINES = [{ name: "self_check_open_incident_count", re: /^(Self-check: swept (?:never|.+ ago) · )\d+( open incidents?)$/ }];
 const failures = [];
 const saved = {};
 const J = (o) => JSON.stringify(o);
@@ -92,6 +92,14 @@ const objKey = (o) => `${o.type} ${o.name}`;
 /** The code-owned name of the count line `line` is, or null; `masked` replaces only its count. */
 const countLineOf = (line) => COUNT_LINES.find((c) => c.re.test(line)) ?? null;
 const maskCount = (line) => { const c = countLineOf(line); return c ? line.replace(c.re, "$1#$2") : line; };
+/** Startup self-test of the matcher (gateway.ts: "swept <age> ago" or "swept never"): a differing count is masked in both forms; a differing age is not. */
+const countMatcherOk = () => {
+  const eq = (a, b) => maskCount(a) === maskCount(b);
+  return eq("Self-check: swept 1d ago · 5 open incidents", "Self-check: swept 1d ago · 2 open incidents")
+    && eq("Self-check: swept never · 1 open incident", "Self-check: swept never · 0 open incidents")
+    && !eq("Self-check: swept 1d ago · 5 open incidents", "Self-check: swept 9d ago · 5 open incidents")
+    && !eq("Self-check: swept never · 5 open incidents", "Self-check: swept 1d ago · 5 open incidents");
+};
 const migrationRowsOf = (path) => ro(path, (db) => db.prepare("SELECT * FROM schema_migrations ORDER BY version").all().map((r) => ({ ...r })));
 
 // ---- this build seeds F ----
@@ -212,6 +220,7 @@ async function setup() {
 
 async function run(ctx) {
   const { A, F } = ctx;
+  check("count_matcher_self_test — the Self-check count mask accepts \"swept <age> ago\" and \"swept never\", masks only the count, and a changed age or never-vs-age still mismatches", countMatcherOk());
   phase = "snapshot"; const before = { objA: objectsOf(A), colsA: columnsOf(A, "planner_session_state"), verA: versionsOf(A), rowsA: migrationRowsOf(A), rowsF0: migrationRowsOf(F) };
   phase = "seed F"; const seed = await seedF(ctx);
   const newObjF = objectsOf(F); const rowsFSeeded = migrationRowsOf(F);
