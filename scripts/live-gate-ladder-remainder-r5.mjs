@@ -22,7 +22,7 @@ import { dirname, join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { SetupError, canon, cleanupTemp, initTemp, loadDist, redactForPrint } from "./stage4-diff-lib.mjs";
 import { countingRecorder } from "./stage4-sender-fixture.mjs";
-import { cleanup, mkSupervisor, req, seedLaneRows, seedLessons } from "./stage4-supervisor-fixture.mjs";
+import { cleanup, cleanupSettled, mkSupervisor, removeDataDirsSync, req, seedLaneRows, seedLessons } from "./stage4-supervisor-fixture.mjs";
 
 const DIST = resolve(new URL("../dist", import.meta.url).pathname);
 const MAIN_CHECKOUT = "/Users/xiaochuan/Projects/adventure";
@@ -385,8 +385,16 @@ async function setup() {
 function closeAll() {
   for (const k of ["store", "baseStore"]) { try { G[k]?.close(); } catch { /* a closed handle is not a finding */ } G[k] = null; }
 }
-/** Every exit path removes both copies: the signals (SIGQUIT included; SIGKILL cannot be caught), and an exception or rejection that escapes the main try. */
-const bail = (code) => { closeAll(); cleanupTemp(); restoreEnv(); process.exit(code); };
+// PlannerSupervisor.shutdown can wait ~5 s on a draining turn before it stops the session (src/omp/planner-supervisor.ts:461); the bound covers that plus margin.
+const SETTLE_BOUND_MS = 15_000;
+/**
+ * Every exit path removes both copies and the fixture's hsv-* workdirs: the signals (SIGQUIT included; SIGKILL cannot be caught), and an exception or
+ * rejection that escapes the main try. In-flight supervisor teardowns are awaited (bounded) first, then the workdirs removed synchronously either way.
+ */
+function bail(code) {
+  Promise.race([cleanupSettled().catch(() => undefined), new Promise((r) => setTimeout(r, SETTLE_BOUND_MS))])
+    .finally(() => { removeDataDirsSync(); closeAll(); cleanupTemp(); restoreEnv(); process.exit(code); });
+}
 for (const [sig, code] of [["SIGINT", 130], ["SIGTERM", 143], ["SIGHUP", 129], ["SIGQUIT", 131]]) process.on(sig, () => bail(code));
 for (const ev of ["uncaughtException", "unhandledRejection"]) process.on(ev, (e) => { console.error(`${ev}: ${errCode(e)}`); bail(2); });
 
