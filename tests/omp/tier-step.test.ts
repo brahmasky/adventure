@@ -36,6 +36,18 @@ describe("planTier", () => {
     const before = st("kimi", "k3.1-pro", "k3");
     expect(planTier(before, cat().filter((m) => m.provider !== "kimi-code"), NOW)).toEqual({ before, state: before, probe: null });
   });
+  it("a rejection holds back only its own selector: the next-newest below the head is still probed (M56)", () => {
+    // Otherwise one model_missing (any selector) would freeze the tier's previous-head check for a week.
+    const recent = new Date(Date.parse(NOW) - 60_000).toISOString();
+    expect(planTier(st("codex-sol", "gpt-6.1-sol", null, ["openai-codex/gpt-6-sol", recent]), cat(), NOW).probe)
+      .toEqual({ id: "gpt-5.6-sol", selector: "openai-codex/gpt-5.6-sol", purpose: "previous" });
+    expect(planTier(st("codex-sol", "gpt-6.1-sol", null, ["openai-codex/gpt-9-sol", recent]), cat(), NOW).probe?.id).toBe("gpt-6-sol");
+  });
+  it("a previous head that left the catalog is cleared, so it never serves as the fallback leg (M59)", () => {
+    const p = planTier(st("codex-sol", "gpt-6.1-sol", "gpt-5-sol"), cat(), NOW); // gpt-5-sol is not listed
+    expect(p.state).toEqual(st("codex-sol", "gpt-6.1-sol"));
+    expect(p.probe?.id).toBe("gpt-6-sol");
+  });
   it("a head rejected less than 7 days ago is skipped; at 7 days it is probed again", () => {
     const at = (ms: number) => new Date(Date.parse(NOW) - ms).toISOString();
     expect(planTier(st("kimi", "k3", null, ["kimi-code/k3.1-pro", at(REJECT_PROBE_MS - 1)]), cat(), NOW).probe).toBeNull();

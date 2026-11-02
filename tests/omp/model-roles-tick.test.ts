@@ -56,6 +56,14 @@ describe("runModelRolesTick", () => {
     expect(f.refreshes()).toBe(2);
   });
 
+  it("a key the baseline does not have (judges:2 after an upgrade) is no change: no 'was nothing' line (M50)", async () => {
+    const f = fakeRoles(HEADS); const notices: string[] = [];
+    await tick(f, at(0));
+    f.set({ ...HEADS, "judges:2": "google-antigravity/gemini-4-argon" });
+    await tick(f, at(1), notices);
+    expect(notices).toEqual([]);
+  });
+
   it("one line per changed role, naming the new and the old head; unchanged roles stay silent", async () => {
     const f = fakeRoles(HEADS); const notices: string[] = [];
     await tick(f, at(0));

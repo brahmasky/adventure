@@ -88,6 +88,21 @@ describe("probe outcomes", () => {
     expect(calls).toEqual([]);
     expect(store.listModelTiers()).toEqual(before);
   });
+  it("a failed read after a good one plans on nothing: the cached catalog is not today's (M38, Decision 4)", async () => {
+    // The resolver keeps the last good catalog for resolution; the tick must not probe and adopt against it as if it were fresh.
+    const r = roles(); const calls: string[] = [];
+    await tick(r, undefined, day(0));                       // a good read, no probe: tiers stay seeded
+    const before = store.listModelTiers();
+    catalog = () => null;
+    await tick(r, probeBy(() => PASS, calls), day(1));
+    expect([calls, store.listModelTiers(), probes()]).toEqual([[], before, []]);
+    expect(resolvedRows().map((e) => e.payload.catalog_ok)).toEqual([true, false]);
+  });
+  it("a probe that answers aborted without the stop signal still commits nothing (M39)", async () => {
+    const before = store.listModelTiers();
+    expect(await tick(roles(), probeBy(() => "aborted"), day(0))).toEqual({ ran: false, changed: [], unresolved: [] });
+    expect([probes(), store.listModelTiers(), resolvedRows()]).toEqual([[], before, []]);
+  });
   it("a stop mid-probe commits nothing: no probe event, no tier write, no resolution row", async () => {
     const ac = new AbortController(); let n = 0; const before = store.listModelTiers();
     const probe: ProbeFn = async () => { if (++n === 2) { ac.abort(); return "aborted"; } return PASS; };
@@ -142,6 +157,18 @@ describe("a shadowing override", () => {
     expect(notes).toEqual([...moved.map((k) => changeLine(k, before!.get(k) ?? null, after!.get(k) ?? null)), shadowLine("judges:0", "kimi-code/k3.1-pro", "k3")]);
     expect(shadowLine("judges:0", "kimi-code/k3.1-pro", "k3")).toBe("ℹ️ Tier head `kimi-code/k3.1-pro` is available; your override `k3` is in place (/models reset judges 0).");
     expect(failedLine("kimi-code/k3.1-pro", null)).toBe("⚠️ `kimi-code/k3.1-pro` failed its check; staying on nothing.");
+  });
+});
+
+describe("a shadowing override on a retired head (M48)", () => {
+  it("is named when retirement moves the head, though the tick's probe was only for the previous", async () => {
+    // The head moved before the probe (followRetirement); comparing against the post-retirement state would miss the move.
+    const r = roles(); const notes: string[] = [];
+    store.writeModelTier({ tier: "codex-sol", adopted: "gpt-6.1-sol", previous: "gpt-6-sol", adopted_at: day(-1), rejected_selector: null, rejected_at: null }, day(-1));
+    store.recordModelRoleOverride({ key: "judges:1", pattern: "gpt-5.6-sol", actor: "paco" });
+    catalog = () => FIX().filter((m) => m.id !== "gpt-6.1-sol");
+    await tick(r, probeBy(() => PASS), day(0), notes);
+    expect(notes).toContain(shadowLine("judges:1", "openai-codex/gpt-6-sol", "gpt-5.6-sol"));
   });
 });
 

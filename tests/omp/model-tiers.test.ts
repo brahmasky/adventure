@@ -26,9 +26,17 @@ describe("tiers over the 2026-11-02 catalog", () => {
     expect(tierMembers(tierDef("codex-sol"), catalog())).toEqual(["gpt-6.1-sol", "gpt-6-sol", "gpt-5.6-sol"]);
     expect(tierMembers(tierDef("kimi"), catalog())).toEqual(["k3.1-pro", "k3"]);
     const notIn: Array<[TierId, string]> = [["opus@anthropic", "claude-opus-4-20250514"], ["opus@anthropic", "claude-opus-4-5-20251101"],
-      ["gemini-flash", "gemini-3.5-flash-lite"], ["kimi", "k3.1-pro-highspeed"], ["kimi", "k3-256k"], ["kimi", "kimi-k2-turbo-preview"], ["codex-sol", "gpt-6.1-terra"]];
+      ["gemini-flash", "gemini-3.5-flash-lite"], ["kimi", "k3.1-pro-highspeed"], ["kimi", "k3-256k"], ["kimi", "kimi-k2-turbo-preview"], ["codex-sol", "gpt-6.1-terra"],
+      // mutation pass M01/M02/M04/M05: a major-only dated snapshot, a sonnet snapshot and -lite, a pro preview, a bare -highspeed
+      ["opus@anthropic", "claude-opus-20250514"], ["sonnet@anthropic", "claude-sonnet-4-5-20250929"], ["sonnet@anthropic", "claude-sonnet-5-lite"],
+      ["gemini-pro", "gemini-4-pro-preview"], ["kimi", "k3.1-highspeed"]];
     for (const [t, id] of notIn) expect(tierVersion(tierDef(t), id), `${t} ${id}`).toBeNull();
     expect(tierMembers(tierDef("opus@anthropic"), catalog())).not.toContain("claude-fable-5-1");
+  });
+  it("a tier is its provider plus its pattern: an id listed under another provider is not a member (M12)", () => {
+    // Antigravity would otherwise adopt an Opus only Anthropic serves, and its probe would fail model_missing every week.
+    const only: CatalogModel[] = [{ provider: "anthropic", id: "claude-opus-6", thinking: null }, { provider: "google-antigravity", id: "claude-opus-5-5", thinking: null }];
+    expect(tierMembers(tierDef("opus@antigravity"), only)).toEqual(["claude-opus-5-5"]);
   });
   it("versions compare by integer segment, a missing segment is 0; equal versions: the shorter id wins", () => {
     const v = (t: TierId, id: string) => tierVersion(tierDef(t), id)!;
@@ -63,6 +71,11 @@ describe("empty-tier proposals (spec §4.4)", () => {
   });
   it("gemini-pro proposes Google ids no tier reads, no preview, no -lite, by output price highest first", () => {
     expect(proposalsFor(tierDef("gemini-pro"), catalog(), NOV2)).toEqual(["gemini-4-argon", "gpt-oss-120b"]);
+  });
+  it("unpriced last, equal prices by id (M21, M23): a model with no known price is never the first suggestion", () => {
+    const m = (id: string, output?: number): CatalogModel => ({ provider: "google-antigravity", id, thinking: null, ...(output === undefined ? {} : { price: { output, rates: [] } }) });
+    expect(proposalsFor(tierDef("gemini-pro"), [m("a-unpriced"), m("z", 2), m("b", 2), m("c", 1)], NOV2)).toEqual(["b", "z", "c"]);
+    expect(proposalsFor(tierDef("gemini-pro"), [m("y-unpriced"), m("c", 1)], NOV2)).toEqual(["c", "y-unpriced"]);
   });
   it("at most three, price order", () => {
     const m = (id: string, output: number): CatalogModel => ({ provider: "google-antigravity", id, thinking: null, price: { output, rates: [] } });
