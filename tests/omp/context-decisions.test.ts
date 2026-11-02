@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { CONTEXT_CATCH_UP } from "../../src/decisions/entries/context-catch-up.js";
-import { CONTEXT_RECALL } from "../../src/decisions/entries/context-recall.js";
+import { CONTEXT_RECALL, type RecallInput } from "../../src/decisions/entries/context-recall.js";
 import { TURN_CLARIFY_CAP } from "../../src/decisions/entries/turn-clarify-cap.js";
 import { storeRecorder } from "../../src/decisions/record.js";
 import type { DecisionRecorder } from "../../src/decisions/types.js";
@@ -96,6 +96,30 @@ describe("R5 rows at prompt build (spec R5 §4.1, §4.2, §4.4) — the raw answ
       const r = await sameAsRaw(store, { retrieval });
       expect(r.prompt).not.toContain("[context]");
       expect(rows(store), reason).toEqual([["context.recall", "none", reason, r.run_id, null]]);
+    }
+  });
+  it("3b the recorded recall input, read at the real entry's rule: pages-only admit, pages-side best, max of the two sides, facts-side embedding", async () => {
+    const page = [{ id: 7, block: "page 7" }];
+    const cases: Array<[string, TurnRetrieval, string, string, RecallInput]> = [
+      ["pages-only admit", { facts: [], pages: page, telemetry: { facts: tel(), pages: tel({ admitted: 1, best_admitted: 0.6 }) } }, "include", "embedded",
+        { embedding: true, facts: 0, pages: 1, best_admitted: 0.6, best_rejected: null }],
+      ["pages-side dropped", { ...NONE, telemetry: { facts: tel(), pages: tel({ best_admitted: 0.8 }) } }, "none", "dropped_after_gate",
+        { embedding: true, facts: 0, pages: 0, best_admitted: 0.8, best_rejected: null }],
+      ["max of the sides", { ...NONE, telemetry: { facts: tel({ best_admitted: 0.4, best_rejected: 0.3 }), pages: tel({ best_admitted: 0.8, best_rejected: 0.1 }) } }, "none", "dropped_after_gate",
+        { embedding: true, facts: 0, pages: 0, best_admitted: 0.8, best_rejected: 0.3 }],
+      ["facts-side embedding", { ...NONE, telemetry: { facts: tel({ embedding: true }), pages: tel({ embedding: false }) } }, "none", "unscored",
+        { embedding: true, facts: 0, pages: 0, best_admitted: null, best_rejected: null }]
+    ];
+    const rung = CONTEXT_RECALL.ladder[0] as { decide: (s: RecallInput) => unknown }; const orig = rung.decide;
+    for (const [label, retrieval, verdict, reason, input] of cases) {
+      const store = RunStore.openInMemory();
+      const seen: RecallInput[] = [];
+      rung.decide = (s) => { seen.push({ ...s }); return orig(s); };
+      let r: Awaited<ReturnType<typeof sameAsRaw>>;
+      try { r = await sameAsRaw(store, { retrieval }); } finally { rung.decide = orig; }
+      expect(seen, label).toEqual([input]);
+      expect(rows(store), label).toEqual([["context.recall", verdict, reason, r.run_id, null]]);
+      if (verdict === "include") expect(r.prompt, label).toContain("page 7");
     }
   });
   it("4 catch-up: all, entry_capped, trimmed, all_trimmed, read_failed; schedule and no-rows are not consults", async () => {
