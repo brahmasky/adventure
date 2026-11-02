@@ -12,7 +12,7 @@ import { parseOmpCatalog } from "../../src/omp/model-catalog.js";
 import type { ProbeFn } from "../../src/omp/model-probe.js";
 import { tierCallbackData } from "../../src/gateway/model-tier-commands.js";
 import { parseRatingHistory, RunStore } from "../../src/run/run-store.js";
-import { invariantSweepInput, JEV_JOB_SHUTDOWN_CAP_MS, TIER_TAP_SHUTDOWN_CAP_MS, runTelegramDaemon as runDaemon, settledWithin, sweepAndRearm } from "../../src/telegram/telegram-daemon.js";
+import { invariantSweepInput, JEV_JOB_SHUTDOWN_CAP_MS, ROLES_TICK_SHUTDOWN_CAP_MS, TIER_TAP_SHUTDOWN_CAP_MS, runTelegramDaemon as runDaemon, settledWithin, sweepAndRearm } from "../../src/telegram/telegram-daemon.js";
 import { jevJobSettled, resetJevJobForTests } from "../../src/decisions/jev-version-job.js";
 import type { JevResult } from "../../src/jev/jev-client.js";
 import { seedJevAnchor } from "../helpers/jev-anchor.js";
@@ -1560,6 +1560,53 @@ describe("runTelegramDaemon — shutdown during a slow tick (live 2026-10-02 01:
       expect(store.getLedgerEvents().filter((e) => e.event_type === "model_probe")).toEqual([]);
       expect(store.latestModelRoleOverrides().has("judges:2")).toBe(false);
     } finally {
+      store.close();
+      vi.unstubAllEnvs();
+    }
+  });
+});
+
+describe("runTelegramDaemon — the daily roles tick runs off the poll loop (final review I1)", () => {
+  // The tick probes one model at a time, up to 60 s each on a slow provider. Awaited in the poll loop, that held every
+  // message (a /kill included) for minutes once a day. Detached, it must also never run twice: its 24 h latch is written
+  // only when it settles, so without an in-flight guard every poll cycle would start another tick probing the same models.
+  it("a probe that never answers does not hold intake, a later poll starts no second tick, and the stop ends it within the cap", async () => {
+    vi.stubEnv("HOUGE_MODEL_ROLES", "resolved");
+    const store = RunStore.openInMemory();
+    const controller = new AbortController();
+    const root = projectRoot();
+    const catalog = parseOmpCatalog(readFileSync(new URL("../fixtures/omp-catalog-2026-11-02.json", import.meta.url).pathname, "utf8"))!;
+    let reads = 0;
+    const roles = new RoleResolver({ store, env: () => ({ HOUGE_MODEL_ROLES: "resolved" }), readCatalog: async () => { reads += 1; return catalog; } });
+    const probes: string[] = [];
+    // Settles only when the daemon's stop reaches it: the tick is parked in its first probe for the whole test.
+    const modelProbe: ProbeFn = (sel, signal) => { probes.push(sel); return new Promise((r) => signal?.addEventListener("abort", () => r("aborted"), { once: true })); };
+    const notNow = { update_id: 91, callback_query: { id: "cbq_nn", from: { id: 111 }, message: { message_id: 5, chat: { id: 222 } }, data: "mt:gemini-pro:no" } };
+    const sent: string[] = [];
+    let polls = 0; let stoppedAt = 0;
+    const stall = setTimeout(() => controller.abort(), 4_000); // an awaited tick never reaches poll 2: stop it so the assertions fail, not hang
+    try {
+      await runTelegramDaemon({
+        store, projectRoot: root, omp: { ...fakeOmp(root), roles }, allowlist: ALLOWLIST, stopSignal: controller.signal, longPollTimeoutSeconds: 0, modelProbe,
+        llmAdapter: async (input) => okAnswer(input),
+        telegramClient: {
+          getUpdates: async () => {
+            polls += 1;
+            if (polls === 1) return [];
+            if (polls === 2) { await until(() => probes.length > 0); return [notNow]; }
+            if (polls === 3) return []; // one more full cycle while the first tick is still probing
+            stoppedAt = Date.now(); controller.abort(); return [];
+          },
+          sendMessage: async ({ text }) => { sent.push(text); return { message_id: sent.length }; }
+        }
+      });
+      expect(polls).toBe(4);
+      expect(sent).toContain("👍 Not now: judges:2 stays empty; the daily reminder lists it until it is filled.");
+      expect([probes.length, reads]).toEqual([1, 2]); // the boot read and one tick's read; no second tick
+      expect(Date.now() - stoppedAt).toBeLessThan(ROLES_TICK_SHUTDOWN_CAP_MS + 1_000);
+      expect(store.getLedgerEvents().filter((e) => e.event_type === "model_roles_resolved" || e.event_type === "model_probe")).toEqual([]);
+    } finally {
+      clearTimeout(stall);
       store.close();
       vi.unstubAllEnvs();
     }
