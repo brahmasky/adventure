@@ -219,7 +219,27 @@ const ITEMS = [
 const BRANCHES = ITEMS.map((i) => i.tags[0]);
 
 const all = (store, sql) => store.db.prepare(sql).all().map((r) => ({ ...r }));
-const isClockKey = (k) => /(_at|_since|^since|^now|^last_used|^last_seen)$/.test(k); // lessons/facts touch clocks: compared by order, as every other clock
+const isClockKey = (k) => /(_at|_since|^since|^now)$/.test(k);
+const TOUCHED = ["lessons", "episodic_facts", "wiki_pages"]; const TOUCH_KEYS = ["last_used", "last_seen"];
+/**
+ * Touch times exactly (codex fix 1): each touched row's last_used/last_seen becomes "<ledger event>@<run label>+<ms>", the latest ledger event at or
+ * before it and the counting-clock distance from it. recordAttribution writes loop_started and then touches with no recorder call between, so the
+ * distance is the same on both builds unless the touch moved; the recorder's extra clock reads shift only absolute instants, which the anchor cancels.
+ */
+function anchorTouches(db, ownerLabel) {
+  const events = (db.ledger_events ?? []).map((e) => ({ at: Date.parse(e.occurred_at), what: `${e.event_type}@${ownerLabel(e.run_id)}` }));
+  const anchor = (v) => {
+    const t = Date.parse(v); let best = null;
+    for (const e of events) if (e.at <= t && (best === null || e.at >= best.at)) best = e;
+    return best ? `${best.what}+${t - best.at}ms` : `unanchored:${v}`;
+  };
+  const out = { ...db };
+  for (const name of TOUCHED) {
+    if (!out[name]) continue;
+    out[name] = out[name].map((r) => Object.fromEntries(Object.entries(r).map(([k, v]) => [k, TOUCH_KEYS.includes(k) && typeof v === "string" ? anchor(v) : v])));
+  }
+  return out;
+}
 const idList = R5_IDS.map((i) => `'${i}'`).join(",");
 
 // Coverage self-test: the dump must hold, per table, exactly the rows the DB holds (minus the intentionally dropped R5 decisions rows).
@@ -333,7 +353,7 @@ async function project(d, item) {
       const { session, outcome, data } = rig();
       const promptFiles = files.map((f) => f.split(data).join("<data>"));
       const seen = (list) => list.map(({ run_id, ...rest }) => ({ ...rest, ...("duration_ms" in rest ? { duration_ms: durationClass(rest.duration_ms) } : {}), run_id: label(run_id), run_label: ownerLabel(run_id) }));
-      const observed = { log: session.log, done: seen(outcome.done), failed: seen(outcome.failed), incidents: outcome.incidents, promptFiles, db: classDurations(labelRunOwners(db, ownerLabel)) };
+      const observed = { log: session.log, done: seen(outcome.done), failed: seen(outcome.failed), incidents: outcome.incidents, promptFiles, db: classDurations(labelRunOwners(anchorTouches(db, ownerLabel), ownerLabel)) };
       const facts = factsOf(store, { session, outcome, label, mk, files, notes });
       return { ...scrubWorkers(scrubIds(relabelClocks(observed, isClockKey))), newRows, calls: counting?.calls ?? {}, order, facts, __strip: ["newRows", "calls", "order", "facts"] };
     }));
