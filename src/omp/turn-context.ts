@@ -8,7 +8,6 @@ import type { LessonsInput } from "../decisions/entries/context-lessons.js";
 import { CONTEXT_RECALL, type RecallInput } from "../decisions/entries/context-recall.js";
 import { TURN_CLARIFY_CAP } from "../decisions/entries/turn-clarify-cap.js";
 import type { DecisionRecorder, Entry } from "../decisions/types.js";
-export { clarifyCapOf, CATCH_UP_MAX_ENTRIES };
 import type { QuotedTurn } from "../jev/questions/tree.js";
 import { composeSystemPrompt } from "../prompt/composer.js";
 import { resolveLocalTimeZone } from "../prompt/tz-convert.js";
@@ -18,6 +17,7 @@ import { type RetrievalTelemetry } from "../run/relevance-gate.js";
 import { type DaemonBoot, type LaneTurnRow, type RunStore } from "../run/run-store.js";
 import { buildSessionSeed, SEED_MAX_AGE_HOURS, SEED_RUNS } from "./session-seed.js";
 import { clipText, isBuildStale, localStamp } from "../status/houge-status.js";
+export { clarifyCapOf, CATCH_UP_MAX_ENTRIES };
 
 /** One turn's retrieval: one block per row, and the gate telemetry the attribution row carries (spec §3). */
 export interface TurnRetrieval {
