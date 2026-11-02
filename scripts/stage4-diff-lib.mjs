@@ -4,7 +4,7 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-export const DISTS = { new: null, s3: null, s4a: null, s4b: null, r1: null, r2: null, r3: null, r4: null }; // filled by the CLI
+export const DISTS = { new: null, s3: null, s4a: null, s4b: null, r1: null, r2: null, r3: null, r4: null, r5: null }; // filled by the CLI
 export const CORPORA = [];                               // filled by the CLI from scripts/stage4-corpora/*.mjs
 /** Async teardown callbacks (a corpus's open sockets); the CLI runs them in a finally, on success and on error alike. */
 export const closers = [];
@@ -153,20 +153,23 @@ export const R2_IDS = ["intake.sender", "turn.contract"];
 export const R3_IDS = ["intake.bare_ack", "intake.steer_or_queue"];
 /** The two Slice R4 decision rows written by the planner supervisor: planner.crash_guard (a refused spawn) and turn.retry (every retry-or-final judgement). */
 export const R4_IDS = ["planner.crash_guard", "turn.retry"];
+/** The four Slice R5 record-never-steer rows written while a turn prompt is built and a session is spawned. */
+export const R5_IDS = ["context.recall", "context.catch_up", "context.lessons", "turn.clarify_cap"];
 /**
  * Decision rows one pair's NEW build records and the OLD build cannot: excluded from both sides before comparing (per old build, P1).
- * The branch build is the new side of every pair, so R2_IDS, R3_IDS and R4_IDS are in every set. The corpora that intake scheduled turns through Gateway
+ * The branch build is the new side of every pair, so R2_IDS, R3_IDS, R4_IDS and R5_IDS are in every set. The corpora that intake scheduled turns through Gateway
  * (R1 intake.mjs `source: "schedule"` items, 4B memadmit.mjs) would otherwise show a spurious `restrict` row in a raw-decisions read;
  * they assert that row exactly instead (P10). 4C's schedule.mjs never touches Gateway.
  */
 export const NEW_ROW_IDS = {
-  s3: new Set(["approval.bind", "secret.redact", ...INTAKE_IDS, ...R2_IDS, ...R3_IDS, ...R4_IDS]),
-  s4a: new Set(["approval.bind", "secret.redact", ...INTAKE_IDS, ...R2_IDS, ...R3_IDS, ...R4_IDS]),
-  s4b: new Set(["memory.lesson_admit", "schedule.admit", "memory.correct_preflight", ...INTAKE_IDS, ...R2_IDS, ...R3_IDS, ...R4_IDS]),
-  r1: new Set([...INTAKE_IDS, ...R2_IDS, ...R3_IDS, ...R4_IDS]),
-  r2: new Set([...R2_IDS, ...R3_IDS, ...R4_IDS]),
-  r3: new Set([...R3_IDS, ...R4_IDS]),
-  r4: new Set(R4_IDS)
+  s3: new Set(["approval.bind", "secret.redact", ...INTAKE_IDS, ...R2_IDS, ...R3_IDS, ...R4_IDS, ...R5_IDS]),
+  s4a: new Set(["approval.bind", "secret.redact", ...INTAKE_IDS, ...R2_IDS, ...R3_IDS, ...R4_IDS, ...R5_IDS]),
+  s4b: new Set(["memory.lesson_admit", "schedule.admit", "memory.correct_preflight", ...INTAKE_IDS, ...R2_IDS, ...R3_IDS, ...R4_IDS, ...R5_IDS]),
+  r1: new Set([...INTAKE_IDS, ...R2_IDS, ...R3_IDS, ...R4_IDS, ...R5_IDS]),
+  r2: new Set([...R2_IDS, ...R3_IDS, ...R4_IDS, ...R5_IDS]),
+  r3: new Set([...R3_IDS, ...R4_IDS, ...R5_IDS]),
+  r4: new Set([...R4_IDS, ...R5_IDS]),
+  r5: new Set(R5_IDS)
 };
 
 /** Every ordinary table: sqlite_* internals, virtual tables and their shadow tables (`<virtual>_*`) as sqlite_master reports them are excluded; a name alone (e.g. "_fts") never excludes one. */

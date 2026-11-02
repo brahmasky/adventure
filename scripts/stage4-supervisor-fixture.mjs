@@ -8,6 +8,8 @@ import { join } from "node:path";
 
 const MEMORY_ROOT = new URL("../memory", import.meta.url).pathname;
 const cleanups = [];
+const dataDirs = new Set(); // every supervisor data dir created (/tmp/hsv-*) and not yet removed
+
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /** The extension's load-time handshake (src/omp/extension/bridge-client.ts): hello with the minted token, then one manifest request. */
@@ -85,18 +87,20 @@ const fakeRoles = (d, lists = LISTS) => ({ requestRefresh() {}, candidates: (rol
 /** Every Jev question answered at 0.1, below each per-question bar, so a settle the rules pass settles. */
 const jev01 = async (r) => ({ ok: true, model: "jev-1.13.0", input_tokens: 1, latency_ms: 1, answers: Object.fromEntries(Object.keys(r.questions).map((id) => [id, { type: "noul", noul: 0.1 }])) });
 
-/** Seeds chat 42's planner session as current, as harness() does, then builds the supervisor. `opts`: { recorder, session, extra (SupervisorDeps overrides), outcome, roles ({ default, fast, thinking } lists; R4) }. */
+/** Seeds chat 42's planner session as current, as harness() does, then builds the supervisor. `opts`: { recorder (also passed as turnContext.recorder; R5), turnContext (a partial merged over the default turn context; R5), session, extra (SupervisorDeps overrides, incl. versionCheck), outcome, roles ({ default, fast, thinking } lists; R4) }. */
 export function mkSupervisor(d, store, opts = {}) {
   store.recordPlannerSessionReset("42", d.lessonSetFingerprint(store), new Date().toISOString());
   store.claimSessionSeed("42"); store.promotePlannerSession("42");
   const data = mkdtempSync(join(tmpdir(), "hsv-")); // short: the bridge socket path must fit sun_path (104 bytes)
+  dataDirs.add(data);
   let sup;
-  cleanups.push(async () => { try { await sup?.shutdown(); } finally { rmSync(data, { recursive: true, force: true }); } }); // registered before construction: a constructor throw still removes the dir
+  cleanups.push(async () => { try { await sup?.shutdown(); } finally { rmSync(data, { recursive: true, force: true }); dataDirs.delete(data); } }); // registered before construction: a constructor throw still removes the dir
   const outcome = opts.outcome ?? sink(store);
   const session = opts.session ?? fakeSession();
   sup = new d.PlannerSupervisor({
     chatId: "42", store, cfg: d.resolveOmpConfig({ HOUGE_OMP_SANDBOX: "0" }), ctx: { home: data, repo: data, data }, distDir: data, decls: [], env: {}, turnEnvelopeActions: ["shell"],
-    turnContext: { store, memoryRoot: MEMORY_ROOT, dataDir: data, skillsReader: () => undefined, coreBlock: () => undefined, retrieve: async () => ({ facts: [], pages: [] }), env: {} },
+    turnContext: { store, memoryRoot: MEMORY_ROOT, dataDir: data, skillsReader: () => undefined, coreBlock: () => undefined, retrieve: async () => ({ facts: [], pages: [] }), env: {},
+      ...(opts.recorder ? { recorder: opts.recorder } : {}), ...(opts.turnContext ?? {}) }, // R5: the recorder reaches the turn-context entries; a partial turnContext is merged last (as o.turnContext in the TS harness)
     buildTools: () => ({ registry: new d.ToolRegistry(), quarantine: async () => ({ digest: "", contains_instructions: false, source_meta: { tool: "x", bytes: 0 } }) }),
     posture: () => null, outcome, sessionFactory: (o) => session.bind(o), versionCheck: () => ({ ok: true, version: "18.4.4" }), skipPreflightForTest: true,
     manifestWaitMs: 5_000, roles: fakeRoles(d, opts.roles ?? LISTS), settleClient: () => jev01,
@@ -105,7 +109,15 @@ export function mkSupervisor(d, store, opts = {}) {
 }
 
 /** Run ids and worker ids are random uuids: rows compared across builds scrub them with scripts/stage4-bind-fixture.mjs scrubIds. Shuts every supervisor down and removes its data dir. */
-export async function cleanup() { for (const fn of cleanups.splice(0).reverse()) { try { await fn(); } catch (e) { console.error("fixture teardown failed"); } } }
+let running = Promise.resolve(); // every teardown in flight: a signal arriving inside cleanup() finds the callbacks already spliced off, so it awaits this instead
+export async function cleanup() {
+  const fns = cleanups.splice(0).reverse();
+  const p = (async () => { for (const fn of fns) { try { await fn(); } catch (e) { console.error("fixture teardown failed"); } } })();
+  running = Promise.all([running, p]);
+  await p;
+}
+/** cleanup(), then every teardown that was already in flight (a signal handler's exit path). */
+export async function cleanupSettled() { await cleanup(); await running; }
 
 /** One running run through Gateway.intake, as the worker would claim it (telegram, chat 555). `actor` (R4, P20) is `requested_by.id`: the gateway admits 5 Telegram runs per actor per minute, so a line past five uses a second actor. Throws when the gateway refuses. */
 export function intakeRun(d, store, goal, key = goal, actor = "paco") {
@@ -115,3 +127,39 @@ export function intakeRun(d, store, goal, key = goal, actor = "paco") {
   return r.run_id;
 }
 export const req = (run_id, text = "hi", source = "telegram") => ({ run_id, text, source, requester: { kind: "user", id: "paco" } });
+
+// R5 seed helpers (ported from tests/omp/turn-context.test.ts and tests/omp/context-decisions.test.ts). They write through the RunStore API (seedLaneRows reads store.db for its self-check).
+/** `n` active "ask" lessons of `chars` characters each (the renderer's HOUGE_LESSON_CHAR_CAP, read from turnContext.env, caps their sum). Returns the lesson ids. */
+export function seedLessons(store, n, chars) {
+  return Array.from({ length: n }, (_, i) => store.addLesson({ scope: "ask", text: `${String.fromCharCode(97 + (i % 26))}`.repeat(chars), source: "user_feedback" }));
+}
+/** One clarifying assistant turn in `chatId` (a user question, then the assistant's `clarify` answer): the next turn's trailing-clarify count is 1. */
+export function seedClarify(store, chatId) {
+  const at = (s) => new Date(Date.now() - s * 1000).toISOString();
+  store.recordChatTurn({ chat_id: chatId, run_id: "r0", role: "user", text: "fix the file", created_at: at(30) });
+  store.recordChatTurn({ chat_id: chatId, run_id: "r0", role: "assistant", text: "Which file do you mean?", intent: "clarify", created_at: at(20) });
+}
+/**
+ * Lane replies after a planner answer in `chatId`. Writes, oldest first: one lane row older than the answer (never "since"), a Telegram run with an
+ * assistant chat_turn (what plannerLastAnsweredAt reads), then one delivered lane reply per text (verdict_id null: laneTurnsSince's LEFT JOIN keeps it).
+ * ADDS ONE RUN (the planner answer's, label "seed-answer"): intaken under the synthetic actor "seed-answer" (so paco's 5-per-minute intake budget is untouched), claimed and
+ * finished "completed" the way the outcome path does, so it holds no active-run slot; corpus run labels by submission order stay predictable only if the caller counts it.
+ * Self-checks that the seed run is terminal and that laneTurnsSince(chat, plannerLastAnsweredAt(chat)) returns exactly `texts`, in order; throws otherwise. Returns the answer's timestamp.
+ */
+export function seedLaneRows(d, store, chatId, texts) {
+  const now = Date.now(); const iso = (ms) => new Date(ms).toISOString();
+  const lane = (run_id, catch_up, ms) => store.recordLaneReply({ run_id, chat_id: chatId, lane: "answer", verdict_id: null, catch_up, created_at: iso(ms) });
+  lane("lane-old", "older than the planner answer", now - 20 * 60_000);
+  const answered = iso(now - 10 * 60_000);
+  const run = intakeRun(d, store, "seed planner answer", `seed-answer:${chatId}`, "seed-answer");
+  if (!store.claimRun(run, "seed-answer", 120) || !store.finishRun({ run_id: run, expected_worker_id: "seed-answer", next: "completed", report_ref: "seed", duration_ms: 0, tool_calls: 0 })) throw new Error("fixture: seed run did not complete");
+  store.recordChatTurn({ chat_id: chatId, run_id: run, role: "assistant", text: "planner answer", created_at: answered });
+  texts.forEach((t, k) => lane(`lane-${k}`, t, now - (texts.length - k) * 30_000));
+  const got = store.laneTurnsSince(chatId, store.plannerLastAnsweredAt(chatId)).map((r) => r.catch_up);
+  if (store.db.prepare("SELECT state FROM runs WHERE run_id = ?").get(run)?.state !== "completed") throw new Error("fixture: seed run is not terminal");
+  if (store.plannerLastAnsweredAt(chatId) !== answered || JSON.stringify(got) !== JSON.stringify(texts)) throw new Error("fixture: seedLaneRows boundary check failed");
+  return answered;
+}
+
+/** Synchronously removes every fixture data dir still present: the last resort of an exit path whose bounded wait for cleanupSettled() expired. */
+export function removeDataDirsSync() { for (const d of [...dataDirs]) { try { rmSync(d, { recursive: true, force: true }); dataDirs.delete(d); } catch { /* best effort at exit */ } } }

@@ -1,3 +1,4 @@
+import type { TurnContextDeps } from "../../src/omp/turn-context.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import type { Socket } from "node:net";
 import { tmpdir } from "node:os";
@@ -192,7 +193,7 @@ export const jev01 = async (r: JevRequest): Promise<JevResult> => ({ ok: true, m
   answers: Object.fromEntries(Object.keys(r.questions).map((id) => [id, { type: "noul" as const, noul: 0.1 }])) });
 
 /** `o.store`: share a store across supervisors (a restart); the caller closes it. */
-export function harness(session = fakeSession(), env: Record<string, string> = {}, extra: Partial<SupervisorDeps> = {}, o: { sessionState?: "current" | "none"; store?: RunStore } = {}) {
+export function harness(session = fakeSession(), env: Record<string, string> = {}, extra: Partial<SupervisorDeps> = {}, o: { sessionState?: "current" | "none"; store?: RunStore; turnContext?: Partial<TurnContextDeps> } = {}) {
   const store = o.store ?? RunStore.openInMemory();
   if (!o.store && (o.sessionState ?? "current") === "current") {
     store.recordPlannerSessionReset("42", lessonSetFingerprint(store), new Date().toISOString());
@@ -204,7 +205,10 @@ export function harness(session = fakeSession(), env: Record<string, string> = {
   const sup = new PlannerSupervisor({
     chatId: "42", store, cfg: resolveOmpConfig({ HOUGE_OMP_SANDBOX: "0", ...env }), ctx: { home: data, repo: data, data }, distDir: data,
     decls: [], env: {}, turnEnvelopeActions: ["shell"],
-    turnContext: { store, memoryRoot: new URL("../../memory", import.meta.url).pathname, dataDir: data, skillsReader: () => undefined, coreBlock: () => undefined, retrieve: async () => ({ facts: [], pages: [] }), env: {} },
+    turnContext: {
+      store, memoryRoot: new URL("../../memory", import.meta.url).pathname, dataDir: data, skillsReader: () => undefined, coreBlock: () => undefined,
+      retrieve: async () => ({ facts: [], pages: [] }), env: {}, ...(extra.recorder ? { recorder: extra.recorder } : {}), ...(o.turnContext ?? {})
+    },
     buildTools: () => ({ registry: new ToolRegistry(), quarantine: async () => ({ digest: "", contains_instructions: false, source_meta: { tool: "x", bytes: 0 } }) }),
     posture: () => null, outcome, sessionFactory: (o) => session.bind(o), versionCheck: () => ({ ok: true, version: "18.4.4" }),
     skipPreflightForTest: true, manifestWaitMs: 5_000, roles: fakeRoles(), settleClient: () => jev01, ...extra

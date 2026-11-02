@@ -2401,7 +2401,8 @@ export class CoreWorker {
         return core.ids.length > 0 ? core : undefined;
       },
       retrieve: (chatId, message) => this.retrieveForOmpTurn(chatId, message),
-      env: process.env
+      env: process.env,
+      recorder: this.decisionRecorder
     };
   }
 

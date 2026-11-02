@@ -52,4 +52,35 @@ describe("production wiring: CoreWorker passes its recorder to the supervisor", 
     expect(store.listDecisionsForRun(r4).filter((r) => r.entry_id === "planner.crash_guard").map((r) => [r.verdict, r.reason_code])).toEqual([["halt", "limit_reached"]]);
     for (const run of runs.slice(0, 3)) expect(store.listDecisionsForRun(run).filter((r) => r.entry_id === "planner.crash_guard")).toEqual([]);
   });
+  it("R5 (a): a seeded clarify streak then a turn writes the turn.clarify_cap cap/cap_reached row on the run (ompTurnContext passes the recorder)", async () => {
+    useFakeOmp({ "*": { rpcText: "ok" } }, tmp.dir);
+    worker = ompWorker(store, tmp.dir);
+    store.recordChatTurn({ chat_id: "555", run_id: "r0", role: "assistant", text: "Which file do you mean?", intent: "clarify" });
+    const run = createQueuedTurnRun(store, "the pdf one"); worker.submitTurn(run);
+    await until(() => store.getRunState(run) === "completed");
+    expect(store.listDecisionsForRun(run).filter((r) => r.entry_id === "turn.clarify_cap").map((r) => [r.verdict, r.reason_code])).toEqual([["cap", "cap_reached"]]);
+  });
+  it("R5 (b): lessons over a lowered HOUGE_LESSON_CHAR_CAP write the context.lessons capped/char_cap row on the first turn's run (the spawn)", async () => {
+    const prior = process.env.HOUGE_LESSON_CHAR_CAP;
+    process.env.HOUGE_LESSON_CHAR_CAP = "40"; // the supervisor's turnContext.env is process.env in production
+    try {
+      useFakeOmp({ "*": { rpcText: "ok" } }, tmp.dir);
+      worker = ompWorker(store, tmp.dir);
+      store.addLesson({ scope: "ask", text: "answer briefly", source: "user_feedback" });
+      store.addLesson({ scope: "ask", text: "z".repeat(60), source: "user_feedback" });
+      const run = createQueuedTurnRun(store, "first"); worker.submitTurn(run);
+      await until(() => store.getRunState(run) === "completed");
+      expect(store.listDecisionsForRun(run).filter((r) => r.entry_id === "context.lessons").map((r) => [r.verdict, r.reason_code])).toEqual([["capped", "char_cap"]]);
+    } finally { if (prior === undefined) delete process.env.HOUGE_LESSON_CHAR_CAP; else process.env.HOUGE_LESSON_CHAR_CAP = prior; }
+  });
+  it("R5 (c): recall whose embed fails writes the context.recall none/embed_failed row on the run (ompTurnContext passes the recorder)", async () => {
+    process.env.HOUGE_EPISODIC_ENABLED = "1"; // after pinEnabledFlags(); resolveEpisodicEnabled reads it
+    try {
+      useFakeOmp({ "*": { rpcText: "ok" } }, tmp.dir);
+      worker = ompWorker(store, tmp.dir, { embed: async () => null });
+      const run = createQueuedTurnRun(store, "the pdf one"); worker.submitTurn(run);
+      await until(() => store.getRunState(run) === "completed");
+      expect(store.listDecisionsForRun(run).filter((r) => r.entry_id === "context.recall").map((r) => [r.verdict, r.reason_code, r.run_id, r.tool_call_id ?? null])).toEqual([["none", "embed_failed", run, null]]);
+    } finally { delete process.env.HOUGE_EPISODIC_ENABLED; }
+  });
 });

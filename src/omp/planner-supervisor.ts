@@ -10,6 +10,7 @@ import { INTAKE_BARE_ACK } from "../decisions/entries/intake-bare-ack.js";
 import { INTAKE_STEER_OR_QUEUE, type SteerOrQueueInput, type SteerReason } from "../decisions/entries/intake-steer-or-queue.js";
 import { CRASH_LIMIT, CRASH_WINDOW_MS, PLANNER_CRASH_GUARD, type CrashGuardInput } from "../decisions/entries/planner-crash-guard.js";
 import { TURN_RETRY, type RetryInput } from "../decisions/entries/turn-retry.js";
+import { CONTEXT_LESSONS } from "../decisions/entries/context-lessons.js";
 import type { DecisionRecorder, Entry } from "../decisions/types.js";
 import { errorCode, safeReason } from "../domain/error-code.js";
 import type { Identity } from "../domain/types.js";
@@ -48,8 +49,7 @@ import type { ToolDeclaration } from "./tool-decls.js";
 import {
   assistantIntentFor, appliedOf, buildTurnPrompt, claimAtDispatch, promptTextFingerprint, systemPromptFingerprint, writeSystemPromptFile,
   type AppliedSnapshot, type TurnContextDeps,
-  type TurnPrompt
-} from "./turn-context.js";
+  type TurnPrompt, lessonsInputOf } from "./turn-context.js";
 
 export type SupervisorState = "STOPPED" | "STARTING" | "IDLE" | "RUNNING" | "AWAITING_APPROVAL" | "ABORTING";
 export type PlannerSessionLike = Pick<PlannerSession, "start" | "prompt" | "steer" | "abort" | "setModel" | "newSession" | "getState" | "onFrame" | "onExit" | "stop">;
@@ -200,8 +200,8 @@ export function writeHougeConfigFile(ctx: Pick<PathContext, "data">): string {
 
 interface SpawnRec { gen: number; model: ModelString; exit?: string; started?: Promise<unknown>; bridgeLost?: boolean }
 
-/** What the crash guard needs of the consulting turn (spec R4 §4.0). */
-type GuardTurn = Pick<Turn, "finished" | "req">;
+/** What the crash guard and the lessons consult need of the launching turn (spec R4 §4.0, R5 §4.0). */
+type GuardTurn = Pick<Turn, "finished" | "endSignalled" | "req">;
 
 interface Turn {
   req: TurnRequest; claim: ClaimedRun; worker: string; startedAt: number; merged: string[];
@@ -236,6 +236,8 @@ interface Turn {
   /** The span the current bounded pause was scheduled for (its resume timer's delay). */
   trustPauseSpan: number;
   done: (r: "end" | "abort") => void; ended: Promise<"end" | "abort">;
+  /** Spec R5 §4.0: true from the tick `ended` resolves (done called) until a retried leg re-arms it; `finished` lags it across settle. */
+  endSignalled: boolean;
   deadlineLeft: number; deadlineAt: number; deadline: ReturnType<typeof setTimeout> | undefined; idle: ReturnType<typeof setTimeout> | undefined;
   /** When the frame watchdog was last armed (the child's last frame): a trust card's wait is bounded from here (senior W3). */
   idleAt: number;
@@ -304,6 +306,14 @@ function newDeferred(): { done: (r: "end" | "abort") => void; ended: Promise<"en
   let done: (r: "end" | "abort") => void = () => undefined;
   const ended = new Promise<"end" | "abort">((r) => { done = r; });
   return { done, ended };
+}
+
+/** A fresh end signal for the turn (creation, each retried leg): `endSignalled` turns true in the tick `ended` resolves (spec R5 §4.0, plan P10). */
+function armEnd(t: Pick<Turn, "done" | "ended" | "endSignalled">): void {
+  const d = newDeferred();
+  t.endSignalled = false;
+  t.ended = d.ended;
+  t.done = (r) => { t.endSignalled = true; d.done(r); };
 }
 
 /**
@@ -568,13 +578,14 @@ export class PlannerSupervisor {
     const heartbeat = setInterval(() => this.renewLeases(), PLANNER_HEARTBEAT_MS);
     const turn: Turn = {
       req, claim, worker, startedAt: Date.now(), merged: [], active, abort, heartbeat, n: 0, recorded: 0, lastText: "", lastError: undefined, deadline: undefined, idle: undefined, idleAt: Date.now(),
-      usedTool: false, legIndex: 0, live: false, finished: false, laneEnded: false, aborting: false, dispatched: false, childGen: -1, approvals: 0, trustPausedMs: 0, trustPauseAt: undefined, trustResume: undefined, trustPauseSpan: 0, ...newDeferred(),
+      usedTool: false, legIndex: 0, live: false, finished: false, laneEnded: false, aborting: false, dispatched: false, childGen: -1, approvals: 0, trustPausedMs: 0, trustPauseAt: undefined, trustResume: undefined, trustPauseSpan: 0, ...newDeferred(), endSignalled: false, // placeholders: armEnd(turn) below installs the live end signal
       route: null, role: "default", effort: null, chain: [], routedBy: undefined, startMissing: 0, legsTried: 0, retriedOther: false, pinFailed: false, failed: new Set(),
       deadlineLeft: cfg.turnTimeoutMs, deadlineAt: Date.now(),
       run_id: req.run_id, trustLevel: () => active.trust?.level() ?? "clean",
       passes: [{ texts: [], final: "" }], sentBack: false, continuationSeen: false, userText: req.text, todoBefore: null, settleDecisionId: null,
       extracted: () => turnExtracted(active)
     };
+    armEnd(turn);
     active.onSendBack = (kind, text) => this.onSendBack(turn, kind, text);
     this.armDeadline(turn); // the deadline covers child start and prompt build too
     return turn;
@@ -625,7 +636,7 @@ export class PlannerSupervisor {
       if (!(await this.ensureReady(turn, warm))) return;
       store.recordChatTurn({ chat_id: chatId, run_id: turn.req.run_id, role: "user", text: userText, ...quotedId(verdict.quote) });
       const prompt = await this.step(turn, buildTurnPrompt(turnContext, {
-        run_id: turn.req.run_id, chat_id: chatId, message: promptMessage, source: turn.req.source, applied: this.applied,
+        run_id: turn.req.run_id, chat_id: chatId, message: promptMessage, source: turn.req.source, applied: this.applied, live: () => !turn.endSignalled,
         ...(turn.req.goal !== undefined ? { goal: turn.req.goal } : {}), ...(verdict.quote ? { quoted: verdict.quote.line } : {})
       }));
       if (prompt === ENDED || turn.failure) return;
@@ -948,7 +959,7 @@ export class PlannerSupervisor {
     turn.lastError = undefined;
     // senior plan W: the retried leg's session_stop is decided afresh, never answered from the failed leg's memo
     for (const k of [...turn.active.cache.keys()]) if (k.startsWith("settle:")) turn.active.cache.delete(k);
-    Object.assign(turn, newDeferred());
+    armEnd(turn);
     return this.promptRetry(turn, s, kind);
   }
 
@@ -996,12 +1007,12 @@ export class PlannerSupervisor {
     if (this.session) return null;
     if (this.crashGuard(turn)) return "crash_loop";
     // in flight from here: the preflight awaits omp --version, and a turn arriving meanwhile must join, not spawn twice
-    const p: Promise<StartResult> = this.preflightThenSpawn(fresh).finally(() => { if (this.startInFlight === p) this.startInFlight = undefined; });
+    const p: Promise<StartResult> = this.preflightThenSpawn(fresh, turn).finally(() => { if (this.startInFlight === p) this.startInFlight = undefined; });
     this.startInFlight = p;
     return p;
   }
 
-  private async preflightThenSpawn(fresh: boolean): Promise<StartResult> {
+  private async preflightThenSpawn(fresh: boolean, turn: GuardTurn): Promise<StartResult> {
     const gen0 = this.gen; // a stop (abortAll, shutdown, finishLane) bumps gen during the awaited check: never spawn after it
     const pre = await this.preflight();
     if (this.gen !== gen0) return START_SUPERSEDED;
@@ -1009,7 +1020,7 @@ export class PlannerSupervisor {
     if (fresh) this.refused.clear();
     const head = this.spawnChain()[0];
     if (!head) return NO_SPAWN_MODEL;
-    return this.spawn(head);
+    return this.spawn(head, turn);
   }
 
   /**
@@ -1113,7 +1124,7 @@ export class PlannerSupervisor {
   }
 
   /** Daemon-side dirs and files the sandboxed child cannot create itself (Seatbelt pins both roots). */
-  private preparePaths(): { sessionDir: string; systemPromptFile: string; configFile: string; bridgeDir: string } {
+  private preparePaths(turn: GuardTurn): { sessionDir: string; systemPromptFile: string; configFile: string; bridgeDir: string } {
     const { ctx, chatId, turnContext } = this.d;
     const omp = join(ctx.data, "omp");
     const sessionDir = join(omp, "sessions", `chat-${chatId}`);
@@ -1125,13 +1136,15 @@ export class PlannerSupervisor {
     this.applied = appliedOf(snapshot);
     this.lessonFingerprint = snapshot.lessonFingerprint;
     this.stale = false;
+    // spec R5 §4.3: the prompt the child will hold; no row once the launching turn's end signal fired (§4.0)
+    if (!turn.endSignalled) this.record(CONTEXT_LESSONS, lessonsInputOf(snapshot), turn.req.run_id);
     return { sessionDir, systemPromptFile, configFile, bridgeDir };
   }
 
-  private async spawn(model: ModelString): Promise<StartResult> {
+  private async spawn(model: ModelString, turn: GuardTurn): Promise<StartResult> {
     const { ctx, chatId, distDir, cfg } = this.d;
     this.st = "STARTING";
-    const p = this.preparePaths();
+    const p = this.preparePaths(turn);
     const token = randomBytes(24).toString("hex");
     this.bridgeToken = token; // the turn's judge masks it by value (Rev 4, senior S-R3-2)
     const sock = join(p.bridgeDir, `${chatId}-${randomUUID().slice(0, 8)}.sock`);

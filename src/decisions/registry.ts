@@ -14,6 +14,10 @@ import { INTAKE_BARE_ACK } from "./entries/intake-bare-ack.js";
 import { INTAKE_STEER_OR_QUEUE } from "./entries/intake-steer-or-queue.js";
 import { PLANNER_CRASH_GUARD } from "./entries/planner-crash-guard.js";
 import { TURN_RETRY } from "./entries/turn-retry.js";
+import { CONTEXT_RECALL } from "./entries/context-recall.js";
+import { CONTEXT_CATCH_UP } from "./entries/context-catch-up.js";
+import { CONTEXT_LESSONS } from "./entries/context-lessons.js";
+import { TURN_CLARIFY_CAP } from "./entries/turn-clarify-cap.js";
 import { READER_FAMILY } from "./entries/reader-family.js";
 import { SELF_WRITE_GUARD } from "./entries/selfwrite-guard.js";
 import { FETCH_SSRF } from "./entries/fetch-ssrf.js";
@@ -44,7 +48,8 @@ export const REGISTRY: readonly AnyEntry[] = [TURN_HANDLER as unknown as AnyEntr
   INTAKE_RATE_LIMIT as unknown as AnyEntry, INTAKE_RATING_REPLY as unknown as AnyEntry, INTAKE_BUDGET_FUSE as unknown as AnyEntry,
   INTAKE_SENDER as unknown as AnyEntry, TURN_CONTRACT as unknown as AnyEntry,
   INTAKE_BARE_ACK as unknown as AnyEntry, INTAKE_STEER_OR_QUEUE as unknown as AnyEntry,
-  PLANNER_CRASH_GUARD as unknown as AnyEntry, TURN_RETRY as unknown as AnyEntry];
+  PLANNER_CRASH_GUARD as unknown as AnyEntry, TURN_RETRY as unknown as AnyEntry,
+  CONTEXT_RECALL as unknown as AnyEntry, CONTEXT_CATCH_UP as unknown as AnyEntry, CONTEXT_LESSONS as unknown as AnyEntry, TURN_CLARIFY_CAP as unknown as AnyEntry];
 /** Effects a judge may choose over any input (R12): nothing, a tightening, or a proposal for Paco's tap. */
 const PASSIVE: ReadonlySet<EffectKind> = new Set(["none", "tighten", "proposal"]);
 /** How a judge's effect over Paco's message must be announced (Paco 2026-10-12): an allowlist, so a missing or unknown value fails. */

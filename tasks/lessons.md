@@ -643,3 +643,11 @@ The clean-room merge rebuilt `dist/` (new `omp/shell-wrapper.sh`) and the kickst
 - **A partial catalog read must not wipe a tier.** If the catalog lists nothing of a provider, the tier stays and no probe runs (W1); otherwise one bad read empties every role on that provider.
 - **Mutation testing again earned its cost.** 79 of 107 killed; 18 real gaps became tests. Equivalent mutants were named rather than ignored.
 
+## 2026-11-02 — Stage 3 remainder slice R5 (context decisions + clarify cap)
+- **`finished` is not the end of a turn.** `done()` resolves `turn.ended` at once, but `finished` is set only after settle awaits the judge drain and the todo snapshot; a guard on `finished` lets a consult in that interval record for a dead turn. The codex re-review of the spec's own fix found it. Guard on the end signal itself, set in the same tick, and re-arm it where the end signal is replaced.
+- **A planted fault inside the recorder proves nothing about the real path.** The recorder runs after the rule has answered; deciding a throwing copy there produces the expected row without exercising production. Replace the real entry's rule for the case and restore it in `finally`.
+- **A gate that compares shapes passes on changed values.** The live gate's first draft compared `loop_started` keys; codex's whole-diff pass showed an extra page or a changed score would pass. Compare the prompt bytes and the payload values against the merge-base build, and seed a positive probe so lost retrieval fails.
+- **A new worktree needs its own `npm ci`.** Packages resolved from the parent checkout, so the suite ran, but `node_modules/.bin/tsx` was missing and four CLI tests failed as if broken. Install in the worktree before trusting a whole-suite run.
+- **Cleanup on a signal must wait for teardown already in flight.** Three rounds on the rollback check: the fixture spliced its callbacks before awaiting them, then a 5 s bound was shorter than the supervisor's own drain wait. Track in-flight teardowns, bound the wait above the slowest step, then remove the known dirs synchronously.
+- **Mutation testing on input capture finds the untested side.** Five survivors were all recall's pages side (pages-only admission, the pages-side best score, max vs min); the scenarios had only exercised facts.
+
