@@ -56,17 +56,18 @@ const PINNED_ENV = [
   // Multimodal ingest (spec 2026-09-29): an ambient armed flag would route media updates
   // into the ingest step; the media tests arm it locally.
   "HOUGE_MEDIA_INGEST_ENABLED",
-  "HOUGE_LLM_MEDIA_PROVIDERS"
+  "HOUGE_LLM_MEDIA_PROVIDERS",
+  "HOUGE_MODEL_ROLES"
 ] as const;
 let savedEnv: Record<string, string | undefined> = {};
 beforeEach(() => {
   // These cases assert the chat's exact traffic; the daily roles tick's empty-tier card (the fake omp's catalog has no pro tier) is not under test here.
-  process.env.HOUGE_MODEL_ROLES = "static";
   savedEnv = {};
   for (const key of PINNED_ENV) {
     savedEnv[key] = process.env[key];
     delete process.env[key];
   }
+  process.env.HOUGE_MODEL_ROLES = "static"; // restored by afterEach with the rest of PINNED_ENV
 });
 afterEach(() => {
   for (const key of PINNED_ENV) {

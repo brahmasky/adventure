@@ -175,6 +175,12 @@ describe("empty-tier cards (spec §4.4)", () => {
     await run(day(2));
     expect(cards).toHaveLength(2);
   });
+  it("an override whose model left the catalog does not fill the seat: the card is still sent (same predicate as the tap)", async () => {
+    const r = roles(); const cards: unknown[] = [];
+    store.recordModelRoleOverride({ key: "judges:2", pattern: "model-that-was-retired", actor: "paco" });
+    await runModelRolesTick({ store, roles: r, now: day(0), notify: () => {}, card: (c) => cards.push(c) });
+    expect(cards).toHaveLength(1);
+  });
   it("a tier that empties but leaves every key resolved sends no card (P15)", async () => {
     const r = roles(); const cards: unknown[] = [];
     catalog = () => FIX().filter((m) => !(m.provider === "google-antigravity" && m.id === "claude-sonnet-5-5"));

@@ -88,10 +88,13 @@ function settle(i: ModelRolesTickInput, catalogOk: boolean, catalog: readonly Ca
   return { ran: true, changed: changed.map((c) => c.key), unresolved };
 }
 
+/** The one predicate for "this key needs a model" (card send, tap eligibility, the tap's write recheck): no resolved head, an override whose model left the catalog included. */
+export const keyNeedsModel = (resolved: readonly ResolvedRole[], key: string): boolean => resolved.find((r) => r.key === key)?.head === null;
+
 /** Spec §4.4 / P15: an empty tier whose sole keys still have no head asks Paco; the tick runs once a day, so one card a day. */
 function emptyTierCards(empty: readonly TierId[], roles: ResolvedRole[], catalog: readonly CatalogModel[], now: string): EmptyTierCard[] {
   return empty.flatMap((tier) => {
-    const keys = soleKeysOf(tier).filter((k) => roles.find((r) => r.key === k)?.head === null);
+    const keys = soleKeysOf(tier).filter((k) => keyNeedsModel(roles, k));
     return keys.length === 0 ? [] : [{ tier, keys, proposals: proposalsFor(tierDef(tier), catalog, Date.parse(now)) }];
   });
 }

@@ -3,7 +3,7 @@ import { errorCode } from "../domain/error-code.js";
 import type { TypedTaskEvent } from "../domain/types.js";
 import type { NotificationButton } from "../notifications/notification-types.js";
 import type { ProbeFn, ProbeOutcome } from "../omp/model-probe.js";
-import { ledgerKind, type EmptyTierCard } from "../omp/model-roles-tick.js";
+import { keyNeedsModel, ledgerKind, type EmptyTierCard } from "../omp/model-roles-tick.js";
 import { soleKeysOf } from "../omp/model-roles.js";
 import type { OverrideKey } from "../omp/role-resolver.js";
 import { isTierId, proposalsFor, tierDef, type TierId } from "../omp/model-tiers.js";
@@ -66,32 +66,36 @@ function tapOnce(store: RunStore, deps: TierTapDeps, event: TypedTaskEvent, now:
   if (id === undefined) return reply(TAP_HANDLED_TEXT);
   if (!deps.probe) return reply("Model roles are not available in this process.");
   reply(`🔎 Checking \`${id}\` with one short prompt…`);
-  deps.track(probeThenAdopt(store, deps.probe, t, id, event, deps.signal));
+  deps.track(probeThenAdopt(store, deps.roles as ModelsRoles /* openTap returned a tap only with roles */, deps.probe, t, id, event, deps.signal));
 }
 
-/** The card still applies: a known tier, still empty, a catalog, and a sole key without an override. */
+/** The card still applies: a known tier, still empty, a catalog, and a sole key that still needs a model (the card's own predicate). */
 function openTap(store: RunStore, roles: ModelsRoles | undefined, tier: string, now: string): OpenTap | null {
   if (!roles || !isTierId(tier)) return null;
   const catalog = roles.catalog();
   if (!catalog || (store.getModelTier(tier)?.adopted ?? null) !== null) return null;
-  const overrides = store.latestModelRoleOverrides();
-  const keys = soleKeysOf(tier).filter((k) => !overrides.has(k));
+  const resolved = roles.resolveAll();
+  const keys = soleKeysOf(tier).filter((k) => keyNeedsModel(resolved, k));
   return keys.length === 0 ? null : { tier, keys, proposals: proposalsFor(tierDef(tier), catalog, Date.parse(now)) };
 }
 
 /** Spec §4.4 (codex B3, senior W5): the probe, then the event and (on pass) the override in one transaction, then the answer. */
-async function probeThenAdopt(store: RunStore, probe: ProbeFn, t: OpenTap, id: string, event: TypedTaskEvent, signal?: AbortSignal): Promise<void> {
+async function probeThenAdopt(store: RunStore, roles: ModelsRoles, probe: ProbeFn, t: OpenTap, id: string, event: TypedTaskEvent, signal?: AbortSignal): Promise<void> {
   const selector = `${tierDef(t.tier).provider}/${id}`;
   try {
     const o = await probe(selector, signal);
     if (o === "aborted" || signal?.aborted) return; // the daemon is stopping: nothing written, nothing said (P16)
+    let keys = t.keys;
     store.inTransaction(() => {
       store.recordModelProbe({ tier: t.tier, selector, purpose: "tap", result: o.result, kind: ledgerKind(o.kind) });
       if (o.result !== "pass") return;
-      for (const key of t.keys) store.recordModelRoleOverride({ key: key as OverrideKey, pattern: id, actor: event.requested_by.id });
-      for (const key of t.keys) resolveOpenIncidents(store, ROLE_UNRESOLVED, key);
+      // The probe took time: a /models set or another tap may have filled a key since. Only a key that still needs a model is written.
+      const resolved = roles.resolveAll();
+      keys = t.keys.filter((k) => keyNeedsModel(resolved, k));
+      for (const key of keys) store.recordModelRoleOverride({ key: key as OverrideKey, pattern: id, actor: event.requested_by.id });
+      for (const key of keys) resolveOpenIncidents(store, ROLE_UNRESOLVED, key);
     });
-    replyTo(store, event, "model_tier_probe", resultText(t, id, o));
+    replyTo(store, event, "model_tier_probe", o.result === "pass" && keys.length === 0 ? `ℹ️ \`${id}\` passed its check, but ${t.keys.join(", ")} got a model meanwhile; nothing changed.` : resultText({ ...t, keys }, id, o));
   } catch (e) {
     console.error(`[model-tiers] tap probe failed: ${errorCode(e)}`);
     try { replyTo(store, event, "model_tier_probe", TAP_FAILED_TEXT); } catch (e2) { console.error(`[model-tiers] tap reply failed: ${errorCode(e2)}`); }

@@ -56,6 +56,8 @@ describe("the card", () => {
     expect(parseModelTierCallback("mt:gemini-pro:zz:use")).toBeNull();
   });
   it("with no proposal, names the /models set form and offers no button", () => {
+    enqueueTierCard(store, "-1003", "2026-11-02T09:00:00.000Z", { ...CARD, proposals: [] });
+    expect(JSON.parse(outbox()[0]!.payload_json)).not.toHaveProperty("button_rows");
     expect(tierCardText({ ...CARD, proposals: [] })).toBe("Judges:2 has no model: Google's pro tier is empty. The catalog offers no other google-antigravity model; /models set judges 2 <pattern> fills it.");
   });
 });
@@ -94,6 +96,24 @@ describe("a tap", () => {
     gw.intake(tap(tierCallbackData("gemini-pro", "gemini-4-argon"))); await gw.whenTierTapsSettled();
     expect(calls).toHaveLength(1);
     expect(texts().at(-1)).toBe(TAP_HANDLED_TEXT);
+  });
+  it("an override whose model left the catalog still needs a model: the card's predicate admits the tap and the pass replaces the dead override", async () => {
+    const { gw, roles } = await gateway({ result: "pass", kind: "ok" });
+    store.recordModelRoleOverride({ key: "judges:2", pattern: "model-that-was-retired", actor: "paco" });
+    expect(roles.resolveAll().find((r) => r.key === "judges:2")?.head).toBeNull();
+    gw.intake(tap(tierCallbackData("gemini-pro", "gemini-4-argon"))); await gw.whenTierTapsSettled();
+    expect(store.latestModelRoleOverrides().get("judges:2")).toBe("gemini-4-argon");
+  });
+  it("a /models set that lands while the probe is pending is not overwritten by the older tap (review round 1)", async () => {
+    const roles = new RoleResolver({ store, env: () => ({ HOUGE_MODEL_ROLES: "resolved" }), readCatalog: async () => FIX() }); await roles.refreshCatalog();
+    let release!: (o: ProbeOutcome) => void;
+    const probe: ProbeFn = () => new Promise((r) => { release = r; });
+    const gw = new Gateway(store, undefined, undefined, undefined, undefined, { roles, modelProbe: probe });
+    gw.intake(tap(tierCallbackData("gemini-pro", "gemini-4-argon")));
+    store.recordModelRoleOverride({ key: "judges:2", pattern: "gpt-oss-120b", actor: "paco" });
+    release({ result: "pass", kind: "ok" }); await gw.whenTierTapsSettled();
+    expect(store.latestModelRoleOverrides().get("judges:2")).toBe("gpt-oss-120b");
+    expect(texts().at(-1)).toBe("ℹ️ `gemini-4-argon` passed its check, but judges:2 got a model meanwhile; nothing changed.");
   });
   it("Not now only answers", async () => {
     const calls: string[] = []; const { gw } = await gateway({ result: "pass", kind: "ok" }, calls);
