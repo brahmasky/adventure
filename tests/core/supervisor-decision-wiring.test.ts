@@ -60,4 +60,16 @@ describe("production wiring: CoreWorker passes its recorder to the supervisor", 
     await until(() => store.getRunState(run) === "completed");
     expect(store.listDecisionsForRun(run).filter((r) => r.entry_id === "turn.clarify_cap").map((r) => [r.verdict, r.reason_code])).toEqual([["cap", "cap_reached"]]);
   });
+  it("R5 (b): lessons over a lowered HOUGE_LESSON_CHAR_CAP write the context.lessons capped/char_cap row on the first turn's run (the spawn)", async () => {
+    process.env.HOUGE_LESSON_CHAR_CAP = "40"; // the supervisor's turnContext.env is process.env in production
+    try {
+      useFakeOmp({ "*": { rpcText: "ok" } }, tmp.dir);
+      worker = ompWorker(store, tmp.dir);
+      store.addLesson({ scope: "ask", text: "answer briefly", source: "user_feedback" });
+      store.addLesson({ scope: "ask", text: "z".repeat(60), source: "user_feedback" });
+      const run = createQueuedTurnRun(store, "first"); worker.submitTurn(run);
+      await until(() => store.getRunState(run) === "completed");
+      expect(store.listDecisionsForRun(run).filter((r) => r.entry_id === "context.lessons").map((r) => [r.verdict, r.reason_code])).toEqual([["capped", "char_cap"]]);
+    } finally { delete process.env.HOUGE_LESSON_CHAR_CAP; }
+  });
 });
