@@ -52,16 +52,28 @@ describe("turn.trust", () => {
     expect(turnTrustFinal(store, run_id)).toBe("clean");
     expect(trust.raise("wall_read")).toBe(false); // after the end nothing rises
   });
-  it("hostile sends one urgent card; a schedule-born hostile turn also pages hostile_schedule_turn once", () => {
+  it("hostile sends one urgent card; a schedule-born hostile turn also pages hostile_schedule_turn once, as an event (opened and resolved)", () => {
     const tg = setup();
     tg.trust.raise("injection_withheld");
-    expect(tg.store.listOpenIncidents().filter((i) => i.kind === "hostile_schedule_turn")).toEqual([]);
+    const q = (s: RunStore, sql: string) => (s as unknown as { db: { prepare(q: string): { all(): Array<Record<string, string>> } } }).db.prepare(sql).all();
+    expect(q(tg.store, `SELECT 1 FROM incidents WHERE kind = 'hostile_schedule_turn'`)).toEqual([]);
     const sc = setup("schedule");
     sc.trust.raise("injection_withheld");
-    expect(sc.store.listOpenIncidents().filter((i) => i.kind === "hostile_schedule_turn")).toHaveLength(1);
-    const db = (sc.store as unknown as { db: { prepare(q: string): { all(): Array<{ payload_json: string }> } } }).db;
-    expect(db.prepare(`SELECT payload_json FROM notification_outbox WHERE idempotency_key LIKE 'urgent:trust_hostile:%'`).all()).toHaveLength(1);
+    // an event: a carried turn re-paged the same morning twice when it stayed open (spec 2026-11-02 §5)
+    expect(sc.store.listOpenIncidents().filter((i) => i.kind === "hostile_schedule_turn")).toEqual([]);
+    expect(q(sc.store, `SELECT state FROM incidents WHERE kind = 'hostile_schedule_turn'`)).toEqual([{ state: "resolved" }]);
+    expect(q(sc.store, `SELECT idempotency_key FROM notification_outbox WHERE idempotency_key LIKE 'incident_opened:%'`)).toHaveLength(1);
+    expect(q(sc.store, `SELECT payload_json FROM notification_outbox WHERE idempotency_key LIKE 'urgent:trust_hostile:%'`)).toHaveLength(1);
     expect(HOSTILE_CARD_TEXT).toContain("text aimed at the assistant");
+  });
+  it("two schedule turns that each raise it page twice, once each (the subject is the run id)", () => {
+    const store = RunStore.openInMemory();
+    for (let n = 0; n < 2; n++) {
+      const run_id = createQueuedTurnRun(store);
+      new TurnTrust({ store, run_id, chat_id: "555", born: "schedule", env: { HOUGE_TELEGRAM_CHAT_ID: "555" } }).raise("injection_withheld");
+    }
+    const keys = (store as unknown as { db: { prepare(q: string): { all(): unknown[] } } }).db.prepare(`SELECT idempotency_key FROM notification_outbox WHERE idempotency_key LIKE 'incident_opened:%'`).all();
+    expect(keys).toHaveLength(2);
   });
   it("a hostile card that cannot be queued opens trust_card_failed, so Paco still learns the turn is hostile", () => {
     const { store, trust } = setup();

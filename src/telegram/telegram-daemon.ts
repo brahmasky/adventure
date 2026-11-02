@@ -43,6 +43,7 @@ import { NotificationDispatcher, type NotificationAdapters } from "../notificati
 import { NotificationOutbox } from "../notifications/notification-outbox.js";
 import { resolveBackupEnabled, runDbBackupTick } from "../run/db-backup.js";
 import type { LlmCallRole, ReloadMarker, RunStore } from "../run/run-store.js";
+import { runIncidentReminder } from "../run/incident-alert.js";
 import { maybeFireScheduledTasks } from "../run/schedule-tick.js";
 import { SkillStore } from "../skills/skill-store.js";
 import { runInvariantSweep, type InvariantSweepInput, type InvariantSweepResult } from "../run/invariant-sweep.js";
@@ -524,6 +525,10 @@ function onPlannerControl(status: string, worker: CoreWorker, store: RunStore): 
  * the metered-$ ceiling check and the invariant sweep. NEVER throws (like
  * notifyReloadOnBoot): a signal-path error must not stop the daemon.
  */
+export function runReminderStep(store: RunStore, chatId: string | null, now: string): void {
+  try { runIncidentReminder({ store, chatId, env: process.env, now }); } catch (error) { console.error(`[telegram-daemon] incident reminder failed: ${errorCode(error)}`); }
+}
+
 async function runSignalPathTick(
   options: RunTelegramDaemonOptions,
   gateway: Gateway,
@@ -547,6 +552,9 @@ async function runSignalPathTick(
     const chat = options.allowlist.chats[0];
     const chatId = chat ? String(chat.telegram_chat_id) : null;
     if (chatId) maybeAskSessionRating({ store: options.store, chatId, now });
+    // Spec 2026-11-02 §5 (B3, N5): the daily reminder, before the model ticks and independent of HOUGE_MODEL_ROLES, so a
+    // slow or stopped model tick (or a catalog outage) cannot delay that day's reminder. Its own catch.
+    runReminderStep(options.store, chatId, now);
     await runModelTicks(options, gateway, worker, now, chatId);
     // ADR 0019: the metered-$ ceiling check — drives the alert-dedupe latch (the chain
     // builder's cheap enforcement read) once per cycle; the 0→1 transition enqueues ONE

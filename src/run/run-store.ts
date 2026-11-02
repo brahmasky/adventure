@@ -8472,6 +8472,18 @@ export class RunStore {
     this.applyJevVersionCheckMigration();
     this.applyStandingApprovalMigration();
     this.applyLoudDegradationMigration();
+    this.applyHostileScheduleEventMigration();
+  }
+
+  /** Spec 2026-11-02 §5 (plan P22): hostile_schedule_turn became an event; the rows a previous build left open are resolved once. */
+  private applyHostileScheduleEventMigration(): void {
+    const version = "2026-11-02-hostile-schedule-event";
+    this.inTransaction(() => {
+      if (this.db.prepare(`SELECT version FROM schema_migrations WHERE version = ?`).get<{ version: string }>(version)) return;
+      const now = new Date().toISOString();
+      for (const open of this.listOpenIncidents()) if (open.kind === "hostile_schedule_turn") this.resolveIncident(open.incident_id, now);
+      this.db.prepare(`INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)`).run(version, now);
+    });
   }
 
   /** Loud degradation (spec 2026-11-02 §4.2, §6.2, §6.3): the tier table, seeded once, and two nullable columns. Additive: the old build ignores all three. */

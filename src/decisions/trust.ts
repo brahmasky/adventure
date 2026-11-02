@@ -79,7 +79,8 @@ export class TurnTrust {
   }
 
   private page(kind: "trust_card_failed" | "hostile_schedule_turn"): void {
-    try { openAlertedIncident(this.d.store, { kind, subject: this.d.run_id, detail: { run_id: this.d.run_id }, ...(this.d.env ? { env: this.d.env } : {}) }); }
+    // spec 2026-11-02 §5: hostile_schedule_turn is an event, resolved after its page — a carried turn re-paged the same morning twice
+    try { openAlertedIncident(this.d.store, { kind, subject: this.d.run_id, detail: { run_id: this.d.run_id }, ...(kind === "hostile_schedule_turn" ? { event: true } : {}), ...(this.d.env ? { env: this.d.env } : {}) }); }
     catch (e) { console.error(`trust: ${kind} not opened: ${message(e)}`); }
   }
 }

@@ -69,3 +69,23 @@ describe("model_probe", () => {
     s.close();
   });
 });
+
+describe("hostile_schedule_turn event migration", () => {
+  // Why: rows a previous build left open would otherwise never close (the kind is an event now); the resolve is once only,
+  // so a later open row of that kind is not touched by a reopen.
+  it("resolves the old open rows once, with one incident_resolved event each", () => {
+    const path = fileStore();
+    const a = RunStore.open(path);
+    for (const n of ["r1", "r2", "r3"]) a.openIncident({ kind: "hostile_schedule_turn", subject: n, detail: {}, now: "2026-11-01T00:00:00.000Z" });
+    db(a).prepare(`DELETE FROM schema_migrations WHERE version = ?`).run("2026-11-02-hostile-schedule-event");
+    a.close();
+    const b = RunStore.open(path);
+    expect(b.listOpenIncidents().filter((i) => i.kind === "hostile_schedule_turn")).toEqual([]);
+    expect(b.getLedgerEvents().filter((e) => e.event_type === "incident_resolved" && (e.payload as { kind: string }).kind === "hostile_schedule_turn")).toHaveLength(3);
+    b.openIncident({ kind: "hostile_schedule_turn", subject: "r4", detail: {}, now: "2026-11-02T00:00:00.000Z" });
+    b.close();
+    const c = RunStore.open(path);
+    expect(c.listOpenIncidents().filter((i) => i.kind === "hostile_schedule_turn")).toHaveLength(1);
+    c.close();
+  });
+});
