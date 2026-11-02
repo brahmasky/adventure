@@ -12,7 +12,7 @@ const openCatalogIncidents = (store: RunStore) => store.listOpenIncidents().filt
 /** The seven chains on the seeded heads (resolved mode before any catalog read: Decision 4 keeps every leg whole). */
 const listChains = (): RoleChains => {
   const s = (k: string) => SEED_LISTS[k]!.map(parseModelString);
-  return { planner: s("default"), reader: s("reader"), media: s("vision"), ticks: s("tiny"), judges: [s("judges:0")[0]!, s("judges:1")[0]!, parseModelString("google-antigravity/gemini-3.1-pro")], // seat 2: the empty gemini-pro tier falls back to the static selector until Task 5
+  return { planner: s("default"), reader: s("reader"), media: s("vision"), ticks: s("tiny"), judges: [s("judges:0")[0]!, s("judges:1")[0]!, undefined as unknown as ModelString], // seat 2 is a hole (RoleChains.judges keeps its index): the gemini-pro tier is empty and static seat 2 is empty (D4-A)
     chair: s("chair"), reviewer: s("reviewer") };
 };
 
@@ -110,7 +110,8 @@ describe("RoleResolver", () => {
     store.recordModelRoleOverride({ key: "default", pattern: "k3", actor: "paco" });
     const roles = new RoleResolver({ store, env: () => env, readCatalog: async () => fixtureCatalog().filter((m) => m.provider === "kimi-code") });
     expect(await roles.refreshCatalog()).toBe(false); // static has no catalog (F3): no read
-    expect(roles.chains()).toEqual(staticRoleChains());
+    // chains() keeps one slot per judge seat, so static seat 2 (empty, D4-A) is a hole here where staticRoleChains() just has two entries.
+    expect(roles.chains()).toEqual({ ...staticRoleChains(), judges: [...staticRoleChains().judges, undefined] });
     expect(fmt(roles.candidates("fast", { effort: "low" }))).toEqual([...STATIC_ROLE_LISTS.default]); // routed effort not applied
     expect(notes(store, "model_roles_fallback")).toEqual([]); // static never "falls back": it is the static list
     env = {};
@@ -178,8 +179,8 @@ describe("RoleResolver", () => {
     const trimmed = fixtureCatalog().filter((m) => m.provider !== "openai-codex" && !(m.provider === "google-antigravity" && m.id === "gemini-3.8-flash"));
     const roles = await pinnedRoles(store, trimmed, { "judges:0": "opus-4-6" });
     const c = roles.chains();
-    // Seat 2 is the static fallback until Task 5 (the gemini-pro tier is empty); format null-safe so Task 5 can pin a hole.
-    expect(c.judges.map((m) => (m ? formatModelString(m) : null))).toEqual(["google-antigravity/claude-opus-4-6", "openai-codex/gpt-5.5", "google-antigravity/gemini-3.1-pro"]);
+    // Seat 2 is a hole: the gemini-pro tier is empty and its static seat is empty (D4-A), so that seat fails alone.
+    expect(c.judges.map((m) => (m ? formatModelString(m) : null))).toEqual(["google-antigravity/claude-opus-4-6", "openai-codex/gpt-6.1-sol", null]);
     expect(c.media).toEqual(staticRoleChains().media);
     expect(fmt(c.reader)).toEqual(["kimi-code/k3:low"]); // not empty: no fallback
     expect(notes(store, "model_roles_fallback")).toEqual([{ role: "vision" }, { role: "judges:1" }, { role: "judges:2" }]);

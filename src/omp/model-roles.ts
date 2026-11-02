@@ -67,23 +67,29 @@ export function keysOfTier(tier: TierId): Array<RoleName | `judges:${number}`> {
 }
 
 /**
- * The lists `static` mode runs (spec §4.3, the rollback switch): the pre-stage-A `HOUGE_OMP_*` defaults
- * (src/omp/omp-config.ts at main@94e3b4c), seat for seat and string for string. Static adds no model: Fast and Thinking
- * are the Default list, so every turn runs today's planner chain. A resolved role that comes up empty against the
- * catalog also falls back to its list here (RoleResolver), so a degraded catalog is never worse than before stage A.
+ * The lists `static` mode runs (spec 2026-11-02 §4.3, D4-A: the rollback switch): re-pinned at this ship to the seeded tier
+ * heads, gpt-5.5 -> gpt-6.1-sol. Static adds no model: Fast and Thinking are the Default list. Judge seat 2 has no static
+ * selector: pinning gemini-4-argon would adopt a codename without Paco's tap; a code re-pin fills it after the tap. A
+ * resolved role that comes up empty also falls back here (RoleResolver). The daily tick (resolved mode) reports any
+ * selector here the catalog no longer lists as static_list_stale.
  */
 export const STATIC_ROLE_LISTS: Readonly<Record<RoleName, readonly string[]>> = (() => {
-  const planner = ["anthropic/claude-opus-5-5:medium", "google-antigravity/claude-opus-4-6:medium", "kimi-code/k3:low"];
+  const planner = ["anthropic/claude-opus-5-5:medium", "google-antigravity/claude-opus-5-5:medium", "kimi-code/k3:low"];
   return {
     fast: planner, default: planner, thinking: planner,
-    reader: ["google-antigravity/gemini-3.8-flash:low", "kimi-code/k3:low", "openai-codex/gpt-5.5:low"],
+    reader: ["google-antigravity/gemini-3.8-flash:low", "kimi-code/k3:low", "openai-codex/gpt-6.1-sol:low"],
     vision: ["google-antigravity/gemini-3.8-flash:low"],
     tiny: ["kimi-code/k3:low"],
-    judges: ["kimi-code/k3", "openai-codex/gpt-5.5", "google-antigravity/gemini-3.1-pro"],
+    judges: ["kimi-code/k3", "openai-codex/gpt-6.1-sol"],
     chair: ["anthropic/claude-opus-5-5:low"],
-    reviewer: ["kimi-code/k3:high", "google-antigravity/claude-opus-4-6:medium"]
+    reviewer: ["kimi-code/k3:high", "google-antigravity/claude-opus-5-5:medium"]
   };
 })();
+
+/** Every distinct provider/id in the static lists, in list order (the stale check's subjects). */
+export function staticSelectorKeys(): string[] {
+  return [...new Set(ROLE_NAMES.flatMap((r) => STATIC_ROLE_LISTS[r].map((s) => selectorKey(parseModelString(s)))))];
+}
 
 /** Spec §4 step 1: the subscription providers. The catalog also lists metered or absent ones, which never match. */
 export const ALLOWED_PROVIDERS: readonly string[] = ["anthropic", "google-antigravity", "kimi-code", "openai-codex"];

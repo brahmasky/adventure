@@ -180,7 +180,8 @@ export class RoleResolver {
   /** F7: the role's static list, unfiltered and unclamped (minus what the child refused), noted once per role per catalog read. */
   private fallback(role: RoleName, o: CandidateOptions): ModelString[] {
     const key = keyOf(role, o.seat);
-    if (!this.fellBack.has(key)) {
+    // Static IS the list (an empty static judge seat 2, D4-A, is not a fallback): only resolved mode notes one.
+    if (resolveModelRolesMode(this.env()) !== "static" && !this.fellBack.has(key)) {
       this.fellBack.add(key);
       try { this.d.store.recordMemoryEvent("model_roles_fallback", { role: key }, "model_roles"); } catch (e) { console.warn(`[model-roles] could not record model_roles_fallback: ${why(e)}`); }
     }

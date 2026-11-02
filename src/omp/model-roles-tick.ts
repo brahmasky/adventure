@@ -4,7 +4,7 @@ import type { ModelProbeKind, ModelRolesResolvedRow, RunStore } from "../run/run
 import type { ResolvedRole, RoleResolver } from "./role-resolver.js";
 import { escapeForTelegram } from "../capabilities/text-hygiene.js";
 import type { ProbeFn, ProbeOutcome } from "./model-probe.js";
-import { keysOfTier, resolveModelRolesMode, type CatalogModel } from "./model-roles.js";
+import { keysOfTier, resolveModelRolesMode, staticSelectorKeys, type CatalogModel } from "./model-roles.js";
 import { isTierId, type TierId } from "./model-tiers.js";
 import { applyProbe, planTier, selectorOf, type TierPlan, type TierState } from "./tier-step.js";
 
@@ -46,7 +46,7 @@ export async function runModelRolesTick(i: ModelRolesTickInput): Promise<ModelRo
   const plans = catalog ? planAll(i.store, catalog, i.now) : [];
   const outcomes = await runProbes(plans, i.probe, i.signal);
   if (outcomes === "aborted" || i.signal?.aborted) return { ...IDLE };
-  return i.store.inTransaction(() => settle(i, catalogOk, plans, outcomes));
+  return i.store.inTransaction(() => settle(i, catalogOk, catalog, plans, outcomes));
 }
 
 function planAll(store: RunStore, catalog: readonly CatalogModel[], now: string): TierPlan[] {
@@ -68,7 +68,7 @@ async function runProbes(plans: readonly TierPlan[], probe: ProbeFn | undefined,
 }
 
 /** One transaction (spec §4.2 step 4): a notice is never lost after its row, nor sent without it. */
-function settle(i: ModelRolesTickInput, catalogOk: boolean, plans: readonly TierPlan[], outcomes: ReadonlyArray<ProbeOutcome | null>): ModelRolesTickResult {
+function settle(i: ModelRolesTickInput, catalogOk: boolean, catalog: readonly CatalogModel[] | null, plans: readonly TierPlan[], outcomes: ReadonlyArray<ProbeOutcome | null>): ModelRolesTickResult {
   const baseline = catalogOk ? i.store.latestModelRolesResolved({ catalogOk: true }) : undefined;
   const written = writeTiers(i, plans, outcomes);
   const roles = i.roles.resolveAll();
@@ -78,7 +78,22 @@ function settle(i: ModelRolesTickInput, catalogOk: boolean, plans: readonly Tier
   for (const c of changed) i.notify(changeLine(c.key, c.from, c.to));
   for (const f of written.failed) i.notify(failedLine(f.selector, f.stay));
   for (const line of shadowLines(i.store, roles, written.moved)) i.notify(line);
-  return { ran: true, changed: changed.map((c) => c.key), unresolved: syncUnresolved(i.store, roles, i.now) };
+  const unresolved = syncUnresolved(i.store, roles, i.now);
+  if (catalog) syncStaticStale(i.store, catalog, i.now);
+  return { ran: true, changed: changed.map((c) => c.key), unresolved };
+}
+
+const STATIC_STALE: ReadonlySet<string> = new Set(["static_list_stale"]);
+
+/** Spec §4.3 (D4-A) and plan P28: one alerted incident per static selector the catalog no longer lists; resolved on return or re-pin. */
+function syncStaticStale(store: RunStore, catalog: readonly CatalogModel[], now: string): void {
+  const listed = new Set(catalog.map((c) => `${c.provider}/${c.id}`));
+  const pinned = staticSelectorKeys();
+  for (const s of pinned) {
+    if (listed.has(s)) resolveOpenIncidents(store, STATIC_STALE, s, now);
+    else openAlertedIncident(store, { kind: "static_list_stale", subject: s, detail: { selector: s }, now });
+  }
+  for (const open of store.listOpenIncidents()) if (open.kind === "static_list_stale" && !pinned.includes(open.subject)) store.resolveIncident(open.incident_id, now);
 }
 
 interface Written { failed: Array<{ selector: string; stay: string | null }>; moved: Array<{ tier: TierId; head: string }> }

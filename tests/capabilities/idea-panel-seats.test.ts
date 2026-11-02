@@ -32,17 +32,18 @@ const modelOf = (argv: string[]) => argv[argv.indexOf("--model") + 1];
 const rows = (role: string) => store.getLedgerEventsByCorrelation("tick:idea_panel").filter((e) => e.event_type === "llm_attempt" && e.payload.role === role).map((e) => e.payload);
 
 describe("buildOmpPanelSeats — the four panel seats on omp", () => {
-  it("each judge seat spawns exactly its own HOUGE_OMP_JUDGES string, one leg, digest on stdin", async () => {
+  it("each judge seat spawns exactly its own HOUGE_OMP_JUDGES string, one leg, digest on stdin; the empty static seat 2 answers failed with no spawn", async () => {
     const env = fake({ "*": { text: '{"scores":[]}' } });
     const cfg = resolveOmpConfig(env);
     const seats = buildOmpPanelSeats({ store, correlation_id: "tick:idea_panel", env });
     expect(await seats.judges.kimi({ question: "DIGEST-K", system: "lens" })).toEqual({ ok: true, answer: '{"scores":[]}' });
     await seats.codexJudge({ digest: "DIGEST-C", system: "lens" });
-    await seats.judges.gemini({ question: "DIGEST-G", system: "lens" });
+    // Static judge seat 2 is empty (spec 2026-11-02 D4-A): that seat fails alone, and nothing is spawned for it.
+    expect(await seats.judges.gemini({ question: "DIGEST-G", system: "lens" })).toEqual({ ok: false });
     const want = (name: keyof typeof PANEL_JUDGE_SEAT_INDEX) => { const m = cfg.judges[PANEL_JUDGE_SEAT_INDEX[name]]!; return `${m.provider}/${m.model}`; };
-    expect(spawns().map((s) => modelOf(s.argv))).toEqual([want("kimi"), want("codex"), want("gemini")]);
+    expect(spawns().map((s) => modelOf(s.argv))).toEqual([want("kimi"), want("codex")]);
     expect(spawns()[0]?.stdin).toBe("lens\n\nDIGEST-K");
-    expect(rows("judge")).toHaveLength(3);
+    expect(rows("judge")).toHaveLength(2);
   });
 
   it("a dead judge model is a failed seat, NEVER a fall-through to another model (quorum diversity)", async () => {

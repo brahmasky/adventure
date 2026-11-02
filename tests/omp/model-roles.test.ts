@@ -26,18 +26,18 @@ describe("role lists (code-owned, spec §4)", () => {
   });
 
   // Spec §4.3: HOUGE_MODEL_ROLES=static is the rollback switch, so it must be the pre-stage-A model path seat for seat.
-  // These are the HOUGE_OMP_* DEFAULTS of src/omp/omp-config.ts:16-22 (main@80e23bb; unchanged since 94e3b4c), copied verbatim; a list edit that
+  // Re-pinned at the loud-degradation ship (spec 2026-11-02 §4.3, D4-A) to the seeded tier heads, judge seat 2 empty; a list edit that
   // touches static fails here. Two residual differences of static are accepted and live in the supervisor, not in these
   // lists (plan Decision 1): the per-child refused set (Q9) and the removed respawn-on-planner[0] rule (Task 8).
-  it("static chains are today's seven HOUGE_OMP_* defaults, string for string (the rollback adds and drops no model)", () => {
+  it("the re-pinned static chains, string for string (the rollback adds and drops no model)", () => {
     const c = staticRoleChains();
-    expect(f(c.planner)).toBe("anthropic/claude-opus-5-5:medium,google-antigravity/claude-opus-4-6:medium,kimi-code/k3:low");
-    expect(f(c.reader)).toBe("google-antigravity/gemini-3.8-flash:low,kimi-code/k3:low,openai-codex/gpt-5.5:low");
+    expect(f(c.planner)).toBe("anthropic/claude-opus-5-5:medium,google-antigravity/claude-opus-5-5:medium,kimi-code/k3:low");
+    expect(f(c.reader)).toBe("google-antigravity/gemini-3.8-flash:low,kimi-code/k3:low,openai-codex/gpt-6.1-sol:low");
     expect(f(c.media)).toBe("google-antigravity/gemini-3.8-flash:low");
     expect(f(c.ticks)).toBe("kimi-code/k3:low");
-    expect(f(c.judges)).toBe("kimi-code/k3,openai-codex/gpt-5.5,google-antigravity/gemini-3.1-pro");
+    expect(f(c.judges)).toBe("kimi-code/k3,openai-codex/gpt-6.1-sol");
     expect(f(c.chair)).toBe("anthropic/claude-opus-5-5:low");
-    expect(f(c.reviewer)).toBe("kimi-code/k3:high,google-antigravity/claude-opus-4-6:medium");
+    expect(f(c.reviewer)).toBe("kimi-code/k3:high,google-antigravity/claude-opus-5-5:medium");
   });
 
   it("static Fast and Thinking are the Default list: the rollback routes every turn to today's planner chain", () => {
@@ -117,12 +117,12 @@ describe("resolveRole — spec §4 steps 1–4", () => {
     expect(resolved({ role: "thinking", override: "opus-4-6", refused: new Set(["google-antigravity/claude-opus-4-6"]) })[0]).toBe("anthropic/claude-opus-5-5:high");
   });
 
-  it("static mode is the static list in order: no catalog check, no override, uncatalogued gpt-5.5 kept (§4.3)", () => {
+  it("static mode is the static list in order: no catalog check, no override, the static list kept whole (§4.3)", () => {
     expect(resolved({ role: "fast", mode: "static", catalog: [], override: "opus" })).toEqual(STATIC_ROLE_LISTS.default);
-    expect(resolved({ role: "reader", mode: "static" })).toEqual(STATIC_ROLE_LISTS.reader); // the fixture has no gpt-5.5
-    expect(resolved({ role: "judges", seat: 1, mode: "static" })).toEqual(["openai-codex/gpt-5.5"]);
+    expect(resolved({ role: "reader", mode: "static" })).toEqual(STATIC_ROLE_LISTS.reader);
+    expect(resolved({ role: "judges", seat: 1, mode: "static" })).toEqual(["openai-codex/gpt-6.1-sol"]);
     expect(resolved({ role: "default", mode: "static", refused: new Set(["anthropic/claude-opus-5-5"]) }))
-      .toEqual(["google-antigravity/claude-opus-4-6:medium", "kimi-code/k3:low"]); // the refused set applies in static too (Q9)
+      .toEqual(["google-antigravity/claude-opus-5-5:medium", "kimi-code/k3:low"]); // the refused set applies in static too (Q9)
   });
 
   it("with no catalog in resolved mode, keeps the whole list and applies an override only as an exact list match (Decision 4)", () => {
