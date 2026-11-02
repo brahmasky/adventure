@@ -128,7 +128,20 @@ export function seedClarify(store, chatId) {
   store.recordChatTurn({ chat_id: chatId, run_id: "r0", role: "user", text: "fix the file", created_at: at(30) });
   store.recordChatTurn({ chat_id: chatId, run_id: "r0", role: "assistant", text: "Which file do you mean?", intent: "clarify", created_at: at(20) });
 }
-/** One delivered lane reply per text in `chatId` (verdict_id null: laneTurnsSince's LEFT JOIN keeps it). With no planner answer in the chat every row is "since"; the planner's last answer is what plannerLastAnsweredAt reads. */
-export function seedLaneRows(store, chatId, texts) {
-  texts.forEach((t, k) => store.recordLaneReply({ run_id: `lane-${k}`, chat_id: chatId, lane: "answer", verdict_id: null, catch_up: t, created_at: new Date(Date.now() - (texts.length - k) * 60_000).toISOString() }));
+/**
+ * Lane replies after a planner answer in `chatId`. Writes, oldest first: one lane row older than the answer (never "since"), a Telegram run with an
+ * assistant chat_turn (what plannerLastAnsweredAt reads), then one delivered lane reply per text (verdict_id null: laneTurnsSince's LEFT JOIN keeps it).
+ * Self-checks that laneTurnsSince(chat, plannerLastAnsweredAt(chat)) returns exactly `texts`, in order; throws otherwise. Returns the answer's timestamp.
+ */
+export function seedLaneRows(d, store, chatId, texts) {
+  const now = Date.now(); const iso = (ms) => new Date(ms).toISOString();
+  const lane = (run_id, catch_up, ms) => store.recordLaneReply({ run_id, chat_id: chatId, lane: "answer", verdict_id: null, catch_up, created_at: iso(ms) });
+  lane("lane-old", "older than the planner answer", now - 20 * 60_000);
+  const answered = iso(now - 10 * 60_000);
+  const run = intakeRun(d, store, "seed planner answer", `seed-answer:${chatId}`);
+  store.recordChatTurn({ chat_id: chatId, run_id: run, role: "assistant", text: "planner answer", created_at: answered });
+  texts.forEach((t, k) => lane(`lane-${k}`, t, now - (texts.length - k) * 30_000));
+  const got = store.laneTurnsSince(chatId, store.plannerLastAnsweredAt(chatId)).map((r) => r.catch_up);
+  if (store.plannerLastAnsweredAt(chatId) !== answered || JSON.stringify(got) !== JSON.stringify(texts)) throw new Error("fixture: seedLaneRows boundary check failed");
+  return answered;
 }
