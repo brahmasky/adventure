@@ -142,6 +142,21 @@ describe("a tap", () => {
     expect(seen).toBe(ac.signal);
     expect([probeRows(), store.latestModelRoleOverrides().has("judges:2"), texts()]).toEqual([[], false, ["🔎 Checking `gemini-4-argon` with one short prompt…"]]);
   });
+  it("a probe that passes after the stop fired commits nothing: the stop wins the race (M68, P16)", async () => {
+    const ac = new AbortController(); let release!: (o: ProbeOutcome) => void;
+    const roles = new RoleResolver({ store, env: () => ({ HOUGE_MODEL_ROLES: "resolved" }), readCatalog: async () => FIX() }); await roles.refreshCatalog();
+    const probe: ProbeFn = () => new Promise((r) => { release = r; }); // ignores its signal, as a child that outlives the kill would
+    const gw = new Gateway(store, undefined, undefined, undefined, undefined, { roles, modelProbe: probe, stopSignal: ac.signal });
+    gw.intake(tap(tierCallbackData("gemini-pro", "gemini-4-argon")));
+    ac.abort(); release({ result: "pass", kind: "ok" }); await gw.whenTierTapsSettled();
+    expect([probeRows(), store.latestModelRoleOverrides().has("judges:2")]).toEqual([[], false]);
+  });
+  it("the override a tap writes names the tapping user as its actor, as /models set does (M72)", async () => {
+    const { gw } = await gateway({ result: "pass", kind: "ok" });
+    gw.intake(tap(tierCallbackData("gemini-pro", "gemini-4-argon"))); await gw.whenTierTapsSettled();
+    expect(store.getLedgerEvents().filter((e) => e.event_type === "model_role_override").map((e) => e.payload))
+      .toEqual([{ key: "judges:2", pattern: "gemini-4-argon", actor: "paco" }]);
+  });
   it("is exempt from the per-chat rate limit, like the other card taps", async () => {
     const { gw } = await gateway({ result: "pass", kind: "ok" });
     for (let n = 0; n < 7; n++) expect(gw.intake(tap("mt:gemini-pro:no")).ok).toBe(true);
