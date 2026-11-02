@@ -14,7 +14,11 @@ const status = (chat: string, key: string) => buildTypedTaskEvent({ source: "tel
   source_reference: `telegram:update:${key}` });
 const carryLines = (store: RunStore, chat: string, key: string): string[] => {
   new Gateway(store).intake(status(chat, key), NOW);
-  return String([...drainOutbox(store).values()][0]?.text).split("\n").filter((l) => /^Conversation carries/.test(l));
+  const replies = [...drainOutbox(store).values()];
+  expect(replies).toHaveLength(1);
+  const text = String(replies[0]?.text);
+  expect(text).toContain("Self-check:");
+  return text.split("\n").filter((l) => /^Conversation carries/.test(l));
 };
 
 describe("/status carry line", () => {
