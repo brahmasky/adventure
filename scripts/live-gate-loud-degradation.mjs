@@ -293,10 +293,11 @@ async function line6() {
 // ---- line 7: the print contract held ----
 async function line7() {
   const text = printed.join("\n");
-  const secretHits = G.envSecrets.filter((v) => text.includes(v)).length;
+  const tooShort = G.envSecrets.filter((e) => e.v.length <= 2).map((e) => e.key); // cannot be a real secret, and would match any output: surface it
+  const secretHits = G.envSecrets.filter((e) => e.v.length > 2 && text.includes(e.v)).length;
   const chatHit = G.operatorChat !== null && text.includes(G.operatorChat);
   const errRef = text.includes("error_ref");
-  return { ok: secretHits === 0 && !chatHit && !errRef && G.envSecrets.length > 0, detail: `env_secret_values_checked=${G.envSecrets.length} hits=${secretHits} (want 0) operator_chat_in_output=${chatHit} (want false) error_ref_in_output=${errRef} (want false) lines_checked=${printed.length}` };
+  return { ok: tooShort.length === 0 && secretHits === 0 && !chatHit && !errRef && G.envSecrets.length > 0, detail: `env_secret_values_checked=${G.envSecrets.length} hits=${secretHits} (want 0)${tooShort.map((k) => ` secret_value_too_short ${k}`).join("")} operator_chat_in_output=${chatHit} (want false) error_ref_in_output=${errRef} (want false) lines_checked=${printed.length}` };
 }
 
 // ---- main ----
@@ -316,13 +317,13 @@ function readEnvFile(file) {
       const m = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/.exec(line);
       if (!m) continue;
       const v = m[2].trim().replace(/^["']|["']$/g, "");
-      if (/TOKEN|KEY|SECRET|PASSWORD/.test(m[1]) && v.length > 0 && !FLAG_VALUES.has(v.toLowerCase())) secrets.push(v); // every nonempty value; only a bare flag value (HOUGE_SECRETS_FIREWALL_ENABLED=true) is no secret
+      if (/TOKEN|KEY|SECRET|PASSWORD/.test(m[1]) && v.length > 0 && !SWITCH_KEY.test(m[1])) secrets.push({ key: m[1], v }); // every nonempty value; only a boolean switch KEY (HOUGE_SECRETS_FIREWALL_ENABLED) is no secret
       if (m[1] === "HOUGE_TELEGRAM_CHAT_ID" && v) chat = v;
     }
   } catch { /* an unreadable env file leaves the checks empty, which line 7 fails on */ }
   return { secrets, chat };
 }
-const FLAG_VALUES = new Set(["true", "false", "on", "off", "yes", "no", "0", "1"]);
+const SWITCH_KEY = /_(ENABLED|ENABLE|DISABLED|FLAG)$/;
 const killFiles = () => [join(process.cwd(), "houge.kill"), join(MAIN_CHECKOUT, "houge.kill")].filter(existsSync).length;
 async function setup() {
   const envFile = resolve(process.env.HOUGE_ENV_FILE ?? join(process.cwd(), ".env"));
@@ -370,6 +371,7 @@ try {
     try { await runLine(n, name, fn); } finally { await cleanup().catch(() => undefined); }
   }
   if (argv.includes("--sim-leak") && G.operatorChat) printed.push(`leak ${G.operatorChat}`);
+  if (argv.includes("--sim-leak-secret") && G.envSecrets[0]) printed.push(`leak ${G.envSecrets[0].v}`); // dev seam: a planted non-switch secret value in the output
   await runLine(7, "no_secret_print", line7);
   const tomb = killFiles();
   if (tomb !== 0) { out.push(false); console.log(`FAIL post houge.kill — found ${tomb} (want 0)`); }
