@@ -7,7 +7,7 @@
 // (P12: the idle consult counts; a bare_ack `pass` consults once and writes no row). The old build must hold none.
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { DISTS, R3_IDS, canon, compare, dumpDb, mkStore, mkTemp, regularTables, relabelClocks, requireNew } from "../stage4-diff-lib.mjs";
+import { DISTS, R3_IDS, canon, compare, dumpDb, mkStore, mkTemp, regularTables, extraDropFilter, relabelClocks, requireNew } from "../stage4-diff-lib.mjs";
 import { scrubIds } from "../stage4-bind-fixture.mjs";
 import { NOW, withCountingClock, withPinnedEnv } from "../stage4-intake-fixture.mjs";
 import { countingRecorder } from "../stage4-sender-fixture.mjs";
@@ -142,7 +142,7 @@ const idList = R3_IDS.map((i) => `'${i}'`).join(",");
 function tableCounts(store) {
   const counts = {};
   for (const { name } of regularTables(store)) {
-    const n = store.db.prepare(`SELECT COUNT(*) AS n FROM "${name}"${name === "decisions" ? ` WHERE entry_id NOT IN (${idList})` : ""}`).get().n;
+    const n = store.db.prepare(`SELECT COUNT(*) AS n FROM "${name}"${name === "decisions" ? ` WHERE entry_id NOT IN (${idList})` : extraDropFilter(name)}`).get().n;
     if (n > 0) counts[name] = n;
   }
   return counts;

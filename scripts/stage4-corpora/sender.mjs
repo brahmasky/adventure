@@ -5,7 +5,7 @@
 // the new side (each item's `expect`, plus the counting recorder's call count and the emitted-event count); the old build must hold none.
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { DISTS, R2_IDS, canon, diffPaths, dumpDb, mkStore, mkTemp, regularTables, relabelClocks, requireNew } from "../stage4-diff-lib.mjs";
+import { DISTS, R2_IDS, canon, diffPaths, dumpDb, mkStore, mkTemp, regularTables, extraDropFilter, relabelClocks, requireNew } from "../stage4-diff-lib.mjs";
 import { scrubIds } from "../stage4-bind-fixture.mjs";
 import { FOREIGN_CHAT, OTHER, STRANGER, pollItem, senderUpdate as u, underPins } from "../stage4-sender-fixture.mjs";
 
@@ -42,7 +42,7 @@ const idList = R2_IDS.map((i) => `'${i}'`).join(",");
 function tableCounts(store) {
   const counts = {};
   for (const { name } of regularTables(store)) {
-    const n = store.db.prepare(`SELECT COUNT(*) AS n FROM "${name}"${name === "decisions" ? ` WHERE entry_id NOT IN (${idList})` : ""}`).get().n;
+    const n = store.db.prepare(`SELECT COUNT(*) AS n FROM "${name}"${name === "decisions" ? ` WHERE entry_id NOT IN (${idList})` : extraDropFilter(name)}`).get().n;
     if (n > 0) counts[name] = n;
   }
   return counts;

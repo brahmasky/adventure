@@ -173,8 +173,27 @@ export const NEW_ROW_IDS = {
 export function regularTables(store) {
   const t = store.db.prepare("SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all();
   const virtual = t.filter((x) => /^CREATE VIRTUAL/i.test(x.sql ?? "")).map((x) => x.name);
-  return t.filter((x) => !virtual.some((v) => x.name === v || x.name.startsWith(`${v}_`)));
+  return t.filter((x) => !virtual.some((v) => x.name === v || x.name.startsWith(`${v}_`)) && !LOUD_DEGRADATION_NEW.tables.includes(x.name));
 }
+/** The SQL filter a coverage count adds for the loud-degradation migration rows dumpDb drops (a table with no named drop gets ""). */
+export const extraDropFilter = (name) => (name === "schema_migrations" ? ` WHERE version NOT IN (${LOUD_DEGRADATION_NEW.migrations.map((v) => `'${v}'`).join(",")})` : "");
+
+/**
+ * Loud-degradation (2026-11-02) schema the merge-base builds never had, dropped BY NAME from every dump (P32; never a pattern): the table, the two
+ * migration rows, and the two planner_session_state columns. Anything else a dump shows on the new side is a real difference.
+ */
+export const LOUD_DEGRADATION_NEW = {
+  tables: ["model_tiers"],
+  migrations: ["2026-11-02-loud-degradation", "2026-11-02-hostile-schedule-event"],
+  plannerSessionStateKeys: ["fresh_requested_at", "transcript_trust_at"]
+};
+
+/**
+ * D4-A (static judge seat 2 is empty): a CoreWorker built with no catalog read yet resolves seat 2 to nothing and notes it once, as a `model_roles_fallback`
+ * ledger row {"role":"judges:2"}. The merge-base builds cannot write it (their seat 2 was never empty). A corpus that projects the ledger drops exactly that
+ * row, by event_type and payload, with this WHERE (it never matches another role or event).
+ */
+export const D4A_LEDGER_WHERE = `WHERE NOT (event_type = 'model_roles_fallback' AND payload_json = '{"role":"judges:2"}')`;
 
 /**
  * Every table's rows in rowid order, virtual tables, their shadows and sqlite_* excluded (regularTables): the whole-DB projection (spec R1 §6). Raw column
@@ -189,6 +208,8 @@ export function dumpDb(store, { dropDecisionIds = [] } = {}) {
     if (/WITHOUT\s+ROWID/i.test(sql ?? "")) throw new Error(`dumpDb: ${name} is WITHOUT ROWID; order it by its primary key first`);
     let rows = store.db.prepare(`SELECT * FROM "${name.replace(/"/g, '""')}" ORDER BY rowid`).all();
     if (name === "decisions") rows = rows.filter((r) => !drop.has(r.entry_id));
+    if (name === "schema_migrations") rows = rows.filter((r) => !LOUD_DEGRADATION_NEW.migrations.includes(r.version));
+    if (name === "planner_session_state") rows = rows.map((r) => Object.fromEntries(Object.entries(r).filter(([k]) => !LOUD_DEGRADATION_NEW.plannerSessionStateKeys.includes(k))));
     if (rows.length) out[name] = rows.map((r) => ({ ...r }));
   }
   return out;
