@@ -52,4 +52,12 @@ describe("production wiring: CoreWorker passes its recorder to the supervisor", 
     expect(store.listDecisionsForRun(r4).filter((r) => r.entry_id === "planner.crash_guard").map((r) => [r.verdict, r.reason_code])).toEqual([["halt", "limit_reached"]]);
     for (const run of runs.slice(0, 3)) expect(store.listDecisionsForRun(run).filter((r) => r.entry_id === "planner.crash_guard")).toEqual([]);
   });
+  it("R5 (a): a seeded clarify streak then a turn writes the turn.clarify_cap cap/cap_reached row on the run (ompTurnContext passes the recorder)", async () => {
+    useFakeOmp({ "*": { rpcText: "ok" } }, tmp.dir);
+    worker = ompWorker(store, tmp.dir);
+    store.recordChatTurn({ chat_id: "555", run_id: "r0", role: "assistant", text: "Which file do you mean?", intent: "clarify" });
+    const run = createQueuedTurnRun(store, "the pdf one"); worker.submitTurn(run);
+    await until(() => store.getRunState(run) === "completed");
+    expect(store.listDecisionsForRun(run).filter((r) => r.entry_id === "turn.clarify_cap").map((r) => [r.verdict, r.reason_code])).toEqual([["cap", "cap_reached"]]);
+  });
 });
