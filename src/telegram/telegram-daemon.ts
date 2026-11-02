@@ -16,7 +16,8 @@ import { newestMtimeMs } from "../capabilities/self-write-merge.js";
 import { maybeAskSessionRating } from "../capabilities/session-rating.js";
 import { CoreWorker, type OmpWorkerOptions } from "../core/core-worker.js";
 import { resolveOmpConfig, warnRetiredOmpChainVars } from "../omp/omp-config.js";
-import { runModelRolesTick } from "../omp/model-roles-tick.js";
+import { ompProbe } from "../omp/model-probe.js";
+import { runModelRolesTick, type ModelRolesTickInput } from "../omp/model-roles-tick.js";
 import { createOmpProbeRunner, type OmpProbeRunner } from "../omp/omp-probe-runner.js";
 import { sharedOmpVersionCache } from "../omp/omp-version-cache.js";
 import { stableHash } from "../domain/canonical.js";
@@ -681,6 +682,11 @@ async function runModelTicks(
   await maybeFireScheduledTasks({ store: options.store, gateway, worker, now, signal });
 }
 
+/** The roles tick's input (plan P26: the daemon always passes the probe and the resolver's catalog). Exported for the wiring test. */
+export function modelRolesTickInput(store: RunStore, roles: RoleResolver, now: string, notify: (text: string) => void, signal: AbortSignal): ModelRolesTickInput {
+  return { store, roles, probe: ompProbe(store, resolveOmpConfig(process.env)), now, signal, notify };
+}
+
 /**
  * The daily model-roles tick (spec §4.1): change notices go to the operator chat (the rating ask's chat), through the outbox
  * and the rich renderer; `role_unresolved` pages through openAlertedIncident. Its own catch: a failed tick never skips the
@@ -697,7 +703,7 @@ async function runRolesTick(
     });
   };
   try {
-    await runModelRolesTick({ store: options.store, roles: worker.modelRoles(), now, signal, notify });
+    await runModelRolesTick(modelRolesTickInput(options.store, worker.modelRoles(), now, notify, signal));
   } catch (error) {
     console.error(`[telegram-daemon] model roles tick failed: ${errorCode(error)}`);
   }
