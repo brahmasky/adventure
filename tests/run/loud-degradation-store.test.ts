@@ -52,6 +52,16 @@ describe("model_probe", () => {
       { tier: "kimi", selector: "kimi-code/k3.1-pro", purpose: "head", result: "pass", kind: "ok" }]]);
     s.close();
   });
+  it("refuses a free-text kind, result or purpose: the event is codes only, so error text can never enter the ledger", () => {
+    const s = RunStore.openInMemory();
+    const base = { tier: "kimi", selector: "kimi-code/k3.1-pro", purpose: "head", result: "pass", kind: "ok" } as const;
+    const bad = (o: Record<string, string>) => () => s.recordModelProbe({ ...base, ...o } as never);
+    expect(bad({ kind: "spawn ENOENT: /Users/x/.omp: secret" })).toThrow(/kind is not a closed code/);
+    expect(bad({ result: "sort of" })).toThrow(/result is not a closed code/);
+    expect(bad({ purpose: "whim" })).toThrow(/purpose is not a closed code/);
+    expect(s.getLedgerEvents().filter((e) => e.event_type === "model_probe")).toEqual([]);
+    s.close();
+  });
   it("a probe's attempt is audited under role `probe`", () => {
     const s = RunStore.openInMemory();
     s.llmAuditSink({ correlation_id: "probe:x", role: "probe" }).record({ provider: "kimi-code", role: "", outcome: "ok", model: "k3.1-pro" });

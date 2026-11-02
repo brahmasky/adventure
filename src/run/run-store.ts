@@ -28,6 +28,9 @@ import { NOTIFICATION_MAX_ATTEMPTS, type NotificationButton, type NotificationIn
 import {
   appendLedgerEvent,
   createLedgerEvent,
+  MODEL_PROBE_KINDS,
+  MODEL_PROBE_PURPOSES,
+  MODEL_PROBE_RESULTS,
   readLedgerEvents,
   readLedgerEventsByCorrelation,
   readLedgerEventsByTypeSince,
@@ -395,8 +398,9 @@ export interface ModelTierRow {
   tier: string; adopted: string | null; previous: string | null; adopted_at: string | null;
   rejected_selector: string | null; rejected_at: string | null; updated_at: string;
 }
-export type ModelProbeResult = "pass" | "model_missing" | "inconclusive";
-export interface ModelProbeRow { tier: string; selector: string; purpose: "head" | "previous" | "tap"; result: ModelProbeResult; kind: string }
+export type ModelProbeResult = (typeof MODEL_PROBE_RESULTS)[number];
+export type ModelProbeKind = (typeof MODEL_PROBE_KINDS)[number];
+export interface ModelProbeRow { tier: string; selector: string; purpose: (typeof MODEL_PROBE_PURPOSES)[number]; result: ModelProbeResult; kind: ModelProbeKind }
 
 export interface ChatTurnRow {
   turn_id: string;
