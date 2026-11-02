@@ -36,6 +36,9 @@ const MIGRATION = "2026-11-02-loud-degradation";
 const PLANTED = { provider: "google-antigravity", id: "gemini-3.1-pro", thinking: null };
 const PLANTED_SELECTOR = `${PLANTED.provider}/${PLANTED.id}`;
 const PROPOSAL = "gemini-4-argon";
+/** Spec §4.2 bootstrap, literal (Global Constraints): the heads that matched each tier and ran on 2026-11-01. */
+const LITERAL_SEED = { "opus@anthropic": "claude-opus-5-5", "opus@antigravity": "claude-opus-5-5", "sonnet@anthropic": "claude-sonnet-5-5", "sonnet@antigravity": "claude-sonnet-5-5",
+  "gemini-flash": "gemini-3.8-flash", "gemini-pro": null, "codex-sol": "gpt-6.1-sol", kimi: "k3" };
 const SET_PINS = ["HOUGE_TOMBSTONE_PATH", "HOUGE_DISARM_PATH", "HOUGE_TELEGRAM_CHAT_ID"];
 const DELETE_PINS = ["HOUGE_SCHEDULER_ENABLED", "HOUGE_RADAR_ENABLED", "HOUGE_RADAR_PANEL_ENABLED", "HOUGE_MEDIA_INGEST_ENABLED", "HOUGE_LLM_MEDIA_PROVIDERS",
   "HOUGE_RATING_PENDING_MINUTES", "HOUGE_MODEL_ROLES"];
@@ -48,12 +51,12 @@ function verdict(n, name, ok, detail) {
   console.log(`${ok ? "PASS" : "FAIL"} ${n} ${name} — ${redactForPrint(detail)}`);
 }
 const ERROR_NAMES = new Set(["Error", "TypeError", "RangeError", "SyntaxError", "ReferenceError", "AssertionError"]);
-/** A thrown value prints as its standard class name only, never its message (--debug adds the message to stderr for development). */
+/** A thrown value prints as its standard class name only, never its message (--debug adds only the class name to stderr, never a message or stack). */
 const errCode = (e) => (e instanceof Error ? (ERROR_NAMES.has(e.name) ? e.name : "<other>") : "non-Error");
 async function runLine(n, name, fn) {
   if (!want(n)) return;
   try { const r = await fn(); verdict(n, name, r.ok, r.detail); } catch (e) {
-    if (DEBUG) console.error(`# debug line ${n}: ${redactForPrint(String(e?.stack ?? e))}`);
+    if (DEBUG) console.error(`# debug line ${n}: threw ${errCode(e)}`);
     verdict(n, name, false, `threw: ${errCode(e)}`);
   }
 }
@@ -98,7 +101,11 @@ function expectedHeadOf(key, heads, listed) {
   return { first: sel[0] ? k(sel[0]) : null, firstListed: sel.map(k).find((s) => listed.has(s)) ?? null, all: new Set(sel.map(k)) };
 }
 async function line1() {
-  const heads = G.d.tierHeadsOf(G.store.listModelTiers());
+  // A fresh migration is checked against the literal spec §4.2 seed (Global Constraints), not against the code's own SEED_HEADS.
+  const rowsNow = G.store.listModelTiers();
+  const seedRowsOk = !G.fresh || (rowsNow.length === Object.keys(LITERAL_SEED).length
+    && Object.entries(LITERAL_SEED).every(([t, a]) => { const r = rowsNow.find((x) => x.tier === t); return r !== undefined && r.adopted === a && r.previous === null; }));
+  const heads = G.d.tierHeadsOf(G.fresh ? Object.entries(LITERAL_SEED).map(([tier, adopted]) => ({ tier, adopted, previous: null })) : rowsNow);
   const listed = new Set([...G.catalog, PLANTED].map((c) => `${c.provider}/${c.id}`));
   const resolved = G.roles.resolveAll();
   const withoutHead = resolved.filter((r) => r.head === null).map((r) => r.key);
@@ -111,8 +118,8 @@ async function line1() {
     if (headKey !== e.firstListed) mismatched += 1;
   }
   const overridden = resolved.filter((r) => r.source === "override").length;
-  const ok = canon(withoutHead) === canon(["judges:2"]) && fallbacks === 0 && mismatched === 0;
-  return { ok, detail: `null_heads=[${withoutHead}] (want [judges:2]) fallbacks=${fallbacks} (want 0) head_mismatches=${mismatched} (want 0) keys=${resolved.length} overridden_on_copy=${overridden} ${G.fresh ? "fresh_migration (seed)" : "already_migrated (compared against the copy's rows)"}` };
+  const ok = canon(withoutHead) === canon(["judges:2"]) && fallbacks === 0 && mismatched === 0 && seedRowsOk;
+  return { ok, detail: `null_heads=[${withoutHead}] (want [judges:2]) fallbacks=${fallbacks} (want 0) head_mismatches=${mismatched} (want 0) seed_rows_literal=${seedRowsOk} keys=${resolved.length} overridden_on_copy=${overridden} ${G.fresh ? "fresh_migration (seed)" : "already_migrated (compared against the copy's rows)"}` };
 }
 
 // ---- line 2: static judge seat 2 stays empty ----
@@ -189,11 +196,13 @@ async function line5() {
   const one = cards.length === 1 && c.tier === "gemini-pro" && canon(c.keys) === canon(["judges:2"]) && c.proposals[0] === PROPOSAL;
   let rowOk = false; let n = -1;
   if (one) {
-    G.d.enqueueTierCard(G.store, STUB_CHAT, G.now, c);
     const date = G.d.formatInstantInZone(G.now, G.d.resolveDisplayZone(process.env)).slice(0, 10);
-    const found = outboxByKey("model_tier_card:%");
-    n = found.length;
-    const r = found[0];
+    const target = `model_tier_card:gemini-pro:${date}`;
+    const before = outboxByKey(target).length; // the copy may hold historical cards; only this run's change counts
+    G.d.enqueueTierCard(G.store, STUB_CHAT, G.now, c);
+    const found = outboxByKey(target);
+    n = found.length - before;
+    const r = found[found.length - 1];
     rowOk = n === 1 && r.key === `model_tier_card:gemini-pro:${date}` && r.payload.text === G.d.tierCardText(c)
       && r.payload.button_rows?.[0]?.[0]?.data === G.d.tierCallbackData("gemini-pro", PROPOSAL);
   }
@@ -285,7 +294,7 @@ try {
   await runLine(2, lines[1][1], line2);
   if (NEEDS_TICK) {
     try { await runTick(); } catch (e) {
-      if (DEBUG) console.error(`# debug tick: ${redactForPrint(String(e?.stack ?? e))}`);
+      if (DEBUG) console.error(`# debug tick: threw ${errCode(e)}`);
       note(`tick threw: ${errCode(e)}`); G.tick = null;
     }
   }
@@ -303,7 +312,7 @@ try {
   console.log(`${process.exitCode === 0 ? "PASS" : "FAIL"} gate — ${passed}/${expected} checks`);
 } catch (e) {
   console.error(`setup_failed${e instanceof SetupError ? `: ${e.message}` : ""}`);
-  if (DEBUG) console.error(`# debug: ${redactForPrint(String(e?.stack ?? e))}`);
+  if (DEBUG) console.error(`# debug: setup threw ${errCode(e)}`);
   process.exitCode = 2;
 } finally {
   const root = G.root;
