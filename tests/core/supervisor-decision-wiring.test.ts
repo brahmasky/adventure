@@ -61,6 +61,7 @@ describe("production wiring: CoreWorker passes its recorder to the supervisor", 
     expect(store.listDecisionsForRun(run).filter((r) => r.entry_id === "turn.clarify_cap").map((r) => [r.verdict, r.reason_code])).toEqual([["cap", "cap_reached"]]);
   });
   it("R5 (b): lessons over a lowered HOUGE_LESSON_CHAR_CAP write the context.lessons capped/char_cap row on the first turn's run (the spawn)", async () => {
+    const prior = process.env.HOUGE_LESSON_CHAR_CAP;
     process.env.HOUGE_LESSON_CHAR_CAP = "40"; // the supervisor's turnContext.env is process.env in production
     try {
       useFakeOmp({ "*": { rpcText: "ok" } }, tmp.dir);
@@ -70,7 +71,7 @@ describe("production wiring: CoreWorker passes its recorder to the supervisor", 
       const run = createQueuedTurnRun(store, "first"); worker.submitTurn(run);
       await until(() => store.getRunState(run) === "completed");
       expect(store.listDecisionsForRun(run).filter((r) => r.entry_id === "context.lessons").map((r) => [r.verdict, r.reason_code])).toEqual([["capped", "char_cap"]]);
-    } finally { delete process.env.HOUGE_LESSON_CHAR_CAP; }
+    } finally { if (prior === undefined) delete process.env.HOUGE_LESSON_CHAR_CAP; else process.env.HOUGE_LESSON_CHAR_CAP = prior; }
   });
   it("R5 (c): recall whose embed fails writes the context.recall none/embed_failed row on the run (ompTurnContext passes the recorder)", async () => {
     process.env.HOUGE_EPISODIC_ENABLED = "1"; // after pinEnabledFlags(); resolveEpisodicEnabled reads it

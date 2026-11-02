@@ -82,14 +82,19 @@ describe("R5 rows — context.lessons at the spawn (spec R5 §4.3), the end sign
       try {
         const a = createQueuedTurnRun(h.store); h.sup.submit(req(a)); await h.sup.whenIdle();
         const r = q(h.store).prepare("SELECT rung, verdict, run_id FROM decisions WHERE entry_id = 'context.lessons'").all();
-        return { r, a, file: readFileSync(join(h.data, "omp", "system-chat-42.md"), "utf8"), dropped: incidentsN(h.store, "lesson_dropped"), loop: h.store.getLedgerEvents(a).some((e) => e.event_type === "loop_started") };
+        const scrub = (v: unknown) => JSON.stringify(v).split(a).join("RUN");
+        const loop = h.store.getLedgerEvents(a).filter((e) => e.event_type === "loop_started").map((e) => scrub(e.payload));
+        const touches = q(h.store).prepare("SELECT id, applied_count, last_used IS NOT NULL AS used FROM lessons ORDER BY id").all();
+        const incidents = q(h.store).prepare("SELECT kind, subject, fingerprint, state, detail_json FROM incidents ORDER BY kind, fingerprint").all().map(scrub);
+        return { r, a, file: readFileSync(join(h.data, "omp", "system-chat-42.md"), "utf8"), dropped: incidentsN(h.store, "lesson_dropped"), loop, touches, incidents };
       } finally { rung.decide = orig; }
     };
     const base = await run(false); const planted = await run(true);
     expect(planted.r).toEqual([{ rung: "fail", verdict: "full", run_id: planted.a }]);
     expect(base.r).toEqual([{ rung: "rule", verdict: "capped", run_id: base.a }]);
     expect(planted.file).toBe(base.file); expect(planted.dropped).toBe(base.dropped); expect(planted.dropped).toBe(1);
-    expect(planted.loop).toBe(true);
+    expect(planted.loop).toHaveLength(1); expect(planted.loop).toEqual(base.loop);
+    expect(planted.touches).toEqual(base.touches); expect(planted.incidents).toEqual(base.incidents); expect(planted.incidents.length).toBeGreaterThan(0);
   });
   it("6 the end signal: /kill while retrieve is held → endSignalled true while finished is false; the released build writes loop_started and no R5 row", async () => {
     const dir = mkdtempSync(join(tmpdir(), "r5-kill-")); // P2: pin the tombstone paths; nothing may land in the cwd
