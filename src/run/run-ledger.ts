@@ -283,7 +283,9 @@ const requiredPayloadFields = {
     "cards_scored",
     "shortlist_ids",
     "week_key",
-    "brief_written"
+    "brief_written",
+    // model ids per seat (spec 2026-11-02 §2), code-owned catalog strings
+    "judge_models"
   ],
   // Skill retirement spec (2026-07-29): one summary per weekly re-verify tick — counts only,
   // no skill text (bodies-out-of-the-ledger invariant).

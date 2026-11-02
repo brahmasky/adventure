@@ -46,6 +46,13 @@ describe("buildOmpPanelSeats — the four panel seats on omp", () => {
     expect(rows("judge")).toHaveLength(2);
   });
 
+  it("judgeModels names each seat's model; an empty seat is null (spec 2026-11-02 §12)", () => {
+    const m = (x: string) => parseModelChain(x)[0]!;
+    const chains = { ...staticRoleChains(), judges: [m("kimi-code/k3.1-pro"), m("openai-codex/gpt-6.1-sol"), undefined] } as never;
+    const seats = buildOmpPanelSeats({ store, correlation_id: "tick:idea_panel", env: fake({}), chains });
+    expect(seats.judgeModels).toEqual({ kimi: "kimi-code/k3.1-pro", codex: "openai-codex/gpt-6.1-sol", gemini: null });
+  });
+
   it("a dead judge model is a failed seat, NEVER a fall-through to another model (quorum diversity)", async () => {
     const env = fake({ "kimi-code/k3": { exit: 1, stderr: "429 usage limit reached" }, "*": { text: "other model" } });
     const seats = buildOmpPanelSeats({ store, correlation_id: "tick:idea_panel", env });

@@ -388,6 +388,23 @@ describe("runIdeaPanelTick", () => {
     });
   });
 
+  // Spec 2026-11-02 §12: a newer model changes judge scores overnight; the row must say which model scored.
+  it("the tick row records each seat's model id (skip and ok paths); absent input records null", async () => {
+    const judgeModels = { kimi: "kimi-code/k3.1-pro", codex: "openai-codex/gpt-6.1-sol", gemini: null };
+    const thin = openStore();
+    seedCard(thin, "solo", 2);
+    await tick(thin, { judgeModels });
+    expect(panelEvents(thin)[0]?.payload.judge_models).toEqual(judgeModels);
+    const ok = openStore();
+    seedBoard(ok);
+    await tick(ok, { judgeModels });
+    expect(panelEvents(ok)[0]?.payload).toMatchObject({ result: "ok", judge_models: judgeModels });
+    const none = openStore();
+    seedBoard(none);
+    await tick(none);
+    expect(panelEvents(none)[0]?.payload.judge_models).toBeNull();
+  });
+
   it("first-arm happy path with chair: scores, statuses, snapshot, ledger, per-fire push", async () => {
     const store = openStore();
     const ids = seedBoard(store);

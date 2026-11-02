@@ -308,6 +308,8 @@ export interface PanelTickInput {
   /** Pre-bound seat closures from idea-panel-seats (env already captured). */
   codexJudge: PanelSeat;
   chair: PanelSeat;
+  /** Spec 2026-11-02 §2: which model each seat ran (null = empty seat); absent → recorded as null. */
+  judgeModels?: Record<PanelJudgeName, string | null>;
   env: NodeJS.ProcessEnv;
   now: string;
   /** Allowlisted chat for the §7 digest push; null → no push (CLI context). */
@@ -375,7 +377,8 @@ export async function runIdeaPanelTick(input: PanelTickInput): Promise<PanelTick
           cards_scored: 0,
           shortlist_ids: [],
           week_key: weekKey,
-          brief_written: false
+          brief_written: false,
+          judge_models: input.judgeModels ?? null
         });
       }
       return { ran: true, status: "skipped", reason: "thin_board", weekKey };
@@ -423,7 +426,8 @@ export async function runIdeaPanelTick(input: PanelTickInput): Promise<PanelTick
           cards_scored: 0,
           shortlist_ids: [],
           week_key: weekKey,
-          brief_written: false
+          brief_written: false,
+          judge_models: input.judgeModels ?? null
         });
       }
       return {
@@ -599,7 +603,8 @@ export async function runIdeaPanelTick(input: PanelTickInput): Promise<PanelTick
       cards_scored: scored.length,
       shortlist_ids: shortlistCards.map((c) => c.idea_id),
       week_key: weekKey,
-      brief_written: briefWritten
+      brief_written: briefWritten,
+      judge_models: input.judgeModels ?? null
     });
 
     // Push — after the ledger, per-fire dedupe key (§7 B2: week_key alone would suppress

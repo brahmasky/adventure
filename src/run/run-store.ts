@@ -4412,6 +4412,7 @@ export class RunStore {
     shortlist_ids: number[];
     week_key: string;
     brief_written: boolean;
+    judge_models: Record<string, string | null> | null;
   }): void {
     this.appendLedgerEvent(
       createLedgerEvent({
