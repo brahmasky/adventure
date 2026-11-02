@@ -367,8 +367,9 @@ function catchUp(d: TurnContextDeps, i: TurnPromptInput, seededRunIds: readonly 
 
 /** decideSync for a rule-only entry on the turn's own run (spec R5 §4.0, §4.5): no recorder or a turn that ended → no call; never throws into the turn. */
 function record<S, V extends string>(d: TurnContextDeps, i: TurnPromptInput, entry: Entry<S, V>, s: S): void {
-  if (!d.recorder || i.live?.() === false) return;
+  if (!d.recorder) return;
   try {
+    if (i.live?.() === false) return;
     decideSync(entry, s, { run_id: i.run_id, tool_call_id: null, recorder: d.recorder });
   } catch (e) { // belt: decideSync already catches a recorder and a rule (decide.ts:166–171); a future change must not reach the prompt
     console.error(`[turn-context] decision record failed: ${e instanceof Error ? e.message : String(e)}`);

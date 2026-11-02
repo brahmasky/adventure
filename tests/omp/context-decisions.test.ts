@@ -161,6 +161,11 @@ describe("R5 rows at prompt build (spec R5 §4.1, §4.2, §4.4) — the raw answ
     const r = await sameAsRaw(store, { recorder: boom });
     expect(r.prompt.startsWith(CLARIFY_CAP_NOTICE)).toBe(true); expect(rows(store)).toEqual([]);
   });
+  it("8b a live() callback that throws: buildTurnPrompt resolves, the prompt unchanged, no rows", async () => {
+    const store = RunStore.openInMemory(); seedClarify(store);
+    const r = await sameAsRaw(store, {}, { live: () => { throw new Error("x"); } });
+    expect(r.prompt.startsWith(CLARIFY_CAP_NOTICE)).toBe(true); expect(rows(store)).toEqual([]);
+  });
   it("9 lessonsInputOf reads the snapshot's counts and the failed flag", () => {
     const snap = { text: "", lessonIds: [1, 2], lessonScopes: [], skillScopes: [], coreFactIds: [], skipped: [{ lesson_id: 3, chars: 900, cap: 100 }] } as unknown as PromptSnapshot;
     expect(lessonsInputOf(snap)).toEqual({ rendered: 2, skipped: 1, failed: false });
@@ -169,12 +174,16 @@ describe("R5 rows at prompt build (spec R5 §4.1, §4.2, §4.4) — the raw answ
   it("10 planted throw (P14) in the real entry's rule: one fail-rung row with the fail verdict on the run; prompt and loop_started identical to unplanted", async () => {
     const recallR: TurnRetrieval = { facts: facts(1), pages: [], telemetry: { facts: tel({ admitted: 1, best_admitted: 0.7 }), pages: tel() } };
     const plans: Array<[string, { ladder: readonly unknown[] }, (s: RunStore) => void, TurnRetrieval, string]> = [
-      ["context.recall", CONTEXT_RECALL, () => {}, recallR, "none"],
+      ["context.recall", CONTEXT_RECALL, (s) => { s.addEpisodicFact({ chat_id: CHAT, fact: "Paco likes the pdf one" }); }, recallR, "none"],
       ["context.catch_up", CONTEXT_CATCH_UP, (s) => laneRow(s, 1), NONE, "none"],
       ["turn.clarify_cap", TURN_CLARIFY_CAP, (s) => seedClarify(s), NONE, "allow"]
     ];
     const read = (store: RunStore, id: string) => q(store).prepare("SELECT entry_id, rung, verdict, run_id, tool_call_id FROM decisions WHERE entry_id = ? ORDER BY rowid").all(id)
       .map((r) => [r.entry_id, r.rung, r.verdict, r.run_id, r.tool_call_id ?? null]);
+    const effects = (st: RunStore) => ({
+      touches: q(st).prepare("SELECT id, applied_count FROM episodic_facts ORDER BY id").all(),
+      incidents: st.listOpenIncidents().map((x) => [x.kind, x.subject, x.fingerprint])
+    });
     for (const [id, entry, seed, retrieval, failVerdict] of plans) {
       const base = RunStore.openInMemory(); seed(base);
       const unplanted = await build(deps(base, { retrieval }).d, base);
@@ -186,6 +195,8 @@ describe("R5 rows at prompt build (spec R5 §4.1, §4.2, §4.4) — the raw answ
       expect(read(store, id), id).toEqual([[id, "fail", failVerdict, planted.run_id, null]]);
       expect(planted.prompt, id).toBe(unplanted.prompt);
       expect(loopStarted(store, planted.run_id), id).toEqual(loopStarted(base, unplanted.run_id));
+      expect(effects(store), id).toEqual(effects(base));
+      if (id === "context.recall") expect(effects(base).touches, "the fact was admitted and touched").toEqual([{ id: 1, applied_count: 1 }]);
     }
   });
 });
