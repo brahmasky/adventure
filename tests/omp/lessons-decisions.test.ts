@@ -1,7 +1,8 @@
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { CONTEXT_LESSONS } from "../../src/decisions/entries/context-lessons.js";
 import { storeRecorder } from "../../src/decisions/record.js";
 import type { DecisionRecorder } from "../../src/decisions/types.js";
 import type { SupervisorDeps } from "../../src/omp/planner-supervisor.js";
@@ -28,7 +29,8 @@ function withRecorder(session: Fake, extra: Partial<SupervisorDeps> = {}, turnCo
   const h = harness(session, {}, { recorder, ...extra }, { turnContext }); cell.store = h.store;
   return { ...h, counts: cell.counts };
 }
-type Private = { turn?: { endSignalled: boolean; finished: boolean }; d: { turnContext: TurnContextDeps }; preflightThenSpawn(fresh: boolean, turn: unknown): Promise<unknown> };
+type SeamTurn = { finished: boolean; endSignalled: boolean; req: { run_id: string } };
+type Private = { turn?: { endSignalled: boolean; finished: boolean } | SeamTurn; d: { turnContext: TurnContextDeps }; preflightThenSpawn(fresh: boolean, turn: SeamTurn): Promise<unknown> };
 const priv = (sup: unknown) => sup as Private;
 /** tests/omp/planner-supervisor.test.ts:38: a 27-char bullet fits a 40-char cap, a 60-char one is skipped. */
 function seedOverCap(store: RunStore): void {
@@ -66,10 +68,28 @@ describe("R5 rows — context.lessons at the spawn (spec R5 §4.3), the end sign
     expect(incidentsN(h.store, "lesson_dropped")).toBe(1);
     expect(rows(h.store)).toEqual([]); expect(h.counts).toEqual([]);
   });
-  it("5 seam, live: one capped/char_cap row naming the threaded run", async () => {
+  it("5 seam, live: one capped/char_cap row naming the threaded run, not the different running turn", async () => {
     const h = withRecorder(fakeSession(), {}, CAP40); seedOverCap(h.store);
-    await priv(h.sup).preflightThenSpawn(true, { finished: false, endSignalled: false, req: { run_id: "late" } });
+    priv(h.sup).turn = { finished: false, endSignalled: false, req: { run_id: "other" } }; // a different running turn (P15 mutation 1)
+    try { await priv(h.sup).preflightThenSpawn(true, { finished: false, endSignalled: false, req: { run_id: "late" } }); } finally { delete priv(h.sup).turn; }
     expect(rows(h.store)).toEqual([[LS, "capped", "char_cap", "late", null]]); expect(h.counts).toEqual([LS]);
+  });
+  it("8 planted throw (P14) on the real context.lessons rule: one fail-rung full row; prompt file and lesson_dropped as unplanted", async () => {
+    const run = async (plant: boolean) => {
+      const h = withRecorder(fakeSession(), {}, CAP40); seedOverCap(h.store);
+      const rung = CONTEXT_LESSONS.ladder[0] as { decide: unknown }; const orig = rung.decide;
+      if (plant) rung.decide = () => { throw new Error("planted"); };
+      try {
+        const a = createQueuedTurnRun(h.store); h.sup.submit(req(a)); await h.sup.whenIdle();
+        const r = q(h.store).prepare("SELECT rung, verdict, run_id FROM decisions WHERE entry_id = 'context.lessons'").all();
+        return { r, a, file: readFileSync(join(h.data, "omp", "system-chat-42.md"), "utf8"), dropped: incidentsN(h.store, "lesson_dropped"), loop: h.store.getLedgerEvents(a).some((e) => e.event_type === "loop_started") };
+      } finally { rung.decide = orig; }
+    };
+    const base = await run(false); const planted = await run(true);
+    expect(planted.r).toEqual([{ rung: "fail", verdict: "full", run_id: planted.a }]);
+    expect(base.r).toEqual([{ rung: "rule", verdict: "capped", run_id: base.a }]);
+    expect(planted.file).toBe(base.file); expect(planted.dropped).toBe(base.dropped); expect(planted.dropped).toBe(1);
+    expect(planted.loop).toBe(true);
   });
   it("6 the end signal: /kill while retrieve is held → endSignalled true while finished is false; the released build writes loop_started and no R5 row", async () => {
     const dir = mkdtempSync(join(tmpdir(), "r5-kill-")); // P2: pin the tombstone paths; nothing may land in the cwd

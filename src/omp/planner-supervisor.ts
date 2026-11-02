@@ -578,7 +578,7 @@ export class PlannerSupervisor {
     const heartbeat = setInterval(() => this.renewLeases(), PLANNER_HEARTBEAT_MS);
     const turn: Turn = {
       req, claim, worker, startedAt: Date.now(), merged: [], active, abort, heartbeat, n: 0, recorded: 0, lastText: "", lastError: undefined, deadline: undefined, idle: undefined, idleAt: Date.now(),
-      usedTool: false, legIndex: 0, live: false, finished: false, laneEnded: false, aborting: false, dispatched: false, childGen: -1, approvals: 0, trustPausedMs: 0, trustPauseAt: undefined, trustResume: undefined, trustPauseSpan: 0, ...newDeferred(), endSignalled: false,
+      usedTool: false, legIndex: 0, live: false, finished: false, laneEnded: false, aborting: false, dispatched: false, childGen: -1, approvals: 0, trustPausedMs: 0, trustPauseAt: undefined, trustResume: undefined, trustPauseSpan: 0, ...newDeferred(), endSignalled: false, // placeholders: armEnd(turn) below installs the live end signal
       route: null, role: "default", effort: null, chain: [], routedBy: undefined, startMissing: 0, legsTried: 0, retriedOther: false, pinFailed: false, failed: new Set(),
       deadlineLeft: cfg.turnTimeoutMs, deadlineAt: Date.now(),
       run_id: req.run_id, trustLevel: () => active.trust?.level() ?? "clean",

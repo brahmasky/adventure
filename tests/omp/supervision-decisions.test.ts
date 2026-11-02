@@ -68,7 +68,7 @@ const quotaThenOk = () => {
 };
 /** P10: a child that never asks for its manifest fails every start after manifestWaitMs (a crash exit each). */
 const FAILING_START: Partial<SupervisorDeps> = { manifestWaitMs: 20 };
-type Private = { exits: number[]; crashLatched: boolean; stale: boolean; session?: unknown; recordStartMissing(...a: unknown[]): void; ensureSession(fresh: boolean, turn: unknown): Promise<unknown>; crashLooping(now: number): boolean };
+type Private = { exits: number[]; crashLatched: boolean; stale: boolean; session?: unknown; recordStartMissing(...a: unknown[]): void; ensureSession(fresh: boolean, turn: { finished: boolean; endSignalled: boolean; req: { run_id: string } }): Promise<unknown>; crashLooping(now: number): boolean };
 const priv = (sup: unknown) => sup as Private;
 const PAIR = [SQ, CG];
 /** R5 P4: a start that reaches the spawn consults lessons in preparePaths (no row under the default), a halted one does not. */
