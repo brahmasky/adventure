@@ -219,7 +219,7 @@ const MODELS_USAGE = "/models usage: /models · /models set <role> <pattern> · 
 const MODELS_PATTERN_MAX = 64;
 
 /**
- * `/models` (spec §4.2). The role must be one of ROLE_NAMES; only judges take a seat (0-based, the ROLE_LISTS.judges index). A
+ * `/models` (spec §4.2). The role must be one of ROLE_NAMES; only judges take a seat (0-based, the ROLE_LEGS.judges index). A
  * role-level `set judges <pattern>` parses so the handler can refuse it with its reason. The parser never echoes the words back.
  */
 function parseModels(words: string[]): TelegramCommandParseResult {

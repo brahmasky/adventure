@@ -1,18 +1,19 @@
 import { describe, expect, it } from "vitest";
 import { formatModelString, parseModelString, type ModelString } from "../../src/omp/model-string.js";
-import { ROLE_LISTS, STATIC_ROLE_LISTS, staticRoleChains, type CatalogModel, type RoleChains } from "../../src/omp/model-roles.js";
+import { STATIC_ROLE_LISTS, staticRoleChains, type CatalogModel, type RoleChains } from "../../src/omp/model-roles.js";
 import { CATALOG_RETRY_MS, NO_LEG_REFRESH_MS, RoleResolver } from "../../src/omp/role-resolver.js";
 import { RunStore } from "../../src/run/run-store.js";
-import { fixtureCatalog, pinnedRoles } from "../helpers/model-roles.js";
+import { fixtureCatalog, pinnedRoles, SEED_LISTS } from "../helpers/model-roles.js";
 
 const fmt = (l: ModelString[]) => l.map(formatModelString);
 const notes = (store: RunStore, type: "model_catalog_unavailable" | "model_roles_fallback") =>
   store.getLedgerEvents().filter((e) => e.event_type === type).map((e) => e.payload);
 const openCatalogIncidents = (store: RunStore) => store.listOpenIncidents().filter((i) => i.kind === "model_catalog_unavailable");
-/** The seven chains as ROLE_LISTS (resolved mode before any catalog read: Decision 4 keeps every list whole). */
+/** The seven chains on the seeded heads (resolved mode before any catalog read: Decision 4 keeps every leg whole). */
 const listChains = (): RoleChains => {
-  const s = (r: keyof typeof ROLE_LISTS) => ROLE_LISTS[r].map(parseModelString);
-  return { planner: s("default"), reader: s("reader"), media: s("vision"), ticks: s("tiny"), judges: s("judges"), chair: s("chair"), reviewer: s("reviewer") };
+  const s = (k: string) => SEED_LISTS[k]!.map(parseModelString);
+  return { planner: s("default"), reader: s("reader"), media: s("vision"), ticks: s("tiny"), judges: [s("judges:0")[0]!, s("judges:1")[0]!, parseModelString("google-antigravity/gemini-3.1-pro")], // seat 2: the empty gemini-pro tier falls back to the static selector until Task 5
+    chair: s("chair"), reviewer: s("reviewer") };
 };
 
 // Spec 2026-10-06 §4 / §9: every seat now runs on this service. The tests pin what surrounds the pure resolution:
@@ -141,7 +142,7 @@ describe("RoleResolver", () => {
     const store = RunStore.openInMemory();
     const roles = await pinnedRoles(store, fixtureCatalog());
     expect(fmt(roles.candidates("default", { refused: new Set(["anthropic/claude-opus-5-5"]), effort: "medium" })))
-      .toEqual(["google-antigravity/claude-opus-5-5:medium", "google-antigravity/claude-opus-4-6:medium", "kimi-code/k3:high"]);
+      .toEqual(["google-antigravity/claude-opus-5-5:medium", "kimi-code/k3:high"]); // the gone Antigravity 4-6 leg left with the tier model
     store.close();
   });
 
@@ -164,10 +165,11 @@ describe("RoleResolver", () => {
     const roles = await pinnedRoles(store, fixtureCatalog().filter((m) => !/claude|k3/.test(m.id)));
     roles.candidates("default"); roles.candidates("default"); roles.chains();
     // No claude and no k3 in the catalog: Default, judge seat 0, Chair and Reviewer resolve empty (Fast and Tiny keep gemini-3.8-flash).
-    expect(notes(store, "model_roles_fallback")).toEqual([{ role: "default" }, { role: "judges:0" }, { role: "chair" }, { role: "reviewer" }]);
+    expect(notes(store, "model_roles_fallback")).toEqual([{ role: "default" }, { role: "judges:0" }, { role: "judges:2" }, { role: "chair" }, { role: "reviewer" }]);
+    // judges:2 (gemini-pro tier has no head) is empty and falls back too, in chains() order.
     await roles.refreshCatalog();
     roles.candidates("default");
-    expect(notes(store, "model_roles_fallback")).toHaveLength(5); // a new read, a new note
+    expect(notes(store, "model_roles_fallback")).toHaveLength(6); // a new read, a new note
     store.close();
   });
 
@@ -176,10 +178,11 @@ describe("RoleResolver", () => {
     const trimmed = fixtureCatalog().filter((m) => m.provider !== "openai-codex" && !(m.provider === "google-antigravity" && m.id === "gemini-3.8-flash"));
     const roles = await pinnedRoles(store, trimmed, { "judges:0": "opus-4-6" });
     const c = roles.chains();
-    expect(fmt(c.judges)).toEqual(["google-antigravity/claude-opus-4-6", "openai-codex/gpt-5.5", "google-antigravity/gemini-3.1-pro"]);
+    // Seat 2 is the static fallback until Task 5 (the gemini-pro tier is empty); format null-safe so Task 5 can pin a hole.
+    expect(c.judges.map((m) => (m ? formatModelString(m) : null))).toEqual(["google-antigravity/claude-opus-4-6", "openai-codex/gpt-5.5", "google-antigravity/gemini-3.1-pro"]);
     expect(c.media).toEqual(staticRoleChains().media);
     expect(fmt(c.reader)).toEqual(["kimi-code/k3:low"]); // not empty: no fallback
-    expect(notes(store, "model_roles_fallback")).toEqual([{ role: "vision" }, { role: "judges:1" }]);
+    expect(notes(store, "model_roles_fallback")).toEqual([{ role: "vision" }, { role: "judges:1" }, { role: "judges:2" }]);
     store.close();
   });
 

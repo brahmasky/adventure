@@ -11,7 +11,7 @@ import type { RunStore } from "../run/run-store.js";
 import type { PanelSeat } from "./idea-panel.js";
 import type { RadarLlm } from "./idea-radar.js";
 
-/** Which Judges-role seat serves which named judge (kimi-code/k3, the openai-codex seat, gemini-3.1-pro; src/omp/model-roles.ts). */
+/** Which Judges-role seat serves which named judge (kimi-code/k3, the openai-codex seat, the gemini-pro tier's adopted head; src/omp/model-roles.ts). */
 export const PANEL_JUDGE_SEAT_INDEX = { kimi: 0, codex: 1, gemini: 2 } as const;
 
 export interface PanelSeatBindings {

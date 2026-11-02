@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
-  ALLOWED_PROVIDERS, CHAT_ROLES, clampEffort, isOverrideKey, matchOverride, resolveModelRolesMode, resolveRole, ROLE_LISTS, ROLE_NAMES,
-  roleSelectors, STATIC_ROLE_LISTS, staticRoleChains, STEP_UP, type ResolveInput
+  ALLOWED_PROVIDERS, CHAT_ROLES, clampEffort, isOverrideKey, matchOverride, resolveModelRolesMode, resolveRole, JUDGE_SEATS, ROLE_LEGS, ROLE_NAMES,
+  roleSelectors, STATIC_ROLE_LISTS, staticRoleChains, STEP_UP, type ResolveInput, type RoleName
 } from "../../src/omp/model-roles.js";
 import { formatModelString, parseModelString, type ModelString } from "../../src/omp/model-string.js";
-import { fixtureCatalog } from "../helpers/model-roles.js";
+import { tierDef } from "../../src/omp/model-tiers.js";
+import { fixtureCatalog, SEED_LISTS } from "../helpers/model-roles.js";
 
 const NONE: ReadonlySet<string> = new Set();
 const resolved = (i: Partial<ResolveInput> & Pick<ResolveInput, "role">): string[] =>
@@ -15,9 +16,9 @@ const f = (l: ModelString[]) => l.map(formatModelString).join(",");
 // chat turn to Codex or to a metered provider. Both are hard lines, so the tests pin the lists and each filter.
 describe("role lists (code-owned, spec §4)", () => {
   it("every selector parses, sits on an allowed provider, and no chat role names Codex (Codex stays the self-write writer)", () => {
-    for (const role of ROLE_NAMES) {
-      for (const s of ROLE_LISTS[role]) {
-        const m = parseModelString(s);
+    // Why: a wrong selector routes a chat turn to Codex or a metered provider (hard lines); the seeded resolution is what runs.
+    for (const { role, seat } of ROLE_NAMES.flatMap((r): Array<{ role: RoleName; seat?: number }> => (r === "judges" ? Array.from({ length: JUDGE_SEATS }, (_, seat) => ({ role: r, seat })) : [{ role: r }]))) {
+      for (const m of roleSelectors(role, seat)) {
         expect(ALLOWED_PROVIDERS).toContain(m.provider);
         if (CHAT_ROLES.has(role)) expect(m.provider).not.toBe("openai-codex");
       }
@@ -55,11 +56,9 @@ describe("role lists (code-owned, spec §4)", () => {
   });
 
   it("Fast, Thinking and Tiny are the Decision 3 lists (Rev 4: no k3 on Fast; gemini-3.8-flash behind k3 on Tiny)", () => {
-    expect(ROLE_LISTS.fast).toEqual(["anthropic/claude-sonnet-5-5:low", "google-antigravity/claude-sonnet-5-5:low",
-      "google-antigravity/gemini-3.8-flash:low"]);
-    expect(ROLE_LISTS.thinking).toEqual(["anthropic/claude-opus-5-5:high", "google-antigravity/claude-opus-5-5:high",
-      "google-antigravity/claude-opus-4-6:high", "kimi-code/k3:high"]);
-    expect(ROLE_LISTS.tiny).toEqual(["kimi-code/k3:low", "google-antigravity/gemini-3.8-flash:low"]);
+    expect(resolved({ role: "fast" })).toEqual(SEED_LISTS.fast);
+    expect(resolved({ role: "thinking" })).toEqual(SEED_LISTS.thinking); // the Antigravity 4-6 leg is gone with the tier model
+    expect(resolved({ role: "tiny" })).toEqual(SEED_LISTS.tiny);
   });
 
   // Paco 2026-10-07: Kimi is not renewed next year. A role whose only leg is k3 would empty the day the catalog drops it
@@ -67,7 +66,7 @@ describe("role lists (code-owned, spec §4)", () => {
   // provider. Judges are one selector per seat by design; seat 0 is the named exception (a list edit then).
   it("every role list except the per-seat judges keeps a non-Kimi leg", () => {
     for (const role of ROLE_NAMES.filter((r) => r !== "judges")) {
-      expect(ROLE_LISTS[role].some((s) => parseModelString(s).provider !== "kimi-code"), role).toBe(true);
+      expect(ROLE_LEGS[role].some((l) => tierDef(l.tier).provider !== "kimi-code"), role).toBe(true);
     }
   });
 
@@ -76,8 +75,8 @@ describe("role lists (code-owned, spec §4)", () => {
   });
 
   it("every list selector is in the fixture catalog, so resolved mode over it returns the lists unchanged", () => {
-    for (const role of ROLE_NAMES.filter((r) => r !== "judges")) expect(resolved({ role })).toEqual(ROLE_LISTS[role]);
-    ROLE_LISTS.judges.forEach((s, seat) => expect(resolved({ role: "judges", seat })).toEqual([s]));
+    for (const role of ROLE_NAMES.filter((r) => r !== "judges")) expect(resolved({ role })).toEqual(SEED_LISTS[role]);
+    for (let seat = 0; seat < JUDGE_SEATS; seat++) expect(resolved({ role: "judges", seat })).toEqual(SEED_LISTS[`judges:${seat}`]);
   });
 });
 
@@ -90,7 +89,7 @@ describe("resolveRole — spec §4 steps 1–4", () => {
 
   it("never routes a chat seat to Codex, while Reader and the judges may use it", () => {
     expect(matchOverride("gpt-6.1", "default", fixtureCatalog())).toEqual([]);
-    expect(resolved({ role: "default", override: "gpt-6.1" })).toEqual(ROLE_LISTS.default);
+    expect(resolved({ role: "default", override: "gpt-6.1" })).toEqual(SEED_LISTS.default);
     expect(matchOverride("gpt-6.1", "reader", fixtureCatalog()).map((m) => m.id)).toEqual(["gpt-6.1-sol"]);
   });
 
@@ -106,14 +105,15 @@ describe("resolveRole — spec §4 steps 1–4", () => {
   it("drops a listed selector the catalog no longer lists (a retired model), matching provider/id without the :effort", () => {
     // The 2026-10-07 Antigravity generation change, either way round: the role keeps whichever generation is listed.
     const newGen = fixtureCatalog().filter((m) => !(m.provider === "google-antigravity" && m.id === "claude-opus-4-6"));
-    expect(resolved({ role: "default", catalog: newGen })).toEqual(["anthropic/claude-opus-5-5:medium", "google-antigravity/claude-opus-5-5:medium", "kimi-code/k3:low"]);
+    expect(resolved({ role: "default", catalog: newGen })).toEqual(SEED_LISTS.default);
     const oldGen = fixtureCatalog().filter((m) => !(m.provider === "google-antigravity" && /^claude-(opus|sonnet)-5-5$/.test(m.id)));
-    expect(resolved({ role: "default", catalog: oldGen })).toEqual(["anthropic/claude-opus-5-5:medium", "google-antigravity/claude-opus-4-6:medium", "kimi-code/k3:low"]);
+    // The antigravity leg's adopted head left the catalog and it has no previous: the leg drops (tier model, spec §4.1).
+    expect(resolved({ role: "default", catalog: oldGen })).toEqual(["anthropic/claude-opus-5-5:medium", "kimi-code/k3:low"]);
   });
 
   it("skips what the running child refused, in the list and in the override alike", () => {
     expect(resolved({ role: "default", refused: new Set(["anthropic/claude-opus-5-5"]) }))
-      .toEqual(["google-antigravity/claude-opus-5-5:medium", "google-antigravity/claude-opus-4-6:medium", "kimi-code/k3:low"]);
+      .toEqual(["google-antigravity/claude-opus-5-5:medium", "kimi-code/k3:low"]);
     expect(resolved({ role: "thinking", override: "opus-4-6", refused: new Set(["google-antigravity/claude-opus-4-6"]) })[0]).toBe("anthropic/claude-opus-5-5:high");
   });
 
@@ -126,11 +126,11 @@ describe("resolveRole — spec §4 steps 1–4", () => {
   });
 
   it("with no catalog in resolved mode, keeps the whole list and applies an override only as an exact list match (Decision 4)", () => {
-    expect(resolved({ role: "default", catalog: null })).toEqual(ROLE_LISTS.default);
+    expect(resolved({ role: "default", catalog: null })).toEqual(SEED_LISTS.default);
     expect(resolved({ role: "default", catalog: null, override: "KIMI-CODE/k3" })).toEqual([
-      "kimi-code/k3:low", "anthropic/claude-opus-5-5:medium", "google-antigravity/claude-opus-5-5:medium", "google-antigravity/claude-opus-4-6:medium"
+      "kimi-code/k3:low", "anthropic/claude-opus-5-5:medium", "google-antigravity/claude-opus-5-5:medium"
     ]);
-    expect(resolved({ role: "default", catalog: null, override: "opus" })).toEqual(ROLE_LISTS.default);
+    expect(resolved({ role: "default", catalog: null, override: "opus" })).toEqual(SEED_LISTS.default);
   });
 
   it("resolves each judge seat from its own index; a seat override leads that seat only", () => {

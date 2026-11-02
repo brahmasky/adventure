@@ -92,13 +92,13 @@ async function loadModules() {
   const mods = await Promise.all([
     "config/load-env.js", "config/disarm-posture.js", "core/core-worker.js", "domain/types.js", "gateway/gateway.js",
     "run/run-store.js", "jev/jev-client.js", "jev/questions/tree.js", "jev/questions/types.js", "jev/jev-incidents.js",
-    "jev/triage-replay.js", "run/invariant-sweep.js", "omp/model-roles.js", "omp/model-catalog.js", "omp/role-resolver.js",
+    "jev/triage-replay.js", "run/invariant-sweep.js", "omp/model-roles.js", "omp/model-tiers.js", "omp/model-catalog.js", "omp/role-resolver.js",
     "omp/omp-config.js", "omp/model-roles-tick.js", "jev/tree-policy.js", "jev/calibration.js", "decisions/jev-version-check.js", "omp/omp-version.js", "core/lanes/lane-types.js"
   ].map((p) => import(`../dist/${p}`)));
   const m = Object.assign({}, ...mods);
   const need = ["loadHougeEnv", "DISARM_FLAGS", "CoreWorker", "buildTypedTaskEvent", "Gateway", "RunStore", "createJevClient", "toJevQuestion", "CALIBRATED_ROWS", "TREE_QUESTIONS",
     "isProposal", "criteriaHash", "JEV_INCIDENT_SUBJECT", "runTreeReplay", "detectViolations", "checkJevSkipRate", "JEV_NOT_ATTEMPT_REASONS",
-    "JEV_SILENT_SKIP_REASONS", "ROLE_LISTS", "ALLOWED_PROVIDERS", "CHAT_ROLES", "matchOverride", "clampEffort", "STEP_UP", "readOmpCatalog",
+    "JEV_SILENT_SKIP_REASONS", "ROLE_NAMES", "JUDGE_SEATS", "roleSelectors", "tierHeadsOf", "ALLOWED_PROVIDERS", "CHAT_ROLES", "matchOverride", "clampEffort", "STEP_UP", "readOmpCatalog",
     "RoleResolver", "resolveOmpConfig", "runModelRolesTick", "treeArmed", "TREE_STATUS_ARM_ID", "calibrationRows", "checkOmpVersion", "CASCADE_TIMEOUT_MS", "CATEGORIES",
     "TREE_ANSWER_ARM_ID", "TREE_LOOKUP_ARM_ID", "LANE_WHYS", "treeArmingFor"];
   const missing = need.filter((n) => m[n] === undefined);
@@ -471,10 +471,15 @@ function checkFallthroughWhys(g) {
   check("every fallthrough:* in the gate carries a why from spec §8", bad.length === 0, bad.map((v) => `${v.run_id}:${v.handler_outcome}`).join(",") || "none");
 }
 
-/** Every model id named by every role list, by role (judges per seat). */
-function listSelectors(m) {
-  return Object.entries(m.ROLE_LISTS).flatMap(([role, list]) => list.map((s, i) => ({ role: role === "judges" ? `judges:${i}` : role, s: noEffort(s) })));
+/** Every key's own selectors on the copy's tier heads (spec 2026-11-02 §4.1): what resolution starts from. */
+function keySelectors(g) {
+  const heads = g.m.tierHeadsOf(g.store.listModelTiers());
+  const sel = (role, seat) => g.m.roleSelectors(role, seat, "resolved", heads).map((s) => `${s.provider}/${s.model}${s.effort ? `:${s.effort}` : ""}`);
+  return g.m.ROLE_NAMES.flatMap((role) => (role === "judges"
+    ? Array.from({ length: g.m.JUDGE_SEATS }, (_, i) => ({ key: `judges:${i}`, list: sel(role, i) }))
+    : [{ key: role, list: sel(role, undefined) }]));
 }
+function listSelectors(g) { return keySelectors(g).flatMap((k) => k.list.map((s) => ({ role: k.key, s: noEffort(s) }))); }
 
 /** The list's first selector the catalog carries (spec §4 step 3 drops the rest); undefined when none is catalogued. */
 const firstCatalogued = (list, listed) => (list ?? []).find((sel) => listed.has(noEffort(sel)));
@@ -486,13 +491,14 @@ const firstCatalogued = (list, listed) => (list ?? []).find((sel) => listed.has(
  */
 function caseRoleHeads(g, catalog) {
   const listed = new Set(catalog.map((c) => key(c.provider, c.id)));
-  const missing = listSelectors(g.m).filter((x) => !listed.has(x.s));
+  const missing = listSelectors(g).filter((x) => !listed.has(x.s));
   console.log(`  INFO uncatalogued list entries (resolution drops them): ${missing.map((x) => `${x.role}:${x.s}`).join(", ") || "none"}`);
   const overrides = g.store.latestModelRoleOverrides();
   for (const r of g.roles.resolveAll()) {
     const [role, seat] = String(r.key).split(":");
     if (overrides.has(r.key)) { console.log(`  role ${r.key}: override ${overrides.get(r.key)} in the copy → head ${r.head} (not compared)`); continue; }
-    const list = seat !== undefined ? [g.m.ROLE_LISTS[role]?.[Number(seat)]].filter(Boolean) : g.m.ROLE_LISTS[role];
+    const list = keySelectors(g).find((k) => k.key === r.key)?.list ?? [];
+    if (list.length === 0) { console.log(`  INFO ${r.key}: tier empty (spec 2026-11-02 §4.4)`); continue; }
     const want = firstCatalogued(list, listed);
     check(`9 roles: ${r.key} head = its list's first catalogued selector`, want !== undefined && r.source === "list" && noEffort(r.head) === noEffort(want),
       `head=${r.head} want=${want ?? "(none catalogued)"} candidates=${r.candidates.join(",")}`);

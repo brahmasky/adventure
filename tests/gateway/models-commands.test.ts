@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TypedTaskEvent } from "../../src/domain/types.js";
 import { Gateway, HELP_TEXT } from "../../src/gateway/gateway.js";
 import { MODELS_REFUSED, modelsRefusalText, type ModelsRefusal, type ModelsRoles } from "../../src/gateway/models-commands.js";
-import { ALLOWED_PROVIDERS, ROLE_LISTS, type CatalogModel } from "../../src/omp/model-roles.js";
+import { ALLOWED_PROVIDERS, JUDGE_SEATS, type CatalogModel } from "../../src/omp/model-roles.js";
 import type { ResolvedRole } from "../../src/omp/role-resolver.js";
 import { RunStore } from "../../src/run/run-store.js";
 import { isHandledIntakeDenial } from "../../src/telegram/telegram-poll-runner.js";
@@ -124,7 +124,7 @@ describe("/models set", () => {
     ["/models set default gpt-6.1", stub(), "outside_allow_list"],
     ["/models set default nonexistent-model", stub(), "no_match"],
     ["/models set judges opus", stub(), "role_judges"],
-    [`/models set judges ${ROLE_LISTS.judges.length} opus`, stub(), "no_seat"],
+    [`/models set judges ${JUDGE_SEATS} opus`, stub(), "no_seat"],
     ["/models set thinking opus", stub(null), "catalog_unavailable"]
   ];
   for (const [text, roles, reason] of refusals) {
