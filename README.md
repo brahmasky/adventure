@@ -146,8 +146,10 @@ amendments).
 Every LLM call runs on **subscription OAuth**; no metered API sits on any default chain
 ([ADR 0019](docs/decisions/0019-metered-ceiling.md) amendment: the $ ceiling is dormant). Each seat names a
 **model role** (Fast, Default and Thinking for the planner's gears; Reader, Vision, Tiny, Judges, Chair, Reviewer for the
-rest). A role is a code-owned list of `provider/model[:effort]` selectors resolved against omp's live catalog, and Paco
-can override one from Telegram with `/models`. The lists, the resolution order, the daily change notice and the
+rest). A role is a code-owned list of tier legs (`opus@anthropic`, `gemini-flash`, `kimi`, …): each tier resolves to its newest
+model in omp's live catalog, adopted only after a probe call passes. Paco can override one from Telegram with `/models`. An
+empty tier (a judge seat today) sends Paco a tap card, and an open actionable incident is repeated in a daily reminder until
+it is fixed. The lists, the resolution order, the daily change notice and the
 `HOUGE_MODEL_ROLES` rollback switch live in the
 [configuration reference § Model roles](docs/reference/configuration.md#model-roles), not here.
 
@@ -352,7 +354,7 @@ omp --profile houge login kimi-code            # Kimi: Tiny role, judge, reviewe
 omp --profile houge login openai-codex         # GPT judge and reader fallback
 ```
 
-`/models` in Telegram shows which model each role resolves to today, and `/models set` overrides one.
+`/models` in Telegram shows which model each role resolves to today, and `/models set` overrides one. `/fresh` starts a new planner conversation at the next message and clears a carried trust level; `/status` shows the carry while one stands.
 
 The grants live in `~/.omp/profiles/houge`, a secret path the sandbox and the policy hook keep from
 the planner's tools.
