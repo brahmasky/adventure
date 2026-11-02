@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { FRESH_FAILED_PREFIX, type PlannerSupervisor } from "../../src/omp/planner-supervisor.js";
 import { PlannerRpcError } from "../../src/omp/planner-session.js";
 import { createQueuedTurnRun } from "../helpers/runs.js";
@@ -14,6 +14,7 @@ const turnTrust = (store: Store, run: string) =>
   store.getLedgerEvents(run).filter((e) => e.event_type === "turn_trust").map((e) => e.payload);
 const resetReasons = (store: Store) =>
   store.getLedgerEvents().filter((e) => e.event_type === "planner_session_reset").map((e) => (e.payload as { reason: string }).reason);
+const waitStopped = async (sup: PlannerSupervisor) => { const end = Date.now() + 5_000; while (sup.state() !== "STOPPED") { if (Date.now() > end) throw new Error("child never stopped"); await new Promise((r) => setTimeout(r, 10)); } };
 const run = async (h: { store: Store; sup: PlannerSupervisor }) => { const id = createQueuedTurnRun(h.store); h.sup.submit(req(id)); await h.sup.whenIdle(); return id; };
 /** The reset rows this case added: harness() with sessionState "current" seeds one lesson_change row. */
 const newResets = (store: Store, base: number) => resetReasons(store).slice(base);
@@ -64,6 +65,33 @@ describe("/fresh", () => {
     expect(stored).toEqual(["answer"]);
     expect(h.store.freshRequestedAt("42")).toBe("2026-11-02T01:00:00.000Z");
     expect(h.outcome.incidents).toEqual(expect.arrayContaining([expect.objectContaining({ k: "planner_session_reset_failed" })]));
+  });
+  it("a failed reset is retried at the next spawn, not on every turn of the live child; the prefix is that child's only (M90/M92, M93)", async () => {
+    // Ruled behaviour (freshTried): restarting a live child each turn would turn one failing new_session into a retry storm.
+    // The failed child's replies say they continue the old conversation; a later child's fresh transcript must not say so.
+    let n = 0;
+    const h = harness(fakeSession({ newSession: async () => { if (++n === 1) throw new PlannerRpcError("command_failed:new_session"); return { cancelled: false }; } }));
+    h.store.requestFreshTranscript("42", "2026-11-02T01:00:00.000Z");
+    await run(h); await run(h);
+    expect(h.session.resets).toBe(1);                                   // the second turn rode the same child: no second attempt
+    h.session.exit(1); await waitStopped(h.sup);
+    await run(h);
+    const texts = h.outcome.done.map((d) => (d as { text: string }).text);
+    expect([h.session.resets, texts, h.store.freshRequestedAt("42")]).toEqual([2, [`${FRESH_FAILED_PREFIX}\n\nanswer`, `${FRESH_FAILED_PREFIX}\n\nanswer`, "answer"], null]);
+  });
+  it("only the child whose reset served the /fresh can clear the marker; another generation's commit leaves it (M87, N2)", async () => {
+    // Defensive pin: today every start with a pending marker re-serves it, so a stale served generation is reached only when
+    // the second start reads no marker (stubbed below). A lesson-reset child must then commit its own reset, not Paco's /fresh.
+    let prompts = 0;
+    const session = fakeSession({ beforePrompt: async () => { if (++prompts === 1) session.exit(1); } }); // gen 1 dies before its commit
+    const h = harness(session);
+    h.store.requestFreshTranscript("42", "2026-11-02T01:00:00.000Z");
+    await run(h); await waitStopped(h.sup);
+    h.store.addLesson({ scope: "ask", text: "be brief", source: "user_feedback" }); // gen 2 makes (and commits) a lesson reset
+    const read = vi.spyOn(h.store, "freshRequestedAt").mockReturnValue(null);
+    await run(h);
+    read.mockRestore();
+    expect([newResets(h.store, 1), h.store.freshRequestedAt("42")]).toEqual([["fresh", "lesson_change"], "2026-11-02T01:00:00.000Z"]);
   });
   it("N2: a /fresh written while a lesson-reset child's first prompt RPC is in flight survives that turn's commit", async () => {
     // The marker is written INSIDE the prompt RPC (beforePrompt), i.e. after the lesson reset and before commitReset:
