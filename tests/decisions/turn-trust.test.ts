@@ -74,6 +74,7 @@ describe("turn.trust", () => {
     }
     const keys = (store as unknown as { db: { prepare(q: string): { all(): unknown[] } } }).db.prepare(`SELECT idempotency_key FROM notification_outbox WHERE idempotency_key LIKE 'incident_opened:%'`).all();
     expect(keys).toHaveLength(2);
+    store.close();
   });
   it("a hostile card that cannot be queued opens trust_card_failed, so Paco still learns the turn is hostile", () => {
     const { store, trust } = setup();

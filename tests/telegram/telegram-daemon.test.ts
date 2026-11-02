@@ -599,6 +599,49 @@ describe("runTelegramDaemon — the signal path (⓪·3 S2)", () => {
     }
   });
 
+  // Spec 2026-11-02 §5 (B3, N5): the daily reminder runs before the model ticks in the REAL tick, so a stalled or failing
+  // model-roles catalog read (the first await of the tick) cannot delay it. The boot read (call 0) is let through.
+  describe("the daily incident reminder in the daemon tick", () => {
+    const reminderKeys = (store: RunStore) => (store as unknown as { db: { prepare(q: string): { all(): Array<{ idempotency_key: string }> } } }).db
+      .prepare(`SELECT idempotency_key FROM notification_outbox WHERE idempotency_key LIKE 'incident_remind:%'`).all().map((r) => r.idempotency_key);
+    const openOld = (store: RunStore) => store.openIncident({ kind: "role_unresolved", subject: "judges:2", detail: {}, now: new Date(Date.now() - 30 * 3_600_000).toISOString() });
+    const runDaemonWith = (store: RunStore, controller: AbortController, getUpdates: () => Promise<never[]>) => runTelegramDaemon({
+      store, projectRoot: projectRoot(), allowlist: ALLOWLIST, stopSignal: controller.signal, longPollTimeoutSeconds: 0,
+      llmAdapter: async (input: Record<string, unknown>) => okAnswer(input),
+      telegramClient: { getUpdates, sendMessage: async () => ({ message_id: 1 }) }
+    });
+    afterEach(() => { vi.restoreAllMocks(); });
+
+    it("a catalog read that never resolves: the reminder is already enqueued while the model tick is stalled", async () => {
+      delete process.env.HOUGE_MODEL_ROLES; // resolved mode: the roles tick awaits the catalog first
+      const store = RunStore.openInMemory();
+      let release!: () => void; let calls = 0;
+      vi.spyOn(RoleResolver.prototype, "refreshCatalog").mockImplementation(() => (calls++ === 0 ? Promise.resolve(false)
+        : new Promise<boolean>((resolve) => { release = () => resolve(false); })));
+      try {
+        openOld(store);
+        const controller = new AbortController();
+        const done = runDaemonWith(store, controller, stopOnSecondPoll(controller));
+        await until(() => calls >= 2); // the tick is parked inside the roles tick's catalog read
+        expect(reminderKeys(store)).toHaveLength(1);
+        release();
+        await done;
+      } finally { store.close(); }
+    });
+
+    it("a catalog read that fails: the reminder is still enqueued", async () => {
+      delete process.env.HOUGE_MODEL_ROLES;
+      const store = RunStore.openInMemory();
+      let calls = 0; // the boot read resolves false (a failed read, as the real resolver reports it); the tick's read then throws
+      vi.spyOn(RoleResolver.prototype, "refreshCatalog").mockImplementation(() => (calls++ === 0 ? Promise.resolve(false) : Promise.reject(new Error("catalog down"))));
+      try {
+        openOld(store);
+        await idleCycle(store);
+        expect(reminderKeys(store)).toHaveLength(1);
+      } finally { store.close(); }
+    });
+  });
+
   it("a signal-path store error NEVER crashes the loop — the heartbeat still lands", async () => {
     const store = RunStore.openInMemory();
     try {
