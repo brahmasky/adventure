@@ -82,6 +82,7 @@ const entryCount = (path, id) => ro(path, (db) => db.prepare("SELECT COUNT(*) AS
 const schemaOf = (path) => ro(path, (db) => ({
   uv: db.prepare("PRAGMA user_version").get().user_version,
   hash: createHash("sha256").update(J(db.prepare("SELECT type, name, sql FROM sqlite_master ORDER BY type, name").all())).digest("hex").slice(0, 12),
+  mig: createHash("sha256").update(J(db.prepare("SELECT * FROM schema_migrations ORDER BY rowid").all())).digest("hex").slice(0, 12), // every schema_migrations row: a migration can add one without touching the schema sql
 }));
 /** The seeded decision rows, whole, as one hash: a changed or rewritten row differs. */
 const rowsHash = (path, ids) => ro(path, (db) => createHash("sha256").update(J(ids.map((id) => db.prepare("SELECT * FROM decisions WHERE decision_id = ?").get(id) ?? null))).digest("hex").slice(0, 12));
@@ -151,8 +152,12 @@ function seedClarifyNow(store) {
   store.recordChatTurn({ chat_id: CHAT, run_id: "r0", role: "assistant", text: "Which file do you mean?", intent: "clarify" });
 }
 /** The digest's clarify rate is clarify / assistant chat turns: the chat turns the scenarios added to F are replayed onto A (store API), so only decisions rows differ between the copies. */
-function mirrorChatTurns(ctx, from, to, mark) {
-  const rows = ro(from, (db) => db.prepare("SELECT chat_id, run_id, role, text, intent, created_at FROM chat_turns WHERE rowid > ? ORDER BY rowid").all(mark));
+const turnsAdded = (from, mark) => ro(from, (db) => db.prepare("SELECT chat_id, run_id, role, text, intent, created_at FROM chat_turns WHERE rowid > ? ORDER BY rowid").all(mark));
+/** The exact chat turns the six scenarios add to F, in order [role, intent, text]: seedLaneRows' planner answer, five answered turns (cu_all, rc_inc, rc_fail, cu_fail, ls), the clarify pair, the cc turn. Anything else is not mirrored silently. */
+const EXPECTED_TURNS = [["assistant", null, "planner answer"], ...Array.from({ length: 5 }, () => [["user", null, "hi"], ["assistant", "loop", "answer"]]).flat(),
+  ["user", null, "fix the file"], ["assistant", "clarify", "Which file do you mean?"], ["user", null, "hi"], ["assistant", "loop", "answer"]];
+const turnShape = (rows) => rows.map((r) => [r.role, r.intent, r.text]);
+function mirrorChatTurns(ctx, rows, to) {
   const a = openStore(ctx.dNew, to);
   try { for (const r of rows) a.recordChatTurn({ ...r, intent: r.intent ?? undefined }); } finally { closeStore(a); }
 }
@@ -273,7 +278,10 @@ async function run(ctx) {
   phase = "snapshot"; const before = { n: NEW_IDS.map((id) => entryCount(F, id)), schema: schemaOf(F), counts: counts(F) };
   const chatMark = ro(F, (db) => db.prepare("SELECT COALESCE(MAX(rowid), 0) AS m FROM chat_turns").get().m);
   phase = "seed F"; const seed = await seedF(ctx, F);
-  mirrorChatTurns(ctx, F, A, chatMark);
+  const addedTurns = turnsAdded(F, chatMark);
+  check("the chat turns the scenarios added to F are exactly the expected ones (15: the planner answer, five answered turns, the clarify pair, the cc turn; no extra clarify or assistant turn), checked before they are mirrored onto A",
+    same(turnShape(addedTurns), EXPECTED_TURNS) && addedTurns.every((r) => r.chat_id === CHAT), `added ${addedTurns.length} (want ${EXPECTED_TURNS.length}) · clarify ${addedTurns.filter((r) => r.intent === "clarify").length} (want 1)`);
+  mirrorChatTurns(ctx, addedTurns, A);
   const seedIds = seed.rows.map((r) => r.decision_id);
   const snapF = { counts: counts(F), keys: keysOf(F), schema: schemaOf(F), hash: rowsHash(F, seedIds), content: contentOf(F) };
   const snapA = { counts: counts(A), keys: keysOf(A), schema: schemaOf(A), content: contentOf(A) };
@@ -290,9 +298,9 @@ async function run(ctx) {
   check("the old build opened both copies and every step (/status, digest, /status decisions, list, review_ok) completed without throwing", true);
   phase = "compare";
   const [aA, aF, schA, schF] = [counts(A), counts(F), schemaOf(A), schemaOf(F)];
-  check("the old build ran no migration: the schema (every object's sql and user_version) is identical before and after its open, on A and F, and A equals F",
+  check("the old build ran no migration: the schema (every object's sql and user_version and every schema_migrations row) is identical before and after its open, on A and F, and A equals F",
     same(snapA.schema, oa.schemaAfterOpen) && same(snapF.schema, of.schemaAfterOpen) && same(snapA.schema, schA) && same(snapF.schema, schF) && same(snapA.schema, snapF.schema) && same(before.schema, snapF.schema),
-    `${snapF.schema.hash} uv ${snapF.schema.uv} -> A ${schA.hash} / F ${schF.hash}`);
+    `${snapF.schema.hash} migrations ${snapF.schema.mig} uv ${snapF.schema.uv} -> A ${schA.hash} / F ${schF.hash}`);
   const keysF = keysOf(F); const gone = lost(snapF.keys, keysF); const goneA = lost(snapA.keys, keysOf(A));
   const hashAfter = rowsHash(F, seedIds); const contentF = contentOf(F); const contentA = contentOf(A);
   const seededRead = seedIds.map((id) => of.readRows.find((x) => x.decision_id === id));
@@ -325,7 +333,11 @@ async function run(ctx) {
 }
 
 function restoreEnv() { for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; } delete process.env.HOUGE_OMP_BIN; }
-function onSignal(code) { for (const h of handles.splice(0)) closeStore(h); cleanupTemp(); restoreEnv(); process.exit(code); }
+/** Every exit path: handles closed, the fixture's /tmp/hsv-* workdirs removed (fx.cleanup), the copies removed, env restored. */
+function onSignal(code) {
+  for (const h of handles.splice(0)) closeStore(h);
+  fx.cleanup().catch(() => undefined).finally(() => { cleanupTemp(); restoreEnv(); process.exit(code); });
+}
 for (const [sig, code] of [["SIGINT", 130], ["SIGTERM", 143], ["SIGHUP", 129], ["SIGQUIT", 131]]) process.on(sig, () => onSignal(code));
 for (const ev of ["uncaughtException", "unhandledRejection"]) process.on(ev, (e) => { console.error(`${ev}: ${errCode(e)}`); onSignal(2); });
 
@@ -341,6 +353,7 @@ export async function main() {
     process.exitCode = 2;
   } finally {
     for (const h of handles.splice(0)) closeStore(h);
+    await fx.cleanup().catch(() => undefined);
     await runClosers();
     cleanupTemp();
     restoreEnv();
