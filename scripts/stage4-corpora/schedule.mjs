@@ -3,7 +3,7 @@
 // Compared: each call's tool result, the run's ledger events, scheduled_tasks rows and decisions. schedule.admit rows are filtered by the
 // harness (NEW_ROW_IDS.s4b) and instead REQUIRED on the new side (the table below); the old side must hold none (checked in project).
 import { join } from "node:path";
-import { DISTS, mkStore, mkTemp, requireNew } from "../stage4-diff-lib.mjs";
+import { D4A_LEDGER_WHERE, DISTS, mkStore, mkTemp, requireNew } from "../stage4-diff-lib.mjs";
 import { scrubIds } from "../stage4-bind-fixture.mjs";
 import { scheduleRun, withFixedClock } from "../stage4-admit-fixture.mjs";
 
@@ -70,7 +70,7 @@ async function project(d, item) {
     await withFixedClock(async () => { for (const input of item.calls(ids)) results.push(await run.call(input)); });
     const decisions = rows(store, `SELECT entry_id, tool_call_id, stage, rung, verdict, reason_code, armed_mode, fallback_reason FROM decisions ORDER BY rowid`);
     if (d.dir !== DISTS.new && decisions.some((r) => r.entry_id === "schedule.admit")) throw new Error("control failed: the old build wrote schedule.admit rows");
-    const view = { results, ledger: rows(store, `SELECT event_type, actor, sequence, payload_json FROM ledger_events ORDER BY rowid`),
+    const view = { results, ledger: rows(store, `SELECT event_type, actor, sequence, payload_json FROM ledger_events ${D4A_LEDGER_WHERE} ORDER BY rowid`),
       scheduled_tasks: rows(store, `SELECT * FROM scheduled_tasks ORDER BY rowid`), decisions,
       run_ok: store.db.prepare("SELECT run_id, tool_call_id FROM decisions WHERE entry_id = ?").all("schedule.admit").every((r) => r.run_id === run.run_id && r.tool_call_id === null), __strip: ["run_ok"] }; // per-side check for required(): every new row sits on this item's own run
     return scrubIds(view, [run.root]);
