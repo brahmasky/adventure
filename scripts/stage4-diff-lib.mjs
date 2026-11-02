@@ -189,13 +189,6 @@ export const LOUD_DEGRADATION_NEW = {
 };
 
 /**
- * D4-A (static judge seat 2 is empty): a CoreWorker built with no catalog read yet resolves seat 2 to nothing and notes it once, as a `model_roles_fallback`
- * ledger row {"role":"judges:2"}. The merge-base builds cannot write it (their seat 2 was never empty). A corpus that projects the ledger drops exactly that
- * row, by event_type and payload, with this WHERE (it never matches another role or event).
- */
-export const D4A_LEDGER_WHERE = `WHERE NOT (event_type = 'model_roles_fallback' AND payload_json = '{"role":"judges:2"}')`;
-
-/**
  * Every table's rows in rowid order, virtual tables, their shadows and sqlite_* excluded (regularTables): the whole-DB projection (spec R1 §6). Raw column
  * values, `*_json` strings NOT parsed (byte-identical compare; relabelClocks reaches clocks inside them textually). `decisions` rows
  * whose entry_id is in dropDecisionIds are removed HERE, before any clock relabelling, so they never occupy a clock rank (P2).

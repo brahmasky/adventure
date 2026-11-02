@@ -7,7 +7,7 @@
 // must hold none (checked in project). No Date override here: wall-clock columns go through relabelClocks (order, equality and shape are compared, not the instants).
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { D4A_LEDGER_WHERE, DISTS, R2_IDS, mkStore, mkTemp, relabelClocks, requireNew } from "../stage4-diff-lib.mjs";
+import { DISTS, R2_IDS, mkStore, mkTemp, relabelClocks, requireNew } from "../stage4-diff-lib.mjs";
 import { scrubIds } from "../stage4-bind-fixture.mjs";
 import { adminWorker } from "../stage4-admit-fixture.mjs";
 
@@ -168,7 +168,7 @@ async function projectWorker(d, item) {
     const decisions = rows(store, DEC_SQL);
     if (d.dir !== DISTS.new && decisions.some((r) => r.entry_id === "memory.lesson_admit")) throw new Error("control failed: the old build wrote memory.lesson_admit rows");
     const view = { result: out.result, committed: out.committed, saved: out.saved ?? null,
-      ledger: rows(store, `SELECT event_type, actor, sequence, payload_json FROM ledger_events ${D4A_LEDGER_WHERE} ORDER BY rowid`),
+      ledger: rows(store, "SELECT event_type, actor, sequence, payload_json FROM ledger_events ORDER BY rowid"),
       lessons: rows(store, "SELECT * FROM lessons ORDER BY rowid"),
       episodic_facts: rows(store, "SELECT * FROM episodic_facts ORDER BY id"),
       memory_changes: rows(store, "SELECT * FROM memory_changes ORDER BY rowid"), decisions, hook_fired: hooks.n };

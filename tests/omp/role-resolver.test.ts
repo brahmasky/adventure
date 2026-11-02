@@ -166,11 +166,12 @@ describe("RoleResolver", () => {
     const roles = await pinnedRoles(store, fixtureCatalog().filter((m) => !/claude|k3/.test(m.id)));
     roles.candidates("default"); roles.candidates("default"); roles.chains();
     // No claude and no k3 in the catalog: Default, judge seat 0, Chair and Reviewer resolve empty (Fast and Tiny keep gemini-3.8-flash).
-    expect(notes(store, "model_roles_fallback")).toEqual([{ role: "default" }, { role: "judges:0" }, { role: "judges:2" }, { role: "chair" }, { role: "reviewer" }]);
-    // judges:2 (gemini-pro tier has no head) is empty and falls back too, in chains() order.
+    // judges:2 (gemini-pro tier has no head) resolves empty too, but its static seat is empty (D4-A): there is nothing to fall
+    // back to, so no note (final review Minor 3: the note would claim a fallback that serves nothing; role_unresolved names it).
+    expect(notes(store, "model_roles_fallback")).toEqual([{ role: "default" }, { role: "judges:0" }, { role: "chair" }, { role: "reviewer" }]);
     await roles.refreshCatalog();
     roles.candidates("default");
-    expect(notes(store, "model_roles_fallback")).toHaveLength(6); // a new read, a new note
+    expect(notes(store, "model_roles_fallback")).toHaveLength(5); // a new read, a new note
     store.close();
   });
 
@@ -183,7 +184,7 @@ describe("RoleResolver", () => {
     expect(c.judges.map((m) => (m ? formatModelString(m) : null))).toEqual(["google-antigravity/claude-opus-4-6", "openai-codex/gpt-6.1-sol", null]);
     expect(c.media).toEqual(staticRoleChains().media);
     expect(fmt(c.reader)).toEqual(["kimi-code/k3:low"]); // not empty: no fallback
-    expect(notes(store, "model_roles_fallback")).toEqual([{ role: "vision" }, { role: "judges:1" }, { role: "judges:2" }]);
+    expect(notes(store, "model_roles_fallback")).toEqual([{ role: "vision" }, { role: "judges:1" }]); // seat 2: an empty static seat is no fallback
     store.close();
   });
 

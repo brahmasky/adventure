@@ -177,14 +177,18 @@ export class RoleResolver {
     return all.filter((m) => !refused.has(selectorKey(m))).map((m) => clampEffort(m, o.effort ?? null, this.cat, s.mode));
   }
 
-  /** F7: the role's static list, unfiltered and unclamped (minus what the child refused), noted once per role per catalog read. */
+  /**
+   * F7: the role's static list, unfiltered and unclamped (minus what the child refused), noted once per role per catalog read.
+   * An empty static list is no fallback (final review Minor 3: judge seat 2 under D4-A); the tick's role_unresolved names it.
+   */
   private fallback(role: RoleName, o: CandidateOptions): ModelString[] {
     const key = keyOf(role, o.seat);
-    // Static IS the list (an empty static judge seat 2, D4-A, is not a fallback): only resolved mode notes one.
-    if (resolveModelRolesMode(this.env()) !== "static" && !this.fellBack.has(key)) {
+    const asStatic = (refused: ReadonlySet<string>) => resolveRole({ role, ...seatOpt(o.seat), catalog: null, override: null, refused, mode: "static" });
+    // Static IS the list: only resolved mode notes one.
+    if (asStatic(NOTHING_REFUSED).length > 0 && resolveModelRolesMode(this.env()) !== "static" && !this.fellBack.has(key)) {
       this.fellBack.add(key);
       try { this.d.store.recordMemoryEvent("model_roles_fallback", { role: key }, "model_roles"); } catch (e) { console.warn(`[model-roles] could not record model_roles_fallback: ${why(e)}`); }
     }
-    return resolveRole({ role, ...seatOpt(o.seat), catalog: null, override: null, refused: o.refused ?? NOTHING_REFUSED, mode: "static" });
+    return asStatic(o.refused ?? NOTHING_REFUSED);
   }
 }
