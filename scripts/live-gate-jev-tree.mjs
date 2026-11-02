@@ -498,7 +498,12 @@ function caseRoleHeads(g, catalog) {
     const [role, seat] = String(r.key).split(":");
     if (overrides.has(r.key)) { console.log(`  role ${r.key}: override ${overrides.get(r.key)} in the copy → head ${r.head} (not compared)`); continue; }
     const list = keySelectors(g).find((k) => k.key === r.key)?.list ?? [];
-    if (list.length === 0) { console.log(`  INFO ${r.key}: tier empty (spec 2026-11-02 §4.4)`); continue; }
+    if (list.length === 0) {
+      // Only the gemini-pro seat may be empty (spec 2026-11-02 §4.4); any other empty key is a fault, not a skip.
+      if (r.key === "judges:2") { console.log(`  INFO ${r.key}: tier empty (spec 2026-11-02 §4.4)`); continue; }
+      check(`9 roles: ${r.key} has a non-empty selector list`, false, "empty_list");
+      continue;
+    }
     const want = firstCatalogued(list, listed);
     check(`9 roles: ${r.key} head = its list's first catalogued selector`, want !== undefined && r.source === "list" && noEffort(r.head) === noEffort(want),
       `head=${r.head} want=${want ?? "(none catalogued)"} candidates=${r.candidates.join(",")}`);

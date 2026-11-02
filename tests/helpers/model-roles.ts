@@ -25,7 +25,7 @@ export async function pinnedRoles(
 }
 
 /** Spec §4.2 bootstrap: every key's resolution on the seeded heads over a catalog that lists them — today's lists minus
- * the three selectors the catalog dropped (google-antigravity/claude-opus-4-6 ×3 roles, google-antigravity/gemini-3.1-pro). */
+ * the four selectors the catalog dropped (google-antigravity/claude-opus-4-6 ×3 roles, google-antigravity/gemini-3.1-pro). */
 export const SEED_LISTS: Readonly<Record<string, readonly string[]>> = {
   fast: ["anthropic/claude-sonnet-5-5:low", "google-antigravity/claude-sonnet-5-5:low", "google-antigravity/gemini-3.8-flash:low"],
   default: ["anthropic/claude-opus-5-5:medium", "google-antigravity/claude-opus-5-5:medium", "kimi-code/k3:low"],
