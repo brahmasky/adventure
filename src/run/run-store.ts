@@ -38,6 +38,7 @@ import {
 import { canTransitionProject, canTransitionRun } from "./state-machines.js";
 import type { LlmAttempt, LlmAuditSink } from "../llm/audit.js";
 import { isOverrideKey } from "../omp/model-roles.js";
+import { SEED_HEADS, TIER_IDS } from "../omp/model-tiers.js";
 import type { OverrideKey } from "../omp/role-resolver.js";
 import { computeCostUsd, METERED_PROVIDERS } from "../llm/metered-pricing.js";
 import { blobToFloat32, cosineSimilarity, float32ToBlob } from "../llm/embeddings.js";
@@ -95,7 +96,9 @@ export type LlmCallRole =
   // the tree's cascade pick between two categories (plan 2026-10-07 Decision 14): a Tiny-role one-shot on the turn's run
   | "cascade"
   // stage B lanes (spec §4–§5): the compose (Fast candidates) and the lookup's query rewrite (Tiny candidates); the planner stays "compose"
-  | "lane";
+  | "lane"
+  // a model probe before adoption (spec 2026-11-02 §4.2): its own role so probe traffic is readable apart
+  | "probe";
 
 /** Where an audited attempt belongs: a run, or a run-less correlation (`tick:*`, `cli:*`, `rating:*`). */
 export type LlmAuditScope =
@@ -387,6 +390,13 @@ export interface ModelRolesResolvedRow {
   catalog_ok: boolean;
   roles: Array<{ key: string; head: string | null; candidates: string[]; source: "list" | "override" }>;
 }
+
+export interface ModelTierRow {
+  tier: string; adopted: string | null; previous: string | null; adopted_at: string | null;
+  rejected_selector: string | null; rejected_at: string | null; updated_at: string;
+}
+export type ModelProbeResult = "pass" | "model_missing" | "inconclusive";
+export interface ModelProbeRow { tier: string; selector: string; purpose: "head" | "previous" | "tap"; result: ModelProbeResult; kind: string }
 
 export interface ChatTurnRow {
   turn_id: string;
@@ -1160,6 +1170,11 @@ const DECISION_LADDER_DDL = `
     offered_json TEXT NOT NULL,
     created_at TEXT NOT NULL
   );`;
+
+/** Spec 2026-11-02 §4.2: one row per tier. `adopted`/`previous` are catalog ids (the provider is the tier's); `rejected_selector` is provider/id. */
+const MODEL_TIERS_DDL = `CREATE TABLE IF NOT EXISTS model_tiers (
+  tier TEXT PRIMARY KEY, adopted TEXT, previous TEXT, adopted_at TEXT, rejected_selector TEXT, rejected_at TEXT, updated_at TEXT NOT NULL
+)`;
 
 const STANDING_APPROVAL_DDL = `
   CREATE TABLE IF NOT EXISTS standing_approvals (
@@ -6313,6 +6328,31 @@ export class RunStore {
     }));
   }
 
+  listModelTiers(): ModelTierRow[] {
+    return this.db.prepare(`SELECT tier, adopted, previous, adopted_at, rejected_selector, rejected_at, updated_at FROM model_tiers ORDER BY tier`).all<ModelTierRow>();
+  }
+
+  getModelTier(tier: string): ModelTierRow | undefined {
+    return this.db.prepare(`SELECT tier, adopted, previous, adopted_at, rejected_selector, rejected_at, updated_at FROM model_tiers WHERE tier = ?`).get<ModelTierRow>(tier);
+  }
+
+  /** The daily tick's (and only its) write of one tier's state (spec §4.2 step 4). */
+  writeModelTier(r: Omit<ModelTierRow, "updated_at">, now: string): void {
+    this.db.prepare(`
+      INSERT INTO model_tiers (tier, adopted, previous, adopted_at, rejected_selector, rejected_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(tier) DO UPDATE SET adopted = excluded.adopted, previous = excluded.previous, adopted_at = excluded.adopted_at,
+        rejected_selector = excluded.rejected_selector, rejected_at = excluded.rejected_at, updated_at = excluded.updated_at
+    `).run(r.tier, r.adopted, r.previous, r.adopted_at, r.rejected_selector, r.rejected_at, now);
+  }
+
+  /** One probe's outcome (spec §4.2, plan P17): codes only, never the model's reply or omp's text. */
+  recordModelProbe(p: ModelProbeRow): void {
+    this.appendLedgerEvent(createLedgerEvent({
+      correlation_id: "model-roles", event_type: "model_probe", actor: "system", sequence: this.nextLedgerSequence(),
+      payload: { tier: p.tier, selector: p.selector, purpose: p.purpose, result: p.result, kind: p.kind }
+    }));
+  }
+
   /** The latest tick record by its own instant; `catalogOk` keeps only reads that saw the catalog (the diff baseline). */
   latestModelRolesResolved(o: { catalogOk?: boolean } = {}): ModelRolesResolvedRow | undefined {
     const row = this.db.prepare(`
@@ -8426,6 +8466,28 @@ export class RunStore {
     this.applyImproveRouteMigration();
     this.applyJevVersionCheckMigration();
     this.applyStandingApprovalMigration();
+    this.applyLoudDegradationMigration();
+  }
+
+  /** Loud degradation (spec 2026-11-02 §4.2, §6.2, §6.3): the tier table, seeded once, and two nullable columns. Additive: the old build ignores all three. */
+  private applyLoudDegradationMigration(): void {
+    const version = "2026-11-02-loud-degradation";
+    this.inTransaction(() => {
+      const applied = this.db.prepare(`SELECT version FROM schema_migrations WHERE version = ?`).get<{ version: string }>(version);
+      this.db.exec(MODEL_TIERS_DDL);
+      const cols = this.tableColumns("planner_session_state");
+      if (!cols.has("fresh_requested_at")) this.db.exec(`ALTER TABLE planner_session_state ADD COLUMN fresh_requested_at TEXT`);
+      if (!cols.has("transcript_trust_at")) this.db.exec(`ALTER TABLE planner_session_state ADD COLUMN transcript_trust_at TEXT`);
+      if (applied) return;
+      this.seedModelTiers(new Date().toISOString());
+      this.db.prepare(`INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)`).run(version, new Date().toISOString());
+    });
+  }
+
+  /** W4: the known-good heads, so the first resolution after this build never sees an empty table. INSERT OR IGNORE: never over a tick's row. */
+  private seedModelTiers(now: string): void {
+    const ins = this.db.prepare(`INSERT OR IGNORE INTO model_tiers (tier, adopted, previous, adopted_at, rejected_selector, rejected_at, updated_at) VALUES (?, ?, NULL, ?, NULL, NULL, ?)`);
+    for (const t of TIER_IDS) ins.run(t, SEED_HEADS[t], SEED_HEADS[t] === null ? null : now, now);
   }
 
   /** Stage 4A: additive tables only (IF NOT EXISTS); the previous build never reads them and keeps asking (spec §5 rollback). */

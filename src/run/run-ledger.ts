@@ -25,6 +25,7 @@ export type LedgerEventType =
   | "quote_unresolved"
   | "model_roles_fallback"
   | "omp_contract_probe"
+  | "model_probe"
   | "trigger_received"
   | "idempotency_conflict"
   | "schedule_fired"
@@ -349,6 +350,9 @@ const requiredPayloadFields = {
   model_roles_fallback: ["role"],
   // The contract probe's verdict per omp version (fixed outcome codes only, never omp's text).
   omp_contract_probe: ["version", "result", "checks"],
+  // Spec 2026-11-02 §4.2: one probe before a tier adopts a model. Codes only (plan P17): purpose head|previous|tap,
+  // result pass|model_missing|inconclusive, kind a closed failure code — never the model's reply or omp's text.
+  model_probe: ["tier", "selector", "purpose", "result", "kind"],
   improve_signal_skipped: ["signal", "code"],
   improve_tick: ["phase", "local_date"],
   improvement_job: ["job_id", "from", "to", "attempt"],

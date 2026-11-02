@@ -1,0 +1,61 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { DatabaseSync } from "node:sqlite";
+import { afterEach, describe, expect, it } from "vitest";
+import { SEED_HEADS, TIER_IDS } from "../../src/omp/model-tiers.js";
+import { RunStore } from "../../src/run/run-store.js";
+
+// Spec §4.2 bootstrap (W4): the first boot of this build must resolve exactly today's working models, never an empty table
+// (an empty table would run every role on its static fallback for a day). The tier rows are state the tick owns, so a reopen
+// must never reseed over a tick's write. Probe outcomes are ledgered with codes only, never model output.
+const dirs: string[] = [];
+afterEach(() => { for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true }); });
+const db = (s: RunStore) => (s as unknown as { db: DatabaseSync }).db;
+const fileStore = () => { const d = mkdtempSync(join(tmpdir(), "hld-")); dirs.push(d); return join(d, "h.sqlite"); };
+
+describe("model_tiers migration", () => {
+  it("seeds exactly one row per tier with the known-good head, no previous, no rejection", () => {
+    const s = RunStore.openInMemory();
+    const rows = s.listModelTiers();
+    expect(rows.map((r) => [r.tier, r.adopted, r.previous, r.rejected_selector, r.rejected_at])).toEqual(
+      [...TIER_IDS].sort().map((t) => [t, SEED_HEADS[t], null, null, null]));
+    expect(rows.filter((r) => r.adopted_at === null).map((r) => r.tier)).toEqual(["gemini-pro"]);
+    s.close();
+  });
+  it("a reopen never reseeds over a tick's write", () => {
+    const path = fileStore();
+    const a = RunStore.open(path);
+    a.writeModelTier({ tier: "kimi", adopted: "k3.1-pro", previous: "k3", adopted_at: "2026-11-03T00:00:00.000Z", rejected_selector: null, rejected_at: null }, "2026-11-03T00:00:00.000Z");
+    a.close();
+    const b = RunStore.open(path);
+    expect(b.getModelTier("kimi")).toEqual({ tier: "kimi", adopted: "k3.1-pro", previous: "k3", adopted_at: "2026-11-03T00:00:00.000Z",
+      rejected_selector: null, rejected_at: null, updated_at: "2026-11-03T00:00:00.000Z" });
+    expect(b.listModelTiers()).toHaveLength(TIER_IDS.length);
+    b.close();
+  });
+  it("adds the two nullable planner_session_state columns", () => {
+    const s = RunStore.openInMemory();
+    const cols = db(s).prepare("PRAGMA table_info(planner_session_state)").all() as Array<{ name: string; notnull: number }>;
+    expect(cols.filter((c) => c.name === "fresh_requested_at" || c.name === "transcript_trust_at").map((c) => [c.name, c.notnull]))
+      .toEqual([["fresh_requested_at", 0], ["transcript_trust_at", 0]]);
+    s.close();
+  });
+});
+
+describe("model_probe", () => {
+  it("is one run-less event with exactly the five code fields", () => {
+    const s = RunStore.openInMemory();
+    s.recordModelProbe({ tier: "kimi", selector: "kimi-code/k3.1-pro", purpose: "head", result: "pass", kind: "ok" });
+    const rows = s.getLedgerEvents().filter((e) => e.event_type === "model_probe");
+    expect(rows.map((e) => [e.run_id ?? null, e.correlation_id, e.payload])).toEqual([[null, "model-roles",
+      { tier: "kimi", selector: "kimi-code/k3.1-pro", purpose: "head", result: "pass", kind: "ok" }]]);
+    s.close();
+  });
+  it("a probe's attempt is audited under role `probe`", () => {
+    const s = RunStore.openInMemory();
+    s.llmAuditSink({ correlation_id: "probe:x", role: "probe" }).record({ provider: "kimi-code", role: "", outcome: "ok", model: "k3.1-pro" });
+    expect(s.getLedgerEvents().filter((e) => e.event_type === "llm_attempt").map((e) => [e.correlation_id, (e.payload as { role: string }).role])).toEqual([["probe:x", "probe"]]);
+    s.close();
+  });
+});
