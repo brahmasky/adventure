@@ -7,9 +7,9 @@
 // Everything else goes to stderr, prefixed `# `. Only counts, booleans, codes and run labels are printed, never message or prompt text, any wiki
 // title, or any id of the live DB.
 // The live DB is opened read-only, once, by VACUUM INTO a temp copy under /tmp/hg-s4d-*; a byte copy of that copy (taken before any store opens it)
-// is the merge-base build's for line 1. Both are removed on every exit path (finally, SIGINT, SIGTERM, SIGHUP). No env file is loaded (HOUGE_ENV_FILE
+// is the merge-base build's for line 1. Both are removed on every exit path (finally, SIGINT, SIGTERM, SIGHUP, SIGQUIT, uncaughtException, unhandledRejection). No env file is loaded (HOUGE_ENV_FILE
 // only locates the DB); there is no real omp child (a fake session over the dist PlannerSupervisor for lines 3-5 and 7, tests/fixtures/fake-omp.mjs
-// under CoreWorker.submitTurn for lines 1, 2 and 6) and no Telegram client at all. Line 1's embedder is the real one (local Ollama, or its failure);
+// under CoreWorker.submitTurn for lines 1, 2 and 6) and no Telegram client at all. Line 1's embedder is the real one (local Ollama), its query hits a synthetic wiki page seeded into both copies;
 // line 2's is pointed at a closed local port. Nothing leaves the machine. Safety pins, set before any store opens and restored on exit:
 //   HOUGE_TOMBSTONE_PATH / HOUGE_DISARM_PATH under the temp root (P2), HOUGE_TELEGRAM_CHAT_ID = -1003 (P3: line 7's alert must not page Paco),
 //   every HOUGE_*_ENABLED flag and the omp, embed, lesson-cap and clarify variables deleted (lines set the ones they need, then restore),
@@ -181,6 +181,14 @@ function keyShape(v) {
 }
 const MEMORY_FLAGS = { HOUGE_EPISODIC_ENABLED: "1", HOUGE_WIKI_ENABLED: "1" };
 const hasContext = (p) => p.includes("[context]\n");
+/**
+ * Line 1/2's query and a synthetic wiki page seeded under the same words into BOTH copies (setup): the page has no embedding, so the relevance gate
+ * admits it on its FTS hit alone (relevance-gate.ts admit: no row cosine -> ftsHit). Retrieval that admits nothing is therefore a FAIL, not a pass.
+ */
+const PROBE = "zephyrquill marrowlantern";
+const seedProbePage = (store) => store.addWikiPage({ topic_slug: "gate-r5-probe", title: PROBE, summary: "synthetic page seeded by the R5 live gate", body_md: "synthetic" });
+/** The probe page reached the prompt and the turn's attribution: its title in the [context] block, its id in loop_started.applied_artifacts.wiki_page_ids. */
+const probeAdmitted = (t, id) => t.prompts.length === 1 && hasContext(t.prompts[0]) && t.prompts[0].includes(PROBE) && (t.loops[0]?.applied_artifacts?.wiki_page_ids ?? []).includes(id);
 /** The recall line's shared checks: one prompt, run completed, exactly one context.recall row on the run, include ⇔ the prompt's [context] block. */
 function recallFacts(t) {
   const row = t.rows.length === 1 ? t.rows[0] : null;
@@ -194,23 +202,26 @@ function recallFacts(t) {
 
 // ---- line 1: real retrieval over the copy; the merge-base build's loop_started has the same keys ----
 async function line1() {
-  const t = await workerTurn({ tag: "l1", text: G.query, env: MEMORY_FLAGS });
-  const b = await workerTurn({ d: G.bd, store: G.baseStore, distDir: BASE_DIST, tag: "l1-base", text: G.query, env: MEMORY_FLAGS });
+  const t = await workerTurn({ tag: "l1", text: PROBE, env: MEMORY_FLAGS });
+  const b = await workerTurn({ d: G.bd, store: G.baseStore, distDir: BASE_DIST, tag: "l1-base", text: PROBE, env: MEMORY_FLAGS });
   const f = recallFacts(t);
   const newShape = keyShape(t.loops[0]); const baseShape = keyShape(b.loops[0]);
   const same = t.loops.length === 1 && b.loops.length === 1 && canon(newShape) === canon(baseShape);
   const telemetry = newShape.includes(".retrieval.facts.embedding");
-  const ok = f.ok && same && telemetry && b.rows.length === 0 && b.state === "completed" && b.prompts.length === 1 && hasContext(b.prompts[0]) === f.ctx;
-  return { ok, detail: `loop_started key paths ${newShape.length} vs merge base ${baseShape.length} identical ${same} (retrieval telemetry ${telemetry}) · ${f.detail} · verdict/reason ${f.row ? `${f.row[1]}/${f.row[2]}` : "none"} · merge base: R5 rows ${b.rows.length} (want 0) state ${b.state} [context] ${b.prompts.length === 1 && hasContext(b.prompts[0])} (want same as new ${f.ctx})` };
+  const admitted = probeAdmitted(t, G.probe.new); const baseAdmitted = probeAdmitted(b, G.probe.base);
+  const include = f.row?.[1] === "include" && f.row?.[2] === "embedded"; // Ollama answers on this machine: a real embedding, the probe admitted on FTS
+  const ok = f.ok && include && admitted && baseAdmitted && same && telemetry && b.rows.length === 0 && b.state === "completed";
+  return { ok, detail: `probe page admitted: new ${admitted} merge base ${baseAdmitted} (want true, true: title in the [context] block, id in wiki_page_ids) · loop_started key paths ${newShape.length} vs merge base ${baseShape.length} identical ${same} (retrieval telemetry ${telemetry}) · ${f.detail} · verdict/reason ${f.row ? `${f.row[1]}/${f.row[2]}` : "none"} (want include/embedded) · merge base: R5 rows ${b.rows.length} (want 0) state ${b.state} [context] ${b.prompts.length === 1 && hasContext(b.prompts[0])} (want same as new ${f.ctx})` };
 }
 
 // ---- line 2: the embedder unreachable -> embed_failed or fts_only, never embedded ----
 async function line2() {
-  const t = await workerTurn({ tag: "l2", text: G.query, env: { ...MEMORY_FLAGS, HOUGE_EMBED_URL: "http://127.0.0.1:1" } });
+  const t = await workerTurn({ tag: "l2", text: PROBE, env: { ...MEMORY_FLAGS, HOUGE_EMBED_URL: "http://127.0.0.1:1" } });
   const f = recallFacts(t);
-  const reasonOk = f.row !== null && ["embed_failed", "fts_only"].includes(f.row[2]);
+  // spec: embed_failed or fts_only, never embedded; with the probe page an FTS hit it must be include/fts_only, the page in the prompt
+  const reasonOk = f.row !== null && f.row[1] === "include" && f.row[2] === "fts_only" && probeAdmitted(t, G.probe.new);
   const noEmbedding = t.loops[0]?.retrieval?.facts?.embedding === false && t.loops[0]?.retrieval?.pages?.embedding === false;
-  return { ok: f.ok && reasonOk && noEmbedding, detail: `${f.detail} · verdict/reason ${f.row ? `${f.row[1]}/${f.row[2]}` : "none"} (want embed_failed or fts_only, never embedded) · telemetry embedding false (facts, pages) ${noEmbedding}` };
+  return { ok: f.ok && reasonOk && noEmbedding, detail: `${f.detail} · verdict/reason ${f.row ? `${f.row[1]}/${f.row[2]}` : "none"} (want include/fts_only: never embedded, the probe page admitted on FTS) probe admitted ${probeAdmitted(t, G.probe.new)} · telemetry embedding false (facts, pages) ${noEmbedding}` };
 }
 
 // ---- line 3: two lane rows after a planner answer -> one inject/all row, the block in the prompt ----
@@ -232,23 +243,24 @@ async function line4() {
 }
 
 // ---- line 5: lessons over a lowered cap at a spawn -> one capped/char_cap row on the spawning run; lesson_dropped as today ----
-const droppedEvents = () => countOf("SELECT COUNT(*) AS n FROM ledger_events WHERE event_type = 'lesson_dropped'");
-const openDropped = () => new Set(all("SELECT subject FROM incidents WHERE kind = 'lesson_dropped' AND state = 'open'").map((r) => r.subject));
+// Each seeded lesson renders as one bullet "- [<theme>] <60 chars>", longer than the 40-char cap on its own: whatever the order and whatever the
+// copy's real lessons do, BOTH seeds are skipped. The expectation is derived from the seeds' sizes, not from the renderer under test.
+const SEED_CHARS = 60;
+const droppedSince = (mark) => all("SELECT payload_json FROM ledger_events WHERE event_type = 'lesson_dropped' AND rowid > ?", mark).map((r) => JSON.parse(r.payload_json));
+const ledgerMark = () => G.store.db.prepare("SELECT COALESCE(MAX(rowid), 0) AS m FROM ledger_events").get().m;
 async function line5() {
-  const seeded = seedLessons(G.store, 2, 20);
-  // the oracle is the dist's own renderer over the same read and env the spawn uses: the copy's real lessons skip too, not only the seeds
-  const expect = G.lr.renderLessonSection(G.store, G.lr.OMP_LESSON_SCOPES, CAP40);
-  const wantSubjects = expect.skipped.map((k) => `lesson:${k.lesson_id}`);
-  const open0 = openDropped(); const ids0 = new Set(all("SELECT incident_id FROM incidents").map((r) => r.incident_id)); const ev0 = droppedEvents();
+  const seeded = seedLessons(G.store, 2, SEED_CHARS);
+  const subjects = seeded.map((id) => `lesson:${id}`);
+  const ids0 = new Set(all("SELECT incident_id FROM incidents").map((r) => r.incident_id)); const ev0 = ledgerMark();
   const s = await fixtureTurn(null, { env: CAP40 });
-  const freshAll = all("SELECT incident_id, kind, subject FROM incidents").filter((i) => !ids0.has(i.incident_id) && i.kind === "lesson_dropped").map((i) => i.subject).sort();
-  const wantFresh = wantSubjects.filter((x) => !open0.has(x)).sort();
-  const events = droppedEvents() - ev0;
-  const seedsSkipped = seeded.filter((id) => wantSubjects.includes(`lesson:${id}`)).length;
+  const fresh = all("SELECT incident_id, kind, subject FROM incidents").filter((i) => !ids0.has(i.incident_id) && i.kind === "lesson_dropped").map((i) => i.subject);
+  const events = droppedSince(ev0);
+  const seedEvents = seeded.map((id) => events.filter((e) => e.lesson_id === id && e.cap === 40).length);
+  const seedIncidents = subjects.map((x) => fresh.filter((f) => f === x).length);
   const want = [[LS, "capped", "char_cap", "a", null]];
-  const ok = canon(s.rows) === canon(want) && expect.skipped.length > 0 && events === expect.skipped.length && canon(freshAll) === canon(wantFresh)
+  const ok = canon(s.rows) === canon(want) && canon(seedEvents) === canon([1, 1]) && canon(seedIncidents) === canon([1, 1])
     && s.state === "completed" && canon(s.done) === canon(["a:answer"]);
-  return { ok, detail: `rows ${s.rows.length} [${strs(s.rows)}] (want 1 [ls:capped/char_cap@a], the spawning run) · renderer at cap 40: rendered ${expect.ids.length} skipped ${expect.skipped.length} (seeds skipped ${seedsSkipped} of 2) · lesson_dropped events +${events} (want ${expect.skipped.length}) · new lesson_dropped incidents ${freshAll.length} (want ${wantFresh.length}: the skipped minus ${wantSubjects.length - wantFresh.length} already open) subjects exact ${canon(freshAll) === canon(wantFresh)} · state ${s.state}` };
+  return { ok, detail: `rows ${s.rows.length} [${strs(s.rows)}] (want 1 [ls:capped/char_cap@a], the spawning run) · seeded lessons' lesson_dropped events ${seedEvents} (want 1,1 at cap 40) · seeded lessons' new lesson_dropped incidents ${seedIncidents} (want 1,1: subject lesson:<seeded id>) · all drops this spawn: events ${events.length} new incidents ${fresh.length} (reported, not asserted: the copy's real lessons may already hold an open incident) · state ${s.state}` };
 }
 
 // ---- line 6: the production wiring, CoreWorker.submitTurn -> line 4's row ----
@@ -321,11 +333,6 @@ function restoreEnv() {
   G.saved = null;
 }
 const killFiles = () => [join(process.cwd(), "houge.kill"), join(MAIN_CHECKOUT, "houge.kill")].filter(existsSync).length;
-/** Line 1's query: the title of the copy's lowest-id active wiki page (wiki pages are global; episodic facts are per chat and -1003 has none). Never printed. */
-function pickQuery() {
-  const row = G.store.db.prepare("SELECT title FROM wiki_pages WHERE status = 'active' ORDER BY id LIMIT 1").get();
-  return row?.title ? String(row.title) : "what did we decide about the mac mini";
-}
 async function openStores() {
   G.d = await loadDist(DIST); G.bd = await loadDist(BASE_DIST);
   for (const k of ["storeOptionsFor", "RunStore", "Gateway", "buildTypedTaskEvent", "DEFAULT_GLOBAL_BUDGET_CAPS", "storeRecorder", "PlannerSupervisor", "CoreWorker", "lessonSetFingerprint", "ToolRegistry", "parseModelString", "selectorKey", "resolveOmpConfig"]) if (!G.d[k]) throw new SetupError(`${k} missing from dist: rebuild`);
@@ -333,9 +340,9 @@ async function openStores() {
   if (!existsSync(join(BASE_DIST, "omp/shell-wrapper.sh"))) throw new SetupError("merge-base dist has no omp/shell-wrapper.sh");
   G.store = G.d.RunStore.open(G.base, G.d.storeOptionsFor(undefined, {}));
   G.baseStore = G.bd.RunStore.open(G.baseCopy, G.bd.storeOptionsFor(undefined, {}));
-  G.tc = await import(join(DIST, "omp/turn-context.js")); G.lr = await import(join(DIST, "run/lesson-render.js"));
+  G.tc = await import(join(DIST, "omp/turn-context.js"));
   G.reasons = (await import(join(DIST, "decisions/entries/context-recall.js"))).RECALL_REASONS;
-  if (!G.tc.CLARIFY_CAP_NOTICE || !G.tc.CATCH_UP_OPEN || !G.lr.renderLessonSection || !G.reasons) throw new SetupError("R5 exports missing from dist: rebuild");
+  if (!G.tc.CLARIFY_CAP_NOTICE || !G.tc.CATCH_UP_OPEN || !G.reasons) throw new SetupError("R5 exports missing from dist: rebuild");
 }
 async function setup() {
   const liveDb = resolve(arg("--live-db") ?? join(dirname(resolve(process.env.HOUGE_ENV_FILE ?? join(process.cwd(), ".env"))), "houge.sqlite"));
@@ -348,7 +355,7 @@ async function setup() {
   copyFileSync(G.base, G.baseCopy); // before any store opens the copy: the merge-base turn sees the same rows line 1 does
   await openStores();
   const pending = parkOutbox(G.store) + parkOutbox(G.baseStore);
-  G.query = pickQuery();
+  G.probe = { new: seedProbePage(G.store), base: seedProbePage(G.baseStore) };
   // Line 8's baseline must be what /status counts: rows inside its window. One synthetic row per id dated 2 days ago is seeded on the copy
   // so a baseline over ALL rows fails line 8; the status window ignores them.
   const reg = await import(join(DIST, "decisions/registry.js"));
@@ -363,7 +370,10 @@ async function setup() {
 function closeAll() {
   for (const k of ["store", "baseStore"]) { try { G[k]?.close(); } catch { /* a closed handle is not a finding */ } G[k] = null; }
 }
-for (const [sig, code] of [["SIGINT", 130], ["SIGTERM", 143], ["SIGHUP", 129]]) process.on(sig, () => { closeAll(); cleanupTemp(); restoreEnv(); process.exit(code); });
+/** Every exit path removes both copies: the signals (SIGQUIT included; SIGKILL cannot be caught), and an exception or rejection that escapes the main try. */
+const bail = (code) => { closeAll(); cleanupTemp(); restoreEnv(); process.exit(code); };
+for (const [sig, code] of [["SIGINT", 130], ["SIGTERM", 143], ["SIGHUP", 129], ["SIGQUIT", 131]]) process.on(sig, () => bail(code));
+for (const ev of ["uncaughtException", "unhandledRejection"]) process.on(ev, (e) => { console.error(`${ev}: ${errCode(e)}`); bail(2); });
 
 try {
   await setup();
