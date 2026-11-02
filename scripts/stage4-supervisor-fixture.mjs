@@ -106,7 +106,15 @@ export function mkSupervisor(d, store, opts = {}) {
 }
 
 /** Run ids and worker ids are random uuids: rows compared across builds scrub them with scripts/stage4-bind-fixture.mjs scrubIds. Shuts every supervisor down and removes its data dir. */
-export async function cleanup() { for (const fn of cleanups.splice(0).reverse()) { try { await fn(); } catch (e) { console.error("fixture teardown failed"); } } }
+let running = Promise.resolve(); // every teardown in flight: a signal arriving inside cleanup() finds the callbacks already spliced off, so it awaits this instead
+export async function cleanup() {
+  const fns = cleanups.splice(0).reverse();
+  const p = (async () => { for (const fn of fns) { try { await fn(); } catch (e) { console.error("fixture teardown failed"); } } })();
+  running = Promise.all([running, p]);
+  await p;
+}
+/** cleanup(), then every teardown that was already in flight (a signal handler's exit path). */
+export async function cleanupSettled() { await cleanup(); await running; }
 
 /** One running run through Gateway.intake, as the worker would claim it (telegram, chat 555). `actor` (R4, P20) is `requested_by.id`: the gateway admits 5 Telegram runs per actor per minute, so a line past five uses a second actor. Throws when the gateway refuses. */
 export function intakeRun(d, store, goal, key = goal, actor = "paco") {

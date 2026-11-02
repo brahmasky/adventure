@@ -336,7 +336,7 @@ function restoreEnv() { for (const [k, v] of Object.entries(saved)) { if (v === 
 /** Every exit path: handles closed, the fixture's /tmp/hsv-* workdirs removed (fx.cleanup), the copies removed, env restored. */
 function onSignal(code) {
   for (const h of handles.splice(0)) closeStore(h);
-  fx.cleanup().catch(() => undefined).finally(() => { cleanupTemp(); restoreEnv(); process.exit(code); });
+  Promise.race([fx.cleanupSettled().catch(() => undefined), new Promise((r) => setTimeout(r, 5_000))]).finally(() => { cleanupTemp(); restoreEnv(); process.exit(code); });
 }
 for (const [sig, code] of [["SIGINT", 130], ["SIGTERM", 143], ["SIGHUP", 129], ["SIGQUIT", 131]]) process.on(sig, () => onSignal(code));
 for (const ev of ["uncaughtException", "unhandledRejection"]) process.on(ev, (e) => { console.error(`${ev}: ${errCode(e)}`); onSignal(2); });
@@ -353,7 +353,7 @@ export async function main() {
     process.exitCode = 2;
   } finally {
     for (const h of handles.splice(0)) closeStore(h);
-    await fx.cleanup().catch(() => undefined);
+    await fx.cleanupSettled().catch(() => undefined);
     await runClosers();
     cleanupTemp();
     restoreEnv();
