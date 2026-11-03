@@ -94,7 +94,7 @@ describe("production wiring: CoreWorker passes its recorder to the supervisor", 
       .filter((c) => c?.type === "set_model").map((c) => `${c!.provider}/${c!.modelId}`);
     expect(pinned).toHaveLength(2);
     expect(pinned[0]).toBe("anthropic/claude-opus-5-5");
-    expect(pinned[1]).not.toBe("anthropic/claude-opus-5-5");
+    expect(pinned[1]).toBe("google-antigravity/claude-opus-5-5"); // the second Default candidate (tests/helpers/model-roles.ts)
   });
   it("R6 (b): R4 (a)'s quota scenario also writes turn.model fallback/next_leg on the run", async () => {
     useFakeOmp({ "anthropic/claude-opus-5-5": { rpcErrorText: "429 usage limit reached" }, "*": { rpcText: "ok" } }, tmp.dir);
