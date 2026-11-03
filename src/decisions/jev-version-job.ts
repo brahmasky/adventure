@@ -171,7 +171,7 @@ function stallTick(i: Pick<JevJobDeps, "store" | "chatId" | "now">): void {
     const text = `**Stalled:** the Jev version check for ${r.model} is not finishing; lanes stay on the planner. Started ${p.started_at}; `
       + `\`houge jev models\` shows its progress, \`houge jev accept ${r.model}\` arms it without the check.`;
     const opened = openAlertedIncident(i.store, { kind: "jev_model_check_stalled", subject: jevModelSubject(r.model), detail: { model: r.model, generation: r.generation, started_at: p.started_at }, now, ...(i.chatId ? { env: {} } : {}) });
-    if (opened && i.chatId) notify(i, `jev_check:${r.model}:${r.generation}:stalled`, text);
+    if (opened && i.chatId) notify(i, `jev_check:${r.model}:${r.generation}:stalled`, text, "jev_card");
   }
 }
 
@@ -357,7 +357,7 @@ function defer(d: JevJobDeps, model: string, g: number, reported: string): JevCh
   const written = d.store.inTransaction(() => {
     if (!d.store.setJevModelState(model, "checking", "deferred", JSON.stringify({ reason: "other_model", reported, generation: g, progress }), d.now())) return false;
     notify(d, `jev_check:${model}:${g}:deferred`, `**Jev version check: ${model} waits.** Jev is serving two versions; the check retries in an hour, `
-      + `or sooner once Jev answers only from ${model}. Nothing is armed on ${model} until it passes; those turns go to the planner.`);
+      + `or sooner once Jev answers only from ${model}. Nothing is armed on ${model} until it passes; those turns go to the planner.`, "jev_notice");
     return true;
   });
   if (!written) return "skipped";
@@ -365,11 +365,18 @@ function defer(d: JevJobDeps, model: string, g: number, reported: string): JevCh
   return "deferred";
 }
 
-/** A plain notice (no page, no button) to Paco's chat, or the operator chat when the job has none; logged when there is neither. */
-function notify(d: Pick<JevJobDeps, "store" | "chatId" | "log">, key: string, text: string): void {
+/**
+ * A plain notice (no page, no button). `jev_notice` is background: it goes to the change log and needs no chat. `jev_card`
+ * goes to Paco's chat, or the operator chat when the job has none; logged when there is neither.
+ */
+function notify(d: Pick<JevJobDeps, "store" | "chatId" | "log" | "now">, key: string, text: string, topic: "jev_notice" | "jev_card"): void {
+  if (topic === "jev_notice") {
+    d.store.enqueueNotification({ topic, idempotency_key: key, correlation_id: "jev-version-check", text, now: d.now() });
+    return;
+  }
   const chat = d.chatId ?? process.env.HOUGE_TELEGRAM_CHAT_ID?.trim();
   if (!chat) { logOf(d)("jev version check: no chat for the notice"); return; }
-  d.store.enqueueNotification({ topic: "jev_card", target: { kind: "telegram", chat_id: chat }, intent_type: "progress", idempotency_key: key, correlation_id: "jev-version-check", payload: { text } });
+  d.store.enqueueNotification({ topic, target: { kind: "telegram", chat_id: chat }, intent_type: "progress", idempotency_key: key, correlation_id: "jev-version-check", payload: { text } });
 }
 
 /** An outage reaches Paco (the Jev outage incidents) and the check resumes at a later start. */
@@ -528,7 +535,7 @@ const comparedLine = (s: Summary): string => `Compared ${s.turns} anchor turns (
 function sendNotice(d: JevJobDeps, model: string, g: number, v: CheckVerdict, s: Summary): void {
   const drops = v.recall_drops.length > 0 ? ["Recall drops (reported only; nothing disarmed, those turns go to the planner):", ...recallLines(v.recall_drops)] : [];
   const text = [`**Jev version check: ${model} passed.** The triage tree arms on it.`, comparedLine(s), ...marginLines(v.margins), ...drops, ...goldenLine(s)].join("\n");
-  notify(d, `jev_check:${model}:${g}:notice`, text);
+  notify(d, `jev_check:${model}:${g}:notice`, text, "jev_notice");
 }
 
 function driftText(model: string, v: CheckVerdict, s: Summary): string {

@@ -14,7 +14,7 @@ import {
   type FlaggedSkill,
   type SkillReverifyStateStore
 } from "../../src/capabilities/skill-reverify.js";
-import type { ChatIntent, NotificationIntent } from "../../src/notifications/notification-types.js";
+import type { LogIntent, NotificationIntent } from "../../src/notifications/notification-types.js";
 import { SkillStore } from "../../src/skills/skill-store.js";
 
 // Sunday 10:30 Sydney (AEST = UTC+10) — 30 min past the default sun 10:00 slot.
@@ -208,11 +208,10 @@ describe("runSkillReverifyTick", () => {
     expect(events.indexOf("verify")).toBeGreaterThan(0);
     expect(state.ticks).toEqual([{ checked: 1, passed: 0, flagged: 1 }]);
     expect(state.notifications).toHaveLength(1);
-    const intent = state.notifications[0]! as ChatIntent;
-    expect(intent.intent_type).toBe("progress");
+    const intent = state.notifications[0]! as LogIntent;
+    expect(intent.topic).toBe("skill_reverify");
     expect(intent.idempotency_key).toBe("skill_reverify:2026-08-30");
-    expect(intent.target).toEqual({ kind: "telegram", chat_id: "222" });
-    const text = String(intent.payload.text);
+    const text = intent.text;
     expect(text).toContain("stale-skill");
     expect(text).toContain("/skills retire stale-skill");
     // The stale skill was NOT stamped and NOT moved.
@@ -340,7 +339,7 @@ describe("runSkillReverifyTick", () => {
     expect(state.events).toEqual([]);
   });
 
-  it("flags without a chatId still latch + record but enqueue nothing (CLI context)", async () => {
+  it("flags without a chatId still latch, record and reach the change log (chat is not needed)", async () => {
     const { store: skills, root } = tempSkillStore();
     writeSkillFile(root, "research", "stale-skill", "2026-06-01");
     const state = fakeStateStore();
@@ -354,7 +353,9 @@ describe("runSkillReverifyTick", () => {
     });
     expect(out).toEqual({ ran: true });
     expect(state.ticks).toEqual([{ checked: 1, passed: 0, flagged: 1 }]);
-    expect(state.notifications).toHaveLength(0);
+    expect(state.notifications).toHaveLength(1);
+    expect((state.notifications[0] as LogIntent).topic).toBe("skill_reverify");
+    expect("target" in state.notifications[0]!).toBe(false);
   });
 });
 

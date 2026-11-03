@@ -114,9 +114,8 @@ function pageFallback(store: RunStore, entry_id: string, n: number, o: RecorderO
   const flapping = store.findRecentlyResolvedIncident(fingerprint, new Date(Date.parse(now) - ALERT_REOPEN_QUIET_MS).toISOString()) !== undefined;
   const opened = openAlertedIncident(store, { kind: "decision_fallback", subject: entry_id, detail: { entry: entry_id, limit: DECISION_FALLBACK_LIMIT, window_min: 60 }, env: {}, now });
   if (!opened || flapping) return;
-  const chat = (o.env ?? process.env).HOUGE_TELEGRAM_CHAT_ID?.trim();
   const incident = store.findOpenIncident(fingerprint);
-  if (chat && incident) enqueueUrgentCard(store, { chat_id: chat, key: `decision_fallback:${incident.incident_id}`, text: fallbackCardText(entry_id, n) }, "urgent");
+  if (incident) enqueueUrgentCard(store, { key: `decision_fallback:${incident.incident_id}`, text: fallbackCardText(entry_id, n) }, "decision_internal");
 }
 
 /** Resolves an open decision_fallback on a counting rung's answer, recorded or not (spec §8.2 "the next answered call"). */

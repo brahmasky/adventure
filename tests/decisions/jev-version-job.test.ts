@@ -93,6 +93,8 @@ const outbox = (s: RunStore) => {
   }
   return out;
 };
+/** Background notices (spec 2026-11-03 §4): the version check's passed/deferred lines are change_log rows, never chat. */
+const notices = (s: RunStore) => s.listChangeLog("1970-01-01T00:00:00.000Z", 50).map((r) => ({ topic: r.topic, text: r.text }));
 const treeRows = (s: RunStore, model: string, generation: number) => s.listJevCheckRuns(model, generation, "tree");
 const sha8 = (m: string) => createHash("sha256").update(m).digest("hex").slice(0, 8);
 const acceptData = (s: RunStore, m: string) => `dec:jv:${sha8(m)}:${s.getJevModel(m)!.generation}:acc`;
@@ -238,11 +240,11 @@ describe("the outcome (spec §2.5 d)", () => {
     expect(row.state).toBe("trusted");
     expect(row.checked_at).toBe(NOW);
     expect(s.listOpenIncidents()).toEqual([]);
-    const sent = outbox(s);
+    expect(outbox(s)).toEqual([]); // chat is for Paco: a passed check is not a chat message
+    const sent = notices(s);
     expect(sent).toHaveLength(1);
-    expect(sent[0]!.chat).toBe(CHAT);
-    expect(sent[0]!.payload.button_rows).toBeUndefined();
-    const text = String(sent[0]!.payload.text);
+    expect(sent[0]!.topic).toBe("jev_notice");
+    const text = sent[0]!.text;
     expect(text).toContain(CAND);
     expect(text).toMatch(/passed/);
     expect(text).toMatch(/category/);
@@ -290,9 +292,9 @@ describe("the outcome (spec §2.5 d)", () => {
     const g = s.getJevModel(CAND)!.generation;
     expect(s.getJevCheckRun(CAND, g, "tool.injection", "golden")?.outcome).toBe("drift");
     expect(s.listOpenIncidents()).toEqual([]); // the daily ticks keep their own golden incidents; the check pages nothing for it
-    const sent = outbox(s);
+    const sent = notices(s);
     expect(sent).toHaveLength(1);
-    expect(String(sent[0]!.payload.text)).toMatch(/Golden sets: tool\.injection drift/);
+    expect(sent[0]!.text).toMatch(/Golden sets: tool\.injection drift/);
     expect(s.getJevModel(CAND)?.state).toBe("trusted");
     s.close();
   });
@@ -442,21 +444,22 @@ describe("canary days (final fix A)", () => {
     expect(await runJevCheck(deps(s, f), CAND)).toBe("deferred");
     expect(s.getJevModel(CAND)?.state).toBe("deferred");
     expect(s.listOpenIncidents()).toEqual([]); // a notice, never an alerted page
-    const sent = outbox(s);
+    expect(outbox(s)).toEqual([]);
+    const sent = notices(s);
     expect(sent).toHaveLength(1);
-    expect(sent[0]!.chat).toBe(CHAT);
-    expect(sent[0]!.payload.button_rows).toBeUndefined();
-    expect(String(sent[0]!.payload.text)).toContain(CAND);
-    expect(String(sent[0]!.payload.text)).toMatch(canaryText);
+    expect(sent[0]!.topic).toBe("jev_notice");
+    expect(sent[0]!.text).toContain(CAND);
+    expect(sent[0]!.text).toMatch(canaryText);
     s.close();
   });
 
   it("a deferral again in the same check sends no second notice", async () => {
     const s = fresh(); seedAnchor(s); s.noteJevModel(CAND, NOW);
     expect(await runJevCheck(deps(s, fake({ model: () => "jev-old" })), CAND)).toBe("deferred");
-    expect(outbox(s)).toHaveLength(1);
+    expect(notices(s)).toHaveLength(1);
     expect(s.setJevModelState(CAND, "deferred", "checking", s.getJevModel(CAND)!.detail_json!, NOW)).toBe(true);
     expect(await runJevCheck(deps(s, fake({ model: () => "jev-old" })), CAND)).toBe("deferred");
+    expect(notices(s)).toHaveLength(1); // the same key and text: no second row
     expect(outbox(s)).toEqual([]);
     s.close();
   });
@@ -641,7 +644,7 @@ describe("language mix (final fix G5)", () => {
     expect(await runJevCheck(deps(s, f), CAND)).toBe("trusted");
     expect(f.calls).toHaveLength(3 * 120);
     expect(f.calls.every((c) => indexOf(c.state) < 120)).toBe(true);
-    expect(String(outbox(s)[0]!.payload.text)).toContain("Compared 120 anchor turns (100 zh)");
+    expect(notices(s)[0]!.text).toContain("Compared 120 anchor turns (100 zh)");
     s.close();
   });
 
@@ -709,7 +712,7 @@ describe("final fix round 2", () => {
     for (let k = 0; k < 3; k += 1) results.push(await runJevCheck(deps(s, bad(), { golden: ["memory.kind"] }), CAND));
     expect(results).toEqual(["pending", "pending", "trusted"]);
     expect(s.getJevModel(CAND)?.state).toBe("trusted");
-    expect(String(outbox(s)[0]!.payload.text)).toContain("memory.kind did not run");
+    expect(notices(s)[0]!.text).toContain("memory.kind did not run");
     s.close();
   });
 
@@ -719,7 +722,7 @@ describe("final fix round 2", () => {
     const results: string[] = [];
     for (let k = 0; k < 3; k += 1) results.push(await runJevCheck(deps(s, down(), { golden: ["tool.injection"] }), CAND));
     expect(results).toEqual(["outage", "outage", "trusted"]);
-    expect(String(outbox(s)[0]!.payload.text)).toContain("tool.injection did not run");
+    expect(notices(s)[0]!.text).toContain("tool.injection did not run");
     s.close();
   });
 

@@ -195,14 +195,13 @@ export async function runSkillReverifyTick(input: {
       flagged: flags.length
     });
 
-    if (flags.length > 0 && input.chatId !== null) {
+    if (flags.length > 0) {
       input.store.enqueueNotification({
-        topic: "reply",
-        target: { kind: "telegram", chat_id: input.chatId },
-        intent_type: "progress",
+        topic: "skill_reverify",
         idempotency_key: `skill_reverify:${input.now.slice(0, 10)}`,
         correlation_id: "skill-reverify",
-        payload: { text: formatReverifyReport(flags) }
+        text: formatReverifyReport(flags),
+        now: input.now
       });
     }
     return { ran: true };

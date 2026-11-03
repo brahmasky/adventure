@@ -31,6 +31,8 @@ const jevAnswers = vi.fn(async (): Promise<RungResult<V>> => ({ verdict: "pass",
 const jevAbstains = vi.fn(async (): Promise<RungResult<V>> => ({ abstain: true }));
 const modelDown = vi.fn(async (): Promise<RungResult<V>> => ({ failed: "outage", reason: "transport" }));
 const open = (store: RunStore) => store.listOpenIncidents().map((i) => [i.kind, i.subject]);
+/** The decision_fallback card is decision_internal: a change_log row, never chat (spec 2026-11-03 §4). */
+const logged = (store: RunStore) => store.listChangeLog("1970-01-01T00:00:00.000Z", 50).map((r) => r.text);
 const cards = (store: RunStore) => [...drainOutbox(store).values()].map((p) => p.text);
 
 afterEach(() => { vi.restoreAllMocks(); });
@@ -77,12 +79,13 @@ describe("storeRecorder: the row", () => {
 });
 
 describe("storeRecorder: decision_fallback (ruling 9)", () => {
-  it("three named fallbacks in an hour open decision_fallback:<entry> and send ONE urgent card; a fourth sends nothing more", async () => {
+  it("three named fallbacks in an hour open decision_fallback:<entry> and log ONE card (no chat needed); a fourth logs nothing more", async () => {
     const store = RunStore.openInMemory();
-    const rec = storeRecorder(store, { env: ENV });
+    const rec = storeRecorder(store, { env: {} });
     for (let k = 0; k < 4; k += 1) await decide(E, { v: "abstain" }, { run_id: null, recorder: rec, exec: { system_one: jevDown } });
     expect(open(store)).toEqual([["decision_fallback", "test.judge"]]);
-    expect(cards(store)).toEqual([fallbackCardText("test.judge", 3)]);
+    expect(logged(store)).toEqual([fallbackCardText("test.judge", 3)]);
+    expect(cards(store)).toEqual([]);
     store.close();
   });
   it("a rule answer (a photo, an ack) does not clear it; the next Jev or model answer does", async () => {
@@ -104,7 +107,7 @@ describe("storeRecorder: decision_fallback (ruling 9)", () => {
     await step(jevAnswers);                            // resolved at 10:04
     await step(jevDown);                               // 10:05: four fails in the hour, reopened inside the quiet window
     expect(open(store)).toEqual([["decision_fallback", "test.judge"]]);
-    expect(cards(store)).toHaveLength(1);
+    expect(logged(store)).toHaveLength(1);
     store.close();
   });
   it("turn.handler: Jev-rung failures never page here (the Jev incidents do); three cascade failures do", async () => {
