@@ -632,6 +632,7 @@ describe("no chat id (final fix G4)", () => {
     const s = fresh(); seedAnchor(s); s.noteJevModel(CAND, NOW);
     expect(await runJevCheck(deps(s, fake(), { chatId: null }), CAND)).toBe("trusted");
     expect(outbox(s)).toEqual([]);
+    expect(notices(s).map((n) => n.topic)).toEqual(["jev_notice"]); // the log write needs no chat
     s.close();
   });
 });

@@ -1,4 +1,4 @@
-import type { NotificationIntent } from "../notifications/notification-types.js";
+import type { LogIntent } from "../notifications/notification-types.js";
 import { computeNextRunAt, type ScheduleWeekday } from "../run/schedule-spec.js";
 import type { SkillStore } from "../skills/skill-store.js";
 import { resolveSkillsEnabled } from "../skills/skill-store.js";
@@ -68,7 +68,7 @@ export interface SkillReverifyStateStore {
   getSkillReverifyLastRun(): string | null;
   setSkillReverifyLastRun(now: string): void;
   recordSkillReverifyTick(p: { checked: number; passed: number; flagged: number }): void;
-  enqueueNotification(intent: NotificationIntent): unknown;
+  enqueueNotification(intent: LogIntent): unknown;
 }
 
 /** One Gate B failure worth flagging: identity + score margin + the failing criteria. */
@@ -120,7 +120,6 @@ export async function runSkillReverifyTick(input: {
   anchorLlm: AnchorLlm;
   env: NodeJS.ProcessEnv;
   now: string;
-  chatId: string | null;
   /**
    * The daemon's stop: no tick starts once it aborts; mid-tick it stops before the next skill, and a
    * skill whose passes the stop cut short is neither stamped nor flagged (it stays stale for next week).

@@ -799,7 +799,7 @@ async function runIdeaTicks(options: RunTelegramDaemonOptions, now: string, chat
       const read = await reverifyLlm({ question, system });
       return read.ok ? read.answer : undefined;
     },
-    env: process.env, now, chatId, signal
+    env: process.env, now, signal
   });
 }
 

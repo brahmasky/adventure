@@ -14,7 +14,7 @@ import {
   type FlaggedSkill,
   type SkillReverifyStateStore
 } from "../../src/capabilities/skill-reverify.js";
-import type { LogIntent, NotificationIntent } from "../../src/notifications/notification-types.js";
+import type { LogIntent } from "../../src/notifications/notification-types.js";
 import { SkillStore } from "../../src/skills/skill-store.js";
 
 // Sunday 10:30 Sydney (AEST = UTC+10) — 30 min past the default sun 10:00 slot.
@@ -47,11 +47,11 @@ function writeSkillFile(root: string, scope: string, name: string, lastVerified?
 function fakeStateStore(lastRun: string | null = null): SkillReverifyStateStore & {
   events: string[];
   ticks: Array<{ checked: number; passed: number; flagged: number }>;
-  notifications: NotificationIntent[];
+  notifications: LogIntent[];
 } {
   const events: string[] = [];
   const ticks: Array<{ checked: number; passed: number; flagged: number }> = [];
-  const notifications: NotificationIntent[] = [];
+  const notifications: LogIntent[] = [];
   return {
     events,
     ticks,
@@ -182,8 +182,7 @@ describe("runSkillReverifyTick", () => {
       skills,
       anchorLlm: cannedGateB(ALL_FAIL, events),
       env: {},
-      now: NOW,
-      chatId: "222"
+      now: NOW
     });
     expect(out).toEqual({ ran: false });
     expect(events).toEqual([]);
@@ -199,8 +198,7 @@ describe("runSkillReverifyTick", () => {
       skills,
       anchorLlm: cannedGateB(ALL_FAIL, events),
       env: ARMED,
-      now: NOW,
-      chatId: "222"
+      now: NOW
     });
     expect(out).toEqual({ ran: true });
     // Latch BEFORE the first Gate B call (M3 posture).
@@ -208,7 +206,7 @@ describe("runSkillReverifyTick", () => {
     expect(events.indexOf("verify")).toBeGreaterThan(0);
     expect(state.ticks).toEqual([{ checked: 1, passed: 0, flagged: 1 }]);
     expect(state.notifications).toHaveLength(1);
-    const intent = state.notifications[0]! as LogIntent;
+    const intent = state.notifications[0]!;
     expect(intent.topic).toBe("skill_reverify");
     expect(intent.idempotency_key).toBe("skill_reverify:2026-08-30");
     const text = intent.text;
@@ -228,8 +226,7 @@ describe("runSkillReverifyTick", () => {
       skills,
       anchorLlm: cannedGateB(ALL_PASS),
       env: ARMED,
-      now: NOW,
-      chatId: "222"
+      now: NOW
     });
     expect(out).toEqual({ ran: true });
     expect(state.ticks).toEqual([{ checked: 1, passed: 1, flagged: 0 }]);
@@ -249,8 +246,7 @@ describe("runSkillReverifyTick", () => {
       skills,
       anchorLlm: cannedGateB(undefined), // LLM down → every pass unparseable → unscored
       env: ARMED,
-      now: NOW,
-      chatId: "222"
+      now: NOW
     });
     expect(out).toEqual({ ran: true });
     // Only the stale skill was a candidate; unscored → skipped (no stamp, no flag).
@@ -273,8 +269,7 @@ describe("runSkillReverifyTick", () => {
       skills,
       anchorLlm: cannedGateB(ALL_PASS),
       env: ARMED,
-      now: NOW_WED,
-      chatId: "222"
+      now: NOW_WED
     });
     expect(out).toEqual({ ran: true });
     expect(state.events[0]).toBe(`latch:${NOW_WED}`);
@@ -292,8 +287,7 @@ describe("runSkillReverifyTick", () => {
       skills,
       anchorLlm: cannedGateB(ALL_PASS),
       env: ARMED,
-      now: NOW,
-      chatId: "222"
+      now: NOW
     });
     expect(out).toEqual({ ran: true });
     expect(REVERIFY_MAX_PER_TICK).toBe(12);
@@ -316,8 +310,7 @@ describe("runSkillReverifyTick", () => {
       skills,
       anchorLlm: cannedGateB(ALL_FAIL, events),
       env: ARMED,
-      now: NOW,
-      chatId: "222"
+      now: NOW
     });
     expect(out).toEqual({ ran: false });
     expect(events).toEqual([]);
@@ -332,14 +325,13 @@ describe("runSkillReverifyTick", () => {
       skills,
       anchorLlm: cannedGateB(ALL_FAIL),
       env: { ...ARMED, HOUGE_SKILL_REVERIFY_AT: "off" },
-      now: NOW,
-      chatId: "222"
+      now: NOW
     });
     expect(out).toEqual({ ran: false });
     expect(state.events).toEqual([]);
   });
 
-  it("flags without a chatId still latch, record and reach the change log (chat is not needed)", async () => {
+  it("flags with no chat anywhere still latch, record and reach the change log (chat is not needed)", async () => {
     const { store: skills, root } = tempSkillStore();
     writeSkillFile(root, "research", "stale-skill", "2026-06-01");
     const state = fakeStateStore();
@@ -348,13 +340,12 @@ describe("runSkillReverifyTick", () => {
       skills,
       anchorLlm: cannedGateB(ALL_FAIL),
       env: ARMED,
-      now: NOW,
-      chatId: null
+      now: NOW
     });
     expect(out).toEqual({ ran: true });
     expect(state.ticks).toEqual([{ checked: 1, passed: 0, flagged: 1 }]);
     expect(state.notifications).toHaveLength(1);
-    expect((state.notifications[0] as LogIntent).topic).toBe("skill_reverify");
+    expect(state.notifications[0]!.topic).toBe("skill_reverify");
     expect("target" in state.notifications[0]!).toBe(false);
   });
 });
@@ -368,7 +359,7 @@ describe("runSkillReverifyTick — the daemon's stop (live 2026-10-02)", () => {
     const controller = new AbortController();
     let calls = 0;
     const out = await runSkillReverifyTick({
-      store: state, skills, env: ARMED, now: NOW, chatId: "222", signal: controller.signal,
+      store: state, skills, env: ARMED, now: NOW, signal: controller.signal,
       anchorLlm: async () => { calls += 1; if (calls === 1) controller.abort(); return ALL_PASS; }
     });
     expect(out).toEqual({ ran: true });
@@ -385,7 +376,7 @@ describe("runSkillReverifyTick — the daemon's stop (live 2026-10-02)", () => {
     writeSkillFile(root, "research", "alpha", "2026-06-01");
     const state = fakeStateStore();
     const out = await runSkillReverifyTick({
-      store: state, skills, anchorLlm: cannedGateB(ALL_PASS, state.events), env: ARMED, now: NOW, chatId: "222", signal: AbortSignal.abort()
+      store: state, skills, anchorLlm: cannedGateB(ALL_PASS, state.events), env: ARMED, now: NOW, signal: AbortSignal.abort()
     });
     expect(out).toEqual({ ran: false });
     expect(state.events).toEqual([]);

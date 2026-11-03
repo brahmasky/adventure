@@ -98,16 +98,18 @@ describe("storeRecorder: decision_fallback (ruling 9)", () => {
     expect(store.listOpenIncidents()).toEqual([]);
     store.close();
   });
-  it("a reopen within 10 minutes of resolving records the incident but sends no second card (E12 damping)", async () => {
+  it("a reopen within 10 minutes of resolving logs a second card: a log row is not paged, so no flap damping, and no chat is needed", async () => {
+    vi.stubEnv("HOUGE_TELEGRAM_CHAT_ID", "");
     const store = RunStore.openInMemory();
     let t = Date.parse("2026-10-12T10:00:00.000Z");
-    const rec = storeRecorder(store, { env: ENV, now: () => new Date(t).toISOString() });
+    const rec = storeRecorder(store, { env: {}, now: () => new Date(t).toISOString() });
     const step = async (jev: () => Promise<RungResult<V>>) => { t += 60_000; await decide(E, { v: "abstain" }, { run_id: null, recorder: rec, exec: { system_one: jev } }); };
     for (let k = 0; k < 3; k += 1) await step(jevDown); // pages at 10:03
     await step(jevAnswers);                            // resolved at 10:04
     await step(jevDown);                               // 10:05: four fails in the hour, reopened inside the quiet window
     expect(open(store)).toEqual([["decision_fallback", "test.judge"]]);
-    expect(logged(store)).toHaveLength(1);
+    expect(logged(store)).toHaveLength(2);
+    expect(cards(store)).toEqual([]);
     store.close();
   });
   it("turn.handler: Jev-rung failures never page here (the Jev incidents do); three cascade failures do", async () => {

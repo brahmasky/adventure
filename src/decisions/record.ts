@@ -1,4 +1,4 @@
-import { ALERT_REOPEN_QUIET_MS, openAlertedIncident, resolveOpenIncidents } from "../run/incident-alert.js";
+import { openAlertedIncident, resolveOpenIncidents } from "../run/incident-alert.js";
 import type { DecisionInsert, RunStore } from "../run/run-store.js";
 import { TOOL_INJECTION_ID } from "./entries/tool-injection.js";
 import { TOOL_POLICY } from "./entries/tool-policy.js";
@@ -54,7 +54,7 @@ export function storeRecorder(store: RunStore, o: RecorderOptions = {}): Decisio
         recordFailed(store, entry.id, e, o, now);
         return null;
       }
-      afterRecord(store, entry.id, r, o, now);
+      afterRecord(store, entry.id, r, now);
       return id;
     }
   };
@@ -92,28 +92,26 @@ function countsAsFallback(entry_id: string, r: AnyDecideResult): boolean {
   return !(JEV_PAGED_ELSEWHERE.has(entry_id) && r.fallbackRung === "system_one");
 }
 
-function afterRecord(store: RunStore, entry_id: string, r: AnyDecideResult, o: RecorderOptions, now: string): void {
+function afterRecord(store: RunStore, entry_id: string, r: AnyDecideResult, now: string): void {
   try {
     resolveOpenIncidents(store, RECORD_FAILED, entry_id, now);
     if (!countsAsFallback(entry_id, r)) return;
     const since = new Date(Date.parse(now) - DECISION_FALLBACK_WINDOW_MS).toISOString();
     const n = store.countDecisionFallbacks(entry_id, since, JEV_PAGED_ELSEWHERE.has(entry_id));
-    if (n >= DECISION_FALLBACK_LIMIT) pageFallback(store, entry_id, n, o, now);
+    if (n >= DECISION_FALLBACK_LIMIT) pageFallback(store, entry_id, n, now);
   } catch (e) {
     console.error(`decisions: ${entry_id} incident bookkeeping failed: ${message(e)}`);
   }
 }
 
 /**
- * Opens the row with no generic alert (env {}), then sends the code-built urgent card once per open incident. A reopen
- * within ALERT_REOPEN_QUIET_MS of the last resolve records its row and sends nothing (E12's flap damping, as
- * openAlertedIncident does for its own alert).
+ * Opens the row with no generic alert (env {}), then logs the code-built decision_internal card once per open incident
+ * (spec 2026-11-03 §4.2). A log row is cheap and quiet, so flap damping does not apply: every open writes one.
  */
-function pageFallback(store: RunStore, entry_id: string, n: number, o: RecorderOptions, now: string): void {
+function pageFallback(store: RunStore, entry_id: string, n: number, now: string): void {
   const fingerprint = store.incidentFingerprint("decision_fallback", entry_id);
-  const flapping = store.findRecentlyResolvedIncident(fingerprint, new Date(Date.parse(now) - ALERT_REOPEN_QUIET_MS).toISOString()) !== undefined;
   const opened = openAlertedIncident(store, { kind: "decision_fallback", subject: entry_id, detail: { entry: entry_id, limit: DECISION_FALLBACK_LIMIT, window_min: 60 }, env: {}, now });
-  if (!opened || flapping) return;
+  if (!opened) return;
   const incident = store.findOpenIncident(fingerprint);
   if (incident) enqueueUrgentCard(store, { key: `decision_fallback:${incident.incident_id}`, text: fallbackCardText(entry_id, n) }, "decision_internal");
 }
