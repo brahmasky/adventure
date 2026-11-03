@@ -265,7 +265,7 @@ function savedBeforeFailure(s: SavedMemory): string {
 }
 
 /** Per-run state of an omp turn's loop tools, held from buildOmpTools until the outcome sink finishes the run. */
-interface OmpTurnState {
+export interface OmpTurnState {
   /** When `turnCtx.recentTurns` was read (the claim): triage records it so the replay cuts the same thread. */
   threadCutAt: string;
   turnCtx: LoopTurnContext;
@@ -3524,6 +3524,9 @@ export class CoreWorker {
       recorder: storeRecorder(this.runStore, { env: process.env })
     };
   }
+
+  /** @internal Test seam (spec R6 §4.4): the production lookup deps, recorder included. */
+  lookupLaneDepsForTest(run_id: string, chatId: string, state: OmpTurnState): LookupLaneDeps { return this.lookupLaneDeps(run_id, chatId, state); }
 
   /** Provenance audit (parity with runResearch): the URLs a search read hit the ledger and the wiki's min-sources floor (Phase W). */
   private recordWebSearch(run_id: string, turnCtx: LoopTurnContext, p: SearchPerformed): void {

@@ -2,12 +2,16 @@ import { WEB_RESULT_CONTENT_CAP } from "../../capabilities/web-search.js";
 import { safeReason } from "../../domain/error-code.js";
 import type { ModelString } from "../../omp/model-string.js";
 import { composeReply } from "./answer-lane.js";
-import { catchUpLine, finalQuery, needsRewrite, renderLanePrompt, renderSourcesBlock, rewritePrompt, sourceUrl, validateQuery, withSourceLine } from "./lane-compose.js";
+import { catchUpLine, finalQuery, renderLanePrompt, renderSourcesBlock, rewritePrompt, sourceUrl, validateQuery, withSourceLine } from "./lane-compose.js";
 import { LATE, within } from "./lane-time.js";
 import { fall, type LaneFall, type LaneInput, type LaneResult, type LookupLaneDeps } from "./lane-types.js";
+import { queryCheckOf, rewriteFilterOf, thinOf, type ThinInput } from "./lookup-predicates.js";
 import { decideSync } from "../../decisions/decide.js";
+import { LOOKUP_REWRITE, type RewriteStep } from "../../decisions/entries/lookup-rewrite.js";
+import { LOOKUP_THIN } from "../../decisions/entries/lookup-thin.js";
 import { TOOL_WALL } from "../../decisions/entries/tool-wall.js";
 import { READER_FAMILY } from "../../decisions/entries/reader-family.js";
+import type { DecisionRecorder, Entry } from "../../decisions/types.js";
 
 /** Stage B §5: the lane's budget and the reserve the compose keeps; every other step is bounded inside them. */
 export const LOOKUP_BUDGET_MS = 75_000;
@@ -21,24 +25,42 @@ type WebHit = { title: string; url: string; content: string };
 type Found = { kind: "found"; provider: string; results: WebHit[] };
 type Read = { kind: "read"; urls: string[]; digests: string[]; facts: string[]; flagged: boolean };
 
+type Pending = Array<(recorder: DecisionRecorder) => void>;
+
 /** The lookup lane (stage B §5). Never throws: an unexpected exception is `lane_threw`, logged with the run id. */
 export async function runLookupLane(i: LaneInput, d: LookupLaneDeps): Promise<LaneResult> {
+  const pending: Pending = [];
   try {
-    return await lookupSteps(i, d);
+    return await lookupSteps(i, d, pending);
   } catch (e) {
     console.error(`lookup lane: threw on ${i.run_id}: ${safeReason(e)}`);
     return fall("lane_threw");
+  } finally {
+    writePending(i, d, pending);
   }
 }
 
-async function lookupSteps(i: LaneInput, d: LookupLaneDeps): Promise<LaneResult> {
+/** Spec R6 §4.0: lane rows are decided at the branch and written here, after every budget read, only while the turn is live. */
+function writePending(i: LaneInput, d: LookupLaneDeps, pending: Pending): void {
+  const recorder = d.recorder;
+  if (!recorder || i.signal.aborted) return;
+  for (const write of pending) {
+    try { write(recorder); } catch (e) { console.error(`lookup lane: decision record threw on ${i.run_id}: ${safeReason(e)}`); }
+  }
+}
+
+const consult = <S, V extends string>(pending: Pending, i: LaneInput, entry: Entry<S, V>, s: S): void => {
+  pending.push((recorder) => { decideSync(entry, s, { run_id: i.run_id, tool_call_id: null, recorder }); });
+};
+
+async function lookupSteps(i: LaneInput, d: LookupLaneDeps, pending: Pending): Promise<LaneResult> {
   const chain = d.fastChain(i.effort);
   if (chain.length === 0) return fall("no_fast_leg");
-  const query = await lookupQuery(i, d);
+  const query = await lookupQuery(i, d, pending);
   if (i.signal.aborted) return fall("aborted");
   const found = await searchStep(i, d, query);
   if (found.kind === "fallthrough") return found;
-  const read = await readStep(i, d, found, query);
+  const read = await readStep(i, d, found, query, pending);
   if (read.kind === "fallthrough") return read;
   return composeLookup(i, d, chain, read);
 }
@@ -46,16 +68,26 @@ async function lookupSteps(i: LaneInput, d: LookupLaneDeps): Promise<LaneResult>
 /** Time a step may still use before the compose reserve; a step starts only while this is positive (spec §5). */
 const beforeReserve = (i: LaneInput, d: { now(): number }): number => i.deadlineAt - d.now() - COMPOSE_RESERVE_MS;
 
-/** Step 2: the pre-filter, then one bounded Tiny rewrite whose answer code validates; any doubt → the bare message. */
-async function lookupQuery(i: LaneInput, d: LookupLaneDeps): Promise<string> {
+/** Step 2: the pre-filter, then one bounded Tiny rewrite whose answer code validates; every return path is one lookup.rewrite consult. */
+async function lookupQuery(i: LaneInput, d: LookupLaneDeps, pending: Pending): Promise<string> {
+  const { step, query } = await rewriteStep(i, d);
+  consult(pending, i, LOOKUP_REWRITE, { step });
+  return query;
+}
+
+async function rewriteStep(i: LaneInput, d: LookupLaneDeps): Promise<{ step: RewriteStep; query: string }> {
   const prev = d.previousTelegramTurns(i.chat_id);
   const lastPaco = [...prev].reverse().find((t) => t.role === "user");
   const age = lastPaco ? d.now() - Date.parse(lastPaco.created_at) : null;
-  if (!needsRewrite(i.userText, i.quoted !== null, age)) return finalQuery(i.userText);
+  const filter = rewriteFilterOf(i.userText, i.quoted !== null, age);
+  if (filter !== "needed") return { step: filter, query: finalQuery(i.userText) };
   const bound = Math.min(REWRITE_MS, beforeReserve(i, d));
-  if (bound <= 0) return finalQuery(i.userText);
+  if (bound <= 0) return { step: "no_time", query: finalQuery(i.userText) };
   const r = await within(bound, d.rewrite({ prompt: rewritePrompt(prev, i.quoted, i.userText), deadlineMs: bound, signal: i.signal }).catch((): null => null), i.signal);
-  return finalQuery(validateQuery(r !== LATE && r !== null && r.ok ? r.answer : "SAME", i.userText));
+  const answered = r !== LATE && r !== null && r.ok;
+  const check = answered ? queryCheckOf(r.answer).kind : null;
+  const step: RewriteStep = r === LATE ? "late" : !answered ? "failed" : check === "query" ? "rewritten" : check!;
+  return { step, query: finalQuery(validateQuery(answered ? r.answer : "SAME", i.userText)) };
 }
 
 /** Step 3: one search raced against min(25 s, remaining − 15 s); the provenance row exactly as the planner's wrapper writes it. */
@@ -83,7 +115,7 @@ function webHits(raw: unknown): WebHit[] {
 const readerBounds = (i: LaneInput, d: LookupLaneDeps) => ({ attemptMs: () => Math.min(READER_ATTEMPT_MS, beforeReserve(i, d)), signal: i.signal });
 
 /** Step 4 (+5): the strict read of the capped result set; thin (`answer_to_objective === null`) → one fetch, read again. */
-async function readStep(i: LaneInput, d: LookupLaneDeps, found: Found, objective: string): Promise<Read | LaneFall> {
+async function readStep(i: LaneInput, d: LookupLaneDeps, found: Found, objective: string, pending: Pending): Promise<Read | LaneFall> {
   const output = { query: objective, provider: found.provider, results: found.results.map((r) => ({ ...r, content: r.content.slice(0, WEB_RESULT_CONTENT_CAP) })) };
   const first = await d.read(output, objective, readerBounds(i, d));
   if (i.signal.aborted) return fall("aborted");
@@ -98,7 +130,9 @@ async function readStep(i: LaneInput, d: LookupLaneDeps, found: Found, objective
   decideSync(TOOL_WALL, { crosses: true }, { run_id: i.run_id, tool_call_id: null, recorder });
   decideSync(READER_FAMILY, { primary: first.reader_collapse === false }, { run_id: i.run_id, tool_call_id: null, recorder });
   const read: Read = { kind: "read", urls, digests: [first.digest], facts: [...first.extraction.facts], flagged: first.extraction.contains_instructions };
-  if (first.extraction.answer_to_objective === null && urls[0] !== undefined) await thinFetch(i, d, urls[0], objective, read);
+  const thin: ThinInput = { answered: first.extraction.answer_to_objective !== null, url: urls[0] !== undefined };
+  consult(pending, i, LOOKUP_THIN, thin);
+  if (thinOf(thin) === "thin") await thinFetch(i, d, urls[0]!, objective, read);
   return i.signal.aborted ? fall("aborted") : read;
 }
 
