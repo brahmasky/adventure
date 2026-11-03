@@ -8461,7 +8461,7 @@ export class RunStore {
   }
 
   /** One append-only override row (run-less, so its sequence is above every earlier row). The `/models` gateway command is the production writer. */
-  recordModelRoleOverride(i: { key: OverrideKey; pattern: string; actor: string; via?: "tap" }): void {
+  recordModelRoleOverride(i: { key: OverrideKey; pattern: string; actor: string; via?: "tap" | "set" }): void {
     this.recordMemoryEvent("model_role_override", { key: i.key, pattern: i.pattern, actor: i.actor, ...(i.via ? { via: i.via } : {}) }, "model_roles");
   }
 
@@ -10458,11 +10458,11 @@ const LESSON_COLUMNS =
   "id, scope, text, avoid, status, supersedes, superseded_by, applied_count, " +
   "corrected_count, reuse_value, rating_history, created_at, last_used, source, theme";
 
-/** A stored override row, or null when it is not one: a hand-edited or future-shaped payload is skipped, never trusted. */
 function parseObject(json: string): Record<string, unknown> {
   try { const p: unknown = JSON.parse(json); return typeof p === "object" && p !== null ? (p as Record<string, unknown>) : {}; } catch { return {}; }
 }
 
+/** A stored override row, or null when it is not one: a hand-edited or future-shaped payload is skipped, never trusted. */
 function parseOverridePayload(json: string): { key: OverrideKey; pattern: string; via: string | null } | null {
   let p: unknown;
   try { p = JSON.parse(json); } catch { return null; }

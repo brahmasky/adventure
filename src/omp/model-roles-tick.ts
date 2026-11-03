@@ -192,7 +192,7 @@ export function retireCardOverrides(store: RunStore, notify: (text: string) => v
 }
 
 function cardWritten(row: { pattern: string; via: string | null; prev: { event_type: string; payload: Record<string, unknown> } | null }, tier: TierId, provider: string): boolean {
-  if (row.via === "tap") return true;
+  if (row.via !== null) return row.via === "tap"; // the adjacency rule below is for legacy rows with no `via`
   const p = row.prev?.payload;
   return row.prev?.event_type === "model_probe" && p?.purpose === "tap" && p.result === "pass" && p.tier === tier && p.selector === `${provider}/${row.pattern}`;
 }

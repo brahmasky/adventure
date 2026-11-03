@@ -58,6 +58,15 @@ describe("retireCardOverrides through the tick", () => {
     await tick();
     expect(overrides().at(-1)).toEqual({ key: "judges:2", pattern: "", actor: "houge:tier" });
   });
+  it("a tap-pass probe immediately followed by a /models set of the same pattern is Paco's own choice and is kept", async () => {
+    tapPass();
+    store.recordModelRoleOverride({ key: "judges:2", pattern: ARGON, actor: "paco", via: "set" });
+    const notes: string[] = [];
+    await tick(day(0), notes);
+    expect(store.latestModelRoleOverrides().get("judges:2")).toBe(ARGON);
+    expect(notes).not.toContain(RETIRED);
+    expect(seatSource()).toBe("override");
+  });
   it("tap, then /models reset, then /models set of the same pattern is Paco's own choice and is kept", async () => {
     tapPass();
     store.recordModelRoleOverride({ key: "judges:2", pattern: ARGON, actor: "paco", via: "tap" });
