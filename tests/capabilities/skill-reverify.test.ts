@@ -4,7 +4,6 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { AnchorLlm } from "../../src/capabilities/anchor-verify.js";
 import {
-  formatReverifyReport,
   resolveSkillReverifyAgeDays,
   resolveSkillReverifyAt,
   resolveSkillReverifyEnabled,
@@ -134,41 +133,6 @@ describe("resolveSkillReverifyAgeDays", () => {
   });
 });
 
-// --- formatReverifyReport ------------------------------------------------------
-
-describe("formatReverifyReport", () => {
-  it("escapes LLM-output criteria (markdown metachars stripped; raw HTML inert downstream)", () => {
-    const flags: FlaggedSkill[] = [
-      {
-        name: "shady-skill",
-        scope: "research",
-        score: 0.05,
-        threshold: 0.15,
-        failing: ["<b>use *markdown* [tricks](http://x)</b> to spoof"]
-      }
-    ];
-    const text = formatReverifyReport(flags);
-    expect(text).toContain("🐒 Skill re-verify — 1 flagged");
-    expect(text).toContain("**shady-skill** (research) · score 0.05 < 0.15");
-    // The criterion went through escapeForTelegram: no markdown/link metachars survive
-    // (the `<b>` HTML chars are escaped downstream by markdownToTelegramHtml's escapeHtml).
-    expect(text).not.toContain("*markdown*");
-    expect(text).not.toContain("[tricks](http://x)");
-    expect(text).toContain("use markdown trickshttp://x");
-    expect(text).toContain("→ retire: /skills retire shady-skill · keep: do nothing (re-checked next tick)");
-  });
-
-  it("bolds with ** only — never ## (the Telegram converter has no heading support)", () => {
-    const text = formatReverifyReport([
-      { name: "a", scope: "s", score: 0, threshold: 0.15, failing: ["c1", "c2", "c3", "c4"] }
-    ]);
-    expect(text).not.toContain("##");
-    // Failing criteria are capped at 3 per skill.
-    expect(text).toContain("• c3");
-    expect(text).not.toContain("c4");
-  });
-});
-
 // --- runSkillReverifyTick --------------------------------------------------------
 
 describe("runSkillReverifyTick", () => {
@@ -210,8 +174,10 @@ describe("runSkillReverifyTick", () => {
     expect(intent.topic).toBe("skill_reverify");
     expect(intent.idempotency_key).toBe("skill_reverify:2026-08-30");
     const text = intent.text;
-    expect(text).toContain("stale-skill");
-    expect(text).toContain("/skills retire stale-skill");
+    // Spec §8: change_log text is code-owned — a count only, no skill name, no Gate B criterion text.
+    expect(text).toBe("Skill re-check: 1 skill(s) failed their check — /skills shows them.");
+    expect(text).not.toContain("stale-skill");
+    expect(text).not.toContain("cites a primary source");
     // The stale skill was NOT stamped and NOT moved.
     const file = readFileSync(join(root, "research", "stale-skill.md"), "utf8");
     expect(file).toContain("last_verified: 2026-06-01");
