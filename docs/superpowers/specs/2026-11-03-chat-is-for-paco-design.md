@@ -288,7 +288,7 @@ Gemini card offers nothing today; `gpt-oss-120b` is never offered for a Gemini s
 Paco's 13:36 tap wrote the override `judges:2 → gemini-4-argon`. Kept, it would pin seat 2 past any newer Gemini.
 
 - **Marker from now on.** The tap's override row carries `via: "tap"` (`recordModelRoleOverride` gains an optional field;
-  `run-ledger.ts:348`'s allow-list adds it). `/models set` never writes it. Resolution keeps `latestModelRoleOverrides`
+  `run-ledger.ts:348` lists required fields only, so the optional `via` needs no entry there — build correction). `/models set` never writes it. Resolution keeps `latestModelRoleOverrides`
   / `parseOverridePayload` as they are; retirement reads through a new `RunStore.latestOverrideRows()` returning, per key,
   `{ key, pattern, via, sequence }` of the latest run-less override row plus the run-less row just before it.
 - **Card-written** means: the *latest* override row for key K has pattern P and either `via: "tap"`, or (rows before this
@@ -344,7 +344,8 @@ Paco's 13:36 tap wrote the override `judges:2 → gemini-4-argon`. Kept, it woul
   pattern kept; head older than P kept); `settle()` order (one tick: retired, zero shadow lines, `source: "list"`);
   `/changes` 20 × 300 chars ≤ 3,900, empty case, cut; `/status` line.
 - **Gates changed on purpose** (each amended in the build, named so a red run is not read as a regression):
-  `live-gate-ladder-remainder-r1/r2/r4.mjs` (`decision_record_failed` alert now a `change_log` row),
+  `live-gate-ladder-remainder-r1`…`r6.mjs` (`decision_record_failed` alert now a `change_log` row), `live-gate-omp-probe.mjs`
+  (`omp_contract_drift`), `live-gate-decisions-2a.mjs` (C5, `hostile_schedule_turn`),
   `live-gate-loud-degradation.mjs` (reminder kinds), `live-gate-model-tiers.mjs` (card path uses a planted empty family
   tier; argon is no longer a proposal). Tests that build `NotificationIntent` literals use one fixture helper.
 - **Live gate** `scripts/live-gate-chat-is-for-paco.mjs` on a `VACUUM INTO` copy, Telegram stubbed, no omp spawn by the

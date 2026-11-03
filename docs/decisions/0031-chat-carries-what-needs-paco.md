@@ -39,6 +39,11 @@ in ledger rows but nothing read it back in plain words.
   improvement cards, self-write notices, budget fuses and real outages. Model switches, internal self-checks and routine
   Jev notices are read with `/changes`.
 - Two messages for one event become one where an incident and its card both fired (`hostile_schedule_turn`).
+- What else changed in code: a duplicate log write returns `duplicate_log` (no outbox record exists), not `duplicate`;
+  an urgent card with no chat now throws instead of queueing an undeliverable row (`standing_grant` keeps "no grant
+  without its card"; `trust_hostile` falls to `trust_card_failed`, which pages); the skill re-check logs a code-owned
+  count, never the model-written report; `/models set` marks its override `via: "set"` so it is never read as a card tap;
+  `/changes` collapses consecutive identical entries (`×N`).
 - Residuals Paco accepts: background is visible only when he looks; a catalog outage and a stale static list left the daily
   reminder; an omp contract drift that degrades answers without failing spawns shows in `/status` and, after 7 days, in the
   reminder; rating asks stay in chat.
