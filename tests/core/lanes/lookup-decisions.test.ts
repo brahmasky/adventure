@@ -157,4 +157,23 @@ describe("lookup.rewrite and lookup.thin rows (spec R6 §4.1, §4.2)", () => {
       expect(s.d.search).toHaveBeenCalledWith({ query: "Sydney weather tomorrow", max_results: 5 });
     } finally { rung.decide = real; err.mockRestore(); }
   });
+  it("9. mutation #41: one pending write throws (decideSync refuses a non-rule rung) — the reply, the other row and a logged error remain", async () => {
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    const entry = LOOKUP_REWRITE as { ladder: unknown };
+    const real = entry.ladder;
+    entry.ladder = [{ kind: "model", name: "planted" }];
+    try {
+      const s = setup();
+      const r = await runLookupLane(s.input(), s.d);
+      expect(r.kind).toBe("reply");
+      expect(s.r6()).toEqual([["lookup.thin", "none", "answered", "run_1"]]);
+      const logged = err.mock.calls.map((c) => String(c[0]));
+      expect(logged.filter((m) => m.startsWith("lookup lane: decision record threw on run_1"))).toHaveLength(1);
+    } finally { entry.ladder = real; err.mockRestore(); }
+  });
+  it("10. an empty Fast chain falls through no_fast_leg and writes zero R6 recorder calls (not a consult, spec §4.1)", async () => {
+    const s = setup({ fastChain: () => [] });
+    expect(await runLookupLane(s.input(), s.d)).toEqual({ kind: "fallthrough", why: "no_fast_leg" });
+    expect(s.calls).toEqual([]);
+  });
 });
