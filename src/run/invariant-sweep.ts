@@ -431,6 +431,7 @@ export function runInvariantSweep(input: InvariantSweepInput): InvariantSweepRes
       continue;
     }
     input.store.enqueueNotification({
+      topic: "incident_page",
       target: { kind: "telegram", chat_id: input.chat_id },
       intent_type: "progress",
       idempotency_key: `incident_opened:${opened.incident_id}`,
@@ -444,6 +445,7 @@ export function runInvariantSweep(input: InvariantSweepInput): InvariantSweepRes
   // worse than the storm. Keyed on the sweep instant, so it is idempotent on replay.
   if (input.chat_id && result.alerts_suppressed > 0) {
     input.store.enqueueNotification({
+      topic: "incident_summary",
       target: { kind: "telegram", chat_id: input.chat_id },
       intent_type: "progress",
       idempotency_key: `incident_sweep_summary:${input.now}`,
@@ -461,6 +463,7 @@ export function runInvariantSweep(input: InvariantSweepInput): InvariantSweepRes
     const open_minutes = Math.floor((Date.parse(input.now) - Date.parse(open.first_seen_at)) / 60000);
     if (input.chat_id && open_minutes * 60000 >= INCIDENT_RESOLVE_NOTIFY_MIN_MS) {
       input.store.enqueueNotification({
+        topic: "incident_page",
         target: { kind: "telegram", chat_id: input.chat_id },
         intent_type: "progress",
         idempotency_key: `incident_resolved:${open.incident_id}`,

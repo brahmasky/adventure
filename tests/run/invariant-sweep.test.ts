@@ -261,6 +261,7 @@ describe("runInvariantSweep (introspection slice A)", () => {
     // A NON-sweep notification stuck in the outbox is still reported — the exclusion is
     // narrow (own alerts only), not a blanket blindness to delivery failure.
     store.enqueueNotification({
+      topic: "reply",
       target: { kind: "telegram", chat_id: "555" },
       intent_type: "progress",
       idempotency_key: "some-run-report",

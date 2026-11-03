@@ -10,6 +10,7 @@ describe("NotificationDispatcher", () => {
     try {
       const outbox = new NotificationOutbox(store);
       const record = outbox.enqueue({
+        topic: "reply",
         target: { kind: "telegram", chat_id: "222" },
         intent_type: "final_report",
         idempotency_key: "run_1:final",
@@ -38,6 +39,7 @@ describe("NotificationDispatcher", () => {
     try {
       const outbox = new NotificationOutbox(store);
       const record = outbox.enqueue({
+        topic: "reply",
         target: { kind: "telegram", chat_id: "222" },
         intent_type: "progress",
         idempotency_key: "run_1:progress",
@@ -61,7 +63,7 @@ describe("NotificationDispatcher", () => {
     const store = RunStore.openInMemory();
     try {
       const outbox = new NotificationOutbox(store);
-      const record = outbox.enqueue({ target: { kind: "telegram", chat_id: "222" }, intent_type: "final_report", idempotency_key: "run_9:final_report", run_id: "run_9", correlation_id: "run_9", payload: { text: "200" } });
+      const record = outbox.enqueue({ topic: "reply", target: { kind: "telegram", chat_id: "222" }, intent_type: "final_report", idempotency_key: "run_9:final_report", run_id: "run_9", correlation_id: "run_9", payload: { text: "200" } });
       const seen: string[] = [];
       const dispatcher = new NotificationDispatcher(outbox, { local: { send: async () => ({ provider_message_id: "local:1" }) }, telegram: { send: async () => ({ provider_message_id: "telegram:7" }) } },
         { onDelivered: (r) => { seen.push(`${r.idempotency_key}=${String(outbox.get(r.notification_id)?.state)}`); throw Object.assign(new Error("settle failed: /secret/path"), { code: "SQLITE_FULL" }); } });

@@ -272,6 +272,7 @@ describe("runTelegramDaemon — ⓪·3g background evolution lane", () => {
       // Mirror production wiring: the outcome is a DURABLE outbox notification.
       deliver: (outcome) => {
         store.enqueueNotification({
+          topic: "reply",
           target: { kind: "telegram", chat_id: "222" },
           intent_type: "final_report",
           idempotency_key: "lane:test:completion",

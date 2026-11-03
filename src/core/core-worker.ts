@@ -3375,7 +3375,7 @@ export class CoreWorker {
     if (!saved || !first) return true;
     try {
       const card = memoryLaneCard({ run_id, ...this.cardItems(saved) });
-      const q = this.runStore.enqueueNotification({ target: { kind: "telegram", chat_id: this.chatOf(run_id) }, intent_type: "progress",
+      const q = this.runStore.enqueueNotification({ topic: "memory_card", target: { kind: "telegram", chat_id: this.chatOf(run_id) }, intent_type: "progress",
         idempotency_key: `memcard:${first.change_id}`, correlation_id: run_id, payload: { text: this.maskSecrets(card.text), buttons: memoryUndoButtons(saved) } });
       if (q.status !== "conflict") return true;
       console.error(`memory card: announce refused for change ${first.change_id}: ${q.error}`);

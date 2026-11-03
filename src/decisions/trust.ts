@@ -83,7 +83,7 @@ export class TurnTrust {
   private onHostile(carried: boolean): void {
     if (carried) return;
     if (this.d.born === "schedule") this.page("hostile_schedule_turn");
-    try { enqueueUrgentCard(this.d.store, { chat_id: this.d.chat_id, key: `trust_hostile:${this.d.run_id}`, text: HOSTILE_CARD_TEXT }); }
+    try { enqueueUrgentCard(this.d.store, { chat_id: this.d.chat_id, key: `trust_hostile:${this.d.run_id}`, text: HOSTILE_CARD_TEXT }, "urgent"); }
     catch (e) {
       // Paco must still learn the turn is hostile: the card's failure becomes an incident row (and its own page)
       console.error(`trust: hostile card not queued: ${message(e)}`);

@@ -424,6 +424,7 @@ export class Gateway {
       applied_lesson_ids: applied
     };
     this.runStore.enqueueNotification({
+      topic: "reply",
       target: event.notify,
       intent_type: "progress",
       idempotency_key: `${event.idempotency_key}:rating`,
@@ -470,6 +471,7 @@ export class Gateway {
 
     const result: GatewayIntakeResult = { ok: true, status: "lessons_returned", run_id: "" };
     this.runStore.enqueueNotification({
+      topic: "reply",
       target: event.notify,
       intent_type: "progress",
       idempotency_key: `${event.idempotency_key}:lessons`,
@@ -522,6 +524,7 @@ export class Gateway {
 
     const result: GatewayIntakeResult = { ok: true, status: "skills_returned", run_id: "" };
     this.runStore.enqueueNotification({
+      topic: "reply",
       target: event.notify,
       intent_type: "progress",
       idempotency_key: `${event.idempotency_key}:skills`,
@@ -599,6 +602,7 @@ export class Gateway {
 
     const result: GatewayIntakeResult = { ok: true, status: "forgotten", run_id: "" };
     this.runStore.enqueueNotification({
+      topic: "reply",
       target: event.notify,
       intent_type: "progress",
       idempotency_key: `${event.idempotency_key}:forget`,
@@ -650,6 +654,7 @@ export class Gateway {
 
     const result: GatewayIntakeResult = { ok: true, status: "schedule_admin_returned", run_id: "" };
     this.runStore.enqueueNotification({
+      topic: "reply",
       target: event.notify,
       intent_type: "progress",
       idempotency_key: `${event.idempotency_key}:schedule`,
@@ -719,6 +724,7 @@ export class Gateway {
 
     const result: GatewayIntakeResult = { ok: true, status: "killed", run_id: "" };
     this.runStore.enqueueNotification({
+      topic: "reply",
       target: event.notify,
       intent_type: "progress",
       idempotency_key: `${event.idempotency_key}:kill`,
@@ -755,6 +761,7 @@ export class Gateway {
 
     const result: GatewayIntakeResult = { ok: true, status: "disarmed", run_id: "" };
     this.runStore.enqueueNotification({
+      topic: "reply",
       target: event.notify,
       intent_type: "progress",
       idempotency_key: `${event.idempotency_key}:disarm`,
@@ -788,6 +795,7 @@ export class Gateway {
 
     const result: GatewayIntakeResult = { ok: true, status: "rearmed", run_id: "" };
     this.runStore.enqueueNotification({
+      topic: "reply",
       target: event.notify,
       intent_type: "progress",
       idempotency_key: `${event.idempotency_key}:rearm`,
@@ -820,6 +828,7 @@ export class Gateway {
       : { ok: true, status: "status_returned", run_id: "" };
 
     this.runStore.enqueueNotification({
+      topic: "reply",
       target: event.notify,
       intent_type: "progress",
       idempotency_key: `${event.idempotency_key}:status`,
@@ -854,6 +863,7 @@ export class Gateway {
     const table = formatUsageTable(this.runStore.usageByModel());
     const result: GatewayIntakeResult = { ok: true, status: "usage_returned", run_id: "" };
     this.runStore.enqueueNotification({
+      topic: "reply",
       target: event.notify,
       intent_type: "progress",
       idempotency_key: `${event.idempotency_key}:usage`,
@@ -903,6 +913,7 @@ export class Gateway {
     }
     const result: GatewayIntakeResult = { ok: true, status: "radar_returned", run_id: "" };
     this.runStore.enqueueNotification({
+      topic: "reply",
       target: event.notify,
       intent_type: "progress",
       // The list reply keeps the R1 `:radar` key; a detail reply keys on its ordinal so a
@@ -955,6 +966,7 @@ export class Gateway {
       action === "pick" && typeof rawNumber === "number" ? `:pick:${rawNumber}` : "";
     const result: GatewayIntakeResult = { ok: true, status: "idea_returned", run_id: "" };
     this.runStore.enqueueNotification({
+      topic: "reply",
       target: event.notify,
       intent_type: "progress",
       idempotency_key: `${event.idempotency_key}:idea${pickSuffix}`,
@@ -1039,6 +1051,7 @@ export class Gateway {
     const text = attempted ? `${attempted} 不是命令。\n\n${HELP_TEXT}` : HELP_TEXT;
     const result: GatewayIntakeResult = { ok: true, status: "help_returned", run_id: "" };
     this.runStore.enqueueNotification({
+      topic: "reply",
       target: event.notify,
       intent_type: "progress",
       idempotency_key: `${event.idempotency_key}:help`,
@@ -1081,6 +1094,7 @@ export class Gateway {
     if (reason === undefined) return;
     const id = (event.approval_id ?? "").replace(/[^A-Za-z0-9_-]/g, "").slice(0, APPROVAL_ID_ECHO_MAX);
     this.runStore.enqueueNotification({
+      topic: "reply",
       target: event.notify,
       intent_type: "progress",
       idempotency_key: `${event.idempotency_key}:approval_refused`,
@@ -1102,6 +1116,7 @@ export class Gateway {
     }
     const result: GatewayIntakeResult = { ok: true, status: "approvals_returned", run_id: "" };
     this.runStore.enqueueNotification({
+      topic: "reply",
       target: event.notify,
       intent_type: "progress",
       idempotency_key: `${event.idempotency_key}:approvals`,
@@ -1135,6 +1150,7 @@ export class Gateway {
       const fuse = this.runStore.armGlobalFuseIfNeeded(now);
       if (fuse.armed) {
         this.runStore.enqueueNotification({
+          topic: "budget_fuse",
           target: event.notify,
           intent_type: "progress",
           idempotency_key: `global-budget-fuse:${fuse.since}`,
@@ -1218,6 +1234,7 @@ export class Gateway {
   private refuseContract(event: TypedTaskEvent, error: { code: "TASK_CONTRACT_INVALID"; message: string }): GatewayIntakeResult {
     if (event.source === "telegram") {
       this.runStore.enqueueNotification({
+        topic: "reply",
         target: event.notify,
         intent_type: "progress",
         idempotency_key: `${event.idempotency_key}:contract_invalid`,

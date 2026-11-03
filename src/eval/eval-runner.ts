@@ -195,6 +195,7 @@ async function runOutboxDeliveryCase(input: {
   try {
     const outbox = new NotificationOutbox(store);
     const enqueued = outbox.enqueue({
+      topic: "reply",
       target: input.target,
       intent_type: "final_report",
       idempotency_key: "eval:outbox-delivery",

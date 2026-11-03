@@ -51,7 +51,7 @@ export const PROMOTE_RETRY_MAX = 3;
 /** The card goes out from the fenced transition, keyed by job, attempt and state: a redelivered event never sends it twice (§5.2, codex round 4). */
 function enqueueJobCard(store: RunStore, chatId: string | null, job_id: string, attempt: number, state: JobState, text: string, buttons?: NotificationButton[]): void {
   if (!chatId) return;
-  store.enqueueNotification({ target: { kind: "telegram", chat_id: chatId }, intent_type: "progress", idempotency_key: `improve_job:${job_id}:${attempt}:${state}`, correlation_id: `improve_job:${job_id}`,
+  store.enqueueNotification({ topic: "improve_job", target: { kind: "telegram", chat_id: chatId }, intent_type: "progress", idempotency_key: `improve_job:${job_id}:${attempt}:${state}`, correlation_id: `improve_job:${job_id}`,
     payload: { text, ...(buttons ? { buttons } : {}) } });
 }
 

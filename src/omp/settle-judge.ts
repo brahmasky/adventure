@@ -97,7 +97,7 @@ function settleHealthAfter(d: SettleDeps, now: string, reason: SettleReason | nu
     if (n < SETTLE_HEALTH_LIMIT) return;
     const opened = openAlertedIncident(d.store, { kind: "decision_health", subject: TURN_SETTLE_ID, detail: { entry: TURN_SETTLE_ID, count: n, limit: SETTLE_HEALTH_LIMIT, window_min: 60 }, env: {}, now });
     const incident = d.store.findOpenIncident(d.store.incidentFingerprint("decision_health", TURN_SETTLE_ID));
-    if (opened && incident) enqueueUrgentCard(d.store, { chat_id: d.chatId, key: `decision_health:${incident.incident_id}`, text: `⚠️ *turn.settle* could not finish ${n} settles in the last hour (budget, todo state unavailable, or the planner's model erroring). Replies are delivered unsettled; the next complete settle clears this.` });
+    if (opened && incident) enqueueUrgentCard(d.store, { chat_id: d.chatId, key: `decision_health:${incident.incident_id}`, text: `⚠️ *turn.settle* could not finish ${n} settles in the last hour (budget, todo state unavailable, or the planner's model erroring). Replies are delivered unsettled; the next complete settle clears this.` }, "urgent");
   } catch (e) { console.error(`settle: health bookkeeping failed: ${e instanceof Error ? e.message : String(e)}`); }
 }
 

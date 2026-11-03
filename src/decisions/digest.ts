@@ -396,8 +396,9 @@ export function runDecisionDigestTick(i: DigestTickInput): DigestTickResult {
 
 /** The queue's verdict; a conflict (another payload holds today's key) is logged, never a silent "sent", and a duplicate sets no offers. */
 function enqueueDigest(store: RunStore, chatId: string, date: string, digest: Digest): "queued" | "duplicate" | "conflict" {
-  const r = store.enqueueNotification({ target: { kind: "telegram", chat_id: chatId }, intent_type: "progress", idempotency_key: `decision_digest:${date}`,
+  const r = store.enqueueNotification({ topic: "digest", target: { kind: "telegram", chat_id: chatId }, intent_type: "progress", idempotency_key: `decision_digest:${date}`,
     correlation_id: "decision-digest", payload: { text: digest.text, ...(digest.button_rows.length > 0 ? { button_rows: digest.button_rows } : {}) } });
   if (r.status === "conflict") console.error(`decisions: digest for ${date} not queued (${r.error})`);
+  if (r.status === "logged" || r.status === "duplicate_log") throw new Error("digest topic is chat; it was routed to the change log");
   return r.status;
 }

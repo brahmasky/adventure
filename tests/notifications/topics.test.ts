@@ -1,0 +1,16 @@
+import { describe, expect, it } from "vitest";
+import { TOPIC_ROUTE, isLogTopic } from "../../src/notifications/topics.js";
+
+describe("TOPIC_ROUTE (spec 2026-11-03 §4.1)", () => {
+  it("routes exactly the five background topics to the log", () => {
+    const log = Object.entries(TOPIC_ROUTE).filter(([, r]) => r === "log").map(([t]) => t).sort();
+    expect(log).toEqual(["decision_internal", "incident_log", "jev_notice", "model_change", "skill_reverify"]);
+  });
+  it("keeps every reply, report, approval, card and the storm summary in chat", () => {
+    for (const t of ["reply", "run_report", "approval", "memory_card", "rating_ask", "digest", "urgent", "idea_panel", "self_write",
+      "budget_fuse", "improve_job", "jev_card", "model_card", "incident_page", "incident_reminder", "incident_summary"] as const) {
+      expect(TOPIC_ROUTE[t]).toBe("chat");
+      expect(isLogTopic(t)).toBe(false);
+    }
+  });
+});

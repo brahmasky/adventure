@@ -615,6 +615,7 @@ export async function runIdeaPanelTick(input: PanelTickInput): Promise<PanelTick
         const snapshot = input.store.getLatestShortlist();
         if (snapshot !== null) {
           input.store.enqueueNotification({
+            topic: "idea_panel",
             target: { kind: "telegram", chat_id: input.chatId },
             intent_type: "progress",
             idempotency_key: `idea-panel:${weekKey}:${input.now}`,

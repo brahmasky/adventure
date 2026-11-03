@@ -109,7 +109,7 @@ export async function finalAudit(ctx: SettleCtx, t: SettleTurn, snap: Snapshot |
 
 /** The one "Settled unverified" card of a turn (keyed by run): its first line is the reason's note line. */
 function queueUnverifiedCard(ctx: SettleCtx, t: SettleTurn, reason: SettleReason, state: SettleState): void {
-  enqueueUrgentCard(ctx.store, { chat_id: ctx.chatId, key: `settle_unverified:${t.run_id}`, text: UNVERIFIED_CARD(settleNote(reason, state).split("\n")[0] ?? reason) });
+  enqueueUrgentCard(ctx.store, { chat_id: ctx.chatId, key: `settle_unverified:${t.run_id}`, text: UNVERIFIED_CARD(settleNote(reason, state).split("\n")[0] ?? reason) }, "urgent");
 }
 
 /**

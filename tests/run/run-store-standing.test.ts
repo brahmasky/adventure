@@ -61,7 +61,7 @@ describe("endStandingApproval", () => {
   it("finalReportState reads the run's terminal notice by its shared key, undefined when none was queued", () => {
     const s = RunStore.openInMemory();
     expect(s.finalReportState("run_none")).toBeUndefined();
-    s.enqueueNotification({ target: { kind: "telegram", chat_id: "555" }, intent_type: "final_report", idempotency_key: "run_a:final_report", run_id: "run_a", correlation_id: "run_a", payload: { text: "I hit an error" } });
+    s.enqueueNotification({ topic: "reply", target: { kind: "telegram", chat_id: "555" }, intent_type: "final_report", idempotency_key: "run_a:final_report", run_id: "run_a", correlation_id: "run_a", payload: { text: "I hit an error" } });
     expect(s.finalReportState("run_a")).toBe("queued");
   });
 });

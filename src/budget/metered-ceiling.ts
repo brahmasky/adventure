@@ -45,6 +45,7 @@ export function checkMeteredCeiling(input: CheckMeteredCeilingInput): CheckMeter
   const alerted = fuse.armed && input.chatId !== undefined;
   if (alerted && input.chatId) {
     input.store.enqueueNotification({
+      topic: "budget_fuse",
       target: { kind: "telegram", chat_id: input.chatId },
       intent_type: "progress",
       idempotency_key: `metered-fuse:${fuse.since}`,

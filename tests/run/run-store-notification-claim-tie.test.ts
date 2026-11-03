@@ -26,6 +26,7 @@ describe("claimNextNotification same-millisecond claims by one owner", () => {
 
   function enqueue(key: string, text: string): string {
     const result = store.enqueueNotification({
+      topic: "reply",
       target: { kind: "telegram", chat_id: "222" },
       intent_type: "progress",
       idempotency_key: key,

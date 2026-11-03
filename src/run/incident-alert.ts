@@ -41,6 +41,7 @@ export function openAlertedIncident(store: RunStore, input: AlertedIncidentInput
 
 function alertOpened(store: RunStore, chat: string, incident_id: string, input: AlertedIncidentInput): void {
   store.enqueueNotification({
+    topic: "incident_page",
     target: { kind: "telegram", chat_id: chat },
     intent_type: "progress",
     idempotency_key: `incident_opened:${incident_id}`,
@@ -127,7 +128,7 @@ export function runIncidentReminder(i: { store: RunStore; chatId: string | null;
   const text = reminderText(i.store.listOpenIncidents(), i.now);
   if (text === null) return "none";
   const date = formatInstantInZone(i.now, resolveDisplayZone(i.env)).slice(0, 10);
-  const r = i.store.enqueueNotification({ target: { kind: "telegram", chat_id: i.chatId }, intent_type: "progress",
+  const r = i.store.enqueueNotification({ topic: "incident_reminder", target: { kind: "telegram", chat_id: i.chatId }, intent_type: "progress",
     idempotency_key: `incident_remind:${date}`, correlation_id: "incident-remind", payload: { text } });
   return r.status === "queued" ? "sent" : "already";
 }

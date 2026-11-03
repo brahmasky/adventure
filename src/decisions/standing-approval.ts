@@ -125,7 +125,7 @@ function grantStanding(store: RunStore, observed: StandingApprovalRow, now: stri
     if (move_id === null) return { status: "lost" };
     const text = grantCardText({ label: row.label, schedule: scheduleDisplayName(store.getScheduledTask(row.schedule_id)?.goal ?? ""),
       expires_local: formatInstantInZone(expires_at, resolveDisplayZone(process.env)).slice(0, 10) });
-    const notification_id = enqueueUrgentCard(store, { chat_id: row.chat_id, key: `standing_grant:${row.standing_id}`, text, buttons: [revokeButton(row.standing_id)] });
+    const notification_id = enqueueUrgentCard(store, { chat_id: row.chat_id, key: `standing_grant:${row.standing_id}`, text, buttons: [revokeButton(row.standing_id)] }, "urgent");
     if (notification_id === null) throw new Error(`standing grant card conflict: ${row.standing_id}`); // no grant without its Revoke card
     store.setStandingGrantNotification(row.standing_id, notification_id, now);
     return { status: "granted" };
@@ -205,7 +205,7 @@ export function settleStandingUses(store: RunStore, run_id: string, now: string 
     if (!row || !reason || !store.endStandingApproval({ standing_id: row.standing_id, reason, now })) continue;
     ended++;
     const card = reason === "tampered_use" ? { key: "standing_tampered", text: tamperedUseText(row.label) } : { key: "standing_unverified", text: unverifiedUseText(row.label) };
-    if (enqueueUrgentCard(store, { chat_id: row.chat_id, key: `${card.key}:${row.standing_id}`, text: card.text }) === null) {
+    if (enqueueUrgentCard(store, { chat_id: row.chat_id, key: `${card.key}:${row.standing_id}`, text: card.text }, "urgent") === null) {
       openAlertedIncident(store, { kind: "standing_card_failed", subject: `standing:${row.standing_id}`, detail: { card: reason }, now });
     }
   }

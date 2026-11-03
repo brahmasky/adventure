@@ -38,7 +38,7 @@ export function tierCardText(c: EmptyTierCard): string {
 export function enqueueTierCard(store: RunStore, chatId: string, now: string, c: EmptyTierCard, env: NodeJS.ProcessEnv = process.env): void {
   const date = formatInstantInZone(now, resolveDisplayZone(env)).slice(0, 10);
   const buttons: NotificationButton[] = [...c.proposals.map((id) => ({ text: `Use ${id}`, data: tierCallbackData(c.tier, id) })), { text: "Not now", data: tierCallbackData(c.tier, null) }];
-  store.enqueueNotification({ target: { kind: "telegram", chat_id: chatId }, intent_type: "progress", idempotency_key: `model_tier_card:${c.tier}:${date}`,
+  store.enqueueNotification({ topic: "model_card", target: { kind: "telegram", chat_id: chatId }, intent_type: "progress", idempotency_key: `model_tier_card:${c.tier}:${date}`,
     correlation_id: "model-roles", payload: { text: tierCardText(c), ...(c.proposals.length > 0 ? { button_rows: [buttons] } : {}) } });
 }
 

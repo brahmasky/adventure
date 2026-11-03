@@ -189,6 +189,7 @@ describe("invariant detection queries", () => {
 
   it("findUndeliveredNotifications flags only rows older than the grace window", () => {
     store.enqueueNotification({
+      topic: "reply",
       target: { kind: "telegram", chat_id: "555" },
       intent_type: "progress",
       idempotency_key: "stale-note",

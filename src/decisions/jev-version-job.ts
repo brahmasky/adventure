@@ -369,7 +369,7 @@ function defer(d: JevJobDeps, model: string, g: number, reported: string): JevCh
 function notify(d: Pick<JevJobDeps, "store" | "chatId" | "log">, key: string, text: string): void {
   const chat = d.chatId ?? process.env.HOUGE_TELEGRAM_CHAT_ID?.trim();
   if (!chat) { logOf(d)("jev version check: no chat for the notice"); return; }
-  d.store.enqueueNotification({ target: { kind: "telegram", chat_id: chat }, intent_type: "progress", idempotency_key: key, correlation_id: "jev-version-check", payload: { text } });
+  d.store.enqueueNotification({ topic: "jev_card", target: { kind: "telegram", chat_id: chat }, intent_type: "progress", idempotency_key: key, correlation_id: "jev-version-check", payload: { text } });
 }
 
 /** An outage reaches Paco (the Jev outage incidents) and the check resumes at a later start. */
@@ -544,6 +544,6 @@ function page(d: JevJobDeps, model: string, g: number, kind: string, detail: Rec
   const opened = openAlertedIncident(d.store, { kind, subject: jevModelSubject(model), detail, now: d.now(), ...(d.chatId ? { env: {} } : {}) });
   if (!opened || !d.chatId) return;
   const button: NotificationButton = { text: `Accept ${model}`, data: jevAcceptData(model, g) };
-  d.store.enqueueNotification({ target: { kind: "telegram", chat_id: d.chatId }, intent_type: "progress", idempotency_key: `jev_check:${model}:${g}:card`,
+  d.store.enqueueNotification({ topic: "jev_card", target: { kind: "telegram", chat_id: d.chatId }, intent_type: "progress", idempotency_key: `jev_check:${model}:${g}:card`,
     correlation_id: "jev-version-check", payload: { text, button_rows: [[button]] } });
 }

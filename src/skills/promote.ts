@@ -31,7 +31,7 @@ export function promote(store: RunStore, skills: SkillStore, job: ImprovementJob
     const chat = job.chat_id ?? chat_id;   // the job's own chat (ruling 19); the caller's as the fallback for a pre-stamp row
     store.inTransaction(() => {
       if (!store.transitionJob({ job_id: job.job_id, from: ["promoting"], to: "collision", now })) return;
-      if (chat) store.enqueueNotification({ target: { kind: "telegram", chat_id: chat }, intent_type: "progress", idempotency_key: `improve_job:${job.job_id}:${job.attempt}:collision`, correlation_id: `improve_job:${job.job_id}`,
+      if (chat) store.enqueueNotification({ topic: "improve_job", target: { kind: "telegram", chat_id: chat }, intent_type: "progress", idempotency_key: `improve_job:${job.job_id}:${job.attempt}:collision`, correlation_id: `improve_job:${job.job_id}`,
         payload: { text: jobCollisionCard(job.pending_name!), buttons: skillButtons(job.job_id, "collision") } });
       store.markJobsOffered([job.job_id], now);
     });

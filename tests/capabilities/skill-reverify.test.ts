@@ -14,7 +14,7 @@ import {
   type FlaggedSkill,
   type SkillReverifyStateStore
 } from "../../src/capabilities/skill-reverify.js";
-import type { NotificationIntent } from "../../src/notifications/notification-types.js";
+import type { ChatIntent, NotificationIntent } from "../../src/notifications/notification-types.js";
 import { SkillStore } from "../../src/skills/skill-store.js";
 
 // Sunday 10:30 Sydney (AEST = UTC+10) — 30 min past the default sun 10:00 slot.
@@ -208,7 +208,7 @@ describe("runSkillReverifyTick", () => {
     expect(events.indexOf("verify")).toBeGreaterThan(0);
     expect(state.ticks).toEqual([{ checked: 1, passed: 0, flagged: 1 }]);
     expect(state.notifications).toHaveLength(1);
-    const intent = state.notifications[0]!;
+    const intent = state.notifications[0]! as ChatIntent;
     expect(intent.intent_type).toBe("progress");
     expect(intent.idempotency_key).toBe("skill_reverify:2026-08-30");
     expect(intent.target).toEqual({ kind: "telegram", chat_id: "222" });

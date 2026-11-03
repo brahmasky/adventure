@@ -19,6 +19,7 @@ describe("NotificationOutbox", () => {
       const outbox = new NotificationOutbox(store);
       const enqueue = (key: string) =>
         outbox.enqueue({
+          topic: "reply",
           target: { kind: "telegram", chat_id: "222" },
           intent_type: "progress",
           idempotency_key: key,
@@ -49,6 +50,7 @@ describe("NotificationOutbox", () => {
     try {
       const outbox = new NotificationOutbox(store);
       const first = outbox.enqueue({
+        topic: "reply",
         target: { kind: "telegram", chat_id: "222" },
         intent_type: "progress",
         idempotency_key: "run_1:progress:queued",
@@ -57,6 +59,7 @@ describe("NotificationOutbox", () => {
         payload: { text: "Queued run_1" }
       });
       const second = outbox.enqueue({
+        topic: "reply",
         target: { kind: "telegram", chat_id: "222" },
         intent_type: "progress",
         idempotency_key: "run_1:progress:queued",
@@ -78,6 +81,7 @@ describe("NotificationOutbox", () => {
     try {
       const outbox = new NotificationOutbox(store);
       const retry = outbox.enqueue({
+        topic: "reply",
         target: { kind: "telegram", chat_id: "222" },
         intent_type: "approval_prompt",
         idempotency_key: "appr_1:prompt",
@@ -98,6 +102,7 @@ describe("NotificationOutbox", () => {
       expect(outbox.get(retry.notification_id)?.state).toBe("failed_terminal");
 
       const stale = outbox.enqueue({
+        topic: "reply",
         target: { kind: "local" },
         intent_type: "progress",
         idempotency_key: "run_1:stale",
@@ -118,6 +123,7 @@ describe("NotificationOutbox", () => {
     try {
       const outbox = new NotificationOutbox(store);
       const queued = outbox.enqueue({
+        topic: "reply",
         target: { kind: "telegram", chat_id: "222" },
         intent_type: "progress",
         idempotency_key: "run_1:double-claim",

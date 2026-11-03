@@ -24,7 +24,8 @@ import {
   type GlobalBudgetHeadroom,
   type GlobalBudgetKind
 } from "../budget/global-budget-ledger.js";
-import { NOTIFICATION_MAX_ATTEMPTS, type NotificationButton, type NotificationIntent } from "../notifications/notification-types.js";
+import { NOTIFICATION_MAX_ATTEMPTS, type ChatIntent, type LogIntent, type NotificationButton, type NotificationIntent } from "../notifications/notification-types.js";
+import { isLogTopic, TOPIC_ROUTE } from "../notifications/topics.js";
 import {
   appendLedgerEvent,
   createLedgerEvent,
@@ -302,9 +303,9 @@ type ApprovalConsumptionResult =
 
 export interface NotificationRecord {
   notification_id: string;
-  target: NotificationIntent["target"];
+  target: ChatIntent["target"];
   target_key: string;
-  intent_type: NotificationIntent["intent_type"];
+  intent_type: ChatIntent["intent_type"];
   idempotency_key: string;
   state: string;
   attempt_count: number;
@@ -315,16 +316,28 @@ export interface NotificationRecord {
   run_id: string | null;
   approval_id: string | null;
   correlation_id: string;
-  payload: NotificationIntent["payload"];
+  payload: ChatIntent["payload"];
   payload_hash: string;
   created_at: string;
   updated_at: string;
 }
 
-type NotificationQueueResult =
-  | { status: "queued"; record: NotificationRecord }
-  | { status: "duplicate"; record: NotificationRecord }
-  | { status: "conflict"; error: "NOTIFICATION_IDEMPOTENCY_CONFLICT" };
+export type NotificationQueueResult =
+  | { status: "queued" | "duplicate"; record: NotificationRecord }
+  | { status: "logged"; change_id: string }
+  | { status: "duplicate_log"; change_id: string }
+  | { status: "conflict"; error: string };
+
+export interface ChangeLogRow { change_id: string; topic: string; text: string; created_at: string }
+
+/** Spec 2026-11-03 §4.3: the change log — background notices that left chat. Code-owned, id-masked text only. */
+const CHANGE_LOG_DDL = `CREATE TABLE IF NOT EXISTS change_log (
+  change_id TEXT PRIMARY KEY, topic TEXT NOT NULL, idempotency_key TEXT NOT NULL UNIQUE,
+  correlation_id TEXT NOT NULL, text TEXT NOT NULL, created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS change_log_created ON change_log(created_at);`;
+
+const isLogIntent = (i: NotificationIntent): i is LogIntent => i.topic in TOPIC_ROUTE && isLogTopic(i.topic);
 
 interface RunRow {
   run_id: string;
@@ -6845,6 +6858,7 @@ export class RunStore {
       });
 
       this.assertNotificationQueued(this.enqueueNotification({
+        topic: "approval",
         target: this.getRunNotifyTarget(input.run_id),
         intent_type: "approval_prompt",
         idempotency_key: `approval:${approval_id}:prompt`,
@@ -6948,6 +6962,7 @@ export class RunStore {
           resolved_at: input.resolved_at
         });
         this.assertNotificationQueued(this.enqueueNotification({
+          topic: "approval",
           target: input.event.notify,
           intent_type: "approval_resolved",
           idempotency_key: `approval:${approval_id}:resolved`,
@@ -7003,6 +7018,7 @@ export class RunStore {
         expires_at: input.expires_at
       });
       this.assertNotificationQueued(this.enqueueNotification({
+        topic: "approval",
         target: this.getRunNotifyTarget(input.run_id),
         intent_type: "approval_prompt",
         idempotency_key: `approval:${approval_id}:prompt`,
@@ -7310,6 +7326,7 @@ export class RunStore {
           resolved_at: now
         });
         this.assertNotificationQueued(this.enqueueNotification({
+          topic: "approval",
           target: this.getRunNotifyTarget(row.run_id),
           intent_type: "approval_resolved",
           idempotency_key: `approval:${row.approval_id}:expired`,
@@ -7359,6 +7376,7 @@ export class RunStore {
     input: { text: string; report_path: string; buttons?: NotificationButton[]; attachments?: string[] }
   ): NotificationQueueResult {
     return this.enqueueNotification({
+      topic: "run_report",
       target: this.getRunNotifyTarget(run_id),
       intent_type: "final_report",
       idempotency_key: `${run_id}:final_report`,
@@ -7406,6 +7424,7 @@ export class RunStore {
     report_path?: string
   ): NotificationQueueResult {
     return this.enqueueNotification({
+      topic: "run_report",
       target: this.getRunNotifyTarget(run_id),
       intent_type: "final_report",
       idempotency_key: `${run_id}:final_report`,
@@ -7435,6 +7454,7 @@ export class RunStore {
     const target = this.getRunNotifyTarget(run_id);
     const text = this.redactReport("evolution_report", run_id, input.text);
     const result = this.enqueueNotification({
+      topic: "run_report",
       target,
       intent_type: "final_report",
       idempotency_key: `${run_id}:evolution_report:${tool}`,
@@ -7493,6 +7513,33 @@ export class RunStore {
   }
 
   enqueueNotification(intent: NotificationIntent): NotificationQueueResult {
+    if (!(intent.topic in TOPIC_ROUTE)) console.error(`[notifications] untyped topic ${String(intent.topic)}: sent to chat`);
+    return isLogIntent(intent) ? this.logChange(intent) : this.enqueueChat(intent as ChatIntent);
+  }
+
+  logChange(intent: LogIntent): NotificationQueueResult {
+    const existing = this.db.prepare(`SELECT change_id, text FROM change_log WHERE idempotency_key = ?`).get<{ change_id: string; text: string }>(intent.idempotency_key);
+    if (existing) {
+      if (existing.text === intent.text) return { status: "duplicate_log", change_id: existing.change_id };
+      console.error(`[change-log] ${intent.topic}: key reused with a different text`);
+      return { status: "conflict", error: "CHANGE_LOG_IDEMPOTENCY_CONFLICT" };
+    }
+    const change_id = `chg_${randomUUID()}`;
+    this.db.prepare(`INSERT INTO change_log (change_id, topic, idempotency_key, correlation_id, text, created_at) VALUES (?, ?, ?, ?, ?, ?)`)
+      .run(change_id, intent.topic, intent.idempotency_key, intent.correlation_id, intent.text, intent.now ?? new Date().toISOString());
+    return { status: "logged", change_id };
+  }
+
+  listChangeLog(sinceIso: string, limit: number): ChangeLogRow[] {
+    return this.db.prepare(`SELECT change_id, topic, text, created_at FROM change_log WHERE created_at >= ? ORDER BY created_at DESC, change_id DESC LIMIT ?`)
+      .all<ChangeLogRow>(sinceIso, limit);
+  }
+
+  countChangeLogSince(sinceIso: string): number {
+    return this.db.prepare(`SELECT COUNT(*) AS n FROM change_log WHERE created_at >= ?`).get<{ n: number }>(sinceIso)?.n ?? 0;
+  }
+
+  private enqueueChat(intent: ChatIntent): NotificationQueueResult {
     const target_key = this.notificationTargetKey(intent.target);
     const payload_hash = stableHash(intent.payload);
     const existing = this.db.prepare(`
@@ -7943,13 +7990,13 @@ export class RunStore {
   }
 
   /** The fields the worker needs to route a queued run (turns go to the planner supervisor). Undefined when absent. */
-  getRunForWorker(run_id: string): { type: string; source: string; goal: string | null; contract_json: string | null; notify: NotificationIntent["target"]; requested_by: Identity } | undefined {
+  getRunForWorker(run_id: string): { type: string; source: string; goal: string | null; contract_json: string | null; notify: ChatIntent["target"]; requested_by: Identity } | undefined {
     const row = this.db.prepare(`
       SELECT type, source, goal, contract_json, notify_json, requested_by_json FROM runs WHERE run_id = ?
     `).get<{ type: string; source: string; goal: string | null; contract_json: string | null; notify_json: string; requested_by_json: string }>(run_id);
     if (!row) return undefined;
     const { notify_json, requested_by_json, ...rest } = row;
-    return { ...rest, notify: JSON.parse(notify_json) as NotificationIntent["target"], requested_by: JSON.parse(requested_by_json) as Identity };
+    return { ...rest, notify: JSON.parse(notify_json) as ChatIntent["target"], requested_by: JSON.parse(requested_by_json) as Identity };
   }
 
   getRunRequester(run_id: string): Identity {
@@ -8134,7 +8181,7 @@ export class RunStore {
     return row?.program ?? null;
   }
 
-  getRunNotifyTarget(run_id: string): NotificationIntent["target"] {
+  getRunNotifyTarget(run_id: string): ChatIntent["target"] {
     const row = this.db.prepare(`
       SELECT notify_json
       FROM runs
@@ -8144,7 +8191,7 @@ export class RunStore {
       throw new Error(`Run not found: ${run_id}`);
     }
 
-    return JSON.parse(row.notify_json) as NotificationIntent["target"];
+    return JSON.parse(row.notify_json) as ChatIntent["target"];
   }
 
   private findPendingApproval(run_id: string, action_fingerprint: string): ApprovalRow | undefined {
@@ -8262,7 +8309,7 @@ export class RunStore {
       notification_id: string;
       target_json: string;
       target_key: string;
-      intent_type: NotificationIntent["intent_type"];
+      intent_type: ChatIntent["intent_type"];
       idempotency_key: string;
       state: string;
       attempt_count: number;
@@ -8284,7 +8331,7 @@ export class RunStore {
 
     return {
       notification_id: row.notification_id,
-      target: JSON.parse(row.target_json) as NotificationIntent["target"],
+      target: JSON.parse(row.target_json) as ChatIntent["target"],
       target_key: row.target_key,
       intent_type: row.intent_type,
       idempotency_key: row.idempotency_key,
@@ -8297,7 +8344,7 @@ export class RunStore {
       run_id: row.run_id,
       approval_id: row.approval_id,
       correlation_id: row.correlation_id,
-      payload: JSON.parse(row.payload_json) as NotificationIntent["payload"],
+      payload: JSON.parse(row.payload_json) as ChatIntent["payload"],
       payload_hash: row.payload_hash,
       created_at: row.created_at,
       updated_at: row.updated_at
@@ -8344,7 +8391,7 @@ export class RunStore {
     }
   }
 
-  private notificationTargetKey(target: NotificationIntent["target"]): string {
+  private notificationTargetKey(target: ChatIntent["target"]): string {
     return target.kind === "local" ? "local" : `telegram:${target.chat_id}`;
   }
 
@@ -8433,6 +8480,7 @@ export class RunStore {
   }
 
   private migrate(): void {
+    this.db.exec(CHANGE_LOG_DDL);
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS runs (
         run_id TEXT PRIMARY KEY,

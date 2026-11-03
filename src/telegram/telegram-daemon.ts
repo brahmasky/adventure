@@ -252,6 +252,7 @@ export async function runTelegramDaemon(
     // in-loop dispatch flush delivers it. Deterministic key → idempotent across restarts.
     acknowledgeSink: (ack) => {
       new NotificationOutbox(options.store).enqueue({
+        topic: "reply",
         target: { kind: "telegram", chat_id: ack.chat_id },
         intent_type: "progress",
         idempotency_key: ack.idempotency_key,
@@ -745,6 +746,7 @@ async function runRolesTick(
   const notify = (text: string): void => {
     if (!chatId) return;
     options.store.enqueueNotification({
+      topic: "model_card",
       target: { kind: "telegram", chat_id: chatId }, intent_type: "progress",
       idempotency_key: `model_roles:notice:${now}:${stableHash(text)}`, correlation_id: "model-roles", payload: { text }
     });
@@ -865,6 +867,7 @@ function notifyReloadOnBoot(options: RunTelegramDaemonOptions, marker: ReloadMar
       // The staleness probe is best-effort; never block the confirmation on it.
     }
     new NotificationOutbox(options.store).enqueue({
+      topic: "self_write",
       target: { kind: "telegram", chat_id: String(chat.telegram_chat_id) },
       intent_type: "final_report",
       idempotency_key: `selfwrite:reloaded:${marker.sha}:${marker.merged_at}`,
