@@ -11,6 +11,7 @@ import { INTAKE_STEER_OR_QUEUE, type SteerOrQueueInput, type SteerReason } from 
 import { CRASH_LIMIT, CRASH_WINDOW_MS, PLANNER_CRASH_GUARD, type CrashGuardInput } from "../decisions/entries/planner-crash-guard.js";
 import { TURN_RETRY, type RetryInput } from "../decisions/entries/turn-retry.js";
 import { CONTEXT_LESSONS } from "../decisions/entries/context-lessons.js";
+import { TURN_MODEL, type ModelInput } from "../decisions/entries/turn-model.js";
 import type { DecisionRecorder, Entry } from "../decisions/types.js";
 import { errorCode, safeReason } from "../domain/error-code.js";
 import type { Identity } from "../domain/types.js";
@@ -741,13 +742,24 @@ export class PlannerSupervisor {
    * fatal: incident, answer on the model the child holds, row marked pin_failed, no step-up (spec §5).
    */
   private async pinFirst(turn: Turn, s: PlannerSessionLike): Promise<void | typeof ENDED> {
+    const before = { role: turn.role, tried: turn.legsTried };
     const r = await this.pinWalk(turn, s, "model_missing");
     if (r === ENDED) return ENDED;
+    this.recordModel(turn, "first", r, before);
     if (r === "exhausted") { this.noLeg(turn, "model_missing", turn.legsTried); this.failTurn(turn, "no_planner_leg", "model_missing"); return; }
     if (r === "ok") return;
     turn.pinFailed = true;
     console.error(`planner supervisor: pinning the turn's model failed: ${rpcCode(r.error)}`);
     this.incident("planner_model_reset_failed", { run_id: turn.req.run_id, reason: rpcCode(r.error) });
+  }
+
+  /** turn.model (spec R6 §4.3, plan P11): one consult per completed pin walk, before any failure path; only this walk's refusals count. */
+  private recordModel(turn: Turn, leg: ModelInput["leg"], r: Exclude<PinResult, "refused" | typeof ENDED> | "exhausted", before: { role: TurnRole; tried: number }): void {
+    if (turn.endSignalled) return;
+    const outcome: ModelInput["outcome"] = r === "ok" ? "ok" : r === "exhausted" ? "exhausted" : "pin_failed";
+    const iterations = turn.legsTried - before.tried;
+    const input: ModelInput = { leg, outcome, stepped: turn.role !== before.role, refused: outcome === "exhausted" ? iterations : iterations - 1 };
+    this.record(TURN_MODEL, input, turn.req.run_id);
   }
 
   /**
@@ -973,8 +985,10 @@ export class PlannerSupervisor {
   /** Pin the next candidate and tell it to continue (RETRY_NOTE); the transcript already holds every executed tool's result. */
   private async promptRetry(turn: Turn, s: PlannerSessionLike, kind: LlmErrorKind): Promise<boolean> {
     try {
+      const before = { role: turn.role, tried: turn.legsTried };
       const r = await this.pinWalk(turn, s, kind);
       if (r === ENDED) return true;
+      this.recordModel(turn, "retry", r, before);
       if (r === "exhausted") {
         turn.failure = { type: "no_planner_leg", ref: kind };
         this.noLeg(turn, kind, turn.legsTried);

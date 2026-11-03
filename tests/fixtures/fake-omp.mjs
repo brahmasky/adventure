@@ -63,6 +63,8 @@ async function runRpc() {
       if (scen.rpcResumeModel) model = scen.rpcResumeModel;
       return reply({ cancelled: false, resumed: process.env.FAKE_OMP_RESUMED === "1" || Boolean(scen.rpcResumeModel), sessionId: "s1", sessionFile: "/tmp/fake-s1.jsonl" });
     }
+    if (cmd.type === "set_model" && Array.isArray(scen.rpcSetModelRefuse) && scen.rpcSetModelRefuse.includes(`${cmd.provider}/${cmd.modelId}`))
+      return out({ id: cmd.id, type: "response", command: "set_model", success: false, error: `Model not found: ${cmd.provider}/${cmd.modelId}` });
     if (cmd.type === "set_model" && scen.rpcSetModelError) return out({ id: cmd.id, type: "response", command: "set_model", success: false, error: scen.rpcSetModelError });
     if (cmd.type === "set_model") { model = `${cmd.provider}/${cmd.modelId}`; return reply({ id: cmd.modelId, provider: cmd.provider }); }
     if (cmd.type === "new_session" && scen.rpcNewSessionError) return out({ id: cmd.id, type: "response", command: "new_session", success: false, error: scen.rpcNewSessionError });
