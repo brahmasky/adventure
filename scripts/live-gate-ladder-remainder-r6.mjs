@@ -178,9 +178,9 @@ async function line2() {
   const ans = await laneDrive({ text: LONG, reads: ["Sunny, 22C"], rewrite: answers("unused") });
   const order = [WALL, FAM, WALL, FAM, RW, TH];
   const thinOk = canon(thin.rows.map((r) => r[0])) === canon(order) && thin.rows[4][1] === "bare" && thin.rows[4][2] === "long_message" && thin.rows[5][1] === "fetch" && thin.rows[5][2] === "thin"
-    && canon(thin.calls.fetches) === canon([HIT.url]) && thin.httpFetch === 1 && thin.calls.reads === 2 && thin.calls.rewrites === 0;
-  const ansOk = canon(ans.rows.map((r) => r[0])) === canon([WALL, FAM, RW, TH]) && ans.rows[3][1] === "none" && ans.rows[3][2] === "answered" && ans.calls.fetches.length === 0 && ans.httpFetch === 0 && ans.calls.reads === 1;
-  return { ok: thinOk && ansOk, detail: `thin read: rows [${strs(thin.rows)}] (want ${order.join(",")} with lookup.rewrite bare/long_message, lookup.thin fetch/thin) fetches ${thin.calls.fetches.length} (want 1, the first listed URL ${canon(thin.calls.fetches) === canon([HIT.url])}) http_fetch_performed ${thin.httpFetch} (want 1) reads ${thin.calls.reads} (want 2) · answered read: rows [${strs(ans.rows)}] (want tool.wall,reader.family,lookup.rewrite,lookup.thin with lookup.thin none/answered) fetches ${ans.calls.fetches.length} (want 0) http_fetch_performed ${ans.httpFetch} (want 0)` };
+    && canon(thin.calls.searches) === canon([LONG]) && canon(thin.calls.fetches) === canon([HIT.url]) && thin.httpFetch === 1 && thin.calls.reads === 2 && thin.calls.rewrites === 0;
+  const ansOk = canon(ans.rows.map((r) => r[0])) === canon([WALL, FAM, RW, TH]) && ans.rows[3][1] === "none" && ans.rows[3][2] === "answered" && canon(ans.calls.searches) === canon([LONG]) && ans.calls.fetches.length === 0 && ans.httpFetch === 0 && ans.calls.reads === 1;
+  return { ok: thinOk && ansOk, detail: `thin read: rows [${strs(thin.rows)}] (want ${order.join(",")} with lookup.rewrite bare/long_message, lookup.thin fetch/thin) searched the original message ${canon(thin.calls.searches) === canon([LONG])} (want true) fetches ${thin.calls.fetches.length} (want 1, the first listed URL ${canon(thin.calls.fetches) === canon([HIT.url])}) http_fetch_performed ${thin.httpFetch} (want 1) reads ${thin.calls.reads} (want 2) · answered read: rows [${strs(ans.rows)}] (want tool.wall,reader.family,lookup.rewrite,lookup.thin with lookup.thin none/answered) searched the original message ${canon(ans.calls.searches) === canon([LONG])} (want true) fetches ${ans.calls.fetches.length} (want 0) http_fetch_performed ${ans.httpFetch} (want 0)` };
 }
 
 // ---- a fixture-supervisor turn on the chat-42 fake child (lines 3 and 6) ----
@@ -262,10 +262,11 @@ async function line4() {
 async function line5() {
   const roles = await mkRoles("resolved");
   const pre = preconditionFail("resolved", roles); if (pre) return { ok: false, detail: pre };
-  const head = keyOf(roles.candidates("default")[0]);
+  const cands = roles.candidates("default"); const head = keyOf(cands[0]); const second = keyOf(cands[1]);
   const t = await workerTurn({ tag: "l5", scenario: { [head]: { rpcErrorText: "429 usage limit reached" }, "*": { rpcText: "ok" } }, roles });
-  const ok = canon(t.rows) === canon([[TR, "retry", "quota"], [TM, "fallback", "next_leg"]]) && t.state === "completed";
-  return { ok, detail: `rows in write order [${strs(t.rows)}] (want turn.retry:retry/quota then turn.model:fallback/next_leg) · state ${t.state} (want completed)` };
+  const ok = canon(t.rows) === canon([[TR, "retry", "quota"], [TM, "fallback", "next_leg"]]) && t.state === "completed"
+    && canon(t.targets) === canon([head, second]);
+  return { ok, detail: `rows in write order [${strs(t.rows)}] (want turn.retry:retry/quota then turn.model:fallback/next_leg) · set_model ${t.targets.length} (want 2) head then candidates("default")[1] ${canon(t.targets) === canon([head, second])} · state ${t.state} (want completed)` };
 }
 
 // ---- line 6: record faults never change the query or the pin ----
