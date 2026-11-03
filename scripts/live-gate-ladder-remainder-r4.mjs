@@ -247,7 +247,8 @@ const incidentAlerts = () => alertRows().map((r) => String(JSON.parse(r.target_j
 async function faulted(drive) {
   const real = G.store.insertDecision.bind(G.store); let attempts = 0;
   const ids0 = incidentIds(); const alerts0 = new Set(alertRows().map((r) => r.notification_id));
-  G.store.insertDecision = () => { attempts += 1; throw new Error("gate fault: insertDecision"); };
+  // R6: the retry path also consults turn.model; this gate's fault is scoped to its own two entries (the R6 gate faults turn.model)
+  G.store.insertDecision = (row) => { if (!IDS.includes(row.entry_id)) return real(row); attempts += 1; throw new Error("gate fault: insertDecision"); };
   let s;
   try { s = (await captured(() => scenario(drive))).value; } finally { G.store.insertDecision = real; }
   // only what the fault itself added counts: incidents and alerts are scoped by id against the snapshot taken before it
