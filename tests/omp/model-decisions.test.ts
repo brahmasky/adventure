@@ -83,6 +83,13 @@ describe("turn.model rows — the first leg (spec R6 §4.3)", () => {
     expect(incidentKinds(h.outcome)).toEqual(["planner_model_reset_failed"]);
     expect(h.tm()).toBe(1);
   });
+  it("5b. a routed Fast turn with every Fast leg refused, then the Default head fails in transport: held/pin_failed outranks stepped_up", async () => {
+    const h = withRecorder(pins({ 1: "refuse", 2: "refuse", 3: "transport" }), routed("fast")); const r = await turn(h);
+    expect(rows(h.store, r)).toEqual([["held", "pin_failed", "rule"]]);
+    expect(incidentKinds(h.outcome)).toEqual(["planner_model_reset_failed"]);
+    expect(h.tm()).toBe(1);
+    expect(h.session.models).toHaveLength(3);
+  });
   it("9. two turns on one child, the head refused on turn 1: turn 1 fallback/refused; turn 2 no row and no further set_model (the child already holds candidate two)", async () => {
     const h = withRecorder(pins({ 1: "refuse" }));
     const r1 = await turn(h); const r2 = await turn(h);
