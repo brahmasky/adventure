@@ -10628,7 +10628,7 @@ const TELEGRAM_MAX_ACTIVE_RUNS = 3;
 const TELEGRAM_MAX_PENDING_APPROVALS = 5;
 
 // Telegram caps a message at 4096 chars; leave headroom for the truncation note.
-const CHAT_TEXT_MAX = 3900;
+export const CHAT_TEXT_MAX = 3900;
 
 function truncateForChat(text: string, redact: (s: string) => string = (s) => s): string {
   // Redact BEFORE truncating so a masked value is never split into a leaking fragment (ADR 0015).
