@@ -105,6 +105,19 @@ describe("turn.model rows — the first leg (spec R6 §4.3)", () => {
     await h.sup.abortAll("killed"); await h.sup.whenIdle();
     expect(h.tm()).toBe(0); expect(rows(h.store, r)).toEqual([]);
   });
+  it("10b. mutation #47: the end signal lands in the microtask gap after the pin resolved — pinWalk returns ok on an ended turn, and no turn.model row is written", async () => {
+    // setModel #1 refuses (so an unguarded consult would be fallback/refused, a row); #2 resolves with the kill queued ahead of the race's own reaction,
+    // so Promise.race settles on the pin's value while endSignalled is already true (a pin walk can return non-ENDED on an ended turn)
+    const hold: { kill?: () => void } = {};
+    const session = fakeSession({ setModel: async (n) => {
+      if (n === 1) throw refusal("pin1");
+      if (n === 2) queueMicrotask(() => hold.kill?.());
+    } });
+    const h = withRecorder(session); hold.kill = () => { void h.sup.abortAll("killed"); };
+    const r = await turn(h);
+    expect(session.models).toHaveLength(2);
+    expect(h.tm()).toBe(0); expect(rows(h.store, r)).toEqual([]);
+  });
   it("11. P13: a planted throwing rule records head at the fail rung; the pins are unchanged", async () => {
     const err = vi.spyOn(console, "error").mockImplementation(() => {});
     const rung = TURN_MODEL.ladder[0] as RuleRung<unknown, string>; const real = rung.decide;
