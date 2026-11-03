@@ -5,7 +5,7 @@ import type { ResolvedRole, RoleResolver } from "./role-resolver.js";
 import { escapeForTelegram } from "../capabilities/text-hygiene.js";
 import type { ProbeFn, ProbeOutcome } from "./model-probe.js";
 import { keysOfTier, resolveModelRolesMode, soleKeysOf, staticSelectorKeys, type CatalogModel } from "./model-roles.js";
-import { isTierId, proposalsFor, tierDef, type TierId } from "./model-tiers.js";
+import { compareVersions, isTierId, PROVIDER_LABEL, proposalsFor, TIER_IDS, tierDef, tierVersion, type TierId } from "./model-tiers.js";
 import { applyProbe, planTier, selectorOf, type TierPlan, type TierState } from "./tier-step.js";
 
 /**
@@ -75,11 +75,14 @@ async function runProbes(plans: readonly TierPlan[], probe: ProbeFn | undefined,
 function settle(i: ModelRolesTickInput, catalogOk: boolean, catalog: readonly CatalogModel[] | null, plans: readonly TierPlan[], outcomes: ReadonlyArray<ProbeOutcome | null>): ModelRolesTickResult {
   const baseline = catalogOk ? i.store.latestModelRolesResolved({ catalogOk: true }) : undefined;
   const written = writeTiers(i, plans, outcomes);
+  retireCardOverrides(i.store, i.notify); // before resolveAll: the resolution row records the seat's source as the list
   const roles = i.roles.resolveAll();
   i.store.recordModelRolesResolved({ resolved_at: i.now, catalog_ok: catalogOk, roles: roles.map(jsonSafe) });
   if (!catalogOk) return { ran: true, changed: [], unresolved: [] };
   const changed = baseline ? changedRoles(baseline.roles, roles) : [];
-  for (const c of changed) i.notify(changeLine(c.key, c.from, c.to));
+  const { lines, explained } = moveLines(written.moved, changed);
+  for (const line of lines) i.notify(line);
+  for (const c of changed) if (!explained.has(c.key)) i.notify(changeLine(c.key, c.from, c.to));
   for (const f of written.failed) i.notify(failedLine(f.selector, f.stay));
   for (const line of shadowLines(i.store, roles, written.moved)) i.notify(line);
   const unresolved = syncUnresolved(i.store, roles, i.now);
@@ -117,7 +120,7 @@ function syncStaticStale(store: RunStore, catalog: readonly CatalogModel[], now:
   for (const open of store.listOpenIncidents()) if (open.kind === "static_list_stale" && !pinned.includes(open.subject)) store.resolveIncident(open.incident_id, now);
 }
 
-interface Written { failed: Array<{ selector: string; stay: string | null }>; moved: Array<{ tier: TierId; head: string }>; empty: TierId[] }
+interface Written { failed: Array<{ selector: string; stay: string | null }>; moved: Array<{ tier: TierId; from: string | null; head: string }>; empty: TierId[] }
 
 function writeTiers(i: ModelRolesTickInput, plans: readonly TierPlan[], outcomes: ReadonlyArray<ProbeOutcome | null>): Written {
   const w: Written = { failed: [], moved: [], empty: [] };
@@ -128,7 +131,7 @@ function writeTiers(i: ModelRolesTickInput, plans: readonly TierPlan[], outcomes
     if (!sameTier(next, p.before)) i.store.writeModelTier(next, i.now); // review suggestion: an unchanged tier keeps its row and updated_at
     if (p.probe && o?.result === "model_missing") w.failed.push({ selector: p.probe.selector, stay: selectorOf(next.tier, next.adopted) });
     if (next.adopted === null) w.empty.push(next.tier);
-    if (next.adopted !== null && next.adopted !== p.before.adopted) w.moved.push({ tier: next.tier, head: selectorOf(next.tier, next.adopted)! });
+    if (next.adopted !== null && next.adopted !== p.before.adopted) w.moved.push({ tier: next.tier, from: selectorOf(next.tier, p.before.adopted), head: selectorOf(next.tier, next.adopted)! });
   });
   return w;
 }
@@ -146,6 +149,52 @@ function shadowLines(store: RunStore, roles: ResolvedRole[], moved: Written["mov
     const pattern = overrides.get(key);
     return pattern && roles.find((r) => r.key === key)?.source === "override" ? [shadowLine(key, m.head, pattern)] : [];
   }));
+}
+
+const bare = (sel: string): string => sel.replace(/:[^/:]+$/, "");
+const idOf = (sel: string | null): string => (sel === null ? "nothing" : bare(sel).slice(sel.indexOf("/") + 1));
+const roleWords = (key: string): string => `${key.charAt(0).toUpperCase()}${key.slice(1)}`.replace(":", " ");
+
+/**
+ * Spec 2026-11-03 §6.2: one line per tier move, naming the changed keys whose new head is the move's head (effort stripped).
+ * `explained` are the keys those lines cover; a changed key no move explains keeps its own `changeLine`.
+ */
+export function moveLines(moved: Written["moved"], changed: ReadonlyArray<{ key: string; from: string | null; to: string | null }>): { lines: string[]; explained: Set<string> } {
+  const explained = new Set<string>(); const lines: string[] = [];
+  for (const m of moved) {
+    const keys = changed.filter((c) => c.to !== null && bare(c.to) === m.head).map((c) => c.key);
+    keys.forEach((k) => explained.add(k));
+    const def = tierDef(m.tier);
+    lines.push(`🔁 ${PROVIDER_LABEL[def.provider] ?? def.provider} ${def.label}: ${idOf(m.from)} → ${idOf(m.head)}${keys.length ? ` (used by ${keys.map(roleWords).join(", ")})` : ""}`);
+  }
+  return { lines, explained };
+}
+
+/**
+ * Spec 2026-11-03 §6.4: a card-tap override (marked `via: "tap"`, or the legacy tap-pass probe right before it) is reset once
+ * its tier's adopted head is the pinned model or newer. Returns the keys retired; each gets the reset row and a notice.
+ */
+export function retireCardOverrides(store: RunStore, notify: (text: string) => void): string[] {
+  const heads = new Map(store.listModelTiers().map((r) => [r.tier, r.adopted]));
+  const retired: string[] = [];
+  for (const [key, row] of store.latestOverrideRows()) {
+    const tier = TIER_IDS.find((t) => (soleKeysOf(t) as string[]).includes(key));
+    if (tier === undefined) continue;
+    const def = tierDef(tier); const head = heads.get(tier) ?? null; const pinned = tierVersion(def, row.pattern);
+    if (head === null || pinned === null || !cardWritten(row, tier, def.provider)) continue;
+    const headVersion = tierVersion(def, head);
+    if (headVersion === null || compareVersions(headVersion, pinned) < 0) continue;
+    store.recordModelRoleOverride({ key, pattern: "", actor: "houge:tier" });
+    notify(`${roleWords(key)} now follows ${PROVIDER_LABEL[def.provider] ?? def.provider}'s ${def.label} tier (${head}); your card choice is no longer needed.`);
+    retired.push(key);
+  }
+  return retired;
+}
+
+function cardWritten(row: { pattern: string; via: string | null; prev: { event_type: string; payload: Record<string, unknown> } | null }, tier: TierId, provider: string): boolean {
+  if (row.via === "tap") return true;
+  const p = row.prev?.payload;
+  return row.prev?.event_type === "model_probe" && p?.purpose === "tap" && p.result === "pass" && p.tier === tier && p.selector === `${provider}/${row.pattern}`;
 }
 
 /** "X failed its check; staying on Y" (spec §4.2); selectors are code-owned catalog strings. */

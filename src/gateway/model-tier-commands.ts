@@ -6,7 +6,7 @@ import type { ProbeFn, ProbeOutcome } from "../omp/model-probe.js";
 import { keyNeedsModel, ledgerKind, type EmptyTierCard } from "../omp/model-roles-tick.js";
 import { resolveModelRolesMode, soleKeysOf } from "../omp/model-roles.js";
 import type { OverrideKey } from "../omp/role-resolver.js";
-import { isTierId, proposalsFor, tierDef, type TierId } from "../omp/model-tiers.js";
+import { familyWord, isTierId, PROVIDER_LABEL, proposalsFor, tierDef, type TierId } from "../omp/model-tiers.js";
 import { resolveOpenIncidents } from "../run/incident-alert.js";
 import type { RunStore } from "../run/run-store.js";
 import { formatInstantInZone, resolveDisplayZone } from "../run/schedule-spec.js";
@@ -19,7 +19,6 @@ import type { ModelsRoles } from "./models-commands.js";
  * The empty-tier card and its tap (spec 2026-11-02 §4.4, plan P15–P16). Every text is code-owned; the only ids shown are
  * catalog ids and role keys. A tap probes first, off the tap's path, and only a pass writes the `/models set` row.
  */
-const PROVIDER_LABEL: Readonly<Record<string, string>> = { anthropic: "Anthropic", "google-antigravity": "Google", "openai-codex": "OpenAI", "kimi-code": "Kimi" };
 const ROLE_UNRESOLVED: ReadonlySet<string> = new Set(["role_unresolved"]);
 const cap = (k: string) => `${k.charAt(0).toUpperCase()}${k.slice(1)}`;
 const keyWords = (k: string) => k.replace(":", " ");
@@ -31,7 +30,7 @@ export function tierCardText(c: EmptyTierCard): string {
   const head = `${c.keys.map(cap).join(", ")} has no model: ${PROVIDER_LABEL[def.provider] ?? def.provider}'s ${def.label} tier is empty.`;
   const first = c.proposals[0];
   if (first !== undefined) return `${head} Use \`${first}\`?`;
-  return `${head} The catalog offers no other ${def.provider} model; ${c.keys.map((k) => `/models set ${keyWords(k)} <pattern>`).join(" · ")} fills it.`;
+  return `${head} The catalog offers no other ${familyWord(c.tier)} model; ${c.keys.map((k) => `/models set ${keyWords(k)} <pattern>`).join(" · ")} fills it.`;
 }
 
 /** One card per tier per display-zone day (the outbox key, as the reminder's, P23); through the outbox and the rich renderer. */
@@ -98,7 +97,7 @@ async function probeThenAdopt(store: RunStore, roles: ModelsRoles, probe: ProbeF
       // The probe took time: a /models set or another tap may have filled a key since. Only a key that still needs a model is written.
       const resolved = roles.resolveAll();
       keys = t.keys.filter((k) => keyNeedsModel(resolved, k));
-      for (const key of keys) store.recordModelRoleOverride({ key: key as OverrideKey, pattern: id, actor: event.requested_by.id });
+      for (const key of keys) store.recordModelRoleOverride({ key: key as OverrideKey, pattern: id, actor: event.requested_by.id, via: "tap" });
       for (const key of keys) resolveOpenIncidents(store, ROLE_UNRESOLVED, key);
     });
     replyTo(store, event, "model_tier_probe", o.result === "pass" && keys.length === 0 ? `ℹ️ \`${id}\` passed its check, but ${t.keys.join(", ")} got a model meanwhile; nothing changed.` : resultText({ ...t, keys }, id, o));

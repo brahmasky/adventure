@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { parseOmpCatalog } from "../../src/omp/model-catalog.js";
 import type { CatalogModel } from "../../src/omp/model-roles.js";
 import {
-  catalogHead, compareVersions, outputPriceAt, proposalsFor, SEED_HEADS, seedTierHeads, tierDef, tierHeadsOf, TIER_IDS, tierMembers, tierVersion,
+  catalogHead, compareVersions, GEMINI_NOT_PRO, outputPriceAt, PROVIDER_LABEL, proposalsFor, SEED_HEADS, seedTierHeads, tierDef, tierHeadsOf, TIER_IDS, tierMembers, tierVersion,
   type TierId
 } from "../../src/omp/model-tiers.js";
 
@@ -12,11 +12,11 @@ const catalog = (): CatalogModel[] => { const c = parseOmpCatalog(readFileSync(F
 const NOV2 = Date.parse("2026-11-02T00:00:00Z");
 
 describe("tiers over the 2026-11-02 catalog", () => {
-  it("each tier's head is spec §4.1's (D1-A: Kimi widened to -pro; gemini-pro empty)", () => {
+  it("each tier's head is spec §4.1's (D1-A: Kimi widened to -pro; gemini-pro reads the rename, 2026-11-03 §6.1)", () => {
     const heads = Object.fromEntries(TIER_IDS.map((t) => [t, catalogHead(tierDef(t), catalog())]));
     expect(heads).toEqual({
       "opus@anthropic": "claude-opus-5-5", "opus@antigravity": "claude-opus-5-5", "sonnet@anthropic": "claude-sonnet-5-5",
-      "sonnet@antigravity": "claude-sonnet-5-5", "gemini-flash": "gemini-3.8-flash", "gemini-pro": null, "codex-sol": "gpt-6.1-sol", kimi: "k3.1-pro"
+      "sonnet@antigravity": "claude-sonnet-5-5", "gemini-flash": "gemini-3.8-flash", "gemini-pro": "gemini-4-argon", "codex-sol": "gpt-6.1-sol", kimi: "k3.1-pro"
     });
   });
   it("members are ordered newest first and exclude snapshots, -lite, -highspeed, -256k, previews and other families", () => {
@@ -29,7 +29,7 @@ describe("tiers over the 2026-11-02 catalog", () => {
       ["gemini-flash", "gemini-3.5-flash-lite"], ["kimi", "k3.1-pro-highspeed"], ["kimi", "k3-256k"], ["kimi", "kimi-k2-turbo-preview"], ["codex-sol", "gpt-6.1-terra"],
       // mutation pass M01/M02/M04/M05: a major-only dated snapshot, a sonnet snapshot and -lite, a pro preview, a bare -highspeed
       ["opus@anthropic", "claude-opus-20250514"], ["sonnet@anthropic", "claude-sonnet-4-5-20250929"], ["sonnet@anthropic", "claude-sonnet-5-lite"],
-      ["gemini-pro", "gemini-4-pro-preview"], ["kimi", "k3.1-highspeed"]];
+      ["gemini-pro", "gemini-4-pro-preview"], ["gemini-pro", "gemini-3.8-flash"], ["kimi", "k3.1-highspeed"]];
     for (const [t, id] of notIn) expect(tierVersion(tierDef(t), id), `${t} ${id}`).toBeNull();
     expect(tierMembers(tierDef("opus@anthropic"), catalog())).not.toContain("claude-fable-5-1");
   });
@@ -46,6 +46,23 @@ describe("tiers over the 2026-11-02 catalog", () => {
     expect(compareVersions(v("gemini-flash", "gemini-3.8-flash"), v("gemini-flash", "gemini-2.5-flash"))).toBeGreaterThan(0);
     const tie: CatalogModel[] = [{ provider: "anthropic", id: "claude-opus-5-0", thinking: null }, { provider: "anthropic", id: "claude-opus-5", thinking: null }];
     expect(tierMembers(tierDef("opus@anthropic"), tie)).toEqual(["claude-opus-5", "claude-opus-5-0"]);
+  });
+});
+
+describe("the gemini-pro tier reads renames (spec 2026-11-03 §6.1)", () => {
+  it("over today's Google catalog only gemini-4-argon is a member, at version [4, 0]", () => {
+    expect(tierMembers(tierDef("gemini-pro"), catalog())).toEqual(["gemini-4-argon"]);
+    expect(tierVersion(tierDef("gemini-pro"), "gemini-4-argon")).toEqual([4, 0]);
+    expect(tierVersion(tierDef("gemini-pro"), "gemini-3.5-pro")).toEqual([3, 5]);
+    for (const id of ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-3.1-flash-lite", "gemini-3.8-flash", "gpt-oss-120b", "tab_flash_lite_preview", "tab_jump_flash_lite_preview"])
+      expect(tierVersion(tierDef("gemini-pro"), id), id).toBeNull();
+  });
+  it("each GEMINI_NOT_PRO word keeps a modality out of the tier; gemini-flash is unchanged", () => {
+    for (const w of GEMINI_NOT_PRO.split("|")) expect(tierVersion(tierDef("gemini-pro"), `gemini-4-${w}`), w).toBeNull();
+    expect(tierMembers(tierDef("gemini-flash"), catalog())).toEqual(["gemini-3.8-flash", "gemini-2.5-flash"]);
+  });
+  it("PROVIDER_LABEL lives with the tiers", () => {
+    expect(PROVIDER_LABEL).toEqual({ anthropic: "Anthropic", "google-antigravity": "Google", "openai-codex": "OpenAI", "kimi-code": "Kimi" });
   });
 });
 
@@ -69,16 +86,24 @@ describe("empty-tier proposals (spec §4.4)", () => {
     expect(outputPriceAt(argon, Date.parse("2026-12-01T08:00:00Z"))).toBe(20);
     expect(outputPriceAt({ provider: "x", id: "y", thinking: null }, NOV2)).toBeNull();
   });
-  it("gemini-pro proposes Google ids no tier reads, no preview, no -lite, by output price highest first", () => {
-    expect(proposalsFor(tierDef("gemini-pro"), catalog(), NOV2)).toEqual(["gemini-4-argon", "gpt-oss-120b"]);
+  it("gemini-pro proposes nothing today: argon is the tier's own member and gpt-oss-120b is not a gemini- id (§6.3)", () => {
+    const withoutArgon = catalog().filter((m) => m.id !== "gemini-4-argon");
+    expect(proposalsFor(tierDef("gemini-pro"), withoutArgon, NOV2)).toEqual([]);
+  });
+  it("kimi proposes only k+digit ids; opus proposes claude- ids no tier reads, never another family", () => {
+    const ids = proposalsFor(tierDef("kimi"), catalog(), NOV2);
+    expect(ids.every((id) => /^k\d/.test(id))).toBe(true);
+    expect(ids).not.toContain("kimi-for-coding");
+    const other: CatalogModel[] = [{ provider: "anthropic", id: "gemini-9-x", thinking: null }, { provider: "anthropic", id: "claude-haiku-5-5", thinking: null }];
+    expect(proposalsFor(tierDef("opus@anthropic"), other, NOV2)).toEqual(["claude-haiku-5-5"]);
   });
   it("unpriced last, equal prices by id (M21, M23): a model with no known price is never the first suggestion", () => {
-    const m = (id: string, output?: number): CatalogModel => ({ provider: "google-antigravity", id, thinking: null, ...(output === undefined ? {} : { price: { output, rates: [] } }) });
-    expect(proposalsFor(tierDef("gemini-pro"), [m("a-unpriced"), m("z", 2), m("b", 2), m("c", 1)], NOV2)).toEqual(["b", "z", "c"]);
-    expect(proposalsFor(tierDef("gemini-pro"), [m("y-unpriced"), m("c", 1)], NOV2)).toEqual(["c", "y-unpriced"]);
+    const m = (id: string, output?: number): CatalogModel => ({ provider: "google-antigravity", id: `gemini-exp-${id}`, thinking: null, ...(output === undefined ? {} : { price: { output, rates: [] } }) });
+    expect(proposalsFor(tierDef("gemini-pro"), [m("a-unpriced"), m("z", 2), m("b", 2), m("c", 1)], NOV2).map((s) => s.slice(11))).toEqual(["b", "z", "c"]);
+    expect(proposalsFor(tierDef("gemini-pro"), [m("y-unpriced"), m("c", 1)], NOV2).map((s) => s.slice(11))).toEqual(["c", "y-unpriced"]);
   });
   it("at most three, price order", () => {
-    const m = (id: string, output: number): CatalogModel => ({ provider: "google-antigravity", id, thinking: null, price: { output, rates: [] } });
-    expect(proposalsFor(tierDef("gemini-pro"), [m("a", 1), m("b", 4), m("c", 3), m("d", 2)], NOV2)).toEqual(["b", "c", "d"]);
+    const m = (id: string, output: number): CatalogModel => ({ provider: "google-antigravity", id: `gemini-exp-${id}`, thinking: null, price: { output, rates: [] } });
+    expect(proposalsFor(tierDef("gemini-pro"), [m("a", 1), m("b", 4), m("c", 3), m("d", 2)], NOV2).map((s) => s.slice(11))).toEqual(["b", "c", "d"]);
   });
 });

@@ -8461,8 +8461,31 @@ export class RunStore {
   }
 
   /** One append-only override row (run-less, so its sequence is above every earlier row). The `/models` gateway command is the production writer. */
-  recordModelRoleOverride(i: { key: OverrideKey; pattern: string; actor: string }): void {
-    this.recordMemoryEvent("model_role_override", { key: i.key, pattern: i.pattern, actor: i.actor }, "model_roles");
+  recordModelRoleOverride(i: { key: OverrideKey; pattern: string; actor: string; via?: "tap" }): void {
+    this.recordMemoryEvent("model_role_override", { key: i.key, pattern: i.pattern, actor: i.actor, ...(i.via ? { via: i.via } : {}) }, "model_roles");
+  }
+
+  /**
+   * Spec 2026-11-03 §6.4: per key, the latest non-reset override row (same order as latestModelRoleOverrides) and the run-less
+   * ledger row just before it, so the tick can tell a card-written override from Paco's own `/models set`.
+   */
+  latestOverrideRows(): Map<OverrideKey, { pattern: string; via: string | null; sequence: number; prev: { event_type: string; payload: Record<string, unknown> } | null }> {
+    const rows = this.db.prepare(`
+      SELECT sequence, payload_json FROM ledger_events WHERE event_type = 'model_role_override' AND run_id IS NULL
+      ORDER BY sequence ASC, occurred_at ASC, event_id ASC
+    `).all<{ sequence: number; payload_json: string }>();
+    const latest = new Map<OverrideKey, { pattern: string; via: string | null; sequence: number }>();
+    for (const row of rows) {
+      const p = parseOverridePayload(row.payload_json);
+      if (!p) continue;
+      if (p.pattern === "") latest.delete(p.key);
+      else latest.set(p.key, { pattern: p.pattern, via: p.via, sequence: row.sequence });
+    }
+    const prevStmt = this.db.prepare(`SELECT event_type, payload_json FROM ledger_events WHERE run_id IS NULL AND sequence < ? ORDER BY sequence DESC LIMIT 1`);
+    return new Map([...latest].map(([key, l]) => {
+      const prev = prevStmt.get<{ event_type: string; payload_json: string }>(l.sequence);
+      return [key, { ...l, prev: prev ? { event_type: prev.event_type, payload: parseObject(prev.payload_json) } : null }];
+    }));
   }
 
   private nextLedgerSequence(run_id?: string): number {
@@ -10436,12 +10459,16 @@ const LESSON_COLUMNS =
   "corrected_count, reuse_value, rating_history, created_at, last_used, source, theme";
 
 /** A stored override row, or null when it is not one: a hand-edited or future-shaped payload is skipped, never trusted. */
-function parseOverridePayload(json: string): { key: OverrideKey; pattern: string } | null {
+function parseObject(json: string): Record<string, unknown> {
+  try { const p: unknown = JSON.parse(json); return typeof p === "object" && p !== null ? (p as Record<string, unknown>) : {}; } catch { return {}; }
+}
+
+function parseOverridePayload(json: string): { key: OverrideKey; pattern: string; via: string | null } | null {
   let p: unknown;
   try { p = JSON.parse(json); } catch { return null; }
   if (typeof p !== "object" || p === null) return null;
-  const { key, pattern } = p as Record<string, unknown>;
-  return typeof key === "string" && typeof pattern === "string" && isOverrideKey(key) ? { key, pattern } : null;
+  const { key, pattern, via } = p as Record<string, unknown>;
+  return typeof key === "string" && typeof pattern === "string" && isOverrideKey(key) ? { key, pattern, via: typeof via === "string" ? via : null } : null;
 }
 
 /** Per-scope active-row cap (⓪·3 S1): overflow prunes the lowest reuse_value rows. */

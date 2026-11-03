@@ -30,7 +30,9 @@ describe("planTier", () => {
     const p = planTier(st("kimi", "k3"), cat().filter((m) => !(m.provider === "kimi-code" && /^k\d/.test(m.id))), NOW); // kimi-k2 etc. stay listed
     expect(p.state).toEqual(st("kimi", null));
     expect(p.probe).toBeNull();
-    expect(planTier(st("gemini-pro", null), cat(), NOW).probe).toBeNull();
+    expect(planTier(st("gemini-pro", null), cat().filter((m) => m.id !== "gemini-4-argon"), NOW).probe).toBeNull();
+    // spec 2026-11-03 §6.1: with the rename readable, the empty gemini-pro tier plans a head probe of argon
+    expect(planTier(st("gemini-pro", null), cat(), NOW).probe).toEqual({ id: "gemini-4-argon", selector: "google-antigravity/gemini-4-argon", purpose: "head" });
   });
   it("a read that lists nothing of the provider changes no tier and probes nothing (P13, partial read)", () => {
     const before = st("kimi", "k3.1-pro", "k3");
