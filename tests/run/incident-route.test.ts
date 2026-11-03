@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { JEV_ANSWERED_RESOLVES } from "../../src/jev/jev-incidents.js";
 import { JEV_MODEL_INCIDENT_KINDS } from "../../src/decisions/jev-version-job.js";
 import { OMP_CONTRACT_DRIFT } from "../../src/omp/omp-probe-runner.js";
@@ -34,6 +34,21 @@ describe("routes", () => {
     expect(LOG_KINDS).toHaveLength(19);
     for (const k of LOG_KINDS) expect(routeOf(k)).toBe("log");
   });
+  it("every other table row pages, and the table size is pinned (a flipped, added or removed row fails)", () => {
+    const keys = Object.keys(INCIDENT_ROUTE);
+    expect(keys).toHaveLength(54);
+    const notPage = new Set([...CARD_KINDS, ...LOG_KINDS]);
+    const pages = keys.filter((k) => !notPage.has(k));
+    expect(pages).toHaveLength(31);
+    for (const k of pages) { expect(routeOf(k)).toBe("page"); expect(incidentNotice(k, "x")?.topic).toBe("incident_page"); }
+  });
+  it("the unknown-kind stderr line prints once per kind per process", () => {
+    const lines: string[] = [];
+    const spy = vi.spyOn(process.stderr, "write").mockImplementation((c: unknown) => { lines.push(String(c)); return true; });
+    try { routeOf("zz_unknown_a"); routeOf("zz_unknown_a"); expect(lines).toHaveLength(1); routeOf("zz_unknown_b"); expect(lines).toHaveLength(2); }
+    finally { spy.mockRestore(); }
+    expect(lines[0]).toContain("zz_unknown_a");
+  });
   it("an unknown kind pages with the generic text and no action line", () => {
     expect(routeOf("no_such_kind")).toBe("page");
     expect(incidentNotice("no_such_kind", "daemon")).toEqual({ topic: "incident_page", text: "⚠️ Something needs a look.\n`no_such_kind` · daemon" });
@@ -44,7 +59,7 @@ describe("routes", () => {
 describe("maskSubject", () => {
   it.each([
     ["chat:-1001234567890", "a chat"], ["8123456789", "a chat"], ["run:run_0f6c-uuid", "a run"], ["run_0f6c1b2a", "a run"],
-    ["appr_x", "an approval"], ["judges:2", "judges:2"], ["standing:std_1", "standing:std_1"]
+    ["appr_x", "an approval"], ["uses:run_0f6c-uuid", "a run"], ["x:appr_1", "an approval"], ["x:8123456789", "a chat"], ["judges:2", "judges:2"], ["standing:std_1", "standing:std_1"]
   ])("%s -> %s", (s, want) => expect(maskSubject(s)).toBe(want));
 });
 
@@ -76,5 +91,7 @@ describe("operatorChat (P4)", () => {
     expect(operatorChat(null, { HOUGE_TELEGRAM_CHAT_ID: " 9 " })).toBe("9");
     expect(operatorChat(undefined, {})).toBeNull();
     expect(operatorChat(null, { HOUGE_TELEGRAM_CHAT_ID: "  " })).toBeNull();
+    expect(operatorChat("", { HOUGE_TELEGRAM_CHAT_ID: " 9 " })).toBe("9");
+    expect(operatorChat("  ", {})).toBeNull();
   });
 });

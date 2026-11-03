@@ -90,9 +90,14 @@ export function routeOf(kind: string): IncidentRoute { return ruleOf(kind).route
 const CHAT_ID = /^-?\d{6,}$/;
 /** Chat and run ids and approval ids become words; code-owned ids (standing:, lesson:, role keys) stay. */
 export function maskSubject(s: string): string {
-  if (s.startsWith("chat:") || CHAT_ID.test(s)) return "a chat";
-  if (s.startsWith("run:") || s.startsWith("run_")) return "a run";
-  if (s.startsWith("appr_")) return "an approval";
+  const segs = s.split(":");
+  if (segs[0] === "chat") return "a chat";
+  if (segs[0] === "run") return "a run";
+  for (const seg of segs) {
+    if (CHAT_ID.test(seg)) return "a chat";
+    if (seg.startsWith("run_")) return "a run";
+    if (seg.startsWith("appr_")) return "an approval";
+  }
   return s;
 }
 
@@ -117,5 +122,5 @@ export function incidentResolvedNotice(kind: string, subject: string, open_minut
 
 /** P4: the chat a card goes to: the working chat, else the operator chat from the env; null when neither is set. */
 export function operatorChat(chatId: string | null | undefined, env: NodeJS.ProcessEnv): string | null {
-  return chatId ?? (env.HOUGE_TELEGRAM_CHAT_ID?.trim() || null);
+  return chatId?.trim() || env.HOUGE_TELEGRAM_CHAT_ID?.trim() || null;
 }
