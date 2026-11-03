@@ -2,6 +2,7 @@
 // `d` is a loadDist() result (scripts/stage4-diff-lib.mjs). Every dep is scripted and logged in call order. Not a corpus. Nothing leaves the process.
 const FAST = [{ provider: "anthropic", model: "claude-sonnet-5-5", effort: "low" }];
 const CLOCK0 = Date.parse("2026-10-10T08:00:00.000Z");
+export const LANE_T0 = CLOCK0; // the fixed clock's start: a script's `input.deadlineAt` is relative to it
 export const LANE_HIT = { title: "Synthetic forecast", url: "https://example.test/forecast", content: "Tomorrow: sunny, max 22." };
 export const laneSearchOk = (results = [LANE_HIT]) => ({ ok: true, output: { query: "q", provider: "tavily", results } });
 export const laneRead = (answer, facts = ["Sunny, max 22C"], contains_instructions = false) => ({ ok: true,
@@ -12,7 +13,7 @@ export const laneTurn = (text, minutesAgo, role = "user") => ({ turn_id: `t_${te
 
 /**
  * script: { rewrite(req) -> LlmResult, search(input), read(output, objective, o), fetch(input), previousTelegramTurns(chat) -> rows,
- *   compose(req) -> LlmResult, chain, systemPrompt, retrieve, recorder (optional; the new dist's lane reads it, an old one ignores it),
+ *   compose(req) -> LlmResult, chain, systemPrompt, retrieve, recorder (optional: a DecisionRecorder, or a function (clock, log) -> DecisionRecorder so a corpus can move the clock and log in call order),
  *   input: LaneInput overrides, signal: an AbortSignal for the turn, advance(ms): a hook run after each call to move the fixed clock }.
  * Returns { result, log, clock }. `log` entries: ["rewrite", prompt] ["search", query] ["read", objective, output] ["fetch", url] ["ledger", kind, payload] ["compose", prompt].
  */
@@ -33,7 +34,7 @@ export async function runLane(d, script = {}) {
     rewrite: async (r) => { log.push(["rewrite", r.prompt]); return step(await pick("rewrite")(r)); },
     previousTelegramTurns: script.previousTelegramTurns ?? (() => []), maxResults: 5,
     ledger: { searchPerformed: (p) => log.push(["ledger", "web_search_performed", p]), fetchPerformed: (p) => log.push(["ledger", "http_fetch_performed", p]) },
-    ...(script.recorder ? { recorder: script.recorder } : {}) };
+    ...(script.recorder ? { recorder: typeof script.recorder === "function" ? script.recorder(clock, log) : script.recorder } : {}) };
   const input = { run_id: "run_1", chat_id: "555", userText: "what is the weather in Sydney tomorrow?", recentTurns: [], turnChars: 400, quoted: null, effort: "low",
     verdict_id: "jv_1", note: null, signal: script.signal ?? new AbortController().signal, deadlineAt: clock.t + 75_000, ...(script.input ?? {}) };
   const result = await d.runLookupLane(input, deps);
