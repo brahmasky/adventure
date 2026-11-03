@@ -243,10 +243,12 @@ const failedIncidents = () => all("SELECT subject, state FROM incidents WHERE ki
 const incidentIds = () => new Set(all("SELECT incident_id FROM incidents").map((r) => r.incident_id));
 const alertRows = () => all("SELECT notification_id, target_json FROM notification_outbox WHERE idempotency_key LIKE 'incident_opened:%'");
 const incidentAlerts = () => alertRows().map((r) => String(JSON.parse(r.target_json).chat_id));
+// 2026-11-03 §5.3: decision_record_failed is a log kind: its opened notice is a change_log row (topic incident_log), never an outbox row
+const logRows = () => all("SELECT change_id FROM change_log WHERE topic = 'incident_log' AND idempotency_key LIKE 'incident_opened:%'");
 /** Runs `drive` with insertDecision faulting; returns { s, attempts, open (new incidents), subjects, alerts (new alert chats) }. */
 async function faulted(drive) {
   const real = G.store.insertDecision.bind(G.store); let attempts = 0;
-  const ids0 = incidentIds(); const alerts0 = new Set(alertRows().map((r) => r.notification_id));
+  const ids0 = incidentIds(); const alerts0 = new Set(alertRows().map((r) => r.notification_id)); const logs0 = new Set(logRows().map((r) => r.change_id));
   // R6: the retry path also consults turn.model; this gate's fault is scoped to its own two entries (the R6 gate faults turn.model)
   G.store.insertDecision = (row) => { if (!IDS.includes(row.entry_id)) return real(row); attempts += 1; throw new Error("gate fault: insertDecision"); };
   let s;
@@ -254,27 +256,28 @@ async function faulted(drive) {
   // only what the fault itself added counts: incidents and alerts are scoped by id against the snapshot taken before it
   const fresh = all("SELECT incident_id, kind, subject FROM incidents").filter((i) => !ids0.has(i.incident_id));
   const alerts = alertRows().filter((r) => !alerts0.has(r.notification_id)).map((r) => String(JSON.parse(r.target_json).chat_id));
-  return { s, attempts, open: fresh.length, subjects: fresh.map((i) => `${i.kind}/${i.subject}`), alerts };
+  const logged = logRows().filter((r) => !logs0.has(r.change_id)).length;
+  return { s, attempts, open: fresh.length, subjects: fresh.map((i) => `${i.kind}/${i.subject}`), alerts, logged };
 }
 /** Runs `drive` with a recorder that throws past the store recorder; returns the scenario, the incident/alert deltas and the log lines per entry. */
 async function thrown(drive) {
-  const inc0 = failedIncidents().length; const a0 = incidentAlerts().length;
+  const inc0 = failedIncidents().length; const a0 = incidentAlerts().length; const l0 = logRows().length;
   const cap = await captured(() => scenario(drive, { recorder: { record: () => { throw new Error("gate fault: record"); } } }));
   const logs = (id) => cap.seen.filter((l) => l.startsWith(`decisions: ${id} record threw past the recorder`)).length;
-  return { s: cap.value, incidents: failedIncidents().length - inc0, alerts: incidentAlerts().length - a0, logs: { [CG]: logs(CG), [TR]: logs(TR) } };
+  return { s: cap.value, incidents: failedIncidents().length - inc0, alerts: incidentAlerts().length - a0, logged: logRows().length - l0, logs: { [CG]: logs(CG), [TR]: logs(TR) } };
 }
 async function line7() {
   const parts = []; let ok = true;
   const cases = [["quota", quotaScenario, G.clean.quota, TR, 1], ["chain", chainScenario("gate-r4-l7"), G.clean.chain, CG, 2]];
   for (const [name, drive, cleanS, subject, rowsLost] of cases) {
     const f = await faulted(name === "chain" ? chainScenario("gate-r4-l7f") : drive);
-    const sameEffects = effects({ ...f.s, outbox: f.s.outbox - 1 }) === effects(cleanS); // the one operator alert is the only outbox row more
-    const fOk = f.attempts === rowsLost && f.open === 1 && canon(f.subjects) === canon([`decision_record_failed/${subject}`]) && f.alerts.length === 1 && f.alerts.every((c) => c === STUB_CHAT) && f.s.rows.length === 0 && sameEffects;
+    const sameEffects = effects(f.s) === effects(cleanS); // the fault adds no outbox row: the notice is a change_log row
+    const fOk = f.attempts === rowsLost && f.open === 1 && canon(f.subjects) === canon([`decision_record_failed/${subject}`]) && f.alerts.length === 0 && f.logged === 1 && f.s.rows.length === 0 && sameEffects;
     const t = await thrown(name === "chain" ? chainScenario("gate-r4-l7t") : drive);
     const crashOpened = name !== "chain" || count(t.s.incidents, "planner_crash_loop") === 1; // P16: the raw behaviour still opens the incident
-    const tOk = t.incidents === 0 && t.alerts === 0 && t.s.rows.length === 0 && effects(t.s) === effects(cleanS) && crashOpened && t.logs[CG] === (t.s.calls[CG] ?? 0) && t.logs[TR] === (t.s.calls[TR] ?? 0);
+    const tOk = t.incidents === 0 && t.alerts === 0 && t.logged === 0 && t.s.rows.length === 0 && effects(t.s) === effects(cleanS) && crashOpened && t.logs[CG] === (t.s.calls[CG] ?? 0) && t.logs[TR] === (t.s.calls[TR] ?? 0);
     if (!(fOk && tOk)) ok = false;
-    parts.push(`${name}: insert fault: attempts ${f.attempts} (want ${rowsLost}) new incidents ${f.open} [${f.subjects}] (want 1 [decision_record_failed/${subject}]) alerts +${f.alerts.length} (want 1) to stub ${f.alerts.every((c) => c === STUB_CHAT)} rows ${f.s.rows.length} (want 0) effects unchanged ${sameEffects} planner_crash_loop ${count(f.s.incidents, "planner_crash_loop")}; thrown recorder: decision_record_failed +${t.incidents} (want 0) alerts +${t.alerts} (want 0) rows ${t.s.rows.length} (want 0) effects unchanged ${effects(t.s) === effects(cleanS)} planner_crash_loop ${count(t.s.incidents, "planner_crash_loop")} logged cg/tr ${t.logs[CG]}/${t.logs[TR]} (want ${t.s.calls[CG] ?? 0}/${t.s.calls[TR] ?? 0})`);
+    parts.push(`${name}: insert fault: attempts ${f.attempts} (want ${rowsLost}) new incidents ${f.open} [${f.subjects}] (want 1 [decision_record_failed/${subject}]) outbox alerts +${f.alerts.length} (want 0) change_log +${f.logged} (want 1) rows ${f.s.rows.length} (want 0) effects unchanged ${sameEffects} planner_crash_loop ${count(f.s.incidents, "planner_crash_loop")}; thrown recorder: decision_record_failed +${t.incidents} (want 0) alerts +${t.alerts} (want 0) change_log +${t.logged} (want 0) rows ${t.s.rows.length} (want 0) effects unchanged ${effects(t.s) === effects(cleanS)} planner_crash_loop ${count(t.s.incidents, "planner_crash_loop")} logged cg/tr ${t.logs[CG]}/${t.logs[TR]} (want ${t.s.calls[CG] ?? 0}/${t.s.calls[TR] ?? 0})`);
   }
   return { ok, detail: parts.join(" | ") };
 }

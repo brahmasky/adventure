@@ -276,16 +276,19 @@ async function line5() {
 // ---- line 6: record faults never change the query or the pin ----
 const failedIncidents = () => all("SELECT incident_id FROM incidents WHERE kind = 'decision_record_failed'").length;
 const alertRows = () => all("SELECT notification_id, target_json FROM notification_outbox WHERE idempotency_key LIKE 'incident_opened:%'");
+// 2026-11-03 §5.3: decision_record_failed is a log kind: its opened notice is a change_log row (topic incident_log), never an outbox row
+const logRows = () => all("SELECT change_id FROM change_log WHERE topic = 'incident_log' AND idempotency_key LIKE 'incident_opened:%'");
 /** `drive` with insertDecision throwing for `entry` only: attempts, the incidents and alerts it added (scoped by id against the snapshot before it). */
 async function faulted(entry, drive) {
   const real = G.store.insertDecision.bind(G.store); let attempts = 0;
-  const ids0 = new Set(all("SELECT incident_id FROM incidents").map((r) => r.incident_id)); const alerts0 = new Set(alertRows().map((r) => r.notification_id));
+  const ids0 = new Set(all("SELECT incident_id FROM incidents").map((r) => r.incident_id)); const alerts0 = new Set(alertRows().map((r) => r.notification_id)); const logs0 = new Set(logRows().map((r) => r.change_id));
   G.store.insertDecision = (row) => { if (row.entry_id === entry) { attempts += 1; throw new Error("gate fault: insertDecision"); } return real(row); };
   let value;
   try { value = (await captured(drive)).value; } finally { G.store.insertDecision = real; }
   const fresh = all("SELECT incident_id, kind, subject FROM incidents").filter((i) => !ids0.has(i.incident_id)).map((i) => `${i.kind}/${i.subject}`);
   const alerts = alertRows().filter((r) => !alerts0.has(r.notification_id)).map((r) => String(JSON.parse(r.target_json).chat_id));
-  return { value, attempts, fresh, alerts };
+  const logged = logRows().filter((r) => !logs0.has(r.change_id)).length;
+  return { value, attempts, fresh, alerts, logged };
 }
 const throwingRecorder = { record: () => { throw new Error("gate fault: record"); } };
 async function line6() {
@@ -297,20 +300,20 @@ async function line6() {
   const pinRun = (recorder) => pinTurn({ roles, refuse: [head], ...(recorder ? { recorder } : {}) });
   const fl = await faulted(RW, laneRun); const fp = await faulted(TM, () => pinRun());
   const want = (entry) => canon([`decision_record_failed/${entry}`]);
-  const laneOk = fl.attempts === 1 && canon(fl.fresh) === want(RW) && fl.alerts.length === 1 && fl.alerts[0] === STUB_CHAT && !fl.value.rows.some((r) => r[0] === RW)
+  const laneOk = fl.attempts === 1 && canon(fl.fresh) === want(RW) && fl.alerts.length === 0 && fl.logged === 1 && !fl.value.rows.some((r) => r[0] === RW)
     && canon(fl.value.calls.searches) === canon(cleanLane.calls.searches) && resultOf(fl.value.result) === resultOf(cleanLane.result) && fl.value.rows.some((r) => r[0] === TH);
-  const pinOk = fp.attempts === 1 && canon(fp.fresh) === want(TM) && fp.alerts.length === 1 && fp.alerts[0] === STUB_CHAT && fp.value.rows.length === 0 && pinEffects(fp.value) === pinEffects(cleanPin);
-  const inc0 = failedIncidents(); const a0 = alertRows().length;
+  const pinOk = fp.attempts === 1 && canon(fp.fresh) === want(TM) && fp.alerts.length === 0 && fp.logged === 1 && fp.value.rows.length === 0 && pinEffects(fp.value) === pinEffects(cleanPin);
+  const inc0 = failedIncidents(); const a0 = alertRows().length; const l0 = logRows().length;
   const tp = await captured(() => pinRun(throwingRecorder));
   // the lane's recorder is the deps' own: the throwing one replaces the production recorder for this drive
   const tl2 = await captured(() => laneDrive({ text: SHORT, rewrite: answers(REWRITTEN), recorder: throwingRecorder }));
   const logs = { [RW]: tl2.seen.filter((l) => l.startsWith(`decisions: ${RW} record threw past the recorder`)).length, [TH]: tl2.seen.filter((l) => l.startsWith(`decisions: ${TH} record threw past the recorder`)).length,
     [TM]: tp.seen.filter((l) => l.startsWith(`decisions: ${TM} record threw past the recorder`)).length };
   const t = tl2.value;
-  const thrownOk = failedIncidents() - inc0 === 0 && alertRows().length - a0 === 0 && !t.rows.some((r) => r[0] === RW || r[0] === TH) && tp.value.rows.length === 0
+  const thrownOk = failedIncidents() - inc0 === 0 && alertRows().length - a0 === 0 && logRows().length - l0 === 0 && !t.rows.some((r) => r[0] === RW || r[0] === TH) && tp.value.rows.length === 0
     && canon(t.calls.searches) === canon(cleanLane.calls.searches) && resultOf(t.result) === resultOf(cleanLane.result) && pinEffects(tp.value) === pinEffects(cleanPin)
     && logs[RW] === 1 && logs[TH] === 1 && logs[TM] === 1;
-  return { ok: laneOk && pinOk && thrownOk, detail: `lane insert fault: attempts ${fl.attempts} (want 1) new incidents [${fl.fresh}] (want decision_record_failed/${RW}) alerts +${fl.alerts.length} (want 1) to the stub ${fl.alerts.every((x) => x === STUB_CHAT)} rewrite row absent ${!fl.value.rows.some((r) => r[0] === RW)} query unchanged ${canon(fl.value.calls.searches) === canon(cleanLane.calls.searches)} result unchanged ${resultOf(fl.value.result) === resultOf(cleanLane.result)} · pin insert fault: attempts ${fp.attempts} (want 1) new incidents [${fp.fresh}] (want decision_record_failed/${TM}) alerts +${fp.alerts.length} (want 1) to the stub ${fp.alerts.every((x) => x === STUB_CHAT)} turn.model rows ${fp.value.rows.length} (want 0) pin unchanged ${pinEffects(fp.value) === pinEffects(cleanPin)} · thrown recorder: decision_record_failed +${failedIncidents() - inc0} (want 0) alerts +${alertRows().length - a0} (want 0) lane R6 rows ${t.rows.filter((r) => r[0] === RW || r[0] === TH).length} (want 0) pin rows ${tp.value.rows.length} (want 0) query unchanged ${canon(t.calls.searches) === canon(cleanLane.calls.searches)} pin unchanged ${pinEffects(tp.value) === pinEffects(cleanPin)} logged rewrite/thin/model ${logs[RW]}/${logs[TH]}/${logs[TM]} (want 1/1/1)` };
+  return { ok: laneOk && pinOk && thrownOk, detail: `lane insert fault: attempts ${fl.attempts} (want 1) new incidents [${fl.fresh}] (want decision_record_failed/${RW}) outbox alerts +${fl.alerts.length} (want 0) change_log +${fl.logged} (want 1) rewrite row absent ${!fl.value.rows.some((r) => r[0] === RW)} query unchanged ${canon(fl.value.calls.searches) === canon(cleanLane.calls.searches)} result unchanged ${resultOf(fl.value.result) === resultOf(cleanLane.result)} · pin insert fault: attempts ${fp.attempts} (want 1) new incidents [${fp.fresh}] (want decision_record_failed/${TM}) outbox alerts +${fp.alerts.length} (want 0) change_log +${fp.logged} (want 1) turn.model rows ${fp.value.rows.length} (want 0) pin unchanged ${pinEffects(fp.value) === pinEffects(cleanPin)} · thrown recorder: decision_record_failed +${failedIncidents() - inc0} (want 0) alerts +${alertRows().length - a0} (want 0) change_log +${logRows().length - l0} (want 0) lane R6 rows ${t.rows.filter((r) => r[0] === RW || r[0] === TH).length} (want 0) pin rows ${tp.value.rows.length} (want 0) query unchanged ${canon(t.calls.searches) === canon(cleanLane.calls.searches)} pin unchanged ${pinEffects(tp.value) === pinEffects(cleanPin)} logged rewrite/thin/model ${logs[RW]}/${logs[TH]}/${logs[TM]} (want 1/1/1)` };
 }
 
 // ---- line 7: /status and the registry ----

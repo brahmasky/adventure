@@ -290,28 +290,31 @@ async function line6() {
 // ---- line 7: record faults never change the prompt ----
 const failedIncidents = () => all("SELECT incident_id FROM incidents WHERE kind = 'decision_record_failed'").length;
 const alertRows = () => all("SELECT notification_id, target_json FROM notification_outbox WHERE idempotency_key LIKE 'incident_opened:%'");
+// 2026-11-03 §5.3: decision_record_failed is a log kind: its opened notice is a change_log row (topic incident_log), never an outbox row
+const logRows = () => all("SELECT change_id FROM change_log WHERE topic = 'incident_log' AND idempotency_key LIKE 'incident_opened:%'");
 /** line 4's drive with insertDecision faulting: attempts, the incidents and alerts it added (scoped by id against the snapshot before it). */
 async function faultedCap() {
   const real = G.store.insertDecision.bind(G.store); let attempts = 0;
-  const ids0 = new Set(all("SELECT incident_id FROM incidents").map((r) => r.incident_id)); const alerts0 = new Set(alertRows().map((r) => r.notification_id));
+  const ids0 = new Set(all("SELECT incident_id FROM incidents").map((r) => r.incident_id)); const alerts0 = new Set(alertRows().map((r) => r.notification_id)); const logs0 = new Set(logRows().map((r) => r.change_id));
   G.store.insertDecision = () => { attempts += 1; throw new Error("gate fault: insertDecision"); };
   let s;
   try { s = (await captured(() => fixtureTurn(() => seedClarifyNow(FIX_CHAT)))).value; } finally { G.store.insertDecision = real; }
   const fresh = all("SELECT incident_id, kind, subject FROM incidents").filter((i) => !ids0.has(i.incident_id)).map((i) => `${i.kind}/${i.subject}`);
   const alerts = alertRows().filter((r) => !alerts0.has(r.notification_id)).map((r) => String(JSON.parse(r.target_json).chat_id));
-  return { s, attempts, fresh, alerts };
+  const logged = logRows().filter((r) => !logs0.has(r.change_id)).length;
+  return { s, attempts, fresh, alerts, logged };
 }
 async function line7() {
   const clean = G.clean.cap;
   const f = await faultedCap();
-  const fOk = f.attempts === 1 && canon(f.fresh) === canon([`decision_record_failed/${CC}`]) && f.alerts.length === 1 && f.alerts[0] === STUB_CHAT && f.s.rows.length === 0
+  const fOk = f.attempts === 1 && canon(f.fresh) === canon([`decision_record_failed/${CC}`]) && f.alerts.length === 0 && f.logged === 1 && f.s.rows.length === 0
     && effects(f.s) === effects(clean) && canon(f.s.prompts) === canon(clean.prompts);
-  const inc0 = failedIncidents(); const a0 = alertRows().length;
+  const inc0 = failedIncidents(); const a0 = alertRows().length; const l0 = logRows().length;
   const cap = await captured(() => fixtureTurn(() => seedClarifyNow(FIX_CHAT), { recorder: { record: () => { throw new Error("gate fault: record"); } } }));
   const t = cap.value;
   const logged = cap.seen.filter((l) => l.startsWith(`decisions: ${CC} record threw past the recorder`)).length;
-  const tOk = failedIncidents() - inc0 === 0 && alertRows().length - a0 === 0 && t.rows.length === 0 && effects(t) === effects(clean) && canon(t.prompts) === canon(clean.prompts) && logged === 1;
-  return { ok: fOk && tOk, detail: `insert fault: attempts ${f.attempts} (want 1) new incidents ${f.fresh.length} [${f.fresh}] (want 1 [decision_record_failed/${CC}]) · alerts +${f.alerts.length} (want 1) to the stub ${f.alerts.every((c) => c === STUB_CHAT)} rows ${f.s.rows.length} (want 0) · prompt unchanged ${canon(f.s.prompts) === canon(clean.prompts)} effects unchanged ${effects(f.s) === effects(clean)} · thrown recorder: decision_record_failed +${failedIncidents() - inc0} (want 0) alerts +${alertRows().length - a0} (want 0) rows ${t.rows.length} (want 0) prompt unchanged ${canon(t.prompts) === canon(clean.prompts)} effects unchanged ${effects(t) === effects(clean)} logged for clarify_cap ${logged} (want 1)` };
+  const tOk = failedIncidents() - inc0 === 0 && alertRows().length - a0 === 0 && logRows().length - l0 === 0 && t.rows.length === 0 && effects(t) === effects(clean) && canon(t.prompts) === canon(clean.prompts) && logged === 1;
+  return { ok: fOk && tOk, detail: `insert fault: attempts ${f.attempts} (want 1) new incidents ${f.fresh.length} [${f.fresh}] (want 1 [decision_record_failed/${CC}]) · outbox alerts +${f.alerts.length} (want 0) change_log +${f.logged} (want 1) rows ${f.s.rows.length} (want 0) · prompt unchanged ${canon(f.s.prompts) === canon(clean.prompts)} effects unchanged ${effects(f.s) === effects(clean)} · thrown recorder: decision_record_failed +${failedIncidents() - inc0} (want 0) alerts +${alertRows().length - a0} (want 0) change_log +${logRows().length - l0} (want 0) rows ${t.rows.length} (want 0) prompt unchanged ${canon(t.prompts) === canon(clean.prompts)} effects unchanged ${effects(t) === effects(clean)} logged for clarify_cap ${logged} (want 1)` };
 }
 
 // ---- line 8: /status and the registry ----

@@ -84,6 +84,7 @@ function writeWrapper(g, rewrite) {
 const count = (ro, sql, ...p) => ro.prepare(sql).get(...p).n;
 const probeRows = (g, ro = g.ro) => count(ro, "SELECT COUNT(*) AS n FROM ledger_events WHERE event_type = 'omp_contract_probe'");
 const outboxRows = (g) => count(g.ro, "SELECT COUNT(*) AS n FROM notification_outbox");
+const changeRows = (g) => count(g.ro, "SELECT COUNT(*) AS n FROM change_log WHERE topic = 'incident_log' AND idempotency_key LIKE 'incident_opened:%'");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const openDrift = (g) => g.store.listOpenIncidents().filter((i) => i.kind === g.m.OMP_CONTRACT_DRIFT);
 const versionLines = (g) => readFileSync(g.log, "utf8").split("\n").filter((l) => l === "--version").length;
@@ -145,7 +146,7 @@ async function step2(g) {
   writeFileSync(g.log, "");
   process.env.HOUGE_OMP_BIN = g.wrapper;
   g.m.setSharedOmpVersionCacheForTest(null);
-  const out0 = outboxRows(g); const drift0 = openDrift(g).length;
+  const out0 = outboxRows(g); const chg0 = changeRows(g); const drift0 = openDrift(g).length;
   const { r } = await probe(g);
   check("2 wrapper ran omp (argv logged)", readFileSync(g.log, "utf8").trim().length > 0);
   check("2 probed the same version", r.version === g.version, `${r.version} vs ${g.version}`);
@@ -155,7 +156,8 @@ async function step2(g) {
   const drift = openDrift(g);
   check(`2 one open omp_contract_drift omp:${r.version}`, drift0 === 0 && drift.length === 1 && drift[0].subject === `omp:${r.version}`,
     `before ${drift0}, after ${JSON.stringify(drift.map((i) => i.subject))}`);
-  check("2 one more outbox row (the drift page)", outboxRows(g) - out0 === 1, `${out0} → ${outboxRows(g)}`);
+  // 2026-11-03 §5.3: omp_contract_drift is a log kind: one more incident_log row, and nothing reaches the outbox (a page that still went to chat, or no log row, fails)
+  check("2 one more change_log row (the drift log line), zero outbox rows", changeRows(g) - chg0 === 1 && outboxRows(g) === out0, `change_log ${chg0} → ${changeRows(g)}, outbox ${out0} → ${outboxRows(g)}`);
 }
 
 /** One spawnOneShot on the bogus chain; PASS only when its one leg failed on the bogus model (code-built kind, not omp text). */

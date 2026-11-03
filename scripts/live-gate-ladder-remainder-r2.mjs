@@ -198,8 +198,10 @@ async function line6() {
 // ---- line 7: record faults never change what happens ----
 const failedIncidents = () => all("SELECT subject, state FROM incidents WHERE kind = 'decision_record_failed'");
 const incidentAlerts = () => all("SELECT target_json FROM notification_outbox WHERE idempotency_key LIKE 'incident_opened:%'").map((r) => String(JSON.parse(r.target_json).chat_id));
+// 2026-11-03 §5.3: decision_record_failed is a log kind: its opened notice is a change_log row (topic incident_log), never an outbox row
+const incidentLogRows = () => countOf("SELECT COUNT(*) AS n FROM change_log WHERE topic = 'incident_log' AND idempotency_key LIKE 'incident_opened:%'");
 async function line7() {
-  const open0 = failedIncidents().filter((i) => i.state === "open").length; const out0 = outboxN(); const alerts0 = incidentAlerts().length; const c222 = chatOutbox(String(CHAT));
+  const open0 = failedIncidents().filter((i) => i.state === "open").length; const out0 = outboxN(); const alerts0 = incidentAlerts().length; const log0 = incidentLogRows(); const c222 = chatOutbox(String(CHAT));
   const real = G.store.insertDecision.bind(G.store); let fired = 0;
   const sch = dueSchedule("l7a"); G.gateSchedules.push(sch.schedule_id); const id = nextId(); const s = snap(); let sent = []; let res;
   G.store.insertDecision = () => { fired += 1; throw new Error("gate fault: insertDecision"); };
@@ -208,14 +210,14 @@ async function line7() {
     res = (await captured(() => tick(gateway()))).value;
   } finally { G.store.insertDecision = real; }
   const faultOutbox = outboxN() - out0;
-  const open = failedIncidents().filter((i) => i.state === "open").map((i) => i.subject).sort(); const newAlerts = incidentAlerts().slice(alerts0);
+  const open = failedIncidents().filter((i) => i.state === "open").map((i) => i.subject).sort(); const newAlerts = incidentAlerts().slice(alerts0); const newLogs = incidentLogRows() - log0;
   const runs = runOf(sch.schedule_id);
   const faultOk = fired === 2 && // exactly two insert attempts: the denial's intake.sender row and the fire's turn.contract row
-     open.length - open0 === 2 && open.join(",") === "intake.sender,turn.contract" && faultOutbox === 2 && newAlerts.length === 2 && newAlerts.every((t) => t === STUB_CHAT)
+     open.length - open0 === 2 && open.join(",") === "intake.sender,turn.contract" && faultOutbox === 0 && newAlerts.length === 0 && newLogs === 2
     && chatOutbox(String(CHAT)) - c222 === 0 && !sent.includes(String(CHAT)) && skipCode(id) === "TELEGRAM_AUTH_DENIED" && G.store.getOffset("telegram") === id + 1
     && res.fired === 1 && runs.length === 1 && stripped(runs[0]) && rowsAfter(s.mark, "turn.contract").length === 0 && rowsAfter(s.mark, "intake.sender").length === 0;
   // a recorder that throws past the store recorder (decide.ts:173): no incident, no alert, same results, the error logged
-  const inc1 = failedIncidents().length; const out1 = outboxN(); const id2 = nextId(); const sch2 = dueSchedule("l7b"); G.gateSchedules.push(sch2.schedule_id);
+  const inc1 = failedIncidents().length; const out1 = outboxN(); const log1 = incidentLogRows(); const id2 = nextId(); const sch2 = dueSchedule("l7b"); G.gateSchedules.push(sch2.schedule_id);
   const thrower = { record: () => { throw new Error("gate fault: record"); } };
   const gw = gateway(); gw.recorderCache = thrower;
   const poll = await captured(() => pollItem(G.d, G.store, [senderUpdate("message", { id: id2, from: STRANGER })], { recorder: thrower }));
@@ -223,9 +225,9 @@ async function line7() {
   const logSender = poll.seen.filter((l) => l.startsWith("decisions: intake.sender record threw past the recorder")).length;
   const logContract = fire.seen.filter((l) => l.startsWith("decisions: turn.contract record threw past the recorder")).length;
   const runs2 = runOf(sch2.schedule_id);
-  const throwOk = failedIncidents().length - inc1 === 0 && outboxN() - out1 === 0 && poll.value.emitted.length === 0 && skipCode(id2) === "TELEGRAM_AUTH_DENIED" && poll.value.offset === id2 + 1
+  const throwOk = failedIncidents().length - inc1 === 0 && outboxN() - out1 === 0 && incidentLogRows() - log1 === 0 && poll.value.emitted.length === 0 && skipCode(id2) === "TELEGRAM_AUTH_DENIED" && poll.value.offset === id2 + 1
     && fire.value.fired === 1 && runs2.length === 1 && stripped(runs2[0]) && logSender === 1 && logContract === 1;
-  return { ok: faultOk && throwOk, detail: `store fault: open incidents +${open.length - open0} [${open.join(",")}] (want 2 [intake.sender,turn.contract]) · outbox +${faultOutbox} (want 2) · alerts +${newAlerts.length} (want 2) all to ${STUB_CHAT} ${newAlerts.length === 2 && newAlerts.every((t) => t === STUB_CHAT)} · rows to chat ${CHAT} +${chatOutbox(String(CHAT)) - c222} (want 0) · skip ${skipCode(id)} · sent to ${CHAT} ${sent.includes(String(CHAT))} (want false) · insertDecision attempts ${fired} (want 2) · run ${runs.length} stripped ${runs.length ? stripped(runs[0]) : "n/a"} | recorder throw: incidents +${failedIncidents().length - inc1} (want 0) outbox +${outboxN() - out1} (want 0) fired ${fire.value.fired} (want 1) logged ${logSender},${logContract} (want 1,1)` };
+  return { ok: faultOk && throwOk, detail: `store fault: open incidents +${open.length - open0} [${open.join(",")}] (want 2 [intake.sender,turn.contract]) · outbox +${faultOutbox} (want 0) · outbox alerts +${newAlerts.length} (want 0) · change_log rows +${newLogs} (want 2) · rows to chat ${CHAT} +${chatOutbox(String(CHAT)) - c222} (want 0) · skip ${skipCode(id)} · sent to ${CHAT} ${sent.includes(String(CHAT))} (want false) · insertDecision attempts ${fired} (want 2) · run ${runs.length} stripped ${runs.length ? stripped(runs[0]) : "n/a"} | recorder throw: incidents +${failedIncidents().length - inc1} (want 0) outbox +${outboxN() - out1} (want 0) change_log +${incidentLogRows() - log1} (want 0) fired ${fire.value.fired} (want 1) logged ${logSender},${logContract} (want 1,1)` };
 }
 
 // ---- line 8: /status and the lock ----
