@@ -120,6 +120,8 @@ This file defines domain language for Houge architecture reviews and implementat
 
 **Incident**: A durable record of a violated invariant, fingerprinted `kind:subject`, with an open→resolved lifecycle. Rows are never deleted; a recurrence after resolution opens a new row so recurrence stays countable. Alerts fire on transitions only, never per sweep.
 
+**Change log**: A background notice that left chat — a `change_log` row written by the topic router (`TOPIC_ROUTE`) or an incident whose kind routes `log`. Code-owned text with masked subjects; read with `/changes`; never pushed (ADR 0031).
+
 **Provenance Strip**: The rule that a run born from a schedule fire (`event.source === "schedule"`) has `schedule_task` removed from its task contract, so replayed schedule text can never be acted on as a fresh instruction to create or mutate schedules. The general principle: a capability is withheld based on how a run was *born*, not on what its text says.
 
 **Google-Auth Client**: The shared OAuth closure that exchanges the broker-held Gmail refresh token for short-lived Google access tokens. The runtime-minted access token lives and dies inside the closure — it never appears in results, errors, digests, or ledger rows.

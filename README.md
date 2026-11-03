@@ -190,7 +190,7 @@ Slash commands keep it inspectable (idempotent, no run, no budget unless noted):
 - `/skills [scope]` view skills; `/skills retire|restore <name>`, `/skills retired`, `/skills pending`.
 - `/schedule` · `/schedule cancel <N>` list or cancel this chat's schedules. Schedules are created and
   updated conversationally through `schedule_task`.
-- `/status` health digest (plus 24 h decision counts, the settle health line and per-entry Jev skips when there were any) · `/status decisions` the last 10 decisions · `/usage` token use per model (omp rows show "sub", never dollars).
+- `/status` health digest (plus 24 h decision counts, the settle health line and per-entry Jev skips when there were any) · `/status decisions` the last 10 decisions · `/changes` background changes of the last 30 days in plain words (model switches, internal self-checks, routine Jev notices — what no longer comes to chat) · `/usage` token use per model (omp rows show "sub", never dollars).
 - The daily digest lists improvements, proposals waiting for a tap, and a watch line
   ([configuration](docs/reference/configuration.md#decision-ladder-adr-0030)).
 - `/radar [n]` · `/idea pick <n>` the Idea Radar board and the weekly panel's shortlist
