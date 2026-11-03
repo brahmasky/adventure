@@ -114,7 +114,7 @@ export function resolveInvariantSweepEnabled(env: NodeJS.ProcessEnv): boolean {
 }
 
 export function buildSweepSummaryText(suppressed: number): string {
-  return `⚠️ ${suppressed} more alerts were held back this round (storm cap). /status shows what is open.`;
+  return `⚠️ ${suppressed} more alerts were held back this round (storm cap or flap damping). /status shows what is open.`;
 }
 
 /** The omp-runtime invariants' inputs (spec §8): the previous sweep instant and the data volume. */

@@ -65,7 +65,7 @@ describe("the sweep routes by kind", () => {
     expect(rows.filter((x) => x.idempotency_key.startsWith("incident_opened:"))).toHaveLength(INCIDENT_ALERTS_PER_SWEEP_MAX);
     const summary = rows.filter((x) => x.idempotency_key.startsWith("incident_sweep_summary:"));
     expect(summary.map((x) => (JSON.parse(x.payload_json) as { text: string }).text)).toEqual(
-      ["⚠️ 2 more alerts were held back this round (storm cap). /status shows what is open."]);
+      ["⚠️ 2 more alerts were held back this round (storm cap or flap damping). /status shows what is open."]);
     expect(logs().filter((x) => x.topic === "incident_log")).toHaveLength(2);
   });
   it("with no chat the log violations still write rows and the page violations write nothing", () => {

@@ -7,7 +7,7 @@ import { RunStore } from "../../src/run/run-store.js";
 import { createQueuedTurnRun } from "../helpers/runs.js";
 
 // Spec §7.2: what a turn has read sets how far it is trusted, and the level only rises. Every rise is ledgered; every turn
-// end writes the final level; a hostile turn tells Paco at once, and a schedule-born one (no one to tap) pages once.
+// end writes the final level; a hostile turn tells Paco at once, and a schedule-born one (no one to tap) opens its incident once.
 // turn.trust is locked: no judge may ever decide it (ADR 0030 decision 6).
 function setup(born: "telegram" | "schedule" = "telegram") {
   const store = RunStore.openInMemory(); const run_id = createQueuedTurnRun(store);
@@ -146,7 +146,7 @@ describe("D3-A", () => {
     const sc = setup("schedule"); sc.trust.carry("hostile");
     expect(sc.store.getLedgerEvents().filter((e) => e.event_type === "incident_opened")).toEqual([]);
   });
-  it("a schedule turn that itself raises hostile still pages once", () => {
+  it("a schedule turn that itself raises hostile opens its incident once", () => {
     const sc = setup("schedule"); sc.trust.raise("injection_withheld");
     expect(sc.store.getLedgerEvents().filter((e) => e.event_type === "incident_opened").map((e) => (e.payload as { kind: string }).kind)).toEqual(["hostile_schedule_turn"]);
   });
