@@ -36,7 +36,7 @@ import { resolveSkillName, SkillStore, type SkillMeta } from "../skills/skill-st
 import { join } from "node:path";
 import { evolutionLaneSnapshot } from "../core/evolution-lane.js";
 import { changesText } from "../notifications/change-log-view.js";
-import { routeOf } from "../run/incident-route.js";
+import { INCIDENT_ROUTE, isRoutedKind } from "../run/incident-route.js";
 import { queryStatus } from "../status/status-query.js";
 import { formatUsageTable } from "../status/usage-report.js";
 import { resolveRadarAt, resolveRadarEnabled, resolveRadarTz } from "../capabilities/idea-radar.js";
@@ -1328,7 +1328,7 @@ export class Gateway {
   /** Spec 2026-11-03 §7: the self-check tail counts open incidents by where they go (a card counts as paged) and the week's log rows. */
   private changesLine(now: string): string {
     let paged = 0, internal = 0;
-    for (const i of this.runStore.listOpenIncidents()) { if (routeOf(i.kind) === "log") internal += 1; else paged += 1; }
+    for (const i of this.runStore.listOpenIncidents()) { if (isRoutedKind(i.kind) && INCIDENT_ROUTE[i.kind].route === "log") internal += 1; else paged += 1; }
     const week = this.runStore.countChangeLogSince(new Date(Date.parse(now) - 7 * 86_400_000).toISOString());
     return `${paged} paged · ${internal} internal open · ${week} changes this week · /changes`;
   }

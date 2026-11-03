@@ -46,6 +46,16 @@ describe("changesText", () => {
     expect(lines[21]).toBe("… 5 older");
     s.close();
   });
+  it("collapses consecutive identical rows into one (×N) line so a flapping kind cannot crowd the view", () => {
+    const s = RunStore.openInMemory();
+    log(s, 0, "older distinct", ago(500));
+    for (let i = 1; i <= 30; i++) log(s, i, "flap flap", ago(i));
+    const lines = changesText(s, NOW, ENV).split("\n");
+    expect(lines).toHaveLength(3);
+    expect(lines[1]).toBe("13 Oct 20:59 · flap flap (×30)"); // the newest row's stamp
+    expect(lines[2]).toMatch(/ · older distinct$/);
+    s.close();
+  });
   it("cuts a backtick-free long text on a word boundary, never mid-word", () => {
     const s = RunStore.openInMemory();
     log(s, 1, "abcdefgh ".repeat(40), ago(5));

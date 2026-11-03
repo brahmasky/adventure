@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { buildTypedTaskEvent } from "../../src/domain/types.js";
 import { Gateway, HELP_TEXT } from "../../src/gateway/gateway.js";
 import { RunStore } from "../../src/run/run-store.js";
@@ -26,6 +26,16 @@ describe("/status self-check line, /changes reply and /help (spec 2026-11-03 §7
     expect(String(out[0]?.text)).toMatch(/Self-check: swept .* · 1 paged · 2 internal open · 4 changes this week · \/changes\n/);
     expect(s.countChangeLogSince("1970-01-01T00:00:00.000Z")).toBe(5);
     s.close();
+  });
+  it("an open row-only kind counts as paged and the count writes nothing to stderr", () => {
+    const s = RunStore.openInMemory();
+    const err = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      s.openIncident({ kind: "planner_turn_refused", subject: "t1", detail: {} });
+      new Gateway(s).intake(statusEv("c3"), NOW);
+      expect(String([...drainOutbox(s).values()][0]?.text)).toMatch(/ · 1 paged · 0 internal open · /);
+      expect(err.mock.calls.filter((c) => String(c[0]).includes("incident-route"))).toEqual([]);
+    } finally { err.mockRestore(); s.close(); }
   });
   it("/changes answers with the log; /help lists it", () => {
     const s = RunStore.openInMemory();
