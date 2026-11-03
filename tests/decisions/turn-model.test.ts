@@ -22,6 +22,9 @@ const cases: Array<[ModelInput, string, string | null]> = [
   [{ leg: "first", outcome: "pin_failed", stepped: false, refused: 0 }, "held", "pin_failed"],
   [{ leg: "retry", outcome: "pin_failed", stepped: false, refused: 0 }, "none", "pin_failed"],
   [{ leg: "first", outcome: "exhausted", stepped: true, refused: 3 }, "none", "no_leg"],
+  // precedence: pin_failed outranks stepped and refused (first match, spec R6 §4.3); both inputs are reachable in production
+  [{ leg: "first", outcome: "pin_failed", stepped: true, refused: 1 }, "held", "pin_failed"],
+  [{ leg: "retry", outcome: "pin_failed", stepped: false, refused: 1 }, "none", "pin_failed"],
 ];
 
 describe("turn.model (spec R6 §4.3)", () => {
