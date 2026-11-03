@@ -297,8 +297,9 @@ const EXPECTED = [[RW, "rewrite", "rewritten", "pre_model", "lane_rewritten", "r
 /** The chat turns the drives add to F, in order [role, intent, text]: the synthetic Paco line, then the refused-head turn's user and answer, then the no_leg turn's user (it fails and answers nothing). */
 const EXPECTED_TURNS = [["user", null, "synthetic earlier question"], ["user", null, "hi"], ["assistant", "loop", "answer"], ["user", null, "hi"]];
 const shapeOf = (runs) => (r) => [r.entry_id, r.verdict, r.reason_code, r.stage, Object.entries(runs).find(([, id]) => id === r.run_id)?.[0] ?? "?", r.rung, r.entry_version];
-async function run(ctx) {
-  const { A, F, mNew, mOld } = ctx;
+/** Step 1: snapshot F, seed it through this build's real paths, mirror the chat turns onto A, check the seeded rows. */
+async function seedPhase(ctx, st) {
+  const { A, F } = ctx;
   phase = "snapshot"; const before = { n: NEW_IDS.map((id) => entryCount(F, id)), schema: schemaOf(F), counts: counts(F) };
   const chatMark = ro(F, (db) => db.prepare("SELECT COALESCE(MAX(rowid), 0) AS m FROM chat_turns").get().m);
   phase = "seed F"; const seed = await seedF(ctx, F);
@@ -314,6 +315,11 @@ async function run(ctx) {
     same(got, EXPECTED) && seed.rows.every((r) => r.tool_call_id === null && r.run_id !== null) && NEW_IDS.every((id, i) => entryCount(F, id) === before.n[i] + ADDED[id])
     && snapF.counts.decisions === snapA.counts.decisions + 6,
     `lane old-id rows removed ${seed.strayN} · rows ${seed.rows.map((r) => `${r.entry_id}/${r.verdict}/${r.reason_code}/${r.stage}/${rowShape(r)[4]}/${r.rung}/v${r.entry_version}`).join(" ")} · decisions A ${snapA.counts.decisions} F ${snapF.counts.decisions} · outbox parked on A ${ctx.prep.parked}`);
+  Object.assign(st, { before, seed, seedIds, snapF, snapA, rowShape });
+}
+/** Step 2: the old build on A and F, and the no-migration check. */
+async function oldPhase(ctx, st) {
+  const { A, F } = ctx; const { before, snapA, snapF } = st;
   await yieldLoop();
   const now = new Date(Date.now() + 60_000).toISOString();
   phase = "old build on A"; const oa = await oldSteps(ctx, A, now);
@@ -325,6 +331,11 @@ async function run(ctx) {
   check("the old build ran no migration: the schema (every object's sql and user_version and every schema_migrations row) is identical before and after its open, on A and F, and A equals F",
     same(snapA.schema, oa.schemaAfterOpen) && same(snapF.schema, of.schemaAfterOpen) && same(snapA.schema, schA) && same(snapF.schema, schF) && same(snapA.schema, snapF.schema) && same(before.schema, snapF.schema),
     `${snapF.schema.hash} migrations ${snapF.schema.mig} uv ${snapF.schema.uv} -> A ${schA.hash} / F ${schF.hash}`);
+  Object.assign(st, { now, oa, of, aA, aF });
+}
+/** Step 3: row integrity and the rendered comparisons. */
+function compareAndRefusePhase(ctx, st) {
+  const { A, F, mOld } = ctx; const { before, seed, seedIds, snapF, snapA, rowShape, now, oa, of, aA, aF } = st;
   const keysF = keysOf(F); const gone = lost(snapF.keys, keysF); const goneA = lost(snapA.keys, keysOf(A));
   const hashAfter = rowsHash(F, seedIds); const contentF = contentOf(F); const contentA = contentOf(A);
   const seededRead = seedIds.map((id) => of.readRows.find((x) => x.decision_id === id));
@@ -345,6 +356,11 @@ async function run(ctx) {
   const grew = (x, y) => TABLES.map((t) => y[t] - x[t]);
   check("the old build wrote the same rows to A and F: only decision_outcomes grew, by exactly 1 (its valid-id probe)",
     same(grew(snapA.counts, aA), grew(snapF.counts, aF)) && TABLES.every((t, i) => grew(snapF.counts, aF)[i] === (t === "decision_outcomes" ? 1 : 0)), `growth ${TABLES.map((t, i) => `${t} ${grew(snapA.counts, aA)[i]}/${grew(snapF.counts, aF)[i]}`).join(" · ")} (A/F)`);
+  st.keysF = keysF;
+}
+/** Step 4: this build reopens F. */
+function reopenPhase(ctx, st) {
+  const { F, mNew } = ctx; const { snapF, keysF, now } = st;
   phase = "reopen F"; const s = openStore(ctx.dNew, F);
   const re = mNew.decisionStatusLines(s, now);
   const reRows = s.listRecentDecisions(100_000).map(canonRow).sort();
@@ -354,6 +370,10 @@ async function run(ctx) {
     `rows read ${reRows.length}/${snapF.content.length} · lines ${J(lineTotals(re)).replace(/"/g, "")}`);
   const tomb = [join(process.cwd(), "houge.kill"), join(MAIN_CHECKOUT, "houge.kill")].filter(existsSync).length;
   check("no houge.kill tombstone appeared in the cwd or the main checkout (P3)", tomb === 0, `found ${tomb} (want 0)`);
+}
+async function run(ctx) {
+  const st = {};
+  await seedPhase(ctx, st); await oldPhase(ctx, st); compareAndRefusePhase(ctx, st); reopenPhase(ctx, st);
 }
 
 function restoreEnv() { for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; } delete process.env.HOUGE_OMP_BIN; }
