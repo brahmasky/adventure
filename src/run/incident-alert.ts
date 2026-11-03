@@ -1,6 +1,7 @@
 import { buildIncidentOpenedText } from "./invariant-sweep.js";
 import { formatInstantInZone, resolveDisplayZone } from "./schedule-spec.js";
 import type { IncidentRow, RunStore } from "./run-store.js";
+import type { RoutedIncidentKind } from "./incident-route.js";
 
 /**
  * Incidents opened OUTSIDE the invariant sweep (omp_unavailable,
@@ -11,7 +12,7 @@ import type { IncidentRow, RunStore } from "./run-store.js";
  * `hostile_schedule_turn` is an event (spec 2026-11-02 §5).
  */
 export interface AlertedIncidentInput {
-  kind: string;
+  kind: RoutedIncidentKind;
   subject: string;
   detail: Record<string, unknown>;
   /** The chat to page; default `HOUGE_TELEGRAM_CHAT_ID` (the operator chat). Absent → the row only. */
@@ -71,10 +72,13 @@ export function resolveOmpCheckIncidents(store: RunStore, now = new Date().toISO
 }
 
 /** The planner-supervisor conditions that page Paco once while open (B3). */
-export const SUPERVISOR_ALERT_KINDS: ReadonlySet<string> = new Set([
+export const SUPERVISOR_ALERT_KINDS = new Set([
   "planner_crash_loop", "planner_start_failed", "wrapper_mismatch", "sandbox_unavailable", "omp_unavailable",
   "planner_session_reset_failed"
-]);
+] as const satisfies readonly RoutedIncidentKind[]);
+export type SupervisorAlertKind = typeof SUPERVISOR_ALERT_KINDS extends ReadonlySet<infer K> ? K : never;
+/** Narrowing membership: core-worker's `kind: string` also carries row-only planner kinds that are not in the route table. */
+export function isSupervisorAlertKind(k: string): k is SupervisorAlertKind { return (SUPERVISOR_ALERT_KINDS as ReadonlySet<string>).has(k); }
 /**
  * The supervisor conditions a successful planner start in the same chat clears (the omp-check kinds clear on versionOk).
  * planner_session_reset_failed is not one: a degraded start serves the resumed session with the reset still failing, so

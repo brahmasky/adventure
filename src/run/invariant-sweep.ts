@@ -1,4 +1,5 @@
 import { statfsSync } from "node:fs";
+import type { RoutedIncidentKind } from "./incident-route.js";
 import { FRONT_DOOR_ENTRIES } from "../decisions/entry-ids.js";
 import { REGISTRY } from "../decisions/registry.js";
 import type { AnyEntry } from "../decisions/types.js";
@@ -87,7 +88,7 @@ export const SWEEP_INCIDENT_KINDS = [
   "duplicate_schedule", "stuck_run", "undelivered_notification", "overdue_schedule", "failed_schedule",
   "heartbeat_gap", "llm_leg_failing", "disk_free_low", "wall_collapsed", "lesson_dropped", "embeddings_unavailable", "core_overflow",
   "jev_skip_rate", "lane_fallthrough_rate"
-] as const;
+] as const satisfies readonly RoutedIncidentKind[];
 export type IncidentKind = (typeof SWEEP_INCIDENT_KINDS)[number];
 const SWEEP_KINDS: ReadonlySet<string> = new Set(SWEEP_INCIDENT_KINDS);
 

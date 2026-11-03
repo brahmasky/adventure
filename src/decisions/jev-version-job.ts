@@ -547,7 +547,7 @@ function driftText(model: string, v: CheckVerdict, s: Summary): string {
 }
 
 /** One alerted incident whose page is the Accept card (its own notification, never also the generic incident text). */
-function page(d: JevJobDeps, model: string, g: number, kind: string, detail: Record<string, unknown>, text: string): void {
+function page(d: JevJobDeps, model: string, g: number, kind: "jev_model_drifted" | "jev_model_insufficient", detail: Record<string, unknown>, text: string): void {
   const opened = openAlertedIncident(d.store, { kind, subject: jevModelSubject(model), detail, now: d.now(), ...(d.chatId ? { env: {} } : {}) });
   if (!opened || !d.chatId) return;
   const button: NotificationButton = { text: `Accept ${model}`, data: jevAcceptData(model, g) };
