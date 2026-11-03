@@ -125,3 +125,13 @@ every role at once; a role-specific model pin is the residual.
 
 The north-star metric for the sense track: **the first incident Houge reports before Paco
 notices it.** Until that happens, this is unproven infrastructure, not a closed loop.
+
+
+## Amendment (2026-11-03): chat is for Paco (sweep alerts by kind) (awaiting Paco's signature)
+
+This file is protected (ADR 0011); this amendment is drafted for Paco's hand. Spec: `docs/superpowers/specs/2026-11-03-chat-is-for-paco-design.md` (Rev 1.2, approved 2026-11-03); see [ADR 0031](0031-chat-carries-what-needs-paco.md).
+
+- **Routing.** A sweep violation's alert follows `INCIDENT_ROUTE`: `page` kinds alert in chat as before; `log` kinds write a `change_log` row on open and on resolve, with or without a chat and regardless of flap damping.
+- **Storm cap** counts paged (and card) alerts only; the one-line summary stays in chat, because after this change it is only about pages Paco did not get.
+- **`heartbeat_gap` → log.** Paco saw the silence; the gap is recorded in `/changes`.
+- **Text.** Alerts are plain words with a masked subject, no JSON detail; resolved notices read `✅ Fixed: … — open N min`.

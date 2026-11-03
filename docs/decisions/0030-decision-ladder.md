@@ -752,3 +752,12 @@ This file is protected (ADR 0011); this amendment is drafted for Paco's hand. Sp
 - **R12 consequence.** `rewrite`, `fetch`, `fallback`, `held` are `effect` verdicts; `rewrite` is over `mixed` input, allowed for a rule-only entry. A later Jev or model rung needs a compliant effect contract first, and `entryProblems` fails the registry test until it has one. A rule that throws writes a `fail`-rung row with the default verdict: read `rung` first.
 - **Evidence.** Differential with a ninth stamped pair (`--old-dist-r6`, merge base `b0da208`, provenance on `core/lanes/lookup-lane.js`); new lane fixture and corpora `lookup` (22 items) and `model` (17); 17 corpora, 0 differences. Live gate `scripts/live-gate-ladder-remainder-r6.mjs` 7/7 (the production lookup deps over a copy, the real `RoleResolver`, `CoreWorker.submitTurn` over fake omp); R5, R4, R3, R2, R1, 4C, 4B gates PASS; rollback `scripts/check-ladder-remainder-r6-rollback.mjs` 10/10.
 - **Rollback.** No schema change: revert + rebuild. The previous build reads the new rows unchanged and refuses `review_ok` naming the new ids.
+
+
+## Amendment (2026-11-03): chat is for Paco (decision-health kinds to the log) (awaiting Paco's signature)
+
+This file is protected (ADR 0011); this amendment is drafted for Paco's hand. Spec: `docs/superpowers/specs/2026-11-03-chat-is-for-paco-design.md` (Rev 1.2, approved 2026-11-03); see [ADR 0031](0031-chat-carries-what-needs-paco.md).
+
+- **`decision_record_failed`, `decision_golden_drift`, `decision_fallback` → log** (reading of "and its alert" and "drift pages"). They are self-checks of the ladder's own bookkeeping; the decision still runs on its fallback. `/status` counts them as internal open incidents and `/changes` lists them. The `decision_fallback` card becomes a log row (topic `decision_internal`).
+- **`decision_health` is a card kind:** its urgent card is the page; the generic incident text is not sent.
+- **The daily reminder** (2026-11-02 amendment) keeps `role_unresolved` and `planner_session_reset_failed`; `static_list_stale` and `model_catalog_unavailable` leave it (log kinds); `omp_contract_drift` joins it at 7 days. This touches the unsigned 2026-11-02 amendment; the two sign together.
