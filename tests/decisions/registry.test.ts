@@ -186,4 +186,16 @@ describe("entryProblems (R12 and R13 as data)", () => {
     }
     expect(ENTRY_IDS).toHaveLength(39);
   });
+
+  it("lookup.rewrite, lookup.thin and turn.model are registered, unlocked, rule-only and sound (remainder R6)", () => {
+    for (const id of ["lookup.rewrite", "lookup.thin", "turn.model"] as const) {
+      const e = entryById(id) as AnyEntry;
+      expect(e).toBeDefined();
+      expect(e.locked === true).toBe(false);
+      expect(e.ladder.map((r) => r.kind)).toEqual(["rule"]);
+      expect((LOCKED_ENTRY_IDS as readonly string[]).includes(id)).toBe(false);
+      expect(entryProblems(e)).toEqual([]);
+    }
+    expect(ENTRY_IDS).toHaveLength(39);
+  });
 });
