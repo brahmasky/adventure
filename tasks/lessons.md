@@ -643,6 +643,12 @@ The clean-room merge rebuilt `dist/` (new `omp/shell-wrapper.sh`) and the kickst
 - **A partial catalog read must not wipe a tier.** If the catalog lists nothing of a provider, the tier stays and no probe runs (W1); otherwise one bad read empties every role on that provider.
 - **Mutation testing again earned its cost.** 79 of 107 killed; 18 real gaps became tests. Equivalent mutants were named rather than ignored.
 
+## 2026-11-03 — Stage 3 remainder slice R6 (lookup rewrite/thin + model pin)
+- **Writing a row is not free inside a time budget.** A synchronous insert between a decision and the next budget read can turn a search into a timeout. In a budgeted path, decide at the branch and write at the end; then say the residual that remains (the turn deadline) instead of claiming an unconditional zero.
+- **A "liveness" signal that is a promise race can still lose.** `step()` races the work against `ended`; a pin can win that race after `done()` fired in an earlier microtask. A guard on the end flag that looked defensive was load-bearing; the mutation pass found it, a queued-microtask test pins it.
+- **A plan reviewer that runs the tasks finds the harness's blind spots.** Fable applying Tasks 1–3 for real measured 20 TS tallies the plan said would not move and found new rows shifting the differential's clock labels before the id filter ran. Measure before writing literals; drop new ids at the dump.
+- **Check what a live gate's real-system line actually depends on.** `live-gate-jev-tree` case 9 failed on live data (the daily tier tick moved Kimi to `k3.1-pro`), not code; R6 changed no resolution file. Compare a rerun against the data's moment, not only against `main`.
+
 ## 2026-11-02 — Stage 3 remainder slice R5 (context decisions + clarify cap)
 - **`finished` is not the end of a turn.** `done()` resolves `turn.ended` at once, but `finished` is set only after settle awaits the judge drain and the todo snapshot; a guard on `finished` lets a consult in that interval record for a dead turn. The codex re-review of the spec's own fix found it. Guard on the end signal itself, set in the same tick, and re-arm it where the end signal is replaced.
 - **A planted fault inside the recorder proves nothing about the real path.** The recorder runs after the rule has answered; deciding a throwing copy there produces the expected row without exercising production. Replace the real entry's rule for the case and restore it in `finally`.
