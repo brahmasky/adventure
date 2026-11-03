@@ -291,6 +291,12 @@ async function setup() {
   G.store = G.d.RunStore.open(copy, G.d.storeOptionsFor(undefined, {}));
   G.cfg = G.d.resolveOmpConfig(process.env);
   if (G.store.latestModelRoleOverrides().has("judges:2")) { G.store.recordModelRoleOverride({ key: "judges:2", pattern: "", actor: "gate:model-tiers" }); note("judges:2 override reset on the copy (the card-tap override would hide the empty tier)"); }
+  // Once the live daemon adopts gemini-4-argon, the copy's gemini-pro row is adopted and no card is owed: put it back to unadopted on the copy (mirrors the chat-is-for-paco gate).
+  const pro = G.store.listModelTiers().find((t) => t.tier === "gemini-pro");
+  if (pro && (pro.adopted !== null || pro.previous !== null || pro.rejected_selector !== null)) {
+    G.store.writeModelTier({ tier: "gemini-pro", adopted: null, previous: null, adopted_at: null, rejected_selector: null, rejected_at: null }, new Date().toISOString());
+    note("gemini-pro tier put back to unadopted on the copy");
+  }
   G.catalog = await G.d.readOmpCatalog(G.d.resolveOmpCatalogConfig(process.env));
   if (!G.catalog || G.catalog.length === 0) throw new SetupError("catalog unavailable");
   G.roles = new G.d.RoleResolver({ store: G.store, env: () => process.env, readCatalog: async () => [...G.catalog, PLANTED] });
