@@ -4,6 +4,7 @@ import { sanitizeLaneText } from "./lane-card.js";
 import { INSTRUCTIONS_NOTE } from "../../omp/external-read.js";
 import { quotedLine, renderContextBlock, type TurnRetrieval } from "../../omp/turn-context.js";
 import type { ChatTurnRow } from "../../run/run-store.js";
+import { queryCheckOf, rewriteFilterOf } from "./lookup-predicates.js";
 
 /** Stage B §4: the first line of every lane prompt. No tool exists in a lane, so the model must say when one is needed. */
 export const LANE_PREFACE = "Quick reply: no tool, file or action is available this turn; answer in the message's language; say plainly when the question needs a search or an action.";
@@ -12,10 +13,7 @@ export const SOURCES_CLOSE = "[/sources]";
 const SOURCES_INSTRUCTION = "Answer from these sources only, cite them by [n], and say plainly when they do not answer the question.";
 export const SOURCE_LINE_LABEL = "来源 / Sources:";
 export const REWRITE_INSTRUCTION = "Turn the chat message below into one standalone web-search query. Reply with the query on a single line, or with the word SAME when the message already works as a search on its own. No other text.";
-const REWRITE_MAX_CHARS = 40;
-const REWRITE_RECENT_MS = 30 * 60_000;
 const REWRITE_INPUT_CHARS = 200;
-const QUERY_MAX_CHARS = 120;
 const FINAL_QUERY_CHARS = 200;
 const SOURCE_URL_MAX_CHARS = 200;
 const CATCH_UP_TEXT_CHARS = 300;
@@ -61,8 +59,7 @@ export function withSourceLine(text: string, urls: readonly string[]): string {
 
 /** Stage B §5 step 2 pre-filter: short or quoting, AND Paco's previous Telegram line at most 30 minutes old. */
 export function needsRewrite(message: string, quoted: boolean, previousTelegramLineAgeMs: number | null): boolean {
-  if (previousTelegramLineAgeMs === null || previousTelegramLineAgeMs > REWRITE_RECENT_MS) return false;
-  return quoted || [...message.trim()].length <= REWRITE_MAX_CHARS;
+  return rewriteFilterOf(message, quoted, previousTelegramLineAgeMs) === "needed";
 }
 
 /** The Tiny rewrite's prompt: the last two Paco lines, the last Houge line, the quote (each clipped to 200), the message. */
@@ -76,9 +73,8 @@ export function rewritePrompt(prev: readonly Pick<ChatTurnRow, "role" | "text">[
 
 /** Code validates the model's query: one line, at most 120 chars, no URL, not SAME (any case, optional trailing . ! 。); anything else → the bare message. */
 export function validateQuery(raw: string, message: string): string {
-  const q = raw.trim().replace(/^["'`“”「]+|["'`“”」]+$/g, "").trim();
-  if (q.length === 0 || /^same[.!。]?$/i.test(q) || q.includes("\n") || q.length > QUERY_MAX_CHARS || /https?:\/\/|www\./i.test(q)) return message;
-  return q;
+  const c = queryCheckOf(raw);
+  return c.kind === "query" ? c.q : message;
 }
 
 /** The search string and the reader's objective: whitespace folded, cut at 200 chars. */
