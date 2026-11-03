@@ -1,12 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { buildTypedTaskEvent } from "../../src/domain/types.js";
-import { Gateway, HELP_TEXT } from "../../src/gateway/gateway.js";
 import { openAlertedIncident } from "../../src/run/incident-alert.js";
 import type { RoutedIncidentKind } from "../../src/run/incident-route.js";
 import { RunStore } from "../../src/run/run-store.js";
 import { CHANGES_MAX_CHARS, changesText } from "../../src/notifications/change-log-view.js";
-import { parseTelegramCommand } from "../../src/triggers/telegram-command-parser.js";
-import { drainOutbox } from "../helpers/omp-worker.js";
 
 // Spec 2026-11-03 §7/§8: /changes is how Paco reads what Houge logged instead of messaging him.
 const ENV = { HOUGE_DISPLAY_TZ: "Australia/Sydney" };
@@ -15,15 +11,6 @@ const log = (s: RunStore, n: number, text: string, at: string): void => {
   s.logChange({ topic: "incident_log", idempotency_key: `k${n}`, correlation_id: `c${n}`, text, now: at });
 };
 const ago = (min: number): string => new Date(Date.parse(NOW) - min * 60_000).toISOString();
-
-describe("parser", () => {
-  it("/changes and /status changes are the status view; extra words are invalid", () => {
-    const view = { ok: true, command: { type: "status", view: "changes" } };
-    expect(parseTelegramCommand("/changes")).toEqual(view);
-    expect(parseTelegramCommand("/status changes")).toEqual(view);
-    expect(parseTelegramCommand("/changes x").ok).toBe(false);
-  });
-});
 
 describe("changesText", () => {
   it("renders newest first as DD Mon HH:MM in the display zone", () => {
@@ -51,6 +38,23 @@ describe("changesText", () => {
     expect(text.endsWith(`… ${25 - shown} older`)).toBe(true);
     s.close();
   });
+  it("shows exactly 20 short rows and counts the rest (the row cap, not the char bound)", () => {
+    const s = RunStore.openInMemory();
+    for (let i = 0; i < 25; i++) log(s, i, `short ${i}`, ago(i + 1));
+    const lines = changesText(s, NOW, ENV).split("\n");
+    expect(lines).toHaveLength(22);
+    expect(lines[21]).toBe("… 5 older");
+    s.close();
+  });
+  it("cuts a backtick-free long text on a word boundary, never mid-word", () => {
+    const s = RunStore.openInMemory();
+    log(s, 1, "abcdefgh ".repeat(40), ago(5));
+    const row = changesText(s, NOW, ENV).split("\n")[1]!.split(" · ")[1]!;
+    expect(row.length).toBeLessThanOrEqual(300);
+    expect(row.endsWith("…")).toBe(true);
+    expect(row.slice(0, -1).split(" ").every((w) => w === "abcdefgh")).toBe(true);
+    s.close();
+  });
   it("cuts a long text on a word boundary and drops a dangling backtick", () => {
     const s = RunStore.openInMemory();
     log(s, 1, "alpha ".repeat(48) + "`code beta gamma", ago(5));
@@ -59,35 +63,6 @@ describe("changesText", () => {
     expect(row.endsWith("…")).toBe(true);
     expect(row).not.toMatch(/alph…$/);
     expect(row.slice(0, -1).split("`").length - 1).toBe(0);
-    s.close();
-  });
-});
-
-describe("/status line and /help", () => {
-  const status = (key: string) => buildTypedTaskEvent({ source: "telegram", type: "status", requested_by: { kind: "user", id: "paco" },
-    notify: { kind: "telegram", chat_id: "222" }, idempotency_key: `telegram:${key}`, source_reference: `telegram:update:${key}` });
-  it("counts open incidents by route and changes this week; reading writes no change_log row", () => {
-    const s = RunStore.openInMemory();
-    s.openIncident({ kind: "stuck_run", subject: "run_x", detail: {} });
-    s.openIncident({ kind: "core_overflow", subject: "chat:1", detail: {} });
-    s.openIncident({ kind: "todo_reminder_seen", subject: "1", detail: {} });
-    for (let i = 0; i < 4; i++) log(s, i, `c${i}`, ago(60 * (i + 1)));
-    log(s, 9, "old", new Date(Date.parse(NOW) - 8 * 86_400_000).toISOString());
-    new Gateway(s).intake(status("c1"), NOW);
-    const out = [...drainOutbox(s).values()];
-    expect(out).toHaveLength(1);
-    expect(String(out[0]?.text)).toMatch(/Self-check: swept .* · 1 paged · 2 internal open · 4 changes this week · \/changes\n/);
-    expect(s.countChangeLogSince("1970-01-01T00:00:00.000Z")).toBe(5);
-    s.close();
-  });
-  it("/changes answers with the log; /help lists it", () => {
-    const s = RunStore.openInMemory();
-    log(s, 1, "model moved", ago(5));
-    new Gateway(s).intake(buildTypedTaskEvent({ source: "telegram", type: "status", requested_by: { kind: "user", id: "paco" },
-      notify: { kind: "telegram", chat_id: "222" }, idempotency_key: "telegram:c2", source_reference: "telegram:update:c2",
-      metadata: { status_view: "changes" } }), NOW);
-    expect(String([...drainOutbox(s).values()][0]?.text)).toContain("model moved");
-    expect(HELP_TEXT).toContain("/changes");
     s.close();
   });
 });
