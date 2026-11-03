@@ -12,8 +12,8 @@ import { RunStore } from "../../src/run/run-store.js";
 import { parseModelTierCallback } from "../../src/triggers/telegram-command-parser.js";
 
 // Spec §4.4: an empty tier asks Paco instead of failing quietly for three weeks. A tap probes first and only a pass writes
-// the override (the same row `/models set judges 2 <id>` writes) in the probe event's transaction: code never adopts a
-// codename without a tap, and a model the subscription cannot reach is never adopted at all.
+// the override (the same row `/models set judges 2 <id>` writes) in the probe event's transaction: a card proposal outside the tier's
+// family still needs the tap (renamed Gemini ids join the pro tier, spec 2026-11-03 §6.1), and a model the subscription cannot reach is never adopted at all.
 let store: RunStore; let cb = 0;
 beforeEach(() => { store = RunStore.openInMemory(); vi.stubEnv("HOUGE_MODEL_ROLES", "resolved"); vi.stubEnv("HOUGE_TELEGRAM_CHAT_ID", ""); });
 afterEach(() => { store.close(); vi.unstubAllEnvs(); });

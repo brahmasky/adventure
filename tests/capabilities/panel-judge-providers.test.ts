@@ -23,7 +23,7 @@ function sourceFiles(dir: string, acc: string[] = []): string[] {
 describe("panel judge seats (by index into HOUGE_OMP_JUDGES)", () => {
   const cfg = resolveOmpConfig({});
   it("static: the kimi and codex seats have one model each; seat 2 has none (spec 2026-11-02 D4-A)", () => {
-    // The rollback must not adopt a codename without Paco's tap, so the gemini seat fails alone rather than guess.
+    // Static is catalog-free and pins no renamed Gemini id (those join the pro tier via the resolver, spec 2026-11-03 §6.1), so the gemini seat fails alone rather than guess.
     expect(judgeSeat(cfg, PANEL_JUDGE_SEAT_INDEX.kimi)).toHaveLength(1);
     expect(judgeSeat(cfg, PANEL_JUDGE_SEAT_INDEX.codex)).toHaveLength(1);
     expect(judgeSeat(cfg, PANEL_JUDGE_SEAT_INDEX.gemini)).toHaveLength(0);
