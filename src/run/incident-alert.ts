@@ -1,7 +1,6 @@
-import { buildIncidentOpenedText } from "./invariant-sweep.js";
 import { formatInstantInZone, resolveDisplayZone } from "./schedule-spec.js";
 import type { IncidentRow, RunStore } from "./run-store.js";
-import type { RoutedIncidentKind } from "./incident-route.js";
+import { incidentNotice, operatorChat, type RoutedIncidentKind } from "./incident-route.js";
 
 /**
  * Incidents opened OUTSIDE the invariant sweep (omp_unavailable,
@@ -34,21 +33,20 @@ export function openAlertedIncident(store: RunStore, input: AlertedIncidentInput
   const now = input.now ?? new Date().toISOString();
   const flapping = !input.event && store.findRecentlyResolvedIncident(fingerprint, new Date(Date.parse(now) - ALERT_REOPEN_QUIET_MS).toISOString()) !== undefined;
   const opened = store.openIncident({ kind: input.kind, subject: input.subject, detail: input.detail, now });
-  const chat = input.chat_id ?? (input.env ?? process.env).HOUGE_TELEGRAM_CHAT_ID?.trim();
-  if (chat && !flapping) alertOpened(store, chat, opened.incident_id, input);
-  if (input.event) store.resolveIncident(opened.incident_id, now);
+  announceOpened(store, opened.incident_id, input, now, flapping);
+  if (input.event) store.resolveIncident(opened.incident_id, now, { silent: true });
   return true;
 }
 
-function alertOpened(store: RunStore, chat: string, incident_id: string, input: AlertedIncidentInput): void {
-  store.enqueueNotification({
-    topic: "incident_page",
-    target: { kind: "telegram", chat_id: chat },
-    intent_type: "progress",
-    idempotency_key: `incident_opened:${incident_id}`,
-    correlation_id: incident_id,
-    payload: { text: buildIncidentOpenedText(input.kind, input.subject, input.detail) }
-  });
+/** §4.2/§5.1: the route is decided before the chat: a log row needs no chat and ignores flapping; a card kind sends nothing here. */
+function announceOpened(store: RunStore, incident_id: string, input: AlertedIncidentInput, now: string, flapping: boolean): void {
+  const n = incidentNotice(input.kind, input.subject);
+  if (n === null) return;
+  const key = `incident_opened:${incident_id}`;
+  if (n.topic === "incident_log") { store.enqueueNotification({ topic: n.topic, idempotency_key: key, correlation_id: incident_id, text: n.text, now }); return; }
+  const chat = input.chat_id ?? operatorChat(null, input.env ?? process.env);
+  if (chat && !flapping) store.enqueueNotification({ topic: "incident_page", target: { kind: "telegram", chat_id: chat }, intent_type: "progress",
+    idempotency_key: key, correlation_id: incident_id, payload: { text: n.text } });
 }
 
 /**
@@ -100,27 +98,26 @@ export function resolveOpenIncidents(store: RunStore, kinds: ReadonlySet<string>
 }
 
 /**
- * Spec 2026-11-02 §5: the alerted kinds a daily reminder repeats until fixed, each with the action that fixes it. Left out
- * on purpose: undelivered_notification and every delivery-health kind (a reminder would multiply during an outage),
- * trust_tap_budget (per day, rolls over itself), omp_contract_drift and planner_no_leg (each re-detects or pages on its own path).
+ * Spec 2026-11-03 §5.4: the page kinds a reminder repeats until fixed, each with the action that fixes it and how long it
+ * must be open first. Left out on purpose: every log kind (the change log is the record), undelivered_notification and the
+ * delivery-health kinds (a reminder would multiply during an outage), planner_no_leg (an event of one run). omp_contract_drift
+ * is a log kind that Paco only needs told about when it has lasted a week.
  */
-export const REMIND_KINDS: ReadonlyMap<string, string> = new Map([
-  ["role_unresolved", "tap the card, or `/models set <key> <pattern>`"],
-  ["static_list_stale", "re-pin `STATIC_ROLE_LISTS`"],
-  ["model_catalog_unavailable", "check `omp --profile houge models`"],
-  ["planner_session_reset_failed", "send `/fresh`, or check the omp session dir"]
+export const REMIND_KINDS: ReadonlyMap<string, { action: string; after_ms: number }> = new Map([
+  ["role_unresolved", { action: "tap the card, or `/models set <key> <pattern>`", after_ms: 24 * 60 * 60_000 }],
+  ["planner_session_reset_failed", { action: "send `/fresh`, or check the omp session dir", after_ms: 24 * 60 * 60_000 }],
+  ["omp_contract_drift", { action: "still open after a week: Houge's omp contract check fails; ask Claude to look", after_ms: 7 * 24 * 60 * 60_000 }]
 ]);
-export const REMIND_AFTER_MS = 24 * 60 * 60_000;
 
 const age = (ms: number): string => `${Math.floor(ms / 86_400_000)}d${Math.floor((ms % 86_400_000) / 3_600_000)}h`;
 
 /** Code-owned text: kinds, subjects (role keys, selectors, chat ids), ages and action lines; null when nothing qualifies. */
 export function reminderText(open: ReadonlyArray<Pick<IncidentRow, "incident_id" | "kind" | "subject" | "first_seen_at">>, now: string): string | null {
   const t = Date.parse(now);
-  const due = open.filter((i) => REMIND_KINDS.has(i.kind) && t - Date.parse(i.first_seen_at) > REMIND_AFTER_MS)
+  const due = open.filter((i) => t - Date.parse(i.first_seen_at) > (REMIND_KINDS.get(i.kind)?.after_ms ?? Infinity))
     .sort((a, b) => Date.parse(a.first_seen_at) - Date.parse(b.first_seen_at) || (a.incident_id < b.incident_id ? -1 : a.incident_id > b.incident_id ? 1 : 0)); // deterministic for one millisecond
   if (due.length === 0) return null;
-  return ["🔔 **Still open** (daily reminder)", ...due.map((i) => `- ${i.kind} · ${i.subject} · open ${age(t - Date.parse(i.first_seen_at))} — ${REMIND_KINDS.get(i.kind)}`)].join("\n");
+  return ["🔔 **Still open** (daily reminder)", ...due.map((i) => `- ${i.kind} · ${i.subject} · open ${age(t - Date.parse(i.first_seen_at))} — ${REMIND_KINDS.get(i.kind)!.action}`)].join("\n");
 }
 
 /**

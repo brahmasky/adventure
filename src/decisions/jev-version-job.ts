@@ -7,6 +7,7 @@ import { criteriaHash, toJevQuestion } from "../jev/questions/types.js";
 import { treeQuestions } from "../jev/triage-replay.js";
 import type { NotificationButton } from "../notifications/notification-types.js";
 import { openAlertedIncident, resolveOpenIncidents } from "../run/incident-alert.js";
+import { operatorChat } from "../run/incident-route.js";
 import type { RunStore } from "../run/run-store.js";
 import { askCandidate, CHECK_GOLDEN_ENTRIES, runGoldenForModel, type CandidateAsk, type CheckGoldenEntry } from "./golden.js";
 import {
@@ -170,8 +171,8 @@ function stallTick(i: Pick<JevJobDeps, "store" | "chatId" | "now">): void {
     if (!since || p?.generation !== r.generation || Date.parse(now) - Date.parse(since) <= JEV_CHECK_STALL_MS) continue;
     const text = `**Stalled:** the Jev version check for ${r.model} is not finishing; lanes stay on the planner. Started ${p.started_at}; `
       + `\`houge jev models\` shows its progress, \`houge jev accept ${r.model}\` arms it without the check.`;
-    const opened = openAlertedIncident(i.store, { kind: "jev_model_check_stalled", subject: jevModelSubject(r.model), detail: { model: r.model, generation: r.generation, started_at: p.started_at }, now, ...(i.chatId ? { env: {} } : {}) });
-    if (opened && i.chatId) notify(i, `jev_check:${r.model}:${r.generation}:stalled`, text, "jev_card");
+    const opened = openAlertedIncident(i.store, { kind: "jev_model_check_stalled", subject: jevModelSubject(r.model), detail: { model: r.model, generation: r.generation, started_at: p.started_at }, now });
+    if (opened) notify(i, `jev_check:${r.model}:${r.generation}:stalled`, text, "jev_card");
   }
 }
 
@@ -374,7 +375,7 @@ function notify(d: Pick<JevJobDeps, "store" | "chatId" | "log" | "now">, key: st
     d.store.enqueueNotification({ topic, idempotency_key: key, correlation_id: "jev-version-check", text, now: d.now() });
     return;
   }
-  const chat = d.chatId ?? process.env.HOUGE_TELEGRAM_CHAT_ID?.trim();
+  const chat = operatorChat(d.chatId, process.env);
   if (!chat) { logOf(d)("jev version check: no chat for the notice"); return; }
   d.store.enqueueNotification({ topic, target: { kind: "telegram", chat_id: chat }, intent_type: "progress", idempotency_key: key, correlation_id: "jev-version-check", payload: { text } });
 }
@@ -548,9 +549,10 @@ function driftText(model: string, v: CheckVerdict, s: Summary): string {
 
 /** One alerted incident whose page is the Accept card (its own notification, never also the generic incident text). */
 function page(d: JevJobDeps, model: string, g: number, kind: "jev_model_drifted" | "jev_model_insufficient", detail: Record<string, unknown>, text: string): void {
-  const opened = openAlertedIncident(d.store, { kind, subject: jevModelSubject(model), detail, now: d.now(), ...(d.chatId ? { env: {} } : {}) });
-  if (!opened || !d.chatId) return;
+  const opened = openAlertedIncident(d.store, { kind, subject: jevModelSubject(model), detail, now: d.now() });
+  const chat = operatorChat(d.chatId, process.env);
+  if (!opened || !chat) return;
   const button: NotificationButton = { text: `Accept ${model}`, data: jevAcceptData(model, g) };
-  d.store.enqueueNotification({ topic: "jev_card", target: { kind: "telegram", chat_id: d.chatId }, intent_type: "progress", idempotency_key: `jev_check:${model}:${g}:card`,
+  d.store.enqueueNotification({ topic: "jev_card", target: { kind: "telegram", chat_id: chat }, intent_type: "progress", idempotency_key: `jev_check:${model}:${g}:card`,
     correlation_id: "jev-version-check", payload: { text, button_rows: [[button]] } });
 }

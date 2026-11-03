@@ -71,7 +71,7 @@ describe("decideSettle", () => {
     expect(rows(store).map((x) => [x.rung, x.reason_code, x.fallback_reason])).toEqual([["fail", "budget", "budget"], ["fail", "budget", "budget"], ["fail", "budget", "budget"]]);
     const open = () => store.listOpenIncidents().filter((i) => i.kind === "decision_health" && i.subject === "turn.settle");
     expect(open()).toHaveLength(1);
-    expect([...drainOutbox(store).keys()].filter((k) => k.startsWith("urgent:decision_health"))).toHaveLength(1);
+    expect([...drainOutbox(store).keys()].filter((k) => k.startsWith("urgent:decision_health") || k.startsWith("incident_opened:"))).toHaveLength(1); // the card, never also the generic text
     await decideSettle(d, buildSettleState(raw(), (x) => x), Date.now() - 1); // a 4th budget row in the hour: no second card
     expect([...drainOutbox(store).keys()].filter((k) => k.startsWith("urgent:decision_health"))).toHaveLength(0);
     await decideSettle(d, buildSettleState(raw(), (x) => x), Date.now() + SETTLE_BUDGET_MS); // a row with neither reason

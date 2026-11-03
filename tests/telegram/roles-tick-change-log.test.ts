@@ -32,7 +32,7 @@ describe("runRolesTick", () => {
     await runRolesTick(options, worker, at(1), null, signal);
     const rows = store.listChangeLog("2026-10-01T00:00:00.000Z", 20);
     expect(rows.length).toBeGreaterThan(0);
-    expect(rows.every((r) => r.topic === "model_change")).toBe(true);
+    expect(rows.every((r) => r.topic === "model_change" || r.topic === "incident_log")).toBe(true); // a cleared static_list_stale logs its fix
     expect(rows.some((r) => r.text.startsWith("🔁 Thinking "))).toBe(true);
     expect(outboxCount()).toBe(0);
   });

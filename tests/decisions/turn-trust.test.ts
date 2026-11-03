@@ -62,8 +62,10 @@ describe("turn.trust", () => {
     // an event: a carried turn re-paged the same morning twice when it stayed open (spec 2026-11-02 §5)
     expect(sc.store.listOpenIncidents().filter((i) => i.kind === "hostile_schedule_turn")).toEqual([]);
     expect(q(sc.store, `SELECT state FROM incidents WHERE kind = 'hostile_schedule_turn'`)).toEqual([{ state: "resolved" }]);
-    expect(q(sc.store, `SELECT idempotency_key FROM notification_outbox WHERE idempotency_key LIKE 'incident_opened:%'`)).toHaveLength(1);
+    // hostile_schedule_turn routes to the log (spec 2026-11-03 §5.1); the trust_hostile urgent card is the only page
+    expect(q(sc.store, `SELECT idempotency_key FROM notification_outbox`)).toHaveLength(1);
     expect(q(sc.store, `SELECT payload_json FROM notification_outbox WHERE idempotency_key LIKE 'urgent:trust_hostile:%'`)).toHaveLength(1);
+    expect(sc.store.listChangeLog("1970-01-01T00:00:00.000Z", 10).filter((r) => r.topic === "incident_log")).toHaveLength(1);
     expect(HOSTILE_CARD_TEXT).toContain("text aimed at the assistant");
   });
   it("two schedule turns that each raise it page twice, once each (the subject is the run id)", () => {
@@ -72,8 +74,8 @@ describe("turn.trust", () => {
       const run_id = createQueuedTurnRun(store);
       new TurnTrust({ store, run_id, chat_id: "555", born: "schedule", env: { HOUGE_TELEGRAM_CHAT_ID: "555" } }).raise("injection_withheld");
     }
-    const keys = (store as unknown as { db: { prepare(q: string): { all(): unknown[] } } }).db.prepare(`SELECT idempotency_key FROM notification_outbox WHERE idempotency_key LIKE 'incident_opened:%'`).all();
-    expect(keys).toHaveLength(2);
+    const keys = store.listChangeLog("1970-01-01T00:00:00.000Z", 20).filter((r) => r.topic === "incident_log");
+    expect(keys).toHaveLength(2); // a log kind: one row per event, none in chat
     store.close();
   });
   it("a hostile card that cannot be queued opens trust_card_failed, so Paco still learns the turn is hostile", () => {

@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { RunStore } from "../../src/run/run-store.js";
+import { incidentNotice } from "../../src/run/incident-route.js";
 import {
   INCIDENT_ALERTS_PER_SWEEP_MAX,
   DEFAULT_INVARIANT_SWEEP_INTERVAL_MS,
-  buildIncidentOpenedText,
   resolveInvariantSweepIntervalMs,
   runInvariantSweep
 } from "../../src/run/invariant-sweep.js";
@@ -110,7 +110,7 @@ describe("runInvariantSweep (introspection slice A)", () => {
       .get<{ payload_json: string }>(`incident_opened:${open[0]!.incident_id}`);
     expect(note).toBeDefined();
     expect((JSON.parse(note!.payload_json) as { text: string }).text).toBe(
-      buildIncidentOpenedText(open[0]!.kind, open[0]!.subject, JSON.parse(open[0]!.detail_json))
+      incidentNotice(open[0]!.kind, open[0]!.subject)!.text
     );
   });
 

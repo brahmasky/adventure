@@ -105,12 +105,12 @@ function afterRecord(store: RunStore, entry_id: string, r: AnyDecideResult, now:
 }
 
 /**
- * Opens the row with no generic alert (env {}), then logs the code-built decision_internal card once per open incident
+ * Opens the row (a log kind: its own change_log line, no chat), then logs the code-built decision_internal card once per open incident
  * (spec 2026-11-03 §4.2). A log row is cheap and quiet, so flap damping does not apply: every open writes one.
  */
 function pageFallback(store: RunStore, entry_id: string, n: number, now: string): void {
   const fingerprint = store.incidentFingerprint("decision_fallback", entry_id);
-  const opened = openAlertedIncident(store, { kind: "decision_fallback", subject: entry_id, detail: { entry: entry_id, limit: DECISION_FALLBACK_LIMIT, window_min: 60 }, env: {}, now });
+  const opened = openAlertedIncident(store, { kind: "decision_fallback", subject: entry_id, detail: { entry: entry_id, limit: DECISION_FALLBACK_LIMIT, window_min: 60 }, now });
   if (!opened) return;
   const incident = store.findOpenIncident(fingerprint);
   if (incident) enqueueUrgentCard(store, { key: `decision_fallback:${incident.incident_id}`, text: fallbackCardText(entry_id, n) }, "decision_internal");

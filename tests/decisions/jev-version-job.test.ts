@@ -603,7 +603,7 @@ describe("no chat id (final fix G4)", () => {
   afterEach(() => vi.unstubAllEnvs());
   const driftAnswers = (i: number) => (i % 3 === 0 && i >= MEMORY_TURNS ? treeAnswers({ category: "lookup" }) : anchorAnswers(i));
 
-  it("drifted: one incident and its generic alert to the operator chat, no Accept button (no card_chat to bind it to)", async () => {
+  it("drifted: one incident and exactly one message, the Accept card, to the operator chat; never the generic text (P4)", async () => {
     vi.stubEnv("HOUGE_TELEGRAM_CHAT_ID", OPERATOR);
     const s = fresh(); seedAnchor(s); s.noteJevModel(CAND, NOW);
     expect(await runJevCheck(deps(s, fake({ answer: driftAnswers }), { chatId: null }), CAND)).toBe("drifted");
@@ -612,18 +612,19 @@ describe("no chat id (final fix G4)", () => {
     const sent = outbox(s);
     expect(sent).toHaveLength(1);
     expect(sent[0]!.chat).toBe(OPERATOR);
-    expect(sent[0]!.payload.button_rows).toBeUndefined();
-    expect(String(sent[0]!.payload.text)).toMatch(/jev_model_drifted/);
+    expect(sent[0]!.payload.button_rows).toEqual([[{ text: `Accept ${CAND}`, data: acceptData(s, CAND) }]]);
+    expect(String(sent[0]!.payload.text)).toMatch(/drifted/);
+    expect(String(sent[0]!.payload.text)).not.toMatch(/jev_model_drifted/);
     s.close();
   });
 
-  it("insufficient: one incident and its generic alert, no button", async () => {
+  it("insufficient: one incident and its Accept card to the operator chat, no generic text", async () => {
     vi.stubEnv("HOUGE_TELEGRAM_CHAT_ID", OPERATOR);
     const s = fresh(); seedAnchor(s, 60); s.noteJevModel(CAND, NOW);
     expect(await runJevCheck(deps(s, fake(), { chatId: null }), CAND)).toBe("insufficient");
     expect(s.listOpenIncidents().map((i) => i.kind)).toEqual(["jev_model_insufficient"]);
     const sent = outbox(s);
-    expect(sent.map((m) => [m.chat, m.payload.button_rows])).toEqual([[OPERATOR, undefined]]);
+    expect(sent.map((m) => [m.chat, m.payload.button_rows])).toEqual([[OPERATOR, [[{ text: `Accept ${CAND}`, data: acceptData(s, CAND) }]]]]);
     s.close();
   });
 

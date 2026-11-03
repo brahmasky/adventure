@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { INCIDENT_ROUTE, incidentResolvedNotice, isRoutedKind } from "./incident-route.js";
 import { createRequire } from "node:module";
 import type {
   ApprovalDecision,
@@ -6166,28 +6167,32 @@ export class RunStore {
     `).run(now, now, incident_id);
   }
 
-  /** Close an incident. False when absent or already resolved (idempotent, never a throw). */
-  resolveIncident(incident_id: string, now: string): boolean {
+  /**
+   * Close an incident. False when absent or already resolved (idempotent, never a throw). A fixed log kind writes its
+   * "Fixed" line to the change log at any age (spec 2026-11-03 §5.4); `silent` is for an event resolved in the same call.
+   */
+  resolveIncident(incident_id: string, now: string, opts?: { silent?: boolean }): boolean {
     const result = this.db.prepare(`
       UPDATE incidents SET state = 'resolved', resolved_at = ?, updated_at = ?
       WHERE incident_id = ? AND state = 'open'
     `).run(now, now, incident_id);
     if (result.changes !== 1) return false;
     const row = this.getIncident(incident_id)!;
+    const open_minutes = Math.floor((Date.parse(now) - Date.parse(row.first_seen_at)) / 60000);
     this.appendLedgerEvent(
       createLedgerEvent({
         correlation_id: incident_id,
         event_type: "incident_resolved",
         actor: "system",
         sequence: this.nextLedgerSequence(),
-        payload: {
-          incident_id,
-          kind: row.kind,
-          subject: row.subject,
-          open_minutes: Math.floor((Date.parse(now) - Date.parse(row.first_seen_at)) / 60000)
-        }
+        payload: { incident_id, kind: row.kind, subject: row.subject, open_minutes }
       })
     );
+    // Silent membership, never routeOf: row-only and legacy kinds resolve here too and must not print to stderr.
+    if (!opts?.silent && isRoutedKind(row.kind) && INCIDENT_ROUTE[row.kind].route === "log") {
+      const n = incidentResolvedNotice(row.kind, row.subject, open_minutes)!;
+      this.enqueueNotification({ topic: "incident_log", idempotency_key: `incident_resolved:${incident_id}`, correlation_id: incident_id, text: n.text, now });
+    }
     return true;
   }
 

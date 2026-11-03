@@ -35,7 +35,7 @@ const open = (store: RunStore) => store.listOpenIncidents().map((i) => [i.kind, 
 const logged = (store: RunStore) => store.listChangeLog("1970-01-01T00:00:00.000Z", 50).map((r) => r.text);
 const cards = (store: RunStore) => [...drainOutbox(store).values()].map((p) => p.text);
 
-afterEach(() => { vi.restoreAllMocks(); });
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); });
 
 describe("shouldRecord", () => {
   it("routine: the first rule gave the default verdict, nothing shadowed: no row", () => {
@@ -81,10 +81,12 @@ describe("storeRecorder: the row", () => {
 describe("storeRecorder: decision_fallback (ruling 9)", () => {
   it("three named fallbacks in an hour open decision_fallback:<entry> and log ONE card (no chat needed); a fourth logs nothing more", async () => {
     const store = RunStore.openInMemory();
+    vi.stubEnv("HOUGE_TELEGRAM_CHAT_ID", "");
     const rec = storeRecorder(store, { env: {} });
     for (let k = 0; k < 4; k += 1) await decide(E, { v: "abstain" }, { run_id: null, recorder: rec, exec: { system_one: jevDown } });
     expect(open(store)).toEqual([["decision_fallback", "test.judge"]]);
-    expect(logged(store)).toEqual([fallbackCardText("test.judge", 3)]);
+    expect(logged(store)).toHaveLength(2); // the incident line and the card text
+    expect(logged(store)).toContain(fallbackCardText("test.judge", 3));
     expect(cards(store)).toEqual([]);
     store.close();
   });
@@ -108,7 +110,10 @@ describe("storeRecorder: decision_fallback (ruling 9)", () => {
     await step(jevAnswers);                            // resolved at 10:04
     await step(jevDown);                               // 10:05: four fails in the hour, reopened inside the quiet window
     expect(open(store)).toEqual([["decision_fallback", "test.judge"]]);
-    expect(logged(store)).toHaveLength(2);
+    const lines = logged(store); // each open logs its incident line and its card; the fix logs one line
+    expect(lines.filter((t) => t.startsWith("A decider kept falling back"))).toHaveLength(2);
+    expect(lines.filter((t) => t.startsWith("⚠️ *test.judge*"))).toHaveLength(2);
+    expect(lines.filter((t) => t.startsWith("✅ Fixed:"))).toHaveLength(1);
     expect(cards(store)).toEqual([]);
     store.close();
   });

@@ -183,8 +183,9 @@ describe("R3 rows", () => {
       const out0 = outboxN(w.store); w.sup.submit(req(b, "x"));
       expect(h.session.steers).toEqual(["x"]);
       expect(incidentsN(w.store)).toBe(1);
-      expect(outboxN(w.store) - out0).toBe(1);
-      expect(q(w.store).prepare("SELECT target_json FROM notification_outbox WHERE idempotency_key LIKE 'incident_opened:%'").all()).toHaveLength(1);
+      expect(outboxN(w.store) - out0).toBe(0);
+      // decision_record_failed is a log kind (spec 2026-11-03 §5.1): its one alert is a change_log row, never a chat page
+      expect(w.store.listChangeLog("1970-01-01T00:00:00.000Z", 20).filter((r) => r.topic === "incident_log")).toHaveLength(1);
       h.end(); await w.sup.whenIdle();
       const h2 = heldSession(); const boom: DecisionRecorder = { record: () => { throw new Error("boom"); } };
       const w2 = harness(h2.session, {}, { recorder: boom });

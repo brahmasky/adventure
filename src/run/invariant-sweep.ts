@@ -1,5 +1,5 @@
 import { statfsSync } from "node:fs";
-import type { RoutedIncidentKind } from "./incident-route.js";
+import { incidentNotice, incidentResolvedNotice, routeOf, type RoutedIncidentKind } from "./incident-route.js";
 import { FRONT_DOOR_ENTRIES } from "../decisions/entry-ids.js";
 import { REGISTRY } from "../decisions/registry.js";
 import type { AnyEntry } from "../decisions/types.js";
@@ -112,23 +112,8 @@ export function resolveInvariantSweepEnabled(env: NodeJS.ProcessEnv): boolean {
   return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
 }
 
-export function buildIncidentOpenedText(
-  kind: string,
-  subject: string,
-  detail: Record<string, unknown>
-): string {
-  return `⚠️ Incident opened — ${kind} · ${subject}\n${JSON.stringify(detail)}`;
-}
-
-export function buildIncidentResolvedText(kind: string, subject: string, open_minutes: number): string {
-  return `✓ Incident resolved — ${kind} · ${subject} (was open ${open_minutes} min)`;
-}
-
-export function buildSweepSummaryText(opened: number, suppressed: number): string {
-  return (
-    `⚠️ Invariant sweep opened ${opened} incidents; ${suppressed} alert(s) suppressed ` +
-    `(storm cap / flap damping). Inspect: SELECT * FROM incidents WHERE state='open'`
-  );
+export function buildSweepSummaryText(suppressed: number): string {
+  return `⚠️ ${suppressed} more alerts were held back this round (storm cap). /status shows what is open.`;
 }
 
 /** The omp-runtime invariants' inputs (spec §8): the previous sweep instant and the data volume. */
@@ -365,6 +350,48 @@ export interface InvariantSweepInput {
 }
 
 /**
+ * Where one newly opened violation goes (spec 2026-11-03 §5): a log kind writes its change_log row (no chat, no cap, no flap
+ * damping); a card kind counts toward the cap (its caller sends the card; no sweep kind is one today); a page kind needs a
+ * chat, is held back when flapping or past the storm cap, and is otherwise queued.
+ */
+function alertViolation(input: InvariantSweepInput, v: InvariantViolation, incident_id: string, flapping: boolean, alertsSent: number): "sent" | "logged" | "suppressed" | "silent" {
+  const n = incidentNotice(v.kind, v.subject);
+  const key = `incident_opened:${incident_id}`;
+  if (n?.topic === "incident_log") {
+    input.store.enqueueNotification({ topic: "incident_log", idempotency_key: key, correlation_id: incident_id, text: n.text, now: input.now });
+    return "logged";
+  }
+  if (n === null) return "sent";
+  if (!input.chat_id) return "silent";
+  if (flapping) return "suppressed";
+  if (alertsSent >= INCIDENT_ALERTS_PER_SWEEP_MAX) return "suppressed"; // storm cap: alert on the first N, count the rest for one summary
+  input.store.enqueueNotification({ topic: "incident_page", target: { kind: "telegram", chat_id: input.chat_id }, intent_type: "progress",
+    idempotency_key: key, correlation_id: incident_id, payload: { text: n.text } });
+  return "sent";
+}
+
+/** Resolve the sweep's own open kinds that were not seen this round; a page kind's fix is told in chat once it was open an hour (a log kind's is written by resolveIncident). */
+function resolveStale(input: InvariantSweepInput, seen: ReadonlySet<string>): number {
+  let resolved = 0;
+  for (const open of input.store.listOpenIncidents()) {
+    // Only the sweep's own kinds: an incident opened elsewhere (omp_unavailable, …) is never
+    // re-detected here, so "not seen this sweep" says nothing about it being over.
+    if (seen.has(open.fingerprint) || !SWEEP_KINDS.has(open.kind)) continue;
+    if (!input.store.resolveIncident(open.incident_id, input.now)) continue;
+    const open_minutes = Math.floor((Date.parse(input.now) - Date.parse(open.first_seen_at)) / 60000);
+    if (input.chat_id && routeOf(open.kind) === "page" && open_minutes * 60000 >= INCIDENT_RESOLVE_NOTIFY_MIN_MS) {
+      input.store.enqueueNotification({
+        topic: "incident_page", target: { kind: "telegram", chat_id: input.chat_id }, intent_type: "progress",
+        idempotency_key: `incident_resolved:${open.incident_id}`, correlation_id: open.incident_id,
+        payload: { text: incidentResolvedNotice(open.kind, open.subject, open_minutes)!.text }
+      });
+    }
+    resolved += 1;
+  }
+  return resolved;
+}
+
+/**
  * One sweep: detect → open new / touch recurring → resolve cleared. Notifies ONLY on the
  * open transition (and on resolve for incidents that were open >= 1h), so a persistent
  * violation costs exactly one message no matter how many cycles it survives. The ledger
@@ -404,42 +431,18 @@ export function runInvariantSweep(input: InvariantSweepInput): InvariantSweepRes
       result.recurring += 1;
       continue;
     }
-
-    // Flap damping: a reopen inside the quiet window records the row but stays silent.
+    // Flap damping: a reopen inside the quiet window records the row but stays silent (a log row ignores it).
     const flapping =
       input.store.findRecentlyResolvedIncident(
         fingerprint,
         new Date(Date.parse(input.now) - INCIDENT_REOPEN_QUIET_MS).toISOString()
       ) !== undefined;
-
-    // openIncident appends the incident_opened ledger event itself (store-side, so the
-    // redaction pass applies).
-    const opened = input.store.openIncident({
-      kind: violation.kind,
-      subject: violation.subject,
-      detail: violation.detail,
-      now: input.now
-    });
+    // openIncident appends the incident_opened ledger event itself (store-side, so the redaction pass applies).
+    const opened = input.store.openIncident({ kind: violation.kind, subject: violation.subject, detail: violation.detail, now: input.now });
     result.opened += 1;
-
-    if (!input.chat_id || flapping) {
-      if (flapping) result.alerts_suppressed += 1;
-      continue;
-    }
-    // Storm cap: alert on the first N, then count the rest for one summary line.
-    if (alertsSent >= INCIDENT_ALERTS_PER_SWEEP_MAX) {
-      result.alerts_suppressed += 1;
-      continue;
-    }
-    input.store.enqueueNotification({
-      topic: "incident_page",
-      target: { kind: "telegram", chat_id: input.chat_id },
-      intent_type: "progress",
-      idempotency_key: `incident_opened:${opened.incident_id}`,
-      correlation_id: opened.incident_id,
-      payload: { text: buildIncidentOpenedText(violation.kind, violation.subject, violation.detail) }
-    });
-    alertsSent += 1;
+    const outcome = alertViolation(input, violation, opened.incident_id, flapping, alertsSent);
+    if (outcome === "sent") alertsSent += 1;
+    if (outcome === "suppressed") result.alerts_suppressed += 1;
   }
 
   // One summary line for everything the caps swallowed — silence about a storm would be
@@ -451,30 +454,11 @@ export function runInvariantSweep(input: InvariantSweepInput): InvariantSweepRes
       intent_type: "progress",
       idempotency_key: `incident_sweep_summary:${input.now}`,
       correlation_id: `invariant-sweep:${input.now}`,
-      payload: { text: buildSweepSummaryText(result.opened, result.alerts_suppressed) }
+      payload: { text: buildSweepSummaryText(result.alerts_suppressed) }
     });
   }
 
-  for (const open of input.store.listOpenIncidents()) {
-    // Only the sweep's own kinds: an incident opened elsewhere (omp_unavailable, …) is never
-    // re-detected here, so "not seen this sweep" says nothing about it being over.
-    if (seen.has(open.fingerprint) || !SWEEP_KINDS.has(open.kind)) continue;
-    // resolveIncident appends the incident_resolved ledger event itself.
-    if (!input.store.resolveIncident(open.incident_id, input.now)) continue;
-    const open_minutes = Math.floor((Date.parse(input.now) - Date.parse(open.first_seen_at)) / 60000);
-    if (input.chat_id && open_minutes * 60000 >= INCIDENT_RESOLVE_NOTIFY_MIN_MS) {
-      input.store.enqueueNotification({
-        topic: "incident_page",
-        target: { kind: "telegram", chat_id: input.chat_id },
-        intent_type: "progress",
-        idempotency_key: `incident_resolved:${open.incident_id}`,
-        correlation_id: open.incident_id,
-        payload: { text: buildIncidentResolvedText(open.kind, open.subject, open_minutes) }
-      });
-    }
-    result.resolved += 1;
-  }
-
+  result.resolved += resolveStale(input, seen);
   // Stage B §6: a lane's triage_overrides page is opened by the gateway, never detected here; close it once its taps age out.
   result.resolved += resolveQuietTriageOverrides(input.store, input.now);
   return result;
