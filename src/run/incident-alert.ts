@@ -3,11 +3,11 @@ import type { IncidentRow, RunStore } from "./run-store.js";
 import { incidentNotice, operatorChat, type RoutedIncidentKind } from "./incident-route.js";
 
 /**
- * Incidents opened OUTSIDE the invariant sweep (omp_unavailable,
- * turn_outside_planner): the sweep never re-detects them, so nobody would ever be paged. This opens
- * the incident AND sends ONE Telegram alert on the open transition, through the outbox (the
- * telegram adapter renders it with the rich renderer). Throttled exactly like the incident: while
- * an incident with the same kind+subject is open, nothing is opened or sent again.
+ * Incidents opened OUTSIDE the invariant sweep (omp_unavailable, turn_outside_planner, ...): the sweep never re-detects
+ * them, so nobody would otherwise be told. This opens the incident and routes its notice by kind (spec 2026-11-03 §5.1):
+ * a log kind writes one change_log row (no chat needed, no flap damping); a page kind sends ONE Telegram message through
+ * the outbox on the open transition (rich renderer), damped when it flaps; a card kind sends nothing here, its caller
+ * sends the card. Throttled like the incident: while one with the same kind+subject is open, nothing is opened or sent.
  * `hostile_schedule_turn` is an event (spec 2026-11-02 §5).
  */
 export interface AlertedIncidentInput {
@@ -21,6 +21,12 @@ export interface AlertedIncidentInput {
   event?: boolean;
   /** Injectable instant (tests); default now. */
   now?: string;
+}
+
+/** One chat message through the outbox, keyed so a replay is a duplicate. The only place an incident text becomes a chat enqueue. */
+export function enqueueIncidentChat(store: RunStore, m: { topic: "incident_page" | "incident_summary"; chat_id: string; key: string; correlation_id: string; text: string }): void {
+  store.enqueueNotification({ topic: m.topic, target: { kind: "telegram", chat_id: m.chat_id }, intent_type: "progress",
+    idempotency_key: m.key, correlation_id: m.correlation_id, payload: { text: m.text } });
 }
 
 /** Flap damping (B3): a condition reopened this soon after it resolved records its row but does not page again. */
@@ -45,8 +51,7 @@ function announceOpened(store: RunStore, incident_id: string, input: AlertedInci
   const key = `incident_opened:${incident_id}`;
   if (n.topic === "incident_log") { store.enqueueNotification({ topic: n.topic, idempotency_key: key, correlation_id: incident_id, text: n.text, now }); return; }
   const chat = input.chat_id ?? operatorChat(null, input.env ?? process.env);
-  if (chat && !flapping) store.enqueueNotification({ topic: "incident_page", target: { kind: "telegram", chat_id: chat }, intent_type: "progress",
-    idempotency_key: key, correlation_id: incident_id, payload: { text: n.text } });
+  if (chat && !flapping) enqueueIncidentChat(store, { topic: "incident_page", chat_id: chat, key, correlation_id: incident_id, text: n.text });
 }
 
 /**

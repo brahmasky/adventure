@@ -52,7 +52,7 @@ describe("turn.trust", () => {
     expect(turnTrustFinal(store, run_id)).toBe("clean");
     expect(trust.raise("wall_read")).toBe(false); // after the end nothing rises
   });
-  it("hostile sends one urgent card; a schedule-born hostile turn also pages hostile_schedule_turn once, as an event (opened and resolved)", () => {
+  it("hostile sends one urgent card; a schedule-born hostile turn also logs hostile_schedule_turn once to the change log, as an event (opened and resolved)", () => {
     const tg = setup();
     tg.trust.raise("injection_withheld");
     const q = (s: RunStore, sql: string) => (s as unknown as { db: { prepare(q: string): { all(): Array<Record<string, string>> } } }).db.prepare(sql).all();
@@ -68,7 +68,7 @@ describe("turn.trust", () => {
     expect(sc.store.listChangeLog("1970-01-01T00:00:00.000Z", 10).filter((r) => r.topic === "incident_log")).toHaveLength(1);
     expect(HOSTILE_CARD_TEXT).toContain("text aimed at the assistant");
   });
-  it("two schedule turns that each raise it page twice, once each (the subject is the run id)", () => {
+  it("two schedule turns that each raise it log twice, once each (the subject is the run id)", () => {
     const store = RunStore.openInMemory();
     for (let n = 0; n < 2; n++) {
       const run_id = createQueuedTurnRun(store);

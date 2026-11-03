@@ -34,6 +34,9 @@ describe("runRolesTick", () => {
     expect(rows.length).toBeGreaterThan(0);
     expect(rows.every((r) => r.topic === "model_change" || r.topic === "incident_log")).toBe(true); // a cleared static_list_stale logs its fix
     expect(rows.some((r) => r.text.startsWith("🔁 Thinking "))).toBe(true);
+    // the vanished pin opens static_list_stale, a log kind: its one line is incident_log (no "Fixed" yet: nothing resolved it)
+    expect(rows.filter((r) => r.topic === "incident_log").map((r) => r.text)).toEqual(
+      ["A model in my fallback list left the catalog. (`static_list_stale` · anthropic/claude-opus-5-5)"]);
     expect(outboxCount()).toBe(0);
   });
 });

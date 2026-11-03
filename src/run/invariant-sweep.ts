@@ -1,4 +1,5 @@
 import { statfsSync } from "node:fs";
+import { enqueueIncidentChat } from "./incident-alert.js";
 import { incidentNotice, incidentResolvedNotice, routeOf, type RoutedIncidentKind } from "./incident-route.js";
 import { FRONT_DOOR_ENTRIES } from "../decisions/entry-ids.js";
 import { REGISTRY } from "../decisions/registry.js";
@@ -365,8 +366,7 @@ function alertViolation(input: InvariantSweepInput, v: InvariantViolation, incid
   if (!input.chat_id) return "silent";
   if (flapping) return "suppressed";
   if (alertsSent >= INCIDENT_ALERTS_PER_SWEEP_MAX) return "suppressed"; // storm cap: alert on the first N, count the rest for one summary
-  input.store.enqueueNotification({ topic: "incident_page", target: { kind: "telegram", chat_id: input.chat_id }, intent_type: "progress",
-    idempotency_key: key, correlation_id: incident_id, payload: { text: n.text } });
+  enqueueIncidentChat(input.store, { topic: "incident_page", chat_id: input.chat_id, key, correlation_id: incident_id, text: n.text });
   return "sent";
 }
 
@@ -380,15 +380,44 @@ function resolveStale(input: InvariantSweepInput, seen: ReadonlySet<string>): nu
     if (!input.store.resolveIncident(open.incident_id, input.now)) continue;
     const open_minutes = Math.floor((Date.parse(input.now) - Date.parse(open.first_seen_at)) / 60000);
     if (input.chat_id && routeOf(open.kind) === "page" && open_minutes * 60000 >= INCIDENT_RESOLVE_NOTIFY_MIN_MS) {
-      input.store.enqueueNotification({
-        topic: "incident_page", target: { kind: "telegram", chat_id: input.chat_id }, intent_type: "progress",
-        idempotency_key: `incident_resolved:${open.incident_id}`, correlation_id: open.incident_id,
-        payload: { text: incidentResolvedNotice(open.kind, open.subject, open_minutes)!.text }
-      });
+      enqueueIncidentChat(input.store, { topic: "incident_page", chat_id: input.chat_id, key: `incident_resolved:${open.incident_id}`,
+        correlation_id: open.incident_id, text: incidentResolvedNotice(open.kind, open.subject, open_minutes)!.text });
     }
     resolved += 1;
   }
   return resolved;
+}
+
+/**
+ * Open new / touch recurring for every violation; returns the fingerprints seen. `result.alerts_suppressed` counts the page
+ * kinds held back by flap damping or the storm cap while a chat is set (with no chat nothing is sent, so nothing is held back).
+ */
+function processViolations(input: InvariantSweepInput, violations: InvariantViolation[], result: InvariantSweepResult): Set<string> {
+  const seen = new Set<string>();
+  let alertsSent = 0;
+  for (const violation of violations) {
+    const fingerprint = input.store.incidentFingerprint(violation.kind, violation.subject);
+    seen.add(fingerprint);
+    const existing = input.store.findOpenIncident(fingerprint);
+    if (existing) {
+      input.store.touchIncident(existing.incident_id, input.now);
+      result.recurring += 1;
+      continue;
+    }
+    // Flap damping: a reopen inside the quiet window records the row but stays silent (a log row ignores it).
+    const flapping =
+      input.store.findRecentlyResolvedIncident(
+        fingerprint,
+        new Date(Date.parse(input.now) - INCIDENT_REOPEN_QUIET_MS).toISOString()
+      ) !== undefined;
+    // openIncident appends the incident_opened ledger event itself (store-side, so the redaction pass applies).
+    const opened = input.store.openIncident({ kind: violation.kind, subject: violation.subject, detail: violation.detail, now: input.now });
+    result.opened += 1;
+    const outcome = alertViolation(input, violation, opened.incident_id, flapping, alertsSent);
+    if (outcome === "sent") alertsSent += 1;
+    if (outcome === "suppressed") result.alerts_suppressed += 1;
+  }
+  return seen;
 }
 
 /**
@@ -419,43 +448,13 @@ export function runInvariantSweep(input: InvariantSweepInput): InvariantSweepRes
   const violations = detectViolations(input.store, input.now, env, {
     since, ...(input.dataDir ? { dataDir: input.dataDir } : {}), ...(input.statfs ? { statfs: input.statfs } : {})
   });
-  const seen = new Set<string>();
-  let alertsSent = 0;
-
-  for (const violation of violations) {
-    const fingerprint = input.store.incidentFingerprint(violation.kind, violation.subject);
-    seen.add(fingerprint);
-    const existing = input.store.findOpenIncident(fingerprint);
-    if (existing) {
-      input.store.touchIncident(existing.incident_id, input.now);
-      result.recurring += 1;
-      continue;
-    }
-    // Flap damping: a reopen inside the quiet window records the row but stays silent (a log row ignores it).
-    const flapping =
-      input.store.findRecentlyResolvedIncident(
-        fingerprint,
-        new Date(Date.parse(input.now) - INCIDENT_REOPEN_QUIET_MS).toISOString()
-      ) !== undefined;
-    // openIncident appends the incident_opened ledger event itself (store-side, so the redaction pass applies).
-    const opened = input.store.openIncident({ kind: violation.kind, subject: violation.subject, detail: violation.detail, now: input.now });
-    result.opened += 1;
-    const outcome = alertViolation(input, violation, opened.incident_id, flapping, alertsSent);
-    if (outcome === "sent") alertsSent += 1;
-    if (outcome === "suppressed") result.alerts_suppressed += 1;
-  }
+  const seen = processViolations(input, violations, result);
 
   // One summary line for everything the caps swallowed — silence about a storm would be
   // worse than the storm. Keyed on the sweep instant, so it is idempotent on replay.
   if (input.chat_id && result.alerts_suppressed > 0) {
-    input.store.enqueueNotification({
-      topic: "incident_summary",
-      target: { kind: "telegram", chat_id: input.chat_id },
-      intent_type: "progress",
-      idempotency_key: `incident_sweep_summary:${input.now}`,
-      correlation_id: `invariant-sweep:${input.now}`,
-      payload: { text: buildSweepSummaryText(result.alerts_suppressed) }
-    });
+    enqueueIncidentChat(input.store, { topic: "incident_summary", chat_id: input.chat_id, key: `incident_sweep_summary:${input.now}`,
+      correlation_id: `invariant-sweep:${input.now}`, text: buildSweepSummaryText(result.alerts_suppressed) });
   }
 
   result.resolved += resolveStale(input, seen);
