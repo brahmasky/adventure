@@ -83,4 +83,24 @@ describe("production wiring: CoreWorker passes its recorder to the supervisor", 
       expect(store.listDecisionsForRun(run).filter((r) => r.entry_id === "context.recall").map((r) => [r.verdict, r.reason_code, r.run_id, r.tool_call_id ?? null])).toEqual([["none", "embed_failed", run, null]]);
     } finally { delete process.env.HOUGE_EPISODIC_ENABLED; }
   });
+  it("R6 (a): the fake omp refusing Default's head writes turn.model fallback/refused and the child is pinned to the next candidate (P14-10)", async () => {
+    // rpcSetModelRefuse is top-level in the scenario (the fake reads `scen`, not the per-model bucket); omp's `Model not found` text classifies as a refusal
+    useFakeOmp({ rpcSetModelRefuse: ["anthropic/claude-opus-5-5"], "*": { rpcText: "ok" } }, tmp.dir);
+    worker = ompWorker(store, tmp.dir);
+    const run = createQueuedTurnRun(store, "first"); worker.submitTurn(run);
+    await until(() => store.getRunState(run) === "completed");
+    expect(store.listDecisionsForRun(run).filter((r) => r.entry_id === "turn.model").map((r) => [r.verdict, r.reason_code])).toEqual([["fallback", "refused"]]);
+    const pinned = fakeLog(join(tmp.dir, "argv.log")).map((l) => l.cmd as { type?: string; provider?: string; modelId?: string } | undefined)
+      .filter((c) => c?.type === "set_model").map((c) => `${c!.provider}/${c!.modelId}`);
+    expect(pinned).toHaveLength(2);
+    expect(pinned[0]).toBe("anthropic/claude-opus-5-5");
+    expect(pinned[1]).toBe("google-antigravity/claude-opus-5-5"); // the second Default candidate (tests/helpers/model-roles.ts)
+  });
+  it("R6 (b): R4 (a)'s quota scenario also writes turn.model fallback/next_leg on the run", async () => {
+    useFakeOmp({ "anthropic/claude-opus-5-5": { rpcErrorText: "429 usage limit reached" }, "*": { rpcText: "ok" } }, tmp.dir);
+    worker = ompWorker(store, tmp.dir);
+    const run = createQueuedTurnRun(store, "first"); worker.submitTurn(run);
+    await until(() => store.getRunState(run) === "completed");
+    expect(store.listDecisionsForRun(run).filter((r) => r.entry_id === "turn.model").map((r) => [r.verdict, r.reason_code])).toEqual([["fallback", "next_leg"]]);
+  });
 });

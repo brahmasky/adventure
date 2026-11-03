@@ -7,7 +7,7 @@
 // old build must hold none. P15: no item intakes more than 5 runs (the gateway admits 5 per actor per minute and the counting clock cannot step one).
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { DISTS, R4_IDS, canon, compare, dumpDb, mkStore, mkTemp, regularTables, extraDropFilter, relabelClocks, requireNew } from "../stage4-diff-lib.mjs";
+import { DISTS, R4_IDS, NEW_ROW_IDS, canon, compare, dumpDb, mkStore, mkTemp, regularTables, extraDropFilter, relabelClocks, requireNew } from "../stage4-diff-lib.mjs";
 import { scrubIds } from "../stage4-bind-fixture.mjs";
 import { NOW, withCountingClock, withPinnedEnv } from "../stage4-intake-fixture.mjs";
 import { countingRecorder } from "../stage4-sender-fixture.mjs";
@@ -97,7 +97,8 @@ const asyncOnly = withRoles(async (x) => {
 });
 const fastStepUp = withRoles(async (x) => { const { sup } = x.mk({ session: failing(["429 quota", "429 quota"]), extra: routed("fast") }); await turn(x, sup, "a"); });
 
-const CG = "planner.crash_guard"; const SQ = "intake.steer_or_queue"; const TR = "turn.retry"; const LS = "context.lessons"; const CC = "turn.clarify_cap"; // R5: one LS per spawn attempt that reaches preparePaths (none after a halt), one CC per live buildTurnPrompt (P4)
+const CG = "planner.crash_guard"; const SQ = "intake.steer_or_queue"; const TR = "turn.retry"; const LS = "context.lessons"; const CC = "turn.clarify_cap"; const TM = "turn.model"; // R5: one LS per spawn attempt that reaches preparePaths (none after a halt), one CC per live buildTurnPrompt (P4)
+const M = (verdict, reason, run = "a") => [TM, verdict, reason, run]; // R6: turn.model rows are written only when non-default (a fallback / held / none verdict), at each pin-walk consult
 const H = (reason, run) => [CG, "halt", reason, run]; const T = (verdict, reason, run = "a") => [TR, verdict, reason, run];
 const RN = "RETRY_NOTE"; const OPUS = "set_model:anthropic/claude-opus-5-5";
 const FAILED_START = (n) => Array(n).fill("planner_start_failed");
@@ -107,13 +108,13 @@ const ITEMS = [
     facts: { done: [], failed: ["t1:planner_exit:start_failed: fixture start failed", "t2:planner_exit:start_failed: fixture start failed", "t3:planner_exit:start_failed: fixture start failed", "d:planner_exit:crash_loop"], incidents: [...FAILED_START(3), "planner_crash_loop"], log: [] } },
   { key: "crash_latched", tags: ["latched"], drive: crashLatched, rows: [H("limit_reached", "d"), H("latched", "e")], calls: { [CG]: 5, [SQ]: 5, [LS]: 3 },
     facts: { done: [], failed: ["t1:planner_exit:start_failed: fixture start failed", "t2:planner_exit:start_failed: fixture start failed", "t3:planner_exit:start_failed: fixture start failed", "d:planner_exit:crash_loop", "e:planner_exit:crash_loop"], incidents: [...FAILED_START(3), "planner_crash_loop"], log: [] } },
-  { key: "crash_reset", tags: ["reset"], drive: crashReset, rows: [H("limit_reached", "d")], calls: { [CG]: 5, [SQ]: 5, [LS]: 4, [CC]: 1 },
+  { key: "crash_reset", tags: ["reset"], drive: crashReset, rows: [H("limit_reached", "d")], calls: { [CG]: 5, [SQ]: 5, [LS]: 4, [CC]: 1, [TM]: 1 },
     facts: { done: ["e:answer"], failed: ["t1:planner_exit:start_failed: fixture start failed", "t2:planner_exit:start_failed: fixture start failed", "t3:planner_exit:start_failed: fixture start failed", "d:planner_exit:crash_loop"], incidents: [...FAILED_START(3), "planner_crash_loop"], log: [OPUS, "prompt:hi"] } },
-  { key: "ready_exits", tags: ["ready_exit"], drive: readyExits, rows: [H("limit_reached", "d")], calls: { [CG]: 4, [SQ]: 4, [LS]: 3, [CC]: 3 },
+  { key: "ready_exits", tags: ["ready_exit"], drive: readyExits, rows: [H("limit_reached", "d")], calls: { [CG]: 4, [SQ]: 4, [LS]: 3, [CC]: 3, [TM]: 3 },
     facts: { done: ["a:answer", "b:answer", "c:answer"], failed: ["d:planner_exit:crash_loop"], incidents: ["planner_crash_loop"], log: [OPUS, "prompt:hi", OPUS, "prompt:hi", OPUS, "prompt:hi"] } },
   { key: "lane_while_latched", tags: ["lane"], drive: laneLatched, rows: [H("limit_reached", "d"), H("latched", "L")], calls: { [CG]: 5, [SQ]: 5, [LS]: 3 },
     facts: { done: ["L:lane text"], failed: ["t1:planner_exit:start_failed: fixture start failed", "t2:planner_exit:start_failed: fixture start failed", "t3:planner_exit:start_failed: fixture start failed", "d:planner_exit:crash_loop"], incidents: [...FAILED_START(3), "planner_crash_loop"], log: [] } },
-  { key: "two_fails_then_good", tags: ["below_limit"], drive: twoFailsThenGood, rows: [], calls: { [CG]: 3, [SQ]: 3, [LS]: 3, [CC]: 1 },
+  { key: "two_fails_then_good", tags: ["below_limit"], drive: twoFailsThenGood, rows: [], calls: { [CG]: 3, [SQ]: 3, [LS]: 3, [CC]: 1, [TM]: 1 },
     facts: { done: ["c:answer"], failed: ["t1:planner_exit:start_failed: fixture start failed", "t2:planner_exit:start_failed: fixture start failed"], incidents: FAILED_START(2), log: [OPUS, "prompt:hi"] } },
   { key: "claimed_elsewhere_latched", tags: ["claimed"], drive: claimedElsewhere, rows: [], calls: {},
     facts: { done: [], failed: [], incidents: [], log: [] } },
@@ -121,23 +122,23 @@ const ITEMS = [
     facts: { done: [], failed: ["a:planner_exit:crash_loop"], incidents: ["planner_crash_loop"], log: [] } },
   { key: "late_consult_natural", tags: ["late_natural"], drive: lateNatural, rows: [], calls: { [CG]: 2, [SQ]: 2, [LS]: 2 },
     facts: { done: ["a:lane text", "b:lane text"], failed: [], incidents: [], log: [] } },
-  { key: "quota_then_ok", tags: ["quota"], drive: quotaThenOk, rows: [T("retry", "quota")], calls: { [CG]: 1, [SQ]: 1, [TR]: 1, [LS]: 1, [CC]: 1 },
+  { key: "quota_then_ok", tags: ["quota"], drive: quotaThenOk, rows: [T("retry", "quota"), M("fallback", "next_leg")], calls: { [CG]: 1, [SQ]: 1, [TR]: 1, [LS]: 1, [CC]: 1, [TM]: 2 },
     facts: { done: ["a:ok"], failed: [], incidents: [], log: ["set_model:anthropic/claude-opus-5-5", "prompt:hi", "set_model:google-antigravity/claude-opus-4-6", `prompt:${RN}`] } },
-  { key: "timeout_every_leg", tags: ["timeout"], drive: timeoutExhausted, rows: [T("retry", "timeout"), T("retry", "timeout")], calls: { [CG]: 1, [SQ]: 1, [TR]: 2, [LS]: 1, [CC]: 1 },
+  { key: "timeout_every_leg", tags: ["timeout"], drive: timeoutExhausted, rows: [T("retry", "timeout"), M("fallback", "next_leg"), T("retry", "timeout"), M("none", "no_leg")], calls: { [CG]: 1, [SQ]: 1, [TR]: 2, [LS]: 1, [CC]: 1, [TM]: 3 },
     facts: { done: [], failed: ["a:no_planner_leg:timeout"], incidents: ["planner_no_leg"], log: ["set_model:anthropic/claude-opus-5-5", "prompt:hi", "set_model:google-antigravity/claude-opus-4-6", `prompt:${RN}`] } },
-  { key: "other_unrouted", tags: ["other"], drive: otherUnrouted, rows: [T("final", "other_unrouted")], calls: { [CG]: 1, [SQ]: 1, [TR]: 1, [LS]: 1, [CC]: 1 },
+  { key: "other_unrouted", tags: ["other"], drive: otherUnrouted, rows: [T("final", "other_unrouted")], calls: { [CG]: 1, [SQ]: 1, [TR]: 1, [LS]: 1, [CC]: 1, [TM]: 1 },
     facts: { done: [], failed: ["a:model_error:other"], incidents: [], log: ["set_model:anthropic/claude-opus-5-5", "prompt:hi"] } },
-  { key: "other_routed_twice", tags: ["other_retried"], drive: otherRoutedTwice, rows: [T("retry", "other_once"), T("final", "other_retried")], calls: { [CG]: 1, [SQ]: 1, [TR]: 2, [LS]: 1, [CC]: 1 },
+  { key: "other_routed_twice", tags: ["other_retried"], drive: otherRoutedTwice, rows: [T("retry", "other_once"), M("fallback", "next_leg"), T("final", "other_retried")], calls: { [CG]: 1, [SQ]: 1, [TR]: 2, [LS]: 1, [CC]: 1, [TM]: 2 },
     facts: { done: [], failed: ["a:model_error:other"], incidents: [], log: ["set_model:anthropic/claude-opus-5-5", "prompt:hi", "set_model:google-antigravity/claude-opus-4-6", `prompt:${RN}`] } },
-  { key: "other_after_tool", tags: ["other_tool"], drive: otherAfterTool, rows: [T("final", "other_after_tool")], calls: { [CG]: 1, [SQ]: 1, [TR]: 1, [LS]: 1, [CC]: 1 },
+  { key: "other_after_tool", tags: ["other_tool"], drive: otherAfterTool, rows: [T("final", "other_after_tool")], calls: { [CG]: 1, [SQ]: 1, [TR]: 1, [LS]: 1, [CC]: 1, [TM]: 1 },
     facts: { done: [], failed: ["a:model_error:other"], incidents: [], log: ["set_model:anthropic/claude-sonnet-5-5", "prompt:hi"] } },
-  { key: "other_after_todo", tags: ["other_todo"], drive: otherAfterTodo, rows: [T("retry", "other_once")], calls: { [CG]: 1, [SQ]: 1, [TR]: 1, [LS]: 1, [CC]: 1 },
+  { key: "other_after_todo", tags: ["other_todo"], drive: otherAfterTodo, rows: [T("retry", "other_once"), M("fallback", "stepped_up")], calls: { [CG]: 1, [SQ]: 1, [TR]: 1, [LS]: 1, [CC]: 1, [TM]: 2 },
     facts: { done: ["a:ok"], failed: [], incidents: [], log: ["set_model:anthropic/claude-sonnet-5-5", "prompt:hi", OPUS, `prompt:${RN}`] } },
-  { key: "model_refusal", tags: ["refusal"], drive: modelRefusal, rows: [T("final", "model_refusal")], calls: { [CG]: 1, [SQ]: 1, [TR]: 1, [LS]: 1, [CC]: 1 },
+  { key: "model_refusal", tags: ["refusal"], drive: modelRefusal, rows: [T("final", "model_refusal")], calls: { [CG]: 1, [SQ]: 1, [TR]: 1, [LS]: 1, [CC]: 1, [TM]: 1 },
     facts: { done: [], failed: ["a:model_error:model_refusal"], incidents: [], log: ["set_model:anthropic/claude-opus-5-5", "prompt:hi"] } },
-  { key: "async_work_only_end", tags: ["async"], drive: asyncOnly, rows: [], calls: { [CG]: 1, [SQ]: 1, [LS]: 1, [CC]: 1 },
+  { key: "async_work_only_end", tags: ["async"], drive: asyncOnly, rows: [], calls: { [CG]: 1, [SQ]: 1, [LS]: 1, [CC]: 1, [TM]: 1 },
     facts: { done: [], failed: ["a:model_error:quota"], incidents: ["planner_async_wait"], log: ["set_model:anthropic/claude-opus-5-5", "prompt:hi"] } },
-  { key: "fast_quota_step_up", tags: ["step_up"], drive: fastStepUp, rows: [T("retry", "quota"), T("retry", "quota")], calls: { [CG]: 1, [SQ]: 1, [TR]: 2, [LS]: 1, [CC]: 1 },
+  { key: "fast_quota_step_up", tags: ["step_up"], drive: fastStepUp, rows: [T("retry", "quota"), M("fallback", "stepped_up"), T("retry", "quota"), M("fallback", "next_leg")], calls: { [CG]: 1, [SQ]: 1, [TR]: 2, [LS]: 1, [CC]: 1, [TM]: 3 },
     facts: { done: ["a:ok"], failed: [], incidents: [], log: ["set_model:anthropic/claude-sonnet-5-5", "prompt:hi", "set_model:anthropic/claude-opus-5-5", `prompt:${RN}`, "set_model:google-antigravity/claude-opus-4-6", `prompt:${RN}`] } }
 ];
 const BRANCHES = ["limit", "latched", "reset", "ready_exit", "lane", "below_limit", "claimed", "late", "late_natural", "quota", "timeout", "other", "other_retried", "other_tool", "other_todo", "refusal", "async", "step_up"];
@@ -145,13 +146,16 @@ const BRANCHES = ["limit", "latched", "reset", "ready_exit", "lane", "below_limi
 const all = (store, sql) => store.db.prepare(sql).all().map((r) => ({ ...r }));
 const isClockKey = (k) => /(_at|_since|^since|^now)$/.test(k);
 const idList = R4_IDS.map((i) => `'${i}'`).join(",");
+// P16 (R6): every row the new build records and this pair's old build cannot is dropped at the dump, so a non-default R6 row never shifts a clock label before compare strips it.
+const dropIds = [...NEW_ROW_IDS.r4];
+const dropList = dropIds.map((i) => `'${i}'`).join(",");
 
 // Coverage self-test: the dump must hold, per table, exactly the rows the DB holds (minus the intentionally dropped R4 decisions rows),
 // counted by SQL count(*) over the same ordinary-table rule dumpDb uses (virtual tables and their shadows left out).
 function tableCounts(store) {
   const counts = {};
   for (const { name } of regularTables(store)) {
-    const n = store.db.prepare(`SELECT COUNT(*) AS n FROM "${name}"${name === "decisions" ? ` WHERE entry_id NOT IN (${idList})` : extraDropFilter(name)}`).get().n;
+    const n = store.db.prepare(`SELECT COUNT(*) AS n FROM "${name}"${name === "decisions" ? ` WHERE entry_id NOT IN (${dropList})` : extraDropFilter(name)}`).get().n;
     if (n > 0) counts[name] = n;
   }
   return counts;
@@ -224,11 +228,11 @@ async function project(d, item) {
       const label = (id) => names.get(id) ?? id;
       const order = [...names.keys()]; const foreign = new Map();
       const ownerLabel = (id) => (order.includes(id) ? `r${order.indexOf(id) + 1}` : foreign.has(id) ? foreign.get(id) : (foreign.set(id, `other#${foreign.size + 1}`), foreign.get(id)));
-      const newRows = all(store, `SELECT entry_id, verdict, reason_code, run_id, tool_call_id FROM decisions WHERE rowid > ${Number(seedMax)} AND entry_id IN (${idList}) ORDER BY rowid`)
+      const newRows = all(store, `SELECT entry_id, verdict, reason_code, run_id, tool_call_id FROM decisions WHERE rowid > ${Number(seedMax)} AND entry_id IN (${idList}, 'turn.model') ORDER BY rowid`)
         .map((r) => [r.entry_id, r.verdict, r.reason_code, label(r.run_id), r.tool_call_id]);
       if (!isNew && newRows.length) throw new Error("control failed: the old build wrote planner.crash_guard / turn.retry rows");
       if (existsSync(join(process.cwd(), "houge.kill"))) throw new Error("P2 failed: a houge.kill appeared in the cwd");
-      const db = dumpDb(store, { dropDecisionIds: R4_IDS });
+      const db = dumpDb(store, { dropDecisionIds: dropIds });
       const want = tableCounts(store);
       checkCoverage(db, want);
       omittedRowSelfTest(db, want);
@@ -245,7 +249,7 @@ async function project(d, item) {
 function required(d, item, proj) {
   requireNew(corpus, item, "emitted duration_ms equals the stored run_completed payload (exact)", proj.agreement.length === 0, `disagreements ${canon(proj.agreement)}`);
   const want = item.rows.map(([entry, verdict, reason, run]) => [entry, verdict, reason, run, null]);
-  requireNew(corpus, item, "R4 rows (exact: entry, verdict, reason, the consulting run, tool_call null)", canon(proj.newRows) === canon(want), `got ${canon(proj.newRows)}, want ${canon(want)}`);
+  requireNew(corpus, item, "R4 rows and the R6 turn.model rows (exact: entry, verdict, reason, the consulting run, tool_call null)", canon(proj.newRows) === canon(want), `got ${canon(proj.newRows)}, want ${canon(want)}`);
   requireNew(corpus, item, "recorder calls per entry (exact)", canon(proj.calls) === canon(item.calls), `got ${canon(proj.calls)}, want ${canon(item.calls)}`);
   requireNew(corpus, item, "behaviour facts (sink calls, incidents, ordered child log: exact)", canon(proj.facts) === canon(item.facts), `got ${canon(proj.facts)}, want ${canon(item.facts)}`);
 }

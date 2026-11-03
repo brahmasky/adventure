@@ -35,7 +35,7 @@ describe("R3 rows", () => {
     const { store, sup, outcome, counts } = withRecorder(fakeSession()); const a = createQueuedTurnRun(store);
     sup.submit(req(a)); await sup.whenIdle();
     expect(dones(outcome)).toHaveLength(1); expect(rows(store)).toEqual([]);
-    expect(counts).toEqual(["intake.steer_or_queue", "planner.crash_guard", "context.lessons", "turn.clarify_cap"]); // P12: runTurn consults queue/idle; the entry writes no row for it; R4 P4: the first spawn consults the crash guard (spawn, no row); R5 P4: the spawn consults lessons, the prompt build the cap (no rows)
+    expect(counts).toEqual(["intake.steer_or_queue", "planner.crash_guard", "context.lessons", "turn.clarify_cap", "turn.model"]); // P12: runTurn consults queue/idle; the entry writes no row for it; R4 P4: the first spawn consults the crash guard (spawn, no row); R5 P4: the spawn consults lessons, the prompt build the cap (no rows)
   });
   it("2 steer in RUNNING", async () => {
     const h = heldSession(); const { store, sup } = withRecorder(h.session);
@@ -51,7 +51,7 @@ describe("R3 rows", () => {
     sup.setAwaitingApprovalForTest(true);
     const r2 = createQueuedTurnRun(store, "好"); sup.submit(req(r2, "好"));
     await until(() => dones(outcome).some((d) => d.run_id === r2));
-    expect(h.session.steers).toEqual([]); expect(counts).toEqual(["intake.steer_or_queue", "planner.crash_guard", "context.lessons", "turn.clarify_cap", "intake.bare_ack"]); // r1's idle consult, its spawn's crash guard and lessons (R4/R5 P4), its prompt's cap, then the nudge; none for r2's steer branch
+    expect(h.session.steers).toEqual([]); expect(counts).toEqual(["intake.steer_or_queue", "planner.crash_guard", "context.lessons", "turn.clarify_cap", "turn.model", "intake.bare_ack"]); // r1's idle consult, its spawn's crash guard and lessons (R4/R5 P4), its prompt's cap, then the nudge; none for r2's steer branch
     expect(rows(store)).toEqual([["intake.bare_ack", "nudge", "ack_while_card_waits", r2, null]]);
     expect(dones(outcome).find((d) => d.run_id === r2)?.text).toContain("waiting for your tap");
     expect(store.getLedgerEvents().some((e) => e.event_type === "ack_nudged" && e.payload.approval_run_id === r1)).toBe(true);
@@ -65,7 +65,7 @@ describe("R3 rows", () => {
     const r2 = createQueuedTurnRun(store, "why?"); sup.submit(req(r2, "why?"));
     expect(h.session.steers).toEqual(["why?"]);
     expect(rows(store)).toEqual([["intake.steer_or_queue", "steer", "live_turn", r2, null]]);
-    expect(counts).toEqual(["intake.steer_or_queue", "planner.crash_guard", "context.lessons", "turn.clarify_cap", "intake.bare_ack", "intake.steer_or_queue"]); // r1 idle queue, its spawn's crash guard and lessons (R4/R5 P4), its prompt's cap, then pass, then steer
+    expect(counts).toEqual(["intake.steer_or_queue", "planner.crash_guard", "context.lessons", "turn.clarify_cap", "turn.model", "intake.bare_ack", "intake.steer_or_queue"]); // r1 idle queue, its spawn's crash guard and lessons (R4/R5 P4), its prompt's cap, then pass, then steer
     sup.setAwaitingApprovalForTest(false); h.end(); await sup.whenIdle();
   });
   it("5 Telegram message during a schedule-born live turn: wait, row written at the claim (after the first turn completes)", async () => {

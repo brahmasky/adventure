@@ -129,7 +129,7 @@ describe("entryProblems (R12 and R13 as data)", () => {
       expect(e.ladder[0]?.kind).toBe("rule");
       expect(LOCKED_ENTRY_IDS).toContain(id);
     }
-    expect(ENTRY_IDS).toHaveLength(36);
+    expect(ENTRY_IDS).toHaveLength(39);
   });
   it("memory.lesson_admit, schedule.admit and memory.correct_preflight are registered, unlocked and rule-only (Stage 4C)", () => {
     for (const id of ["memory.lesson_admit", "schedule.admit", "memory.correct_preflight"] as const) {
@@ -139,7 +139,7 @@ describe("entryProblems (R12 and R13 as data)", () => {
       expect(e.ladder.map((r) => r.kind)).toEqual(["rule"]);
       expect(LOCKED_ENTRY_IDS).not.toContain(id);
     }
-    expect(ENTRY_IDS).toHaveLength(36);
+    expect(ENTRY_IDS).toHaveLength(39);
   });
   it("intake.rate_limit, intake.rating_reply (unlocked) and intake.budget_fuse (locked) are registered rule-only intake entries (remainder R1)", () => {
     for (const [id, locked] of [["intake.rate_limit", false], ["intake.rating_reply", false], ["intake.budget_fuse", true]] as const) {
@@ -150,7 +150,7 @@ describe("entryProblems (R12 and R13 as data)", () => {
       expect(e.ladder.map((r) => r.kind)).toEqual(["rule"]);
       expect((LOCKED_ENTRY_IDS as readonly string[]).includes(id)).toBe(locked);
     }
-    expect(ENTRY_IDS).toHaveLength(36);
+    expect(ENTRY_IDS).toHaveLength(39);
   });
   it("intake.sender (locked, intake) and turn.contract (unlocked, pre_model) are registered rule-only entries (remainder R2)", () => {
     for (const [id, locked, stage] of [["intake.sender", true, "intake"], ["turn.contract", false, "pre_model"]] as const) {
@@ -161,7 +161,7 @@ describe("entryProblems (R12 and R13 as data)", () => {
       expect(e.ladder.map((r) => r.kind)).toEqual(["rule"]);
       expect((LOCKED_ENTRY_IDS as readonly string[]).includes(id)).toBe(locked);
     }
-    expect(ENTRY_IDS).toHaveLength(36);
+    expect(ENTRY_IDS).toHaveLength(39);
   });
 
   it("intake.bare_ack (locked) and intake.steer_or_queue (unlocked) are registered rule-only intake entries (remainder R3)", () => {
@@ -173,7 +173,7 @@ describe("entryProblems (R12 and R13 as data)", () => {
       expect(e.ladder.map((r) => r.kind)).toEqual(["rule"]);
       expect((LOCKED_ENTRY_IDS as readonly string[]).includes(id)).toBe(locked);
     }
-    expect(ENTRY_IDS).toHaveLength(36);
+    expect(ENTRY_IDS).toHaveLength(39);
   });
 
   it("planner.crash_guard and turn.retry are registered, unlocked rule-only entries (remainder R4)", () => {
@@ -184,6 +184,18 @@ describe("entryProblems (R12 and R13 as data)", () => {
       expect(e.ladder.map((r) => r.kind)).toEqual(["rule"]);
       expect((LOCKED_ENTRY_IDS as readonly string[]).includes(id)).toBe(false);
     }
-    expect(ENTRY_IDS).toHaveLength(36);
+    expect(ENTRY_IDS).toHaveLength(39);
+  });
+
+  it("lookup.rewrite, lookup.thin and turn.model are registered, unlocked, rule-only and sound (remainder R6)", () => {
+    for (const id of ["lookup.rewrite", "lookup.thin", "turn.model"] as const) {
+      const e = entryById(id) as AnyEntry;
+      expect(e).toBeDefined();
+      expect(e.locked === true).toBe(false);
+      expect(e.ladder.map((r) => r.kind)).toEqual(["rule"]);
+      expect((LOCKED_ENTRY_IDS as readonly string[]).includes(id)).toBe(false);
+      expect(entryProblems(e)).toEqual([]);
+    }
+    expect(ENTRY_IDS).toHaveLength(39);
   });
 });

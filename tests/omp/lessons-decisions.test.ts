@@ -13,7 +13,7 @@ import { cleanups, fakeSession, harness, req, until, type Fake } from "../helper
 
 afterEach(async () => { for (const c of cleanups.splice(0)) await c(); vi.restoreAllMocks(); vi.unstubAllEnvs(); });
 
-const SQ = "intake.steer_or_queue"; const CG = "planner.crash_guard"; const LS = "context.lessons"; const CC = "turn.clarify_cap"; const RC = "context.recall";
+const SQ = "intake.steer_or_queue"; const CG = "planner.crash_guard"; const LS = "context.lessons"; const CC = "turn.clarify_cap"; const RC = "context.recall"; const TM = "turn.model";
 type Row = [string, string, string | null, string, string | null];
 type Q = { prepare(q: string): { all(...a: unknown[]): Array<Record<string, unknown>> } };
 const q = (store: RunStore) => (store as unknown as { db: Q }).db;
@@ -46,13 +46,13 @@ describe("R5 rows — context.lessons at the spawn (spec R5 §4.3), the end sign
     h.store.addLesson({ scope: "ask", text: "answer briefly", source: "user_feedback" });
     const a = createQueuedTurnRun(h.store); h.sup.submit(req(a)); await h.sup.whenIdle();
     expect(dones(h.outcome).map((d) => d.run_id)).toEqual([a]);
-    expect(rows(h.store)).toEqual([]); expect(h.counts).toEqual([SQ, CG, LS, CC]);
+    expect(rows(h.store)).toEqual([]); expect(h.counts).toEqual([SQ, CG, LS, CC, TM]);
   });
   it("2 lessons over the cap: one capped/char_cap row on the run; one lesson_dropped incident as today", async () => {
     const h = withRecorder(fakeSession(), {}, CAP40); seedOverCap(h.store);
     const a = createQueuedTurnRun(h.store); h.sup.submit(req(a)); await h.sup.whenIdle();
     expect(rows(h.store)).toEqual([[LS, "capped", "char_cap", a, null]]);
-    expect(incidentsN(h.store, "lesson_dropped")).toBe(1); expect(h.counts).toEqual([SQ, CG, LS, CC]);
+    expect(incidentsN(h.store, "lesson_dropped")).toBe(1); expect(h.counts).toEqual([SQ, CG, LS, CC, TM]);
   });
   it("3 getActiveLessons throwing: one none/render_failed row; one lesson_render_failed incident", async () => {
     const h = withRecorder(fakeSession());
@@ -128,6 +128,6 @@ describe("R5 rows — context.lessons at the spawn (spec R5 §4.3), the end sign
     const a = createQueuedTurnRun(h.store); h.sup.submit(req(a)); await h.sup.whenIdle();
     expect(session.prompts).toHaveLength(2);
     expect(seen).toEqual([true, false]);
-    expect(h.counts).toEqual([SQ, CG, LS, CC, "turn.retry"]);
+    expect(h.counts).toEqual([SQ, CG, LS, CC, TM, "turn.retry", TM]);
   });
 });

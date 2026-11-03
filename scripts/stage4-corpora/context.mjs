@@ -8,14 +8,14 @@
 // No item intakes more than 5 runs per actor (the gateway admits 5 per actor per minute; seedLaneRows' answer run is under its own actor).
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { DISTS, R5_IDS, canon, compare, dumpDb, mkStore, mkTemp, regularTables, extraDropFilter, relabelClocks, requireNew } from "../stage4-diff-lib.mjs";
+import { DISTS, R5_IDS, NEW_ROW_IDS, canon, compare, dumpDb, mkStore, mkTemp, regularTables, extraDropFilter, relabelClocks, requireNew } from "../stage4-diff-lib.mjs";
 import { scrubIds } from "../stage4-bind-fixture.mjs";
 import { NOW, withCountingClock, withPinnedEnv } from "../stage4-intake-fixture.mjs";
 import { countingRecorder } from "../stage4-sender-fixture.mjs";
 import { cleanup, fakeSession, intakeRun, mkSupervisor, req, seedClarify, seedLaneRows, seedLessons, until } from "../stage4-supervisor-fixture.mjs";
 
 const CHAT = "42"; // the fixture supervisor's chat: chat turns, lane rows and the prompt file are keyed by it
-const SQ = "intake.steer_or_queue"; const CG = "planner.crash_guard"; const LS = "context.lessons"; const CC = "turn.clarify_cap";
+const SQ = "intake.steer_or_queue"; const CG = "planner.crash_guard"; const LS = "context.lessons"; const CC = "turn.clarify_cap"; const TM = "turn.model";
 const RC = "context.recall"; const CU = "context.catch_up";
 const R = (entry, verdict, reason, run = "a", rung = "rule") => [entry, rung, verdict, reason, run];
 const CAP40 = { HOUGE_LESSON_CHAR_CAP: "40" };
@@ -183,7 +183,7 @@ const claimedElsewhere = async (x) => {
   sup.submit(req(id, "hi")); await sup.whenIdle();
 };
 
-const TURN = { [SQ]: 1, [CG]: 1, [LS]: 1, [CC]: 1 };
+const TURN = { [SQ]: 1, [CG]: 1, [LS]: 1, [CC]: 1, [TM]: 1 };
 const ANSWER = { done: ["a:answer"], failed: [], incidents: [], storeIncidents: [], spawns: 1, notes: {} };
 const answered = (log, over = {}) => ({ ...ANSWER, log: ["set_model:anthropic/claude-opus-5-5", `prompt:${log}`], ...over });
 const LANES = (n) => ({ done: ["a:lane text", "b:lane text"], failed: [], incidents: [], storeIncidents: ["lesson_dropped"], log: [], spawns: n });
@@ -214,11 +214,11 @@ const ITEMS = [
   { key: "lessons_seam", tags: ["late_seam"], drive: lessonsSeam, rows: [], calls: {},
     facts: { done: [], failed: [], incidents: [], storeIncidents: ["lesson_dropped"], log: [], spawns: 1, notes: {} } },
   { key: "lessons_stale_respawn", tags: ["stale"], drive: lessonsStale, rows: [R(LS, "capped", "char_cap", "a"), R(LS, "capped", "char_cap", "b")],
-    calls: { [SQ]: 2, [CG]: 2, [LS]: 2, [CC]: 2 }, order: [SQ, CG, LS, CC, SQ, CC, CG, LS],
+    calls: { [SQ]: 2, [CG]: 2, [LS]: 2, [CC]: 2, [TM]: 2 }, order: [SQ, CG, LS, CC, TM, SQ, CC, CG, LS, TM],
     facts: { done: ["a:answer", "b:answer"], failed: [], incidents: [], storeIncidents: ["lesson_dropped"], spawns: 2, notes: {},
       log: ["set_model:anthropic/claude-opus-5-5", "prompt:-:hi", "set_model:anthropic/claude-opus-5-5", "prompt:-:hi"] } },
   { key: "lessons_stale_respawn_one_run", tags: ["stale_one_run"], drive: lessonsStaleOneRun, rows: [R(LS, "capped", "char_cap", "a"), R(LS, "capped", "char_cap", "a")],
-    calls: { [SQ]: 1, [CG]: 2, [LS]: 2, [CC]: 1 }, order: [SQ, CG, LS, CC, CG, LS],
+    calls: { [SQ]: 1, [CG]: 2, [LS]: 2, [CC]: 1, [TM]: 1 }, order: [SQ, CG, LS, CC, CG, LS, TM],
     facts: { done: ["a:answer"], failed: [], incidents: [], storeIncidents: ["lesson_dropped"], spawns: 2, notes: {},
       log: ["set_model:anthropic/claude-opus-5-5", "prompt:-:hi"] } },
   { key: "cap_reached", tags: ["cap"], drive: capReached, rows: [R(CC, "cap", "cap_reached")], calls: TURN, facts: answered("cap:hi") },
@@ -257,12 +257,15 @@ function anchorTouches(db, ownerLabel) {
   return out;
 }
 const idList = R5_IDS.map((i) => `'${i}'`).join(",");
+// P16 (R6): every row the new build records and this pair's old build cannot is dropped at the dump, so a non-default R6 row never shifts a clock label before compare strips it.
+const dropIds = [...NEW_ROW_IDS.r5];
+const dropList = dropIds.map((i) => `'${i}'`).join(",");
 
 // Coverage self-test: the dump must hold, per table, exactly the rows the DB holds (minus the intentionally dropped R5 decisions rows).
 function tableCounts(store) {
   const counts = {};
   for (const { name } of regularTables(store)) {
-    const n = store.db.prepare(`SELECT COUNT(*) AS n FROM "${name}"${name === "decisions" ? ` WHERE entry_id NOT IN (${idList})` : extraDropFilter(name)}`).get().n;
+    const n = store.db.prepare(`SELECT COUNT(*) AS n FROM "${name}"${name === "decisions" ? ` WHERE entry_id NOT IN (${dropList})` : extraDropFilter(name)}`).get().n;
     if (n > 0) counts[name] = n;
   }
   return counts;
@@ -358,11 +361,11 @@ async function project(d, item) {
       const label = (id) => names.get(id) ?? id;
       const runOrder = [...names.keys()]; const foreign = new Map();
       const ownerLabel = (id) => (runOrder.includes(id) ? `r${runOrder.indexOf(id) + 1}` : foreign.has(id) ? foreign.get(id) : (foreign.set(id, `other#${foreign.size + 1}`), foreign.get(id)));
-      const newRows = all(store, `SELECT entry_id, rung, verdict, reason_code, run_id, tool_call_id FROM decisions WHERE rowid > ${Number(seedMax)} AND entry_id IN (${idList}) ORDER BY rowid`)
+      const newRows = all(store, `SELECT entry_id, rung, verdict, reason_code, run_id, tool_call_id FROM decisions WHERE rowid > ${Number(seedMax)} AND entry_id IN (${idList}, 'turn.model') ORDER BY rowid`)
         .map((r) => [r.entry_id, r.rung, r.verdict, r.reason_code, label(r.run_id), r.tool_call_id]);
       if (!isNew && newRows.length) throw new Error("control failed: the old build wrote an R5 decision row");
       if (existsSync(join(process.cwd(), "houge.kill"))) throw new Error("P2 failed: a houge.kill appeared in the cwd");
-      const db = dumpDb(store, { dropDecisionIds: R5_IDS });
+      const db = dumpDb(store, { dropDecisionIds: dropIds });
       const want = tableCounts(store);
       checkCoverage(db, want);
       omittedRowSelfTest(db, want);

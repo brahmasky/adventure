@@ -7,7 +7,7 @@
 // (P12: the idle consult counts; a bare_ack `pass` consults once and writes no row). The old build must hold none.
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { DISTS, R3_IDS, canon, compare, dumpDb, mkStore, mkTemp, regularTables, extraDropFilter, relabelClocks, requireNew } from "../stage4-diff-lib.mjs";
+import { DISTS, R3_IDS, NEW_ROW_IDS, canon, compare, dumpDb, mkStore, mkTemp, regularTables, extraDropFilter, relabelClocks, requireNew } from "../stage4-diff-lib.mjs";
 import { scrubIds } from "../stage4-bind-fixture.mjs";
 import { NOW, withCountingClock, withPinnedEnv } from "../stage4-intake-fixture.mjs";
 import { countingRecorder } from "../stage4-sender-fixture.mjs";
@@ -108,41 +108,44 @@ const preClaimedNudge = async (x) => {
   sup.setAwaitingApprovalForTest(false); h.end(); await sup.whenIdle();
 };
 
-const CG = "planner.crash_guard"; const SQ = "intake.steer_or_queue"; const BA = "intake.bare_ack"; const LS = "context.lessons"; const CC = "turn.clarify_cap"; // R5: one LS per spawn attempt that reaches preparePaths, one CC per live buildTurnPrompt (P4)
+const CG = "planner.crash_guard"; const SQ = "intake.steer_or_queue"; const BA = "intake.bare_ack"; const LS = "context.lessons"; const CC = "turn.clarify_cap"; const TM = "turn.model"; // R5: one LS per spawn attempt that reaches preparePaths, one CC per live buildTurnPrompt (P4)
 const W = (reason, run) => [SQ, "wait", reason, run]; const STEER = (run) => [SQ, "steer", "live_turn", run]; const NUDGE = (run) => [BA, "nudge", "ack_while_card_waits", run];
 // calls: the recorder's exact tally on the new side. Only the first turn spawns, so each item consults planner.crash_guard once (R4); every run the supervisor claims consults steer_or_queue once (the first, idle run included, P12); a bare_ack
 // consult is made for a non-ack with a card waiting (pass, no row) and for the nudge itself; a media message is never live, so it never consults bare_ack.
 const ITEMS = [
-  { key: "idle", tags: ["idle"], drive: idle, rows: [], calls: { [CG]: 1, [SQ]: 1, [LS]: 1, [CC]: 1 } },
-  { key: "turn_not_live", tags: ["turn_not_live"], drive: turnNotLive, rows: [W("turn_not_live", "b")], calls: { [CG]: 1, [SQ]: 2, [LS]: 1, [CC]: 2 } },
-  { key: "queued_behind", tags: ["queued_behind"], drive: queuedBehind, rows: [W("turn_not_live", "b"), W("queued_behind", "c")], calls: { [CG]: 1, [SQ]: 3, [LS]: 1, [CC]: 2 } },
-  { key: "duplicate_submit", tags: ["duplicate"], drive: duplicate, rows: [STEER("b")], calls: { [CG]: 1, [SQ]: 2, [LS]: 1, [CC]: 1 } },
-  { key: "bare_ack_media_during_card", tags: ["media"], drive: mediaDuringCard, rows: [W("needs_ingest", "p"), W("needs_ingest", "q")], calls: { [CG]: 1, [SQ]: 3, [LS]: 1, [CC]: 3 } },
-  { key: "steer_running", tags: ["steer"], drive: duringCard("none", "x"), rows: [STEER("b")], calls: { [CG]: 1, [SQ]: 2, [LS]: 1, [CC]: 1 } },
-  { key: "steer_awaiting_approval", tags: ["steer", "card"], drive: duringCard("awaiting", "why?"), rows: [STEER("b")], calls: { [CG]: 1, [SQ]: 2, [BA]: 1, [LS]: 1, [CC]: 1 } },
-  { key: "bare_ack_awaiting", tags: ["nudge"], drive: duringCard("awaiting", "好"), rows: [NUDGE("b")], calls: { [CG]: 1, [SQ]: 1, [BA]: 1, [LS]: 1, [CC]: 1 } },
-  { key: "bare_ack_running_card", tags: ["nudge", "card"], drive: duringCard("running", "好"), rows: [NUDGE("b")], calls: { [CG]: 1, [SQ]: 1, [BA]: 1, [LS]: 1, [CC]: 1 } },
-  { key: "bare_ack_running_no_card", tags: ["steer"], drive: duringCard("none", "好"), rows: [STEER("b")], calls: { [CG]: 1, [SQ]: 2, [LS]: 1, [CC]: 1 } },
-  { key: "non_ack_running_card", tags: ["steer", "card"], drive: duringCard("running", "why?"), rows: [STEER("b")], calls: { [CG]: 1, [SQ]: 2, [BA]: 1, [LS]: 1, [CC]: 1 } },
-  { key: "turn_schedule_born", tags: ["schedule_born"], drive: scheduleBorn, rows: [W("turn_schedule_born", "m")], calls: { [CG]: 1, [SQ]: 2, [LS]: 1, [CC]: 2 } },
-  { key: "message_scheduled", tags: ["message_scheduled"], drive: messageScheduled, rows: [W("message_scheduled", "s")], calls: { [CG]: 1, [SQ]: 2, [LS]: 1, [CC]: 2 } },
-  { key: "needs_ingest", tags: ["needs_ingest"], drive: needsIngest, rows: [W("needs_ingest", "p")], calls: { [CG]: 1, [SQ]: 2, [LS]: 1, [CC]: 2 } },
-  { key: "not_running_aborting", tags: ["not_running"], drive: notRunning, rows: [W("not_running", "b")], calls: { [CG]: 1, [SQ]: 2, [LS]: 1, [CC]: 2 } },
-  { key: "preclaimed_steer", tags: ["preclaimed"], drive: preClaimedSteer, rows: [], calls: { [CG]: 1, [SQ]: 1, [LS]: 1, [CC]: 1 } },
-  { key: "preclaimed_nudge", tags: ["preclaimed"], drive: preClaimedNudge, rows: [], calls: { [CG]: 1, [SQ]: 1, [LS]: 1, [CC]: 1 } }
+  { key: "idle", tags: ["idle"], drive: idle, rows: [], calls: { [CG]: 1, [SQ]: 1, [LS]: 1, [CC]: 1, [TM]: 1 } },
+  { key: "turn_not_live", tags: ["turn_not_live"], drive: turnNotLive, rows: [W("turn_not_live", "b")], calls: { [CG]: 1, [SQ]: 2, [LS]: 1, [CC]: 2, [TM]: 2 } },
+  { key: "queued_behind", tags: ["queued_behind"], drive: queuedBehind, rows: [W("turn_not_live", "b"), W("queued_behind", "c")], calls: { [CG]: 1, [SQ]: 3, [LS]: 1, [CC]: 2, [TM]: 2 } },
+  { key: "duplicate_submit", tags: ["duplicate"], drive: duplicate, rows: [STEER("b")], calls: { [CG]: 1, [SQ]: 2, [LS]: 1, [CC]: 1, [TM]: 1 } },
+  { key: "bare_ack_media_during_card", tags: ["media"], drive: mediaDuringCard, rows: [W("needs_ingest", "p"), W("needs_ingest", "q")], calls: { [CG]: 1, [SQ]: 3, [LS]: 1, [CC]: 3, [TM]: 3 } },
+  { key: "steer_running", tags: ["steer"], drive: duringCard("none", "x"), rows: [STEER("b")], calls: { [CG]: 1, [SQ]: 2, [LS]: 1, [CC]: 1, [TM]: 1 } },
+  { key: "steer_awaiting_approval", tags: ["steer", "card"], drive: duringCard("awaiting", "why?"), rows: [STEER("b")], calls: { [CG]: 1, [SQ]: 2, [BA]: 1, [LS]: 1, [CC]: 1, [TM]: 1 } },
+  { key: "bare_ack_awaiting", tags: ["nudge"], drive: duringCard("awaiting", "好"), rows: [NUDGE("b")], calls: { [CG]: 1, [SQ]: 1, [BA]: 1, [LS]: 1, [CC]: 1, [TM]: 1 } },
+  { key: "bare_ack_running_card", tags: ["nudge", "card"], drive: duringCard("running", "好"), rows: [NUDGE("b")], calls: { [CG]: 1, [SQ]: 1, [BA]: 1, [LS]: 1, [CC]: 1, [TM]: 1 } },
+  { key: "bare_ack_running_no_card", tags: ["steer"], drive: duringCard("none", "好"), rows: [STEER("b")], calls: { [CG]: 1, [SQ]: 2, [LS]: 1, [CC]: 1, [TM]: 1 } },
+  { key: "non_ack_running_card", tags: ["steer", "card"], drive: duringCard("running", "why?"), rows: [STEER("b")], calls: { [CG]: 1, [SQ]: 2, [BA]: 1, [LS]: 1, [CC]: 1, [TM]: 1 } },
+  { key: "turn_schedule_born", tags: ["schedule_born"], drive: scheduleBorn, rows: [W("turn_schedule_born", "m")], calls: { [CG]: 1, [SQ]: 2, [LS]: 1, [CC]: 2, [TM]: 2 } },
+  { key: "message_scheduled", tags: ["message_scheduled"], drive: messageScheduled, rows: [W("message_scheduled", "s")], calls: { [CG]: 1, [SQ]: 2, [LS]: 1, [CC]: 2, [TM]: 2 } },
+  { key: "needs_ingest", tags: ["needs_ingest"], drive: needsIngest, rows: [W("needs_ingest", "p")], calls: { [CG]: 1, [SQ]: 2, [LS]: 1, [CC]: 2, [TM]: 2 } },
+  { key: "not_running_aborting", tags: ["not_running"], drive: notRunning, rows: [W("not_running", "b")], calls: { [CG]: 1, [SQ]: 2, [LS]: 1, [CC]: 2, [TM]: 2 } },
+  { key: "preclaimed_steer", tags: ["preclaimed"], drive: preClaimedSteer, rows: [], calls: { [CG]: 1, [SQ]: 1, [LS]: 1, [CC]: 1, [TM]: 1 } },
+  { key: "preclaimed_nudge", tags: ["preclaimed"], drive: preClaimedNudge, rows: [], calls: { [CG]: 1, [SQ]: 1, [LS]: 1, [CC]: 1, [TM]: 1 } }
 ];
 const BRANCHES = ["idle", "turn_not_live", "queued_behind", "duplicate", "media", "steer", "card", "nudge", "schedule_born", "message_scheduled", "needs_ingest", "not_running", "preclaimed"];
 
 const all = (store, sql) => store.db.prepare(sql).all().map((r) => ({ ...r }));
 const isClockKey = (k) => /(_at|_since|^since|^now)$/.test(k);
 const idList = R3_IDS.map((i) => `'${i}'`).join(",");
+// P16 (R6): every row the new build records and this pair's old build cannot is dropped at the dump, so a non-default R6 row never shifts a clock label before compare strips it.
+const dropIds = [...NEW_ROW_IDS.r3];
+const dropList = dropIds.map((i) => `'${i}'`).join(",");
 
 // Coverage self-test: the dump must hold, per table, exactly the rows the DB holds (minus the intentionally dropped R3 decisions rows),
 // counted by SQL count(*) over the same ordinary-table rule dumpDb uses (virtual tables and their shadows left out).
 function tableCounts(store) {
   const counts = {};
   for (const { name } of regularTables(store)) {
-    const n = store.db.prepare(`SELECT COUNT(*) AS n FROM "${name}"${name === "decisions" ? ` WHERE entry_id NOT IN (${idList})` : extraDropFilter(name)}`).get().n;
+    const n = store.db.prepare(`SELECT COUNT(*) AS n FROM "${name}"${name === "decisions" ? ` WHERE entry_id NOT IN (${dropList})` : extraDropFilter(name)}`).get().n;
     if (n > 0) counts[name] = n;
   }
   return counts;
@@ -216,11 +219,11 @@ async function project(d, item) {
       const label = (id) => names.get(id) ?? id;
       const order = [...names.keys()]; const foreign = new Map();
       const ownerLabel = (id) => (order.includes(id) ? `r${order.indexOf(id) + 1}` : foreign.has(id) ? foreign.get(id) : (foreign.set(id, `other#${foreign.size + 1}`), foreign.get(id)));
-      const newRows = all(store, `SELECT entry_id, verdict, reason_code, run_id, tool_call_id FROM decisions WHERE rowid > ${Number(seedMax)} AND entry_id IN (${idList}) ORDER BY rowid`)
+      const newRows = all(store, `SELECT entry_id, verdict, reason_code, run_id, tool_call_id FROM decisions WHERE rowid > ${Number(seedMax)} AND entry_id IN (${idList}, 'turn.model') ORDER BY rowid`)
         .map((r) => [r.entry_id, r.verdict, r.reason_code, label(r.run_id), r.tool_call_id]);
       if (!isNew && newRows.length) throw new Error("control failed: the old build wrote intake.bare_ack / intake.steer_or_queue rows");
       if (existsSync(join(process.cwd(), "houge.kill"))) throw new Error("P2 failed: a houge.kill appeared in the cwd");
-      const db = dumpDb(store, { dropDecisionIds: R3_IDS });
+      const db = dumpDb(store, { dropDecisionIds: dropIds });
       const want = tableCounts(store);
       checkCoverage(db, want);
       omittedRowSelfTest(db, want);

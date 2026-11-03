@@ -402,6 +402,8 @@ entry, not a locked rule inside it. Remainder order and slices: spec `2026-10-30
 
 **Note (2026-11-02, remainder R5, Paco's Decisions 1-A, 2-A; ADR 0030 amendment):** A25 `context.recall`, A26 `context.catch_up`, A23 `context.lessons` (the lesson part; restart-on-fingerprint stays mechanics) and A27 `turn.clarify_cap` (the cap only; seed, restart note and quote stay mechanics) are registered (stage `pre_model`), recorded only while the turn is live (`turn.endSignalled`). Spec `2026-11-02-ladder-remainder-r5-context-clarify-design.md`.
 
+**Note (2026-11-03, remainder R6, Paco's Decisions 1-A, 2-A; ADR 0030 amendment):** A21 `lookup.rewrite` and `lookup.thin` (the lane's two decisions; the lane bodies stay mechanics) and A22 `turn.model` (the planner pin only; resolution, effort clamp, the spawn model and other seats stay mechanics) are registered (stage `pre_model`), rule-only. Spec `2026-11-03-ladder-remainder-r6-lookup-model-design.md`.
+
 ### 6.2 Move, don't improve
 
 For every migrated entry:

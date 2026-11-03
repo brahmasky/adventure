@@ -12,7 +12,7 @@ import { cleanups, fakeSession, harness, req, until, type Fake, type Outcome, ty
 
 afterEach(async () => { for (const c of cleanups.splice(0)) await c(); vi.restoreAllMocks(); vi.useRealTimers(); });
 
-const CG = "planner.crash_guard"; const TR = "turn.retry"; const SQ = "intake.steer_or_queue"; const LS = "context.lessons"; const CC = "turn.clarify_cap";
+const CG = "planner.crash_guard"; const TR = "turn.retry"; const SQ = "intake.steer_or_queue"; const LS = "context.lessons"; const CC = "turn.clarify_cap"; const TM = "turn.model"; // R6 P4: one TM per completed pin walk (the first leg after CC, each walked retry after its TR)
 type Row = [string, string, string | null, string, string | null];
 type Q = { prepare(q: string): { all(...a: unknown[]): Array<Record<string, unknown>> } };
 const q = (store: RunStore) => (store as unknown as { db: Q }).db;
@@ -75,7 +75,7 @@ const PAIR = [SQ, CG];
 const SPAWNED = [SQ, CG, LS];
 const spawned = (n: number) => Array<string[]>(n).fill(SPAWNED).flat();
 /** R5 P4: a completed turn's prompt build consults the cap once (no row under the default). */
-const TURN = [SQ, CG, LS, CC];
+const TURN = [SQ, CG, LS, CC, TM];
 const turnOn = (h: { store: RunStore; sup: { submit(r: ReturnType<typeof req>): void; whenIdle(): Promise<void> } }, text = "hi") =>
   async () => { const r = createQueuedTurnRun(h.store, text); h.sup.submit(req(r, text)); await h.sup.whenIdle(); return r; };
 
@@ -145,7 +145,7 @@ describe("R4 rows — planner.crash_guard", () => {
     const h = withRecorder(fakeSession({ badModels: ["anthropic/claude-opus-5-5"] })); const a = createQueuedTurnRun(h.store);
     h.sup.submit(req(a)); await h.sup.whenIdle();
     expect(doneOf(h.outcome, a)).toBeDefined(); expect(rows(h.store)).toEqual([]);
-    expect(h.counts).toEqual([SQ, CG, LS, CG, LS, CC]); // each candidate spawn runs preparePaths: one lessons consult per attempt
+    expect(h.counts).toEqual([SQ, CG, LS, CG, LS, CC, TM]); // each candidate spawn runs preparePaths: one lessons consult per attempt
   });
   it("P4 tally: the stale re-check (the child loses its bridge during the prompt build) is one more consult: counts [SQ, CG, SQ, CG], no row", async () => {
     const session = fakeSession(); const h = withRecorder(session);
@@ -159,7 +159,7 @@ describe("R4 rows — planner.crash_guard", () => {
     session.dropBridge(); await until(() => priv(h.sup).stale);
     release(); await h.sup.whenIdle();
     expect(doneOf(h.outcome, b)).toBeDefined(); expect(rows(h.store)).toEqual([]);
-    expect(h.counts).toEqual([...TURN, SQ, CC, CG, LS]); // turn 2: the prompt build (cap) completes before the stale re-check respawns (guard, lessons)
+    expect(h.counts).toEqual([...TURN, SQ, CC, CG, LS, TM]); // turn 2: the prompt build (cap) completes before the stale re-check respawns (guard, lessons), then the pin
   });
   it("the non-warm startSession consult names its own turn's run: a start refusal, then exits at the limit, halts there with a row on that run", async () => {
     const h = withRecorder(fakeSession({ badModels: ["anthropic/claude-opus-5-5"] })); const a = createQueuedTurnRun(h.store);
@@ -217,7 +217,7 @@ describe("R4 rows — turn.retry", () => {
     const session = quotaThenOk(); const h = withRecorder(session); const r = await turnOn(h)();
     expect(rows(h.store)).toEqual([[TR, "retry", "quota", r, null]]);
     expect(session.prompts).toEqual(["hi", RETRY_NOTE]); expect(doneOf(h.outcome, r)).toMatchObject({ text: "from 4.6" });
-    expect(h.counts).toEqual([...TURN, TR]);
+    expect(h.counts).toEqual([...TURN, TR, TM]);
   });
   it("10 model_refusal: final/model_refusal; failed model_error/model_refusal; one prompt", async () => {
     const session = failing(["model refusal"]); const h = withRecorder(session); const r = await turnOn(h)();
@@ -235,7 +235,7 @@ describe("R4 rows — turn.retry", () => {
     const session = failing(["something odd", "something odd"]); const h = withRecorder(session, routed("default")); const r = await turnOn(h)();
     expect(rows(h.store)).toEqual([[TR, "retry", "other_once", r, null], [TR, "final", "other_retried", r, null]]);
     expect(failedOf(h.outcome, r)).toMatchObject({ error_type: "model_error", error_ref: "other" }); expect(session.prompts).toEqual(["hi", RETRY_NOTE]);
-    expect(h.counts).toEqual([...TURN, TR, TR]);
+    expect(h.counts).toEqual([...TURN, TR, TM, TR]);
   });
   it("13 routed Fast, a tool ran, then `other`: final/other_after_tool, one prompt", async () => {
     const session = toolThenOther([{ type: "tool_execution_start" }]); const h = withRecorder(session, routed("fast")); const r = await turnOn(h)();
@@ -246,13 +246,13 @@ describe("R4 rows — turn.retry", () => {
     const session = toolThenOther([{ type: "tool_execution_start", toolName: "todo" } as OmpFrame]); const h = withRecorder(session, routed("fast")); const r = await turnOn(h)();
     expect(rows(h.store)).toEqual([[TR, "retry", "other_once", r, null], [TR, "final", "other_retried", r, null]]);
     expect(session.prompts).toEqual(["hi", RETRY_NOTE]);
-    expect(failedOf(h.outcome, r)).toMatchObject({ error_type: "model_error", error_ref: "other" }); expect(h.counts).toEqual([...TURN, TR, TR]);
+    expect(failedOf(h.outcome, r)).toMatchObject({ error_type: "model_error", error_ref: "other" }); expect(h.counts).toEqual([...TURN, TR, TM, TR]);
   });
   it("15 routed Fast, quota twice steps up to Default: retry/quota ×2, one routed_escalation, completed", async () => {
     const session = failing(["429 quota", "429 quota"]); const h = withRecorder(session, routed("fast")); const r = await turnOn(h)();
     expect(rows(h.store)).toEqual([[TR, "retry", "quota", r, null], [TR, "retry", "quota", r, null]]);
     expect(escalations(h.store, r)).toEqual([{ from: "fast", to: "default", kind: "quota" }]); expect(doneOf(h.outcome, r)).toMatchObject({ text: "ok" });
-    expect(h.counts).toEqual([...TURN, TR, TR]);
+    expect(h.counts).toEqual([...TURN, TR, TM, TR, TM]);
   });
   it("16 an async-work-only end with an error never consults the rule: no row; failed model_error; one prompt", async () => {
     const session = fakeSession({ onPrompt: (_t, e) => {
@@ -272,7 +272,7 @@ describe("R4 faults (spec §4.4)", () => {
     const s9 = quotaThenOk(); const h9 = harness(s9, {}, { recorder: boom }); const r9 = await turnOn(h9)();
     expect(s9.prompts).toEqual(["hi", RETRY_NOTE]); expect(doneOf(h9.outcome, r9)).toMatchObject({ text: "from 4.6" });
     expect(rows(h9.store)).toEqual([]); expect(recordFailedN(h9.store)).toBe(0);
-    expect(seen).toEqual([...TURN, TR]); seen.length = 0;
+    expect(seen).toEqual([...TURN, TR, TM]); seen.length = 0;
     const s2 = fakeSession({ noManifest: true }); const h2 = harness(s2, {}, { recorder: boom, ...FAILING_START }); const turn = turnOn(h2);
     for (let i = 0; i < 3; i++) await turn();
     const r4 = await turn();

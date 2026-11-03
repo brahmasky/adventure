@@ -52,7 +52,8 @@ export function fakeSession(script = {}) {
     steer: async (t) => { s.steers.push(t); s.log.push(["steer", t]); },
     getState: async () => ({ todoPhases: [], queuedMessageCount: 0, queuedMessages: { steering: [], followUp: [] } }),
     abort: async () => { setTimeout(() => emit({ type: "agent_end", aborted: true }), 5); },
-    setModel: async (m) => { const k = `${m.provider}/${m.model}`; s.models.push(k); s.log.push(["set_model", k]); }, newSession: async () => ({ cancelled: false }),
+    // R6: `script.setModel(m, k)` runs after the log push and may throw: a refusal is `modelRefusal(d, k)`, a transport failure a plain Error.
+    setModel: async (m) => { const k = `${m.provider}/${m.model}`; s.models.push(k); s.log.push(["set_model", k]); if (script.setModel) await script.setModel(m, k); }, newSession: async () => ({ cancelled: false }),
     onFrame: (cb) => { frameCbs.push(cb); }, onExit: (cb) => { exitCbs.push(cb); },
     stop: async () => { for (const k of sockets.splice(0)) k.destroy(); },
     /** R4: the ready child crashes (as tests/helpers/supervisor-harness.ts exit): sockets dropped, every exit callback told. */
@@ -71,6 +72,12 @@ export function heldSession(script = {}) {
   return { session, live: async (n = 1, sup) => { await until(() => live >= n); if (sup) await untilState(sup, "RUNNING"); }, end: (text = "ok") => { ends.shift()(text); } };
 }
 
+/** R6: the refusal omp gives a model it does not know, as THAT dist's PlannerRpcError (the supervisor's isModelRefusal checks instanceof). */
+export function modelRefusal(d, key) {
+  if (!d.PlannerRpcError) throw new Error(`${d.dir} has no PlannerRpcError`);
+  return new d.PlannerRpcError("command_failed:set_model", `Model not found: ${key}`);
+}
+
 /** The outcome sink the worker would pass: finishes the run in `store`; lists what it saw. */
 export function sink(store) {
   const o = { done: [], failed: [], incidents: [], resetOks: 0, routeEnds: [],
@@ -87,7 +94,7 @@ const fakeRoles = (d, lists = LISTS) => ({ requestRefresh() {}, candidates: (rol
 /** Every Jev question answered at 0.1, below each per-question bar, so a settle the rules pass settles. */
 const jev01 = async (r) => ({ ok: true, model: "jev-1.13.0", input_tokens: 1, latency_ms: 1, answers: Object.fromEntries(Object.keys(r.questions).map((id) => [id, { type: "noul", noul: 0.1 }])) });
 
-/** Seeds chat 42's planner session as current, as harness() does, then builds the supervisor. `opts`: { recorder (also passed as turnContext.recorder; R5), turnContext (a partial merged over the default turn context; R5), session, extra (SupervisorDeps overrides, incl. versionCheck), outcome, roles ({ default, fast, thinking } lists; R4) }. */
+/** Seeds chat 42's planner session as current, as harness() does, then builds the supervisor. `opts`: { recorder (also passed as turnContext.recorder; R5), turnContext (a partial merged over the default turn context; R5), session, extra (SupervisorDeps overrides, incl. versionCheck), outcome, roles/lists ({ default, fast, thinking } lists; R4, R6) }. */
 export function mkSupervisor(d, store, opts = {}) {
   store.recordPlannerSessionReset("42", d.lessonSetFingerprint(store), new Date().toISOString());
   store.claimSessionSeed("42"); store.promotePlannerSession("42");
@@ -103,7 +110,7 @@ export function mkSupervisor(d, store, opts = {}) {
       ...(opts.recorder ? { recorder: opts.recorder } : {}), ...(opts.turnContext ?? {}) }, // R5: the recorder reaches the turn-context entries; a partial turnContext is merged last (as o.turnContext in the TS harness)
     buildTools: () => ({ registry: new d.ToolRegistry(), quarantine: async () => ({ digest: "", contains_instructions: false, source_meta: { tool: "x", bytes: 0 } }) }),
     posture: () => null, outcome, sessionFactory: (o) => session.bind(o), versionCheck: () => ({ ok: true, version: "18.4.4" }), skipPreflightForTest: true,
-    manifestWaitMs: 5_000, roles: fakeRoles(d, opts.roles ?? LISTS), settleClient: () => jev01,
+    manifestWaitMs: 5_000, roles: fakeRoles(d, opts.lists ?? opts.roles ?? LISTS), settleClient: () => jev01,
     ...(opts.recorder ? { recorder: opts.recorder } : {}), ...opts.extra });
   return { sup, outcome, session, data };
 }
