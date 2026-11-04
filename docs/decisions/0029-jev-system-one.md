@@ -304,7 +304,7 @@ the decision is ADR 0030's `memory.kind` (amendment 2026-10-17).
   The run that saved is skipped by the background episodic pass.
 
 
-## Amendment (2026-11-03): chat is for Paco (`triage_overrides` to the log) (awaiting Paco's signature)
+## Amendment (2026-11-03): chat is for Paco (`triage_overrides` to the log) (signed off by Paco 2026-11-04)
 
 This file is protected (ADR 0011); this amendment is drafted for Paco's hand. Spec: `docs/superpowers/specs/2026-11-03-chat-is-for-paco-design.md` (Rev 1.2, approved 2026-11-03); see [ADR 0031](0031-chat-carries-what-needs-paco.md).
 

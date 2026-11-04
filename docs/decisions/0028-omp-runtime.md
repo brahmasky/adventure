@@ -387,7 +387,7 @@ attribution or session reset without crashing anything. Decided:
 
 Amended by [ADR 0030](0030-decision-ladder.md). D5's tap-free local writes become conditional on the turn's trust level (`turn.trust`); D12's network shell output gets the `tool.injection` judge.
 
-## Amendment (2026-11-02): tiers, a probe before adoption, the empty-tier card (awaiting Paco's signature)
+## Amendment (2026-11-02): tiers, a probe before adoption, the empty-tier card (signed off by Paco 2026-11-04)
 
 This file is protected (ADR 0011); this amendment is drafted for Paco's hand. Spec: `docs/superpowers/specs/2026-11-02-loud-degradation-design.md` (Rev 1.2, approved 2026-11-02, Decisions D1-A, D2-A, D3-A, D4-A). Plan: `docs/superpowers/plans/2026-11-02-loud-degradation.md`. It amends the 2026-10-07 model-roles amendment; [ADR 0027](0027-idea-panel-claude-chair.md) is not amended, because a judge seat still never falls back inside a panel run.
 
@@ -401,7 +401,7 @@ This file is protected (ADR 0011); this amendment is drafted for Paco's hand. Sp
 - **Rollback.** Revert and rebuild. The previous build ignores `model_tiers`, the new columns and the `model_probe` rows. The old `ROLE_LISTS` come back with a seat 2 that resolves to nothing, as before this slice.
 
 
-## Amendment (2026-11-03): chat is for Paco (tiers read renamed Gemini ids, one line per move, card-tap overrides retire, omp drift to the log) (awaiting Paco's signature)
+## Amendment (2026-11-03): chat is for Paco (tiers read renamed Gemini ids, one line per move, card-tap overrides retire, omp drift to the log) (signed off by Paco 2026-11-04)
 
 This file is protected (ADR 0011); this amendment is drafted for Paco's hand. Spec: `docs/superpowers/specs/2026-11-03-chat-is-for-paco-design.md` (Rev 1.2, approved 2026-11-03); see [ADR 0031](0031-chat-carries-what-needs-paco.md).
 

@@ -127,7 +127,7 @@ The north-star metric for the sense track: **the first incident Houge reports be
 notices it.** Until that happens, this is unproven infrastructure, not a closed loop.
 
 
-## Amendment (2026-11-03): chat is for Paco (sweep alerts by kind) (awaiting Paco's signature)
+## Amendment (2026-11-03): chat is for Paco (sweep alerts by kind) (signed off by Paco 2026-11-04)
 
 This file is protected (ADR 0011); this amendment is drafted for Paco's hand. Spec: `docs/superpowers/specs/2026-11-03-chat-is-for-paco-design.md` (Rev 1.2, approved 2026-11-03); see [ADR 0031](0031-chat-carries-what-needs-paco.md).
 

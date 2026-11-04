@@ -1,6 +1,6 @@
 # ADR 0031: Chat carries what needs Paco; the change log carries the rest
 
-- **Status:** proposed 2026-11-03 — awaiting Paco's signature (scope and decisions 1-A, 2-A, 3-A, 4-A approved by Paco 2026-11-03; spec approved 2026-11-03)
+- **Status:** accepted 2026-11-04, signed off by Paco (scope and decisions 1-A, 2-A, 3-A, 4-A approved by Paco 2026-11-03; spec approved 2026-11-03)
 - **Date:** 2026-11-03
 - **Deciders:** Paco
 - **Amends:** [0024](0024-introspection-invariant-sweep.md) (sweep alerts), [0028](0028-omp-runtime.md) (model tiers, omp
