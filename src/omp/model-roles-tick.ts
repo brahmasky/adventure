@@ -75,7 +75,8 @@ async function runProbes(plans: readonly TierPlan[], probe: ProbeFn | undefined,
 function settle(i: ModelRolesTickInput, catalogOk: boolean, catalog: readonly CatalogModel[] | null, plans: readonly TierPlan[], outcomes: ReadonlyArray<ProbeOutcome | null>): ModelRolesTickResult {
   const baseline = catalogOk ? i.store.latestModelRolesResolved({ catalogOk: true }) : undefined;
   const written = writeTiers(i, plans, outcomes);
-  retireCardOverrides(i.store, i.notify); // before resolveAll: the resolution row records the seat's source as the list
+  // Before resolveAll (the resolution row records the seat's source as the list); never on an outage tick, which changes nothing.
+  if (catalogOk) retireCardOverrides(i.store, i.notify);
   const roles = i.roles.resolveAll();
   i.store.recordModelRolesResolved({ resolved_at: i.now, catalog_ok: catalogOk, roles: roles.map(jsonSafe) });
   if (!catalogOk) return { ran: true, changed: [], unresolved: [] };

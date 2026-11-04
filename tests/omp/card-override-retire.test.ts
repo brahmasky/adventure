@@ -52,6 +52,17 @@ describe("retireCardOverrides through the tick", () => {
     expect(types.lastIndexOf("model_role_override")).toBeLessThan(types.indexOf("model_roles_resolved"));
     expect(seatSource()).toBe("list");
   });
+  it("a catalog outage tick retires nothing, even when the stored tier head already covers the tap (codex whole-diff)", async () => {
+    adopt(ARGON);
+    tapPass();
+    store.recordModelRoleOverride({ key: "judges:2", pattern: ARGON, actor: "paco", via: "tap" });
+    const notes: string[] = [];
+    const down = new RoleResolver({ store, env: () => ({ HOUGE_MODEL_ROLES: "resolved" }), readCatalog: async () => { throw new Error("catalog down"); } });
+    await runModelRolesTick({ store, roles: down, probe, now: day(0), notify: (t) => notes.push(t) });
+    expect(overrides()).toEqual([{ key: "judges:2", pattern: ARGON, actor: "paco", via: "tap" }]);
+    expect(notes).not.toContain(RETIRED);
+    expect(store.latestModelRoleOverrides().has("judges:2")).toBe(true);
+  });
   it("a legacy row (a run-less tap-pass probe immediately before a via-less override) is retired too", async () => {
     tapPass();
     store.recordModelRoleOverride({ key: "judges:2", pattern: ARGON, actor: "paco" });
