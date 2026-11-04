@@ -3,7 +3,7 @@ import { request as httpRequest } from "node:http";
 import type { RequestOptions } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { BlockList, isIP } from "node:net";
-import { createBrotliDecompress, createGunzip, createInflate } from "node:zlib";
+import { createGunzip, createInflate } from "node:zlib";
 
 /**
  * Direct URL read for the inner loop (`http_fetch`, Phase 3.6 step ③) — zero runtime
@@ -510,14 +510,20 @@ export async function fetchUrl(
         // Stream the body under the byte cap; decompress-if-gzipped so the cap binds
         // decompressed output (zip-bomb guard). Cap hit → destroy, keep the prefix.
         const encoding = (headerValue(res.headers, "content-encoding") ?? "").trim().toLowerCase();
+        // CVE-2026-111497 (Node2Shell): never feed a hostile body to the Brotli decoder. We asked for
+        // identity, so a Brotli reply is refused before a byte is decoded, whatever the Node version.
+        const allCodings = [res.headers["content-encoding"] ?? []].flat().join(",").toLowerCase();
+        if (allCodings.split(",").some((coding) => coding.trim() === "br")) {
+          res.destroy();
+          settle({ ok: false, error: "refused: brotli-encoded body (identity was requested)" });
+          return;
+        }
         const decoder =
           encoding === "gzip" || encoding === "x-gzip"
             ? createGunzip()
             : encoding === "deflate"
               ? createInflate()
-              : encoding === "br"
-                ? createBrotliDecompress()
-                : undefined;
+              : undefined;
 
         const chunks: Buffer[] = [];
         let bytes = 0;

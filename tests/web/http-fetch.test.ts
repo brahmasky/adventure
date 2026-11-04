@@ -561,6 +561,21 @@ describe("fetchUrl — transport behavior", () => {
     if (outcome.ok) expect(outcome.result).toMatchObject({ content: "hello world", truncated: false, bytes: 11 });
   });
 
+  // CVE-2026-111497 (Node2Shell): the bundled Brotli decoder can be driven to an out-of-bounds write by a
+  // hostile body. We ask for identity, so a Brotli reply is never needed: refuse it before any byte is decoded.
+  it.each(["br", "BR", " br ", "gzip, br", "br, gzip"])("refuses a Brotli-encoded body (content-encoding %j) without decoding it", async (enc) => {
+    const transport = respondWith(200, { "content-type": "text/plain", "content-encoding": enc }, Buffer.from([0xce, 0xb2, 0x00, 0xff]));
+    const outcome = await fetchUrl({ url: "https://br.test/" }, CONFIG, deps(transport));
+    expect(outcome.ok).toBe(false);
+    if (!outcome.ok) expect(outcome.error).toBe("refused: brotli-encoded body (identity was requested)");
+  });
+  it("refuses Brotli in any of several content-encoding header values, not only the first", async () => {
+    const transport = respondWith(200, { "content-type": "text/plain", "content-encoding": ["gzip", "br"] }, Buffer.from([0xce, 0xb2]));
+    const outcome = await fetchUrl({ url: "https://br2.test/" }, CONFIG, deps(transport));
+    expect(outcome.ok).toBe(false);
+    if (!outcome.ok) expect(outcome.error).toBe("refused: brotli-encoded body (identity was requested)");
+  });
+
   it("decodes the declared charset with a utf-8 fallback for unknown labels", async () => {
     const latin = respondWith(200, { "content-type": "text/plain; charset=iso-8859-1" }, Buffer.from([0xe9]));
     const a = await fetchUrl({ url: "https://charset.test/" }, CONFIG, deps(latin));
