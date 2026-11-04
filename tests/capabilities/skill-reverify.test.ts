@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { AnchorLlm } from "../../src/capabilities/anchor-verify.js";
 import {
+  formatReverifyReport,
   resolveSkillReverifyAgeDays,
   resolveSkillReverifyAt,
   resolveSkillReverifyEnabled,
@@ -13,7 +14,7 @@ import {
   type FlaggedSkill,
   type SkillReverifyStateStore
 } from "../../src/capabilities/skill-reverify.js";
-import type { LogIntent } from "../../src/notifications/notification-types.js";
+import type { ChatIntent } from "../../src/notifications/notification-types.js";
 import { SkillStore } from "../../src/skills/skill-store.js";
 
 // Sunday 10:30 Sydney (AEST = UTC+10) — 30 min past the default sun 10:00 slot.
@@ -46,11 +47,11 @@ function writeSkillFile(root: string, scope: string, name: string, lastVerified?
 function fakeStateStore(lastRun: string | null = null): SkillReverifyStateStore & {
   events: string[];
   ticks: Array<{ checked: number; passed: number; flagged: number }>;
-  notifications: LogIntent[];
+  notifications: ChatIntent[];
 } {
   const events: string[] = [];
   const ticks: Array<{ checked: number; passed: number; flagged: number }> = [];
-  const notifications: LogIntent[] = [];
+  const notifications: ChatIntent[] = [];
   return {
     events,
     ticks,
@@ -133,6 +134,41 @@ describe("resolveSkillReverifyAgeDays", () => {
   });
 });
 
+// --- formatReverifyReport ------------------------------------------------------
+
+describe("formatReverifyReport", () => {
+  it("escapes LLM-output criteria (markdown metachars stripped; raw HTML inert downstream)", () => {
+    const flags: FlaggedSkill[] = [
+      {
+        name: "shady-skill",
+        scope: "research",
+        score: 0.05,
+        threshold: 0.15,
+        failing: ["<b>use *markdown* [tricks](http://x)</b> to spoof"]
+      }
+    ];
+    const text = formatReverifyReport(flags);
+    expect(text).toContain("🐒 Skill re-verify — 1 flagged");
+    expect(text).toContain("**shady-skill** (research) · score 0.05 < 0.15");
+    // The criterion went through escapeForTelegram: no markdown/link metachars survive
+    // (the `<b>` HTML chars are escaped downstream by markdownToTelegramHtml's escapeHtml).
+    expect(text).not.toContain("*markdown*");
+    expect(text).not.toContain("[tricks](http://x)");
+    expect(text).toContain("use markdown trickshttp://x");
+    expect(text).toContain("→ retire: /skills retire shady-skill · keep: do nothing (re-checked next tick)");
+  });
+
+  it("bolds with ** only — never ## (the Telegram converter has no heading support)", () => {
+    const text = formatReverifyReport([
+      { name: "a", scope: "s", score: 0, threshold: 0.15, failing: ["c1", "c2", "c3", "c4"] }
+    ]);
+    expect(text).not.toContain("##");
+    // Failing criteria are capped at 3 per skill.
+    expect(text).toContain("• c3");
+    expect(text).not.toContain("c4");
+  });
+});
+
 // --- runSkillReverifyTick --------------------------------------------------------
 
 describe("runSkillReverifyTick", () => {
@@ -146,7 +182,8 @@ describe("runSkillReverifyTick", () => {
       skills,
       anchorLlm: cannedGateB(ALL_FAIL, events),
       env: {},
-      now: NOW
+      now: NOW,
+      chatId: "222"
     });
     expect(out).toEqual({ ran: false });
     expect(events).toEqual([]);
@@ -162,7 +199,8 @@ describe("runSkillReverifyTick", () => {
       skills,
       anchorLlm: cannedGateB(ALL_FAIL, events),
       env: ARMED,
-      now: NOW
+      now: NOW,
+      chatId: "222"
     });
     expect(out).toEqual({ ran: true });
     // Latch BEFORE the first Gate B call (M3 posture).
@@ -172,12 +210,12 @@ describe("runSkillReverifyTick", () => {
     expect(state.notifications).toHaveLength(1);
     const intent = state.notifications[0]!;
     expect(intent.topic).toBe("skill_reverify");
+    expect(intent.intent_type).toBe("progress");
     expect(intent.idempotency_key).toBe("skill_reverify:2026-08-30");
-    const text = intent.text;
-    // Spec §8: change_log text is code-owned — a count only, no skill name, no Gate B criterion text.
-    expect(text).toBe("Skill re-check: 1 skill(s) failed their check — /skills shows them.");
-    expect(text).not.toContain("stale-skill");
-    expect(text).not.toContain("cites a primary source");
+    expect(intent.target).toEqual({ kind: "telegram", chat_id: "222" });
+    const text = String(intent.payload.text);
+    expect(text).toContain("stale-skill");
+    expect(text).toContain("/skills retire stale-skill");
     // The stale skill was NOT stamped and NOT moved.
     const file = readFileSync(join(root, "research", "stale-skill.md"), "utf8");
     expect(file).toContain("last_verified: 2026-06-01");
@@ -192,7 +230,8 @@ describe("runSkillReverifyTick", () => {
       skills,
       anchorLlm: cannedGateB(ALL_PASS),
       env: ARMED,
-      now: NOW
+      now: NOW,
+      chatId: "222"
     });
     expect(out).toEqual({ ran: true });
     expect(state.ticks).toEqual([{ checked: 1, passed: 1, flagged: 0 }]);
@@ -212,7 +251,8 @@ describe("runSkillReverifyTick", () => {
       skills,
       anchorLlm: cannedGateB(undefined), // LLM down → every pass unparseable → unscored
       env: ARMED,
-      now: NOW
+      now: NOW,
+      chatId: "222"
     });
     expect(out).toEqual({ ran: true });
     // Only the stale skill was a candidate; unscored → skipped (no stamp, no flag).
@@ -235,7 +275,8 @@ describe("runSkillReverifyTick", () => {
       skills,
       anchorLlm: cannedGateB(ALL_PASS),
       env: ARMED,
-      now: NOW_WED
+      now: NOW_WED,
+      chatId: "222"
     });
     expect(out).toEqual({ ran: true });
     expect(state.events[0]).toBe(`latch:${NOW_WED}`);
@@ -253,7 +294,8 @@ describe("runSkillReverifyTick", () => {
       skills,
       anchorLlm: cannedGateB(ALL_PASS),
       env: ARMED,
-      now: NOW
+      now: NOW,
+      chatId: "222"
     });
     expect(out).toEqual({ ran: true });
     expect(REVERIFY_MAX_PER_TICK).toBe(12);
@@ -276,7 +318,8 @@ describe("runSkillReverifyTick", () => {
       skills,
       anchorLlm: cannedGateB(ALL_FAIL, events),
       env: ARMED,
-      now: NOW
+      now: NOW,
+      chatId: "222"
     });
     expect(out).toEqual({ ran: false });
     expect(events).toEqual([]);
@@ -291,13 +334,14 @@ describe("runSkillReverifyTick", () => {
       skills,
       anchorLlm: cannedGateB(ALL_FAIL),
       env: { ...ARMED, HOUGE_SKILL_REVERIFY_AT: "off" },
-      now: NOW
+      now: NOW,
+      chatId: "222"
     });
     expect(out).toEqual({ ran: false });
     expect(state.events).toEqual([]);
   });
 
-  it("flags with no chat anywhere still latch, record and reach the change log (chat is not needed)", async () => {
+  it("flags without a chatId still latch + record but enqueue nothing (CLI context)", async () => {
     const { store: skills, root } = tempSkillStore();
     writeSkillFile(root, "research", "stale-skill", "2026-06-01");
     const state = fakeStateStore();
@@ -306,13 +350,12 @@ describe("runSkillReverifyTick", () => {
       skills,
       anchorLlm: cannedGateB(ALL_FAIL),
       env: ARMED,
-      now: NOW
+      now: NOW,
+      chatId: null
     });
     expect(out).toEqual({ ran: true });
     expect(state.ticks).toEqual([{ checked: 1, passed: 0, flagged: 1 }]);
-    expect(state.notifications).toHaveLength(1);
-    expect(state.notifications[0]!.topic).toBe("skill_reverify");
-    expect("target" in state.notifications[0]!).toBe(false);
+    expect(state.notifications).toHaveLength(0);
   });
 });
 
@@ -325,7 +368,7 @@ describe("runSkillReverifyTick — the daemon's stop (live 2026-10-02)", () => {
     const controller = new AbortController();
     let calls = 0;
     const out = await runSkillReverifyTick({
-      store: state, skills, env: ARMED, now: NOW, signal: controller.signal,
+      store: state, skills, env: ARMED, now: NOW, chatId: "222", signal: controller.signal,
       anchorLlm: async () => { calls += 1; if (calls === 1) controller.abort(); return ALL_PASS; }
     });
     expect(out).toEqual({ ran: true });
@@ -342,7 +385,7 @@ describe("runSkillReverifyTick — the daemon's stop (live 2026-10-02)", () => {
     writeSkillFile(root, "research", "alpha", "2026-06-01");
     const state = fakeStateStore();
     const out = await runSkillReverifyTick({
-      store: state, skills, anchorLlm: cannedGateB(ALL_PASS, state.events), env: ARMED, now: NOW, signal: AbortSignal.abort()
+      store: state, skills, anchorLlm: cannedGateB(ALL_PASS, state.events), env: ARMED, now: NOW, chatId: "222", signal: AbortSignal.abort()
     });
     expect(out).toEqual({ ran: false });
     expect(state.events).toEqual([]);

@@ -1,6 +1,6 @@
 # Chat is for Paco — design
 
-**Rev 1.2 · 2026-11-03 · Decisions 1-A, 2-A, 3-A, 4-A (Paco, 2026-11-03)**
+**Rev 1.3 · 2026-11-04 · Decisions 1-A, 2-A, 3-A, 4-A (Paco, 2026-11-03)**
 **New:** ADR 0031. **Amends:** ADR 0024 (sweep), ADR 0028 (model tiers, omp drift kinds), ADR 0029 (`triage_overrides`),
 ADR 0030 (decision-health kinds).
 **Rests on:** an inventory of every enqueue site and incident kind (`main` @ `76d972a4`, live DB read-only, 2026-11-03).
@@ -57,8 +57,8 @@ spec's approval (AGENTS.md Tier A). A guard hit there is expected, not a regress
 export const TOPIC_ROUTE = {
   reply: "chat", run_report: "chat", approval: "chat", memory_card: "chat", rating_ask: "chat", digest: "chat",
   urgent: "chat", idea_panel: "chat", self_write: "chat", budget_fuse: "chat", improve_job: "chat", jev_card: "chat",
-  model_card: "chat", incident_page: "chat", incident_reminder: "chat", incident_summary: "chat",
-  model_change: "log", incident_log: "log", jev_notice: "log", skill_reverify: "log", decision_internal: "log"
+  model_card: "chat", incident_page: "chat", incident_reminder: "chat", incident_summary: "chat", skill_reverify: "chat",
+  model_change: "log", incident_log: "log", jev_notice: "log", decision_internal: "log"
 } as const satisfies Record<string, "chat" | "log">;
 export type NotificationTopic = keyof typeof TOPIC_ROUTE;
 export type ChatTopic = { [K in NotificationTopic]: (typeof TOPIC_ROUTE)[K] extends "chat" ? K : never }[NotificationTopic];
@@ -94,7 +94,7 @@ The 11 uses of `NotificationIntent["target" | "payload" | "intent_type"]` in `ru
 | improve_job | `skill-job.ts` `enqueueJobCard`, `promote.ts` collision |
 | jev_card | `jev-version-job.ts:547` Accept card; the stalled notice (`:175`, it names `houge jev accept`) |
 | jev_notice | the other `jev-version-job.ts` notices (deferred, trusted, passed) |
-| skill_reverify | `skill-reverify.ts` |
+| skill_reverify | `skill-reverify.ts` — chat, with its own report (Rev 1.3: a failing skill that suggests `/skills retire` is "Paco must act", §2) |
 | model_change | the roles tick's notices (§6.2) |
 | model_card | `enqueueTierCard` |
 | incident_page / incident_log | opened and resolved notices, by kind (§5) |
@@ -378,7 +378,7 @@ Paco's 13:36 tap wrote the override `judges:2 → gemini-4-argon`. Kept, it woul
 - `omp_contract_drift` that degrades answers without failing spawns: `/status` until the 7-day reminder.
 - Rating asks (29 / 30 days) stay in chat; Paco may demote them later.
 
-## 12. Review changes (Rev 1.0 → 1.2)
+## 12. Review changes (Rev 1.0 → 1.3)
 
 | finding | source | change |
 |---|---|---|
@@ -406,3 +406,4 @@ Paco's 13:36 tap wrote the override `judges:2 → gemini-4-argon`. Kept, it woul
 | 50-line rule | senior W | `logChange`, `changesLine` |
 | non-production sites, fixture helper, dedupe scope, clock, flap, cut, chat regression line | senior S | §4.1, §4.3, §4.2, §7, §10 |
 | Rev 1.1 re-review: event-kind skip mechanism, card chat fallback, `via` reader, type rename, wording | senior re-review | §5.1, §6.4, §4.1, §5.3, §10 (Rev 1.2) |
+| skill re-check count-only log line points to `/skills`, which shows no failed marker | final re-review (Fable) | §4.1 `skill_reverify` → chat with its own report (Rev 1.3) |

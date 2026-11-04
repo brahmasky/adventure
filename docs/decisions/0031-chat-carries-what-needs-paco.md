@@ -5,7 +5,7 @@
 - **Deciders:** Paco
 - **Amends:** [0024](0024-introspection-invariant-sweep.md) (sweep alerts), [0028](0028-omp-runtime.md) (model tiers, omp
   drift kinds), [0029](0029-jev-system-one.md) (`triage_overrides`), [0030](0030-decision-ladder.md) (decision-health kinds)
-- **Spec:** [2026-11-03-chat-is-for-paco-design.md](../superpowers/specs/2026-11-03-chat-is-for-paco-design.md) (Rev 1.2)
+- **Spec:** [2026-11-03-chat-is-for-paco-design.md](../superpowers/specs/2026-11-03-chat-is-for-paco-design.md) (Rev 1.3)
 
 ## Context
 
@@ -36,14 +36,13 @@ in ledger rows but nothing read it back in plain words.
 ## Consequences
 
 - Chat carries replies, run reports, approvals, memory cards, rating asks, the digest, idea panel, standing and
-  improvement cards, self-write notices, budget fuses and real outages. Model switches, internal self-checks and routine
-  Jev notices are read with `/changes`.
+  improvement cards, self-write notices, budget fuses, a failing skill re-check (it asks for `/skills retire`) and real
+  outages. Model switches, internal self-checks and routine Jev notices are read with `/changes`.
 - Two messages for one event become one where an incident and its card both fired (`hostile_schedule_turn`).
 - What else changed in code: a duplicate log write returns `duplicate_log` (no outbox record exists), not `duplicate`;
   an urgent card with no chat now throws instead of queueing an undeliverable row (`standing_grant` keeps "no grant
-  without its card"; `trust_hostile` falls to `trust_card_failed`, which pages); the skill re-check logs a code-owned
-  count, never the model-written report; `/models set` marks its override `via: "set"` so it is never read as a card tap;
-  `/changes` collapses consecutive identical entries (`×N`).
+  without its card"; `trust_hostile` falls to `trust_card_failed`, which pages); `/models set` marks its override
+  `via: "set"` so it is never read as a card tap; `/changes` collapses consecutive identical entries (`×N`).
 - Residuals Paco accepts: background is visible only when he looks; a catalog outage and a stale static list left the daily
   reminder; an omp contract drift that degrades answers without failing spawns shows in `/status` and, after 7 days, in the
   reminder; rating asks stay in chat.

@@ -1,4 +1,4 @@
-import type { LogIntent } from "../notifications/notification-types.js";
+import type { ChatIntent } from "../notifications/notification-types.js";
 import { computeNextRunAt, type ScheduleWeekday } from "../run/schedule-spec.js";
 import type { SkillStore } from "../skills/skill-store.js";
 import { resolveSkillsEnabled } from "../skills/skill-store.js";
@@ -9,6 +9,7 @@ import {
   type AnchorLlm
 } from "./anchor-verify.js";
 import { resolveRadarTz } from "./idea-radar.js";
+import { escapeForTelegram } from "./text-hygiene.js";
 import { parseWeeklyAt } from "./week-key.js";
 
 /**
@@ -35,6 +36,9 @@ const DAY_MS = 86_400_000;
 
 /** Max stale skills verified per tick — excess is picked up next week (bounded, like every tick). */
 export const REVERIFY_MAX_PER_TICK = 12;
+
+/** Failing criteria shown per flagged skill in the report (the rest is noise at a glance). */
+const REPORT_FAILING_CAP = 3;
 
 /** Whether the advisor is armed (`HOUGE_SKILL_REVERIFY_ENABLED`). Default OFF — "1" arms. */
 export function resolveSkillReverifyEnabled(env: NodeJS.ProcessEnv): boolean {
@@ -64,7 +68,7 @@ export interface SkillReverifyStateStore {
   getSkillReverifyLastRun(): string | null;
   setSkillReverifyLastRun(now: string): void;
   recordSkillReverifyTick(p: { checked: number; passed: number; flagged: number }): void;
-  enqueueNotification(intent: LogIntent): unknown;
+  enqueueNotification(intent: ChatIntent): unknown;
 }
 
 /** One Gate B failure worth flagging: identity + score margin + the failing criteria. */
@@ -74,6 +78,30 @@ export interface FlaggedSkill {
   score: number;
   threshold: number;
   failing: string[];
+}
+
+/**
+ * Render the flag report. Failing criteria are Gate B LLM OUTPUT — every criterion (and
+ * the frontmatter-derived name/scope) passes through `escapeForTelegram` so model text
+ * can't spoof markdown/links; raw HTML chars are neutralized downstream by the outbound
+ * `markdownToTelegramHtml` escape. **bold** only, never `##` (the converter has no
+ * heading support — /lessons lesson).
+ */
+export function formatReverifyReport(flags: FlaggedSkill[]): string {
+  const blocks = flags.map((f) => {
+    const lines = [
+      `**${escapeForTelegram(f.name)}** (${escapeForTelegram(f.scope)}) · ` +
+        `score ${f.score.toFixed(2)} < ${f.threshold.toFixed(2)}`
+    ];
+    for (const criterion of f.failing.slice(0, REPORT_FAILING_CAP)) {
+      lines.push(`   • ${escapeForTelegram(criterion)}`);
+    }
+    lines.push(
+      `→ retire: /skills retire ${escapeForTelegram(f.name)} · keep: do nothing (re-checked next tick)`
+    );
+    return lines.join("\n");
+  });
+  return [`🐒 Skill re-verify — ${flags.length} flagged`, "", blocks.join("\n\n")].join("\n");
 }
 
 /**
@@ -92,6 +120,7 @@ export async function runSkillReverifyTick(input: {
   anchorLlm: AnchorLlm;
   env: NodeJS.ProcessEnv;
   now: string;
+  chatId: string | null;
   /**
    * The daemon's stop: no tick starts once it aborts; mid-tick it stops before the next skill, and a
    * skill whose passes the stop cut short is neither stamped nor flagged (it stays stale for next week).
@@ -166,13 +195,14 @@ export async function runSkillReverifyTick(input: {
       flagged: flags.length
     });
 
-    if (flags.length > 0) {
+    if (flags.length > 0 && input.chatId !== null) {
       input.store.enqueueNotification({
         topic: "skill_reverify",
+        target: { kind: "telegram", chat_id: input.chatId },
+        intent_type: "progress",
         idempotency_key: `skill_reverify:${input.now.slice(0, 10)}`,
         correlation_id: "skill-reverify",
-        text: `Skill re-check: ${flags.length} skill(s) failed their check — /skills shows them.`,
-        now: input.now
+        payload: { text: formatReverifyReport(flags) }
       });
     }
     return { ran: true };
