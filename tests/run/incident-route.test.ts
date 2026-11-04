@@ -59,7 +59,9 @@ describe("routes", () => {
 describe("maskSubject", () => {
   it.each([
     ["chat:-1001234567890", "a chat"], ["8123456789", "a chat"], ["run:run_0f6c-uuid", "a run"], ["run_0f6c1b2a", "a run"],
-    ["appr_x", "an approval"], ["uses:run_0f6c-uuid", "a run"], ["x:appr_1", "an approval"], ["x:8123456789", "a chat"], ["judges:2", "judges:2"], ["standing:std_1", "standing:std_1"]
+    ["appr_x", "an approval"], ["uses:run_0f6c-uuid", "a run"], ["x:appr_1", "an approval"], ["x:8123456789", "a chat"], ["judges:2", "judges:2"], ["standing:std_1", "standing:std_1"],
+    // codex whole-diff: a bare short chat id (todo_reminder_seen's subject is the chat id itself) is still a chat
+    ["555", "a chat"], ["-42", "a chat"]
   ])("%s -> %s", (s, want) => expect(maskSubject(s)).toBe(want));
 });
 

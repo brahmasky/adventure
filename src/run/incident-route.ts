@@ -90,6 +90,7 @@ export function routeOf(kind: string): IncidentRoute { return ruleOf(kind).route
 const CHAT_ID = /^-?\d{6,}$/;
 /** Chat and run ids and approval ids become words; code-owned ids (standing:, lesson:, role keys) stay. */
 export function maskSubject(s: string): string {
+  if (/^-?\d+$/.test(s)) return "a chat"; // a bare id of any length is a chat (todo_reminder_seen); `judges:2` keeps its seat
   const segs = s.split(":");
   if (segs[0] === "chat") return "a chat";
   if (segs[0] === "run") return "a run";
