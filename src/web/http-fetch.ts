@@ -512,7 +512,8 @@ export async function fetchUrl(
         const encoding = (headerValue(res.headers, "content-encoding") ?? "").trim().toLowerCase();
         // CVE-2026-111497 (Node2Shell): never feed a hostile body to the Brotli decoder. We asked for
         // identity, so a Brotli reply is refused before a byte is decoded, whatever the Node version.
-        if (encoding.split(",").some((coding) => coding.trim() === "br")) {
+        const allCodings = [res.headers["content-encoding"] ?? []].flat().join(",").toLowerCase();
+        if (allCodings.split(",").some((coding) => coding.trim() === "br")) {
           res.destroy();
           settle({ ok: false, error: "refused: brotli-encoded body (identity was requested)" });
           return;

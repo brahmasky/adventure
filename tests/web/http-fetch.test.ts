@@ -569,6 +569,12 @@ describe("fetchUrl — transport behavior", () => {
     expect(outcome.ok).toBe(false);
     if (!outcome.ok) expect(outcome.error).toBe("refused: brotli-encoded body (identity was requested)");
   });
+  it("refuses Brotli in any of several content-encoding header values, not only the first", async () => {
+    const transport = respondWith(200, { "content-type": "text/plain", "content-encoding": ["gzip", "br"] }, Buffer.from([0xce, 0xb2]));
+    const outcome = await fetchUrl({ url: "https://br2.test/" }, CONFIG, deps(transport));
+    expect(outcome.ok).toBe(false);
+    if (!outcome.ok) expect(outcome.error).toBe("refused: brotli-encoded body (identity was requested)");
+  });
 
   it("decodes the declared charset with a utf-8 fallback for unknown labels", async () => {
     const latin = respondWith(200, { "content-type": "text/plain; charset=iso-8859-1" }, Buffer.from([0xe9]));
