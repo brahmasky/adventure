@@ -2,7 +2,7 @@ import { decideSync } from "../decisions/decide.js";
 import { MEMORY_CORRECT_PREFLIGHT, type MemoryCorrectRefusal } from "../decisions/entries/memory-correct-preflight.js";
 import type { DecisionRecorder } from "../decisions/types.js";
 import { blobToFloat32, cosineSimilarity, resolveEmbedConfig } from "../llm/embeddings.js";
-import type { NotificationButton } from "../notifications/notification-types.js";
+import type { ChatIntent, NotificationButton } from "../notifications/notification-types.js";
 import type { MemoryChange, MemoryKind, RunStore } from "../run/run-store.js";
 import { clipText } from "../status/houge-status.js";
 import type { ToolAdapterResult } from "../tools/tool-registry.js";
@@ -171,9 +171,10 @@ export function memoryChangeCardText(store: RunStore, change: MemoryChange): str
 
 /** Queue the Undo card through the outbox (rendered by the Telegram adapter's rich renderer). */
 export function enqueueMemoryChangeCard(
-  store: RunStore, change: MemoryChange, o: { target: Parameters<RunStore["enqueueNotification"]>[0]["target"]; idempotency_key: string; correlation_id: string; run_id?: string }
+  store: RunStore, change: MemoryChange, o: { target: ChatIntent["target"]; idempotency_key: string; correlation_id: string; run_id?: string }
 ): void {
   const queued = store.enqueueNotification({
+    topic: "memory_card",
     target: o.target, intent_type: "progress", idempotency_key: o.idempotency_key, correlation_id: o.correlation_id,
     ...(o.run_id ? { run_id: o.run_id } : {}),
     payload: { text: memoryChangeCardText(store, change), buttons: [memoryUndoButton(change.change_id)] }

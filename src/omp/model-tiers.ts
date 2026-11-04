@@ -5,10 +5,15 @@ import type { CatalogModel } from "./model-roles.js";
  * one capture group per version segment. "Newest" comes from the version in the id (the catalog has no release date).
  * `\d{1,2}` keeps dated snapshots out; the anchors keep out -lite, -highspeed, -256k and previews. A different family is
  * Paco's call (D1, or /models), never this file's.
+ *
+ * Spec 2026-11-03 §6.1: the gemini-pro tier reads renames (`gemini-4-argon`), so the next Gemini adopts through the probe like any
+ * tier; this replaces 2026-11-02 §4.4's "never a codename without a tap" for Gemini. §6.3: a card proposal stays in the tier's family.
  */
 export type TierId = "opus@anthropic" | "opus@antigravity" | "sonnet@anthropic" | "sonnet@antigravity" | "gemini-flash" | "gemini-pro" | "codex-sol" | "kimi";
 export interface TierDef { id: TierId; provider: string; pattern: RegExp; label: string }
 
+/** A modality or size word after `gemini-N-`: not the pro tier. A new modality is a one-line change here. */
+export const GEMINI_NOT_PRO = "flash|flashlite|lite|preview|image|audio|tts|live|embedding|nano|vision";
 const OPUS = /^claude-opus-(\d{1,2})(?:-(\d{1,2}))?$/;
 const SONNET = /^claude-sonnet-(\d{1,2})(?:-(\d{1,2}))?$/;
 export const TIERS: readonly TierDef[] = [
@@ -17,11 +22,12 @@ export const TIERS: readonly TierDef[] = [
   { id: "sonnet@anthropic", provider: "anthropic", pattern: SONNET, label: "Sonnet" },
   { id: "sonnet@antigravity", provider: "google-antigravity", pattern: SONNET, label: "Sonnet" },
   { id: "gemini-flash", provider: "google-antigravity", pattern: /^gemini-(\d{1,2})(?:\.(\d{1,2}))?-flash$/, label: "flash" },
-  { id: "gemini-pro", provider: "google-antigravity", pattern: /^gemini-(\d{1,2})(?:\.(\d{1,2}))?-pro$/, label: "pro" },
+  { id: "gemini-pro", provider: "google-antigravity", pattern: new RegExp(`^gemini-(\\d{1,2})(?:\\.(\\d{1,2}))?-(?!(?:${GEMINI_NOT_PRO})$)[a-z]+$`), label: "pro" },
   { id: "codex-sol", provider: "openai-codex", pattern: /^gpt-(\d{1,2})(?:\.(\d{1,2}))?-sol$/, label: "sol" },
   // D1-A (Paco 2026-11-02): -pro counts (k3.1-pro > k3); -highspeed and -256k stay out by the anchor
   { id: "kimi", provider: "kimi-code", pattern: /^k(\d{1,2})(?:\.(\d{1,2}))?(?:-pro)?$/, label: "K" }
 ];
+export const PROVIDER_LABEL: Readonly<Record<string, string>> = { anthropic: "Anthropic", "google-antigravity": "Google", "openai-codex": "OpenAI", "kimi-code": "Kimi" };
 export const TIER_IDS: readonly TierId[] = TIERS.map((t) => t.id);
 export const isTierId = (s: string): s is TierId => (TIER_IDS as readonly string[]).includes(s);
 export function tierDef(id: TierId): TierDef { return TIERS.find((t) => t.id === id)!; }
@@ -48,7 +54,7 @@ export function tierMembers(def: TierDef, catalog: readonly CatalogModel[]): str
 
 export function catalogHead(def: TierDef, catalog: readonly CatalogModel[]): string | null { return tierMembers(def, catalog)[0] ?? null; }
 
-/** Spec §4.2 bootstrap (W4): the list entries that matched each tier and ran on 2026-11-01. gemini-pro has none (§4.4). */
+/** Spec §4.2 bootstrap (W4): the list entries that matched each tier and ran on 2026-11-01. gemini-pro had none (§4.4); the first tick probes it (2026-11-03 §6.1). */
 export const SEED_HEADS: Readonly<Record<TierId, string | null>> = {
   "opus@anthropic": "claude-opus-5-5", "opus@antigravity": "claude-opus-5-5", "sonnet@anthropic": "claude-sonnet-5-5",
   "sonnet@antigravity": "claude-sonnet-5-5", "gemini-flash": "gemini-3.8-flash", "gemini-pro": null, "codex-sol": "gpt-6.1-sol", kimi: "k3"
@@ -71,9 +77,20 @@ export function outputPriceAt(m: CatalogModel, nowMs: number): number | null {
   return started ? started.output : m.price.output;
 }
 
-/** P9: same provider, matched by no tier of that provider, not a preview, not -lite. */
+/** Spec 2026-11-03 §6.3: the id prefix that makes a model a candidate for the tier's seat; `familyWord` names it in the card. */
+const TIER_FAMILY: Readonly<Record<TierId, RegExp>> = {
+  "opus@anthropic": /^claude-/, "opus@antigravity": /^claude-/, "sonnet@anthropic": /^claude-/, "sonnet@antigravity": /^claude-/,
+  "gemini-flash": /^gemini-/, "gemini-pro": /^gemini-/, "codex-sol": /^gpt-/, kimi: /^k\d/
+};
+const FAMILY_WORD: Readonly<Record<TierId, string>> = {
+  "opus@anthropic": "claude", "opus@antigravity": "claude", "sonnet@anthropic": "claude", "sonnet@antigravity": "claude",
+  "gemini-flash": "gemini", "gemini-pro": "gemini", "codex-sol": "gpt", kimi: "kimi"
+};
+export const familyWord = (id: TierId): string => FAMILY_WORD[id];
+
+/** P9: same provider and family, matched by no tier of that provider, not a preview, not -lite. */
 function isProposal(def: TierDef, m: CatalogModel): boolean {
-  if (m.provider !== def.provider || m.id.includes("preview") || m.id.endsWith("-lite")) return false;
+  if (m.provider !== def.provider || m.id.includes("preview") || m.id.endsWith("-lite") || !TIER_FAMILY[def.id].test(m.id)) return false;
   return !TIERS.some((t) => t.provider === def.provider && tierVersion(t, m.id) !== null);
 }
 

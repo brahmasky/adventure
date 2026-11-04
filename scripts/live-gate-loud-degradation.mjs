@@ -31,7 +31,9 @@ const want = (n) => ONLY === null || ONLY.has(n);
 const STUB_CHAT = "-1003"; // numeric (CoreWorker refuses a non-numeric chat id), not a real chat
 const HOSTILE = "hostile_schedule_turn";
 const HOSTILE_MIGRATION = "2026-11-02-hostile-schedule-event";
-const REMIND_KINDS = ["role_unresolved", "static_list_stale", "model_catalog_unavailable", "planner_session_reset_failed"]; // literal, spec §5
+// literal, spec 2026-11-03 §5.4: the page kinds a reminder repeats (24 h), plus omp_contract_drift (a log kind, reminded only once a week old); the log kinds static_list_stale and model_catalog_unavailable left
+const REMIND_AFTER_MS = { role_unresolved: 86_400_000, planner_session_reset_failed: 86_400_000, omp_contract_drift: 7 * 86_400_000 };
+const REMIND_KINDS = Object.keys(REMIND_AFTER_MS);
 const DAY_MS = 86_400_000;
 const TURN_TIMEOUT_MS = 300_000;
 const SET_PINS = ["HOUGE_TOMBSTONE_PATH", "HOUGE_DISARM_PATH", "HOUGE_TELEGRAM_CHAT_ID"];
@@ -144,9 +146,8 @@ async function line1() {
 async function line2() {
   const now = new Date().toISOString();
   rows("SELECT 1 AS x FROM incidents LIMIT 1"); // fail early on a broken copy
-  const cutoff = (t) => Date.parse(t) - DAY_MS;
   const openRows = rows(`SELECT incident_id, kind, subject, first_seen_at FROM incidents WHERE state = 'open' AND kind IN (${REMIND_KINDS.map((k) => `'${k}'`).join(",")})`);
-  const dueAt = (t) => openRows.filter((r) => Date.parse(r.first_seen_at) < cutoff(t));
+  const dueAt = (t) => openRows.filter((r) => Date.parse(r.first_seen_at) < Date.parse(t) - REMIND_AFTER_MS[r.kind]);
   const due = dueAt(now); const wantJudges = due.some((r) => r.kind === "role_unresolved" && r.subject === "judges:2");
   const pre = countOf("SELECT COUNT(*) AS n FROM notification_outbox WHERE idempotency_key LIKE 'incident_remind:%'");
   G.store.db.prepare("DELETE FROM notification_outbox WHERE idempotency_key LIKE 'incident_remind:%'").run(); // the copy is disposable: start from no row
@@ -205,6 +206,7 @@ async function line4() {
 }
 
 // ---- line 5: schedule-born turns (D3-A) ----
+const changeByKey = (key) => rows("SELECT topic, text FROM change_log WHERE idempotency_key = ?", key);
 const hostileRows = (subject) => rows("SELECT incident_id, state FROM incidents WHERE kind = ? AND subject = ?", HOSTILE, subject);
 async function line5() {
   const { script, sess, sup, getSup } = mkFake({ HOUGE_TELEGRAM_CHAT_ID: STUB_CHAT });
@@ -216,9 +218,11 @@ async function line5() {
   raising(script, sess, getSup, "unjudged_outside");
   const born = await fakeTurn(sup, "born", "schedule");
   const mine = hostileRows(born); const total2 = countOf("SELECT COUNT(*) AS n FROM incidents WHERE kind = ?", HOSTILE);
-  const alerts = mine.length === 1 ? outboxByKey(`incident_opened:${mine[0].incident_id}`) : [];
-  const ok = carriedRows === 0 && total1 === total0 && mine.length === 1 && mine[0].state === "resolved" && total2 === total1 + 1 && alerts.length === 1 && alerts[0].target.chat_id === STUB_CHAT;
-  return { ok, detail: `carried_turn_incidents=${carriedRows} (want 0) total_delta_after_carried=${total1 - total0} (want 0) born_turn_incidents=${mine.length} (want 1) state=${mine[0]?.state ?? "none"} (want resolved) total_delta_after_born=${total2 - total1} (want 1) incident_opened_rows=${alerts.length} (want 1) to_stub_chat=${alerts[0]?.target?.chat_id === STUB_CHAT}` };
+  // 2026-11-03 §5.3: hostile_schedule_turn is a log kind (the trust_hostile card is the page): one incident_log change_log row, zero outbox rows. A page that still reaches chat, or a missing log row, fails here.
+  const key = mine.length === 1 ? `incident_opened:${mine[0].incident_id}` : null;
+  const alerts = key ? outboxByKey(key) : []; const logged = key ? changeByKey(key) : [];
+  const ok = carriedRows === 0 && total1 === total0 && mine.length === 1 && mine[0].state === "resolved" && total2 === total1 + 1 && alerts.length === 0 && logged.length === 1 && logged[0].topic === "incident_log";
+  return { ok, detail: `carried_turn_incidents=${carriedRows} (want 0) total_delta_after_carried=${total1 - total0} (want 0) born_turn_incidents=${mine.length} (want 1) state=${mine[0]?.state ?? "none"} (want resolved) total_delta_after_born=${total2 - total1} (want 1) incident_opened_outbox_rows=${alerts.length} (want 0) incident_log_rows=${logged.length} (want 1) topic=${logged[0]?.topic ?? "none"}` };
 }
 
 // ---- line 6: a real omp /fresh across a restart ----

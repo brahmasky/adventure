@@ -292,8 +292,9 @@ describe("R4 faults (spec §4.4)", () => {
       expect(failedOf(h.outcome, r4)).toMatchObject({ error_type: "planner_exit", error_ref: "crash_loop" });
       expect(crashLoops(h.outcome)).toHaveLength(1); expect(session.options).toHaveLength(3);
       expect(rows(h.store)).toEqual([]); expect(h.counts).toEqual([...spawned(3), SQ, CG]);
-      expect(recordFailedN(h.store)).toBe(1); expect(outboxN(h.store) - out0).toBe(1);
-      expect(q(h.store).prepare("SELECT target_json FROM notification_outbox WHERE idempotency_key LIKE 'incident_opened:%'").all()).toHaveLength(1);
+      expect(recordFailedN(h.store)).toBe(1); expect(outboxN(h.store) - out0).toBe(0);
+      // decision_record_failed is a log kind (spec 2026-11-03 §5.1): its one alert is a change_log row, never a chat page
+      expect(h.store.listChangeLog("1970-01-01T00:00:00.000Z", 20).filter((r) => r.topic === "incident_log")).toHaveLength(1);
     } finally { vi.unstubAllEnvs(); }
   });
 });

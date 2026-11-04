@@ -190,7 +190,7 @@ describe("settleSealing (Decision 1-A: the grant is immediate)", () => {
   });
   it("a grant whose Revoke card cannot be queued does not commit: the row stays sealing with no move, no event, no card id, and its own incident opens", () => {
     const s = RunStore.openInMemory(); const { row, run_id } = sealed(s);
-    s.enqueueNotification({ target: { kind: "telegram", chat_id: "555" }, intent_type: "progress", idempotency_key: `urgent:standing_grant:${row.standing_id}`, correlation_id: "x", payload: { text: "another payload" } });
+    s.enqueueNotification({ topic: "reply", target: { kind: "telegram", chat_id: "555" }, intent_type: "progress", idempotency_key: `urgent:standing_grant:${row.standing_id}`, correlation_id: "x", payload: { text: "another payload" } });
     expect(settleSealing(s, run_id, NOW)).toEqual([{ standing_id: row.standing_id, verdict: "wait" }]); // nothing moved, so the next settle retries it
     expect(s.findOpenIncident(s.incidentFingerprint("standing_settle_failed", `standing:${row.standing_id}`))).toBeDefined();
     expect(s.getStandingApproval(row.standing_id)).toMatchObject({ state: "sealing", move_id: null, grant_notification_id: null });
@@ -356,7 +356,7 @@ describe("settleDeliveredReport (the dispatcher's hook)", () => {
     expect(() => settleDeliveredReport(broken, { intent_type: "final_report", idempotency_key: `${run_id}:final_report`, run_id }, {}, NOW)).not.toThrow();
     expect(s.findOpenIncident(s.incidentFingerprint("standing_settle_failed", `run:${run_id}`))).toBeDefined();
     const c = RunStore.openInMemory(); const f = sealed(c);
-    c.enqueueNotification({ target: { kind: "telegram", chat_id: "555" }, intent_type: "progress", idempotency_key: `urgent:standing_grant:${f.row.standing_id}`, correlation_id: "x", payload: { text: "another payload" } });
+    c.enqueueNotification({ topic: "reply", target: { kind: "telegram", chat_id: "555" }, intent_type: "progress", idempotency_key: `urgent:standing_grant:${f.row.standing_id}`, correlation_id: "x", payload: { text: "another payload" } });
     expect(() => settleDeliveredReport(c, { intent_type: "final_report", idempotency_key: `${f.run_id}:final_report`, run_id: f.run_id }, {}, NOW)).not.toThrow();
     expect(c.findOpenIncident(c.incidentFingerprint("standing_settle_failed", `standing:${f.row.standing_id}`))).toBeDefined(); // a row's own fault is keyed on the row
     expect(c.getStandingApproval(f.row.standing_id)?.state).toBe("sealing");

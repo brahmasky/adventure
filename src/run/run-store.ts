@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { INCIDENT_ROUTE, incidentResolvedNotice, isRoutedKind } from "./incident-route.js";
 import { createRequire } from "node:module";
 import type {
   ApprovalDecision,
@@ -24,7 +25,8 @@ import {
   type GlobalBudgetHeadroom,
   type GlobalBudgetKind
 } from "../budget/global-budget-ledger.js";
-import { NOTIFICATION_MAX_ATTEMPTS, type NotificationButton, type NotificationIntent } from "../notifications/notification-types.js";
+import { NOTIFICATION_MAX_ATTEMPTS, type ChatIntent, type LogIntent, type NotificationButton, type NotificationIntent } from "../notifications/notification-types.js";
+import { isLogTopic, TOPIC_ROUTE } from "../notifications/topics.js";
 import {
   appendLedgerEvent,
   createLedgerEvent,
@@ -302,9 +304,9 @@ type ApprovalConsumptionResult =
 
 export interface NotificationRecord {
   notification_id: string;
-  target: NotificationIntent["target"];
+  target: ChatIntent["target"];
   target_key: string;
-  intent_type: NotificationIntent["intent_type"];
+  intent_type: ChatIntent["intent_type"];
   idempotency_key: string;
   state: string;
   attempt_count: number;
@@ -315,16 +317,28 @@ export interface NotificationRecord {
   run_id: string | null;
   approval_id: string | null;
   correlation_id: string;
-  payload: NotificationIntent["payload"];
+  payload: ChatIntent["payload"];
   payload_hash: string;
   created_at: string;
   updated_at: string;
 }
 
-type NotificationQueueResult =
-  | { status: "queued"; record: NotificationRecord }
-  | { status: "duplicate"; record: NotificationRecord }
-  | { status: "conflict"; error: "NOTIFICATION_IDEMPOTENCY_CONFLICT" };
+export type NotificationQueueResult =
+  | { status: "queued" | "duplicate"; record: NotificationRecord }
+  | { status: "logged"; change_id: string }
+  | { status: "duplicate_log"; change_id: string }
+  | { status: "conflict"; error: string };
+
+export interface ChangeLogRow { change_id: string; topic: string; text: string; created_at: string }
+
+/** Spec 2026-11-03 §4.3: the change log — background notices that left chat. Code-owned, id-masked text only. */
+const CHANGE_LOG_DDL = `CREATE TABLE IF NOT EXISTS change_log (
+  change_id TEXT PRIMARY KEY, topic TEXT NOT NULL, idempotency_key TEXT NOT NULL UNIQUE,
+  correlation_id TEXT NOT NULL, text TEXT NOT NULL, created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS change_log_created ON change_log(created_at);`;
+
+const isLogIntent = (i: NotificationIntent): i is LogIntent => i.topic in TOPIC_ROUTE && isLogTopic(i.topic);
 
 interface RunRow {
   run_id: string;
@@ -6153,28 +6167,32 @@ export class RunStore {
     `).run(now, now, incident_id);
   }
 
-  /** Close an incident. False when absent or already resolved (idempotent, never a throw). */
-  resolveIncident(incident_id: string, now: string): boolean {
+  /**
+   * Close an incident. False when absent or already resolved (idempotent, never a throw). A fixed log kind writes its
+   * "Fixed" line to the change log at any age (spec 2026-11-03 §5.4); `silent` is for an event resolved in the same call.
+   */
+  resolveIncident(incident_id: string, now: string, opts?: { silent?: boolean }): boolean {
     const result = this.db.prepare(`
       UPDATE incidents SET state = 'resolved', resolved_at = ?, updated_at = ?
       WHERE incident_id = ? AND state = 'open'
     `).run(now, now, incident_id);
     if (result.changes !== 1) return false;
     const row = this.getIncident(incident_id)!;
+    const open_minutes = Math.floor((Date.parse(now) - Date.parse(row.first_seen_at)) / 60000);
     this.appendLedgerEvent(
       createLedgerEvent({
         correlation_id: incident_id,
         event_type: "incident_resolved",
         actor: "system",
         sequence: this.nextLedgerSequence(),
-        payload: {
-          incident_id,
-          kind: row.kind,
-          subject: row.subject,
-          open_minutes: Math.floor((Date.parse(now) - Date.parse(row.first_seen_at)) / 60000)
-        }
+        payload: { incident_id, kind: row.kind, subject: row.subject, open_minutes }
       })
     );
+    // Silent membership, never routeOf: row-only and legacy kinds resolve here too and must not print to stderr.
+    if (!opts?.silent && isRoutedKind(row.kind) && INCIDENT_ROUTE[row.kind].route === "log") {
+      const n = incidentResolvedNotice(row.kind, row.subject, open_minutes)!;
+      this.enqueueNotification({ topic: "incident_log", idempotency_key: `incident_resolved:${incident_id}`, correlation_id: incident_id, text: n.text, now });
+    }
     return true;
   }
 
@@ -6845,6 +6863,7 @@ export class RunStore {
       });
 
       this.assertNotificationQueued(this.enqueueNotification({
+        topic: "approval",
         target: this.getRunNotifyTarget(input.run_id),
         intent_type: "approval_prompt",
         idempotency_key: `approval:${approval_id}:prompt`,
@@ -6948,6 +6967,7 @@ export class RunStore {
           resolved_at: input.resolved_at
         });
         this.assertNotificationQueued(this.enqueueNotification({
+          topic: "approval",
           target: input.event.notify,
           intent_type: "approval_resolved",
           idempotency_key: `approval:${approval_id}:resolved`,
@@ -7003,6 +7023,7 @@ export class RunStore {
         expires_at: input.expires_at
       });
       this.assertNotificationQueued(this.enqueueNotification({
+        topic: "approval",
         target: this.getRunNotifyTarget(input.run_id),
         intent_type: "approval_prompt",
         idempotency_key: `approval:${approval_id}:prompt`,
@@ -7310,6 +7331,7 @@ export class RunStore {
           resolved_at: now
         });
         this.assertNotificationQueued(this.enqueueNotification({
+          topic: "approval",
           target: this.getRunNotifyTarget(row.run_id),
           intent_type: "approval_resolved",
           idempotency_key: `approval:${row.approval_id}:expired`,
@@ -7359,6 +7381,7 @@ export class RunStore {
     input: { text: string; report_path: string; buttons?: NotificationButton[]; attachments?: string[] }
   ): NotificationQueueResult {
     return this.enqueueNotification({
+      topic: "run_report",
       target: this.getRunNotifyTarget(run_id),
       intent_type: "final_report",
       idempotency_key: `${run_id}:final_report`,
@@ -7406,6 +7429,7 @@ export class RunStore {
     report_path?: string
   ): NotificationQueueResult {
     return this.enqueueNotification({
+      topic: "run_report",
       target: this.getRunNotifyTarget(run_id),
       intent_type: "final_report",
       idempotency_key: `${run_id}:final_report`,
@@ -7435,6 +7459,7 @@ export class RunStore {
     const target = this.getRunNotifyTarget(run_id);
     const text = this.redactReport("evolution_report", run_id, input.text);
     const result = this.enqueueNotification({
+      topic: "run_report",
       target,
       intent_type: "final_report",
       idempotency_key: `${run_id}:evolution_report:${tool}`,
@@ -7493,6 +7518,33 @@ export class RunStore {
   }
 
   enqueueNotification(intent: NotificationIntent): NotificationQueueResult {
+    if (!(intent.topic in TOPIC_ROUTE)) console.error(`[notifications] untyped topic ${String(intent.topic)}: sent to chat`);
+    return isLogIntent(intent) ? this.logChange(intent) : this.enqueueChat(intent as ChatIntent);
+  }
+
+  logChange(intent: LogIntent): NotificationQueueResult {
+    const existing = this.db.prepare(`SELECT change_id, text FROM change_log WHERE idempotency_key = ?`).get<{ change_id: string; text: string }>(intent.idempotency_key);
+    if (existing) {
+      if (existing.text === intent.text) return { status: "duplicate_log", change_id: existing.change_id };
+      console.error(`[change-log] ${intent.topic}: key reused with a different text`);
+      return { status: "conflict", error: "CHANGE_LOG_IDEMPOTENCY_CONFLICT" };
+    }
+    const change_id = `chg_${randomUUID()}`;
+    this.db.prepare(`INSERT INTO change_log (change_id, topic, idempotency_key, correlation_id, text, created_at) VALUES (?, ?, ?, ?, ?, ?)`)
+      .run(change_id, intent.topic, intent.idempotency_key, intent.correlation_id, intent.text, intent.now ?? new Date().toISOString());
+    return { status: "logged", change_id };
+  }
+
+  listChangeLog(sinceIso: string, limit: number): ChangeLogRow[] {
+    return this.db.prepare(`SELECT change_id, topic, text, created_at FROM change_log WHERE created_at >= ? ORDER BY created_at DESC, change_id DESC LIMIT ?`)
+      .all<ChangeLogRow>(sinceIso, limit);
+  }
+
+  countChangeLogSince(sinceIso: string): number {
+    return this.db.prepare(`SELECT COUNT(*) AS n FROM change_log WHERE created_at >= ?`).get<{ n: number }>(sinceIso)?.n ?? 0;
+  }
+
+  private enqueueChat(intent: ChatIntent): NotificationQueueResult {
     const target_key = this.notificationTargetKey(intent.target);
     const payload_hash = stableHash(intent.payload);
     const existing = this.db.prepare(`
@@ -7943,13 +7995,13 @@ export class RunStore {
   }
 
   /** The fields the worker needs to route a queued run (turns go to the planner supervisor). Undefined when absent. */
-  getRunForWorker(run_id: string): { type: string; source: string; goal: string | null; contract_json: string | null; notify: NotificationIntent["target"]; requested_by: Identity } | undefined {
+  getRunForWorker(run_id: string): { type: string; source: string; goal: string | null; contract_json: string | null; notify: ChatIntent["target"]; requested_by: Identity } | undefined {
     const row = this.db.prepare(`
       SELECT type, source, goal, contract_json, notify_json, requested_by_json FROM runs WHERE run_id = ?
     `).get<{ type: string; source: string; goal: string | null; contract_json: string | null; notify_json: string; requested_by_json: string }>(run_id);
     if (!row) return undefined;
     const { notify_json, requested_by_json, ...rest } = row;
-    return { ...rest, notify: JSON.parse(notify_json) as NotificationIntent["target"], requested_by: JSON.parse(requested_by_json) as Identity };
+    return { ...rest, notify: JSON.parse(notify_json) as ChatIntent["target"], requested_by: JSON.parse(requested_by_json) as Identity };
   }
 
   getRunRequester(run_id: string): Identity {
@@ -8134,7 +8186,7 @@ export class RunStore {
     return row?.program ?? null;
   }
 
-  getRunNotifyTarget(run_id: string): NotificationIntent["target"] {
+  getRunNotifyTarget(run_id: string): ChatIntent["target"] {
     const row = this.db.prepare(`
       SELECT notify_json
       FROM runs
@@ -8144,7 +8196,7 @@ export class RunStore {
       throw new Error(`Run not found: ${run_id}`);
     }
 
-    return JSON.parse(row.notify_json) as NotificationIntent["target"];
+    return JSON.parse(row.notify_json) as ChatIntent["target"];
   }
 
   private findPendingApproval(run_id: string, action_fingerprint: string): ApprovalRow | undefined {
@@ -8262,7 +8314,7 @@ export class RunStore {
       notification_id: string;
       target_json: string;
       target_key: string;
-      intent_type: NotificationIntent["intent_type"];
+      intent_type: ChatIntent["intent_type"];
       idempotency_key: string;
       state: string;
       attempt_count: number;
@@ -8284,7 +8336,7 @@ export class RunStore {
 
     return {
       notification_id: row.notification_id,
-      target: JSON.parse(row.target_json) as NotificationIntent["target"],
+      target: JSON.parse(row.target_json) as ChatIntent["target"],
       target_key: row.target_key,
       intent_type: row.intent_type,
       idempotency_key: row.idempotency_key,
@@ -8297,7 +8349,7 @@ export class RunStore {
       run_id: row.run_id,
       approval_id: row.approval_id,
       correlation_id: row.correlation_id,
-      payload: JSON.parse(row.payload_json) as NotificationIntent["payload"],
+      payload: JSON.parse(row.payload_json) as ChatIntent["payload"],
       payload_hash: row.payload_hash,
       created_at: row.created_at,
       updated_at: row.updated_at
@@ -8344,7 +8396,7 @@ export class RunStore {
     }
   }
 
-  private notificationTargetKey(target: NotificationIntent["target"]): string {
+  private notificationTargetKey(target: ChatIntent["target"]): string {
     return target.kind === "local" ? "local" : `telegram:${target.chat_id}`;
   }
 
@@ -8409,8 +8461,31 @@ export class RunStore {
   }
 
   /** One append-only override row (run-less, so its sequence is above every earlier row). The `/models` gateway command is the production writer. */
-  recordModelRoleOverride(i: { key: OverrideKey; pattern: string; actor: string }): void {
-    this.recordMemoryEvent("model_role_override", { key: i.key, pattern: i.pattern, actor: i.actor }, "model_roles");
+  recordModelRoleOverride(i: { key: OverrideKey; pattern: string; actor: string; via?: "tap" | "set" }): void {
+    this.recordMemoryEvent("model_role_override", { key: i.key, pattern: i.pattern, actor: i.actor, ...(i.via ? { via: i.via } : {}) }, "model_roles");
+  }
+
+  /**
+   * Spec 2026-11-03 §6.4: per key, the latest non-reset override row (same order as latestModelRoleOverrides) and the run-less
+   * ledger row just before it, so the tick can tell a card-written override from Paco's own `/models set`.
+   */
+  latestOverrideRows(): Map<OverrideKey, { pattern: string; via: string | null; sequence: number; prev: { event_type: string; payload: Record<string, unknown> } | null }> {
+    const rows = this.db.prepare(`
+      SELECT sequence, payload_json FROM ledger_events WHERE event_type = 'model_role_override' AND run_id IS NULL
+      ORDER BY sequence ASC, occurred_at ASC, event_id ASC
+    `).all<{ sequence: number; payload_json: string }>();
+    const latest = new Map<OverrideKey, { pattern: string; via: string | null; sequence: number }>();
+    for (const row of rows) {
+      const p = parseOverridePayload(row.payload_json);
+      if (!p) continue;
+      if (p.pattern === "") latest.delete(p.key);
+      else latest.set(p.key, { pattern: p.pattern, via: p.via, sequence: row.sequence });
+    }
+    const prevStmt = this.db.prepare(`SELECT event_type, payload_json FROM ledger_events WHERE run_id IS NULL AND sequence < ? ORDER BY sequence DESC LIMIT 1`);
+    return new Map([...latest].map(([key, l]) => {
+      const prev = prevStmt.get<{ event_type: string; payload_json: string }>(l.sequence);
+      return [key, { ...l, prev: prev ? { event_type: prev.event_type, payload: parseObject(prev.payload_json) } : null }];
+    }));
   }
 
   private nextLedgerSequence(run_id?: string): number {
@@ -8433,6 +8508,7 @@ export class RunStore {
   }
 
   private migrate(): void {
+    this.db.exec(CHANGE_LOG_DDL);
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS runs (
         run_id TEXT PRIMARY KEY,
@@ -10382,13 +10458,17 @@ const LESSON_COLUMNS =
   "id, scope, text, avoid, status, supersedes, superseded_by, applied_count, " +
   "corrected_count, reuse_value, rating_history, created_at, last_used, source, theme";
 
+function parseObject(json: string): Record<string, unknown> {
+  try { const p: unknown = JSON.parse(json); return typeof p === "object" && p !== null ? (p as Record<string, unknown>) : {}; } catch { return {}; }
+}
+
 /** A stored override row, or null when it is not one: a hand-edited or future-shaped payload is skipped, never trusted. */
-function parseOverridePayload(json: string): { key: OverrideKey; pattern: string } | null {
+function parseOverridePayload(json: string): { key: OverrideKey; pattern: string; via: string | null } | null {
   let p: unknown;
   try { p = JSON.parse(json); } catch { return null; }
   if (typeof p !== "object" || p === null) return null;
-  const { key, pattern } = p as Record<string, unknown>;
-  return typeof key === "string" && typeof pattern === "string" && isOverrideKey(key) ? { key, pattern } : null;
+  const { key, pattern, via } = p as Record<string, unknown>;
+  return typeof key === "string" && typeof pattern === "string" && isOverrideKey(key) ? { key, pattern, via: typeof via === "string" ? via : null } : null;
 }
 
 /** Per-scope active-row cap (⓪·3 S1): overflow prunes the lowest reuse_value rows. */
@@ -10548,7 +10628,7 @@ const TELEGRAM_MAX_ACTIVE_RUNS = 3;
 const TELEGRAM_MAX_PENDING_APPROVALS = 5;
 
 // Telegram caps a message at 4096 chars; leave headroom for the truncation note.
-const CHAT_TEXT_MAX = 3900;
+export const CHAT_TEXT_MAX = 3900;
 
 function truncateForChat(text: string, redact: (s: string) => string = (s) => s): string {
   // Redact BEFORE truncating so a masked value is never split into a leaking fragment (ADR 0015).

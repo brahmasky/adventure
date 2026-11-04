@@ -380,7 +380,7 @@ describe("surfacing (⓪·3 S2c)", () => {
         })
       );
       const text = notificationText(store, "telegram:sec2:status")!;
-      expect(text).toContain("Self-check: swept 2h ago · 1 open incident");
+      expect(text).toContain("Self-check: swept 2h ago · 1 paged · 0 internal open");
     } finally {
       store.close();
     }
@@ -519,7 +519,7 @@ describe("surfacing (⓪·3 S2c)", () => {
         })
       );
       const text = notificationText(store, "telegram:sec3:status")!;
-      expect(text).toContain("Self-check: swept never · 0 open incidents");
+      expect(text).toContain("Self-check: swept never · 0 paged · 0 internal open");
     } finally {
       store.close();
     }

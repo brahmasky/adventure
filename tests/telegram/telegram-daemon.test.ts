@@ -272,6 +272,7 @@ describe("runTelegramDaemon — ⓪·3g background evolution lane", () => {
       // Mirror production wiring: the outcome is a DURABLE outbox notification.
       deliver: (outcome) => {
         store.enqueueNotification({
+          topic: "reply",
           target: { kind: "telegram", chat_id: "222" },
           intent_type: "final_report",
           idempotency_key: "lane:test:completion",
@@ -1535,12 +1536,14 @@ describe("runTelegramDaemon — shutdown during a slow tick (live 2026-10-02 01:
     const store = RunStore.openInMemory();
     const controller = new AbortController();
     const root = projectRoot();
-    const catalog = parseOmpCatalog(readFileSync(new URL("../fixtures/omp-catalog-2026-11-02.json", import.meta.url).pathname, "utf8"))!;
+    // Spec 2026-11-03 §6.1: argon is the pro tier's own member now; the empty tier needs a Gemini no tier reads for the card to offer.
+    const catalog = [...parseOmpCatalog(readFileSync(new URL("../fixtures/omp-catalog-2026-11-02.json", import.meta.url).pathname, "utf8"))!.filter((m) => m.id !== "gemini-exp-1"),
+      { provider: "google-antigravity", id: "gemini-exp-1", thinking: null }];
     const roles = new RoleResolver({ store, env: () => ({ HOUGE_MODEL_ROLES: "resolved" }), readCatalog: async () => catalog });
     let probing = false;
     // Settles only when the daemon's stop reaches it: a probe that ignored the signal would be held to the cap instead.
-    const modelProbe: ProbeFn = (sel, signal) => { if (sel === "google-antigravity/gemini-4-argon") probing = true; return new Promise((r) => signal?.addEventListener("abort", () => r("aborted"), { once: true })); };
-    const tapUpdate = { update_id: 90, callback_query: { id: "cbq_tier", from: { id: 111 }, message: { message_id: 5, chat: { id: 222 } }, data: tierCallbackData("gemini-pro", "gemini-4-argon") } };
+    const modelProbe: ProbeFn = (sel, signal) => { if (sel === "google-antigravity/gemini-exp-1") probing = true; return new Promise((r) => signal?.addEventListener("abort", () => r("aborted"), { once: true })); };
+    const tapUpdate = { update_id: 90, callback_query: { id: "cbq_tier", from: { id: 111 }, message: { message_id: 5, chat: { id: 222 } }, data: tierCallbackData("gemini-pro", "gemini-exp-1") } };
     let calls = 0;
     try {
       const t0 = Date.now(); let stoppedAt = 0;

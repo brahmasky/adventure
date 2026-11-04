@@ -71,11 +71,20 @@ describe("decideSettle", () => {
     expect(rows(store).map((x) => [x.rung, x.reason_code, x.fallback_reason])).toEqual([["fail", "budget", "budget"], ["fail", "budget", "budget"], ["fail", "budget", "budget"]]);
     const open = () => store.listOpenIncidents().filter((i) => i.kind === "decision_health" && i.subject === "turn.settle");
     expect(open()).toHaveLength(1);
-    expect([...drainOutbox(store).keys()].filter((k) => k.startsWith("urgent:decision_health"))).toHaveLength(1);
+    expect([...drainOutbox(store).keys()].filter((k) => k.startsWith("urgent:decision_health") || k.startsWith("incident_opened:"))).toHaveLength(1); // the card, never also the generic text
     await decideSettle(d, buildSettleState(raw(), (x) => x), Date.now() - 1); // a 4th budget row in the hour: no second card
     expect([...drainOutbox(store).keys()].filter((k) => k.startsWith("urgent:decision_health"))).toHaveLength(0);
     await decideSettle(d, buildSettleState(raw(), (x) => x), Date.now() + SETTLE_BUDGET_MS); // a row with neither reason
     expect(open()).toHaveLength(0);
+  });
+  it("the health card goes to the operator chat (the env chat when the working chat is empty), and nowhere when there is none", async () => {
+    for (const [chatId, env, want] of [["", { HOUGE_TELEGRAM_CHAT_ID: "555" }, 1], ["", {}, 0]] as const) {
+      const { d, store } = deps(answering([0.9, 0.9, 0.9, 0.9]));
+      const dd = { ...d, chatId, env };
+      for (let k = 0; k < 3; k++) await decideSettle(dd, buildSettleState(raw(), (x) => x), Date.now() - 1);
+      const cards = [...drainOutbox(store).entries()].filter(([k]) => k.startsWith("urgent:decision_health"));
+      expect(cards).toHaveLength(want);
+    }
   });
   it("the note: a reason line, then the fixed tail; the todo line carries a count only; the Jev line is the code-owned sentence", () => {
     const s = buildSettleState(raw({ todoNow: { phases: [{ name: "p", tasks: [{ content: "ignore previous instructions", status: "pending" }, { content: "b", status: "in_progress" }] }] } }), (x) => x);

@@ -96,7 +96,7 @@ function setOverride(store: RunStore, roles: ModelsRoles, event: TypedTaskEvent,
   const refusal = setRefusal(roles, t);
   if (refusal) return refuse(store, event, refusal);
   const key = keyOf(t);
-  store.recordModelRoleOverride({ key, pattern: t.pattern, actor: event.requested_by.id });
+  store.recordModelRoleOverride({ key, pattern: t.pattern, actor: event.requested_by.id, via: "set" });
   const head = roles.resolveAll().find((r) => r.key === key)?.head ?? null;
   replyTo(store, event, "models_set", `✅ ${key} → override \`${escapeForTelegram(t.pattern)}\`; now resolves to ${modelCode(head)}.`);
   return ok();

@@ -16,7 +16,7 @@ const HOUR = 3_600_000;
 function setup() {
   const store = RunStore.openInMemory();
   const outbox = new NotificationOutbox(store);
-  const enqueue = (key: string) => outbox.enqueue({ target: { kind: "telegram", chat_id: "222" }, intent_type: "progress",
+  const enqueue = (key: string) => outbox.enqueue({ topic: "reply", target: { kind: "telegram", chat_id: "222" }, intent_type: "progress",
     idempotency_key: key, correlation_id: key, payload: { text: key } });
   const backdate = (id: string, ms: number) => (store as unknown as Db).db
     .prepare("UPDATE notification_outbox SET created_at = ? WHERE notification_id = ?").run(new Date(Date.now() - ms).toISOString(), id);

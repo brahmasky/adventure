@@ -4,8 +4,9 @@ import type { TurnOutcomeSink } from "../../src/omp/planner-supervisor.js";
 import { ALERT_REOPEN_QUIET_MS, openAlertedIncident, resolveOmpCheckIncidents } from "../../src/run/incident-alert.js";
 import { GUARD_STOPPED_TEXT, PLANNER_CRASH_LOOP_TEXT, plannerFailureText, TURN_UNAVAILABLE_TEXT } from "../../src/core/omp-turn-wiring.js";
 import { KILLED_TEXT, PLANNER_EXIT_TEXT } from "../../src/omp/planner-supervisor.js";
-import { buildIncidentOpenedText, runInvariantSweep } from "../../src/run/invariant-sweep.js";
+import { runInvariantSweep } from "../../src/run/invariant-sweep.js";
 import { RunStore } from "../../src/run/run-store.js";
+import { incidentNotice, type RoutedIncidentKind } from "../../src/run/incident-route.js";
 
 // I1 (Task 14 fix round 1): incidents opened outside the sweep must page Paco once, and the sweep
 // must never resolve them — it never re-detects them, so "not seen" says nothing about them.
@@ -39,11 +40,11 @@ describe("the sweep resolves only its own incident kinds", () => {
 
 describe("openAlertedIncident — one alert on open, throttled by the open incident", () => {
   it("opens once and enqueues ONE telegram alert with the incident text; a repeat is a no-op", () => {
-    const input = { kind: "omp_version_mismatch", subject: "omp:9.9.9", detail: { version: "9.9.9" }, chat_id: "555" };
+    const input = { kind: "omp_version_mismatch" as RoutedIncidentKind /* legacy, unrouted: a pre-unpin row */, subject: "omp:9.9.9", detail: { version: "9.9.9" }, chat_id: "555" };
     expect(openAlertedIncident(store, input)).toBe(true);
     expect(openAlertedIncident(store, input)).toBe(false);
     expect(store.listOpenIncidents()).toHaveLength(1);
-    expect(notes()).toEqual([expect.objectContaining({ text: buildIncidentOpenedText("omp_version_mismatch", "omp:9.9.9", { version: "9.9.9" }) })]);
+    expect(notes()).toEqual([expect.objectContaining({ text: incidentNotice("omp_version_mismatch", "omp:9.9.9")!.text })]);
   });
 
   it("with no chat given, pages the operator chat from HOUGE_TELEGRAM_CHAT_ID; with none, records the row only", () => {
@@ -70,19 +71,26 @@ describe("clearable omp-check incidents (fix round 2)", () => {
     expect(store.listOpenIncidents()).toEqual([]);
   });
 
-  it("an event pages every time, even inside the flap-quiet window (M80: event kinds always page, spec §5)", () => {
+  it("an event kind routed to the log writes a row every time, even inside the flap-quiet window (M80); its card is the page", () => {
     // Each hostile_schedule_turn is its own occurrence; flap damping is for a condition reopening, not for a new event.
     const at = (min: number) => new Date(Date.parse("2026-10-01T00:00:00.000Z") + min * 60_000).toISOString();
-    const input = { kind: "hostile_schedule_turn", subject: "schedule:s1", detail: {}, chat_id: "555", event: true };
+    const input = { kind: "hostile_schedule_turn" as const, subject: "schedule:s1", detail: {}, chat_id: "555", event: true };
     openAlertedIncident(store, { ...input, now: at(0) });
     openAlertedIncident(store, { ...input, now: at(2) });
-    expect(notes()).toHaveLength(2);
+    expect(notes()).toEqual([]);
+    expect(store.listChangeLog("1970-01-01T00:00:00.000Z", 10).filter((r) => r.topic === "incident_log")).toHaveLength(2);
   });
 
   it("an event incident is resolved right after its alert is queued", () => {
     expect(openAlertedIncident(store, { kind: "turn_outside_planner", subject: "run:x", detail: {}, chat_id: "555", event: true })).toBe(true);
     expect(store.listOpenIncidents()).toEqual([]);
     expect(notes()).toHaveLength(1);
+  });
+  it("an event of a log kind: one change_log row for the open, none for its same-call resolve", () => {
+    openAlertedIncident(store, { kind: "hostile_schedule_turn", subject: "run:r1", detail: {}, chat_id: "555", event: true });
+    expect(store.listChangeLog("1970-01-01T00:00:00.000Z", 10).map((r) => r.text)).toEqual(
+      ["A scheduled task read hostile content; you got a card. (`hostile_schedule_turn` · a run)"]);
+    expect(notes()).toEqual([]);
   });
 });
 
@@ -92,7 +100,7 @@ describe("supervisor incidents page once and resolve on the next good start (fin
 
   it("a reopen inside the quiet window records the row but sends no second alert; after it, the alert goes out", () => {
     const at = (min: number) => new Date(Date.parse("2026-10-01T00:00:00.000Z") + min * 60_000).toISOString();
-    const input = { kind: "planner_crash_loop", subject: "chat:555", detail: {}, chat_id: "555" };
+    const input = { kind: "planner_crash_loop" as const, subject: "chat:555", detail: {}, chat_id: "555" };
     const resolveOpen = (min: number) => { for (const r of store.listOpenIncidents()) store.resolveIncident(r.incident_id, at(min)); };
     expect(openAlertedIncident(store, { ...input, now: at(0) })).toBe(true);
     resolveOpen(1);

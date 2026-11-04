@@ -88,7 +88,7 @@ import type { NotificationButton } from "../notifications/notification-types.js"
 import { createLedgerEvent } from "../run/run-ledger.js";
 import {
   OMP_CHECK_INCIDENT_KINDS, ompCheckSubject, openAlertedIncident, resolveOmpCheckIncidents, resolveOpenIncidents, SESSION_RESET_KINDS, START_CONDITION_KINDS,
-  SUPERVISOR_ALERT_KINDS
+  isSupervisorAlertKind
 } from "../run/incident-alert.js";
 import {
   computeNextRunAt,
@@ -2607,7 +2607,7 @@ export class CoreWorker {
   private supervisorIncident(chatId: string, kind: string, detail: Record<string, unknown>): void {
     // an omp check condition has one subject on every path (N5): the one-shot seats see the same omp
     const subject = OMP_CHECK_INCIDENT_KINDS.has(kind) ? ompCheckSubject({ kind: String(detail.check ?? kind) }) : `chat:${chatId}`;
-    if (!SUPERVISOR_ALERT_KINDS.has(kind)) { this.runStore.openIncident({ kind, subject, detail }); return; }
+    if (!isSupervisorAlertKind(kind)) { this.runStore.openIncident({ kind, subject, detail }); return; }
     openAlertedIncident(this.runStore, { kind, subject, detail, chat_id: chatId });
   }
 
@@ -3375,7 +3375,7 @@ export class CoreWorker {
     if (!saved || !first) return true;
     try {
       const card = memoryLaneCard({ run_id, ...this.cardItems(saved) });
-      const q = this.runStore.enqueueNotification({ target: { kind: "telegram", chat_id: this.chatOf(run_id) }, intent_type: "progress",
+      const q = this.runStore.enqueueNotification({ topic: "memory_card", target: { kind: "telegram", chat_id: this.chatOf(run_id) }, intent_type: "progress",
         idempotency_key: `memcard:${first.change_id}`, correlation_id: run_id, payload: { text: this.maskSecrets(card.text), buttons: memoryUndoButtons(saved) } });
       if (q.status !== "conflict") return true;
       console.error(`memory card: announce refused for change ${first.change_id}: ${q.error}`);

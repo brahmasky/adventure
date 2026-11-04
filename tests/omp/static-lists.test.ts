@@ -11,7 +11,7 @@ import { RoleResolver } from "../../src/omp/role-resolver.js";
 import { RunStore } from "../../src/run/run-store.js";
 
 // Spec §4.3 (D4-A): HOUGE_MODEL_ROLES=static is the rollback; it is catalog-free, so it rots silently. Re-pinned at this ship
-// (judge seat 2 empty: pinning a codename would adopt it without Paco's tap), and checked daily in resolved mode so Paco
+// (judge seat 2 empty: static is catalog-free, so it pins no renamed Gemini id; those join the pro tier via the resolver, spec 2026-11-03 §6.1), and checked daily in resolved mode so Paco
 // learns the rollback is stale before he needs it.
 let store: RunStore;
 beforeEach(() => { store = RunStore.openInMemory(); vi.stubEnv("HOUGE_MODEL_ROLES", "resolved"); vi.stubEnv("HOUGE_TELEGRAM_CHAT_ID", ""); });

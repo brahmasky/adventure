@@ -1,4 +1,5 @@
 import type { NotifyTarget } from "../domain/types.js";
+import type { ChatTopic, LogTopic } from "./topics.js";
 
 /**
  * A single inline button on a notification (Phase 3.3). `text` is the visible label;
@@ -25,7 +26,9 @@ export type NotificationIntentType =
   | "approval_prompt"
   | "approval_resolved";
 
-export interface NotificationIntent {
+/** A notice for Paco's chat: queued in the outbox and delivered to `target`. */
+export interface ChatIntent {
+  topic: ChatTopic;
   target: NotifyTarget;
   intent_type: NotificationIntentType;
   idempotency_key: string;
@@ -34,6 +37,17 @@ export interface NotificationIntent {
   correlation_id: string;
   payload: NotificationPayload;
 }
+
+/** A background notice: written to the change log, never to chat (spec 2026-11-03 §4). */
+export interface LogIntent {
+  topic: LogTopic;
+  idempotency_key: string;
+  correlation_id: string;
+  text: string;
+  now?: string;
+}
+
+export type NotificationIntent = ChatIntent | LogIntent;
 
 /** The attempt cap for one notification: the dispatcher's default, and what crash recovery honours too. */
 export const NOTIFICATION_MAX_ATTEMPTS = 5;

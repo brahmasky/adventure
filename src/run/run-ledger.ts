@@ -345,6 +345,7 @@ const requiredPayloadFields = {
   // `omp --profile houge models --json` failed or returned no parseable list (a fixed reason code; Task 7).
   model_catalog_unavailable: ["reason"],
   // Paco's /models set or reset: an append-only override row ("" pattern = reset; Task 7 writes, Task 11 validates).
+  // An optional `via: "tap"` marks a tier-card tap (2026-11-03 §6.4); /models set omits it. This list is required fields only, so `via` is not in it.
   model_role_override: ["key", "pattern", "actor"],
   // A Telegram reply whose quoted message did not resolve to one stored turn (QuoteResolution reason; Task 10).
   quote_unresolved: ["reason"],

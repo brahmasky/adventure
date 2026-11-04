@@ -81,6 +81,16 @@ function outboxKeys(path) {
   const db = new DatabaseSync(path, { readOnly: true });
   try { return db.prepare(`SELECT idempotency_key FROM notification_outbox`).all().map((r) => r.idempotency_key); } finally { db.close(); }
 }
+/** Incident ids of one kind and subject in any state (hostile_schedule_turn is an event: it is resolved at once, so an open-only listing never sees it). */
+function incidentIdsOf(path, kind, subject) {
+  const db = new DatabaseSync(path, { readOnly: true });
+  try { return db.prepare(`SELECT incident_id FROM incidents WHERE kind = ? AND subject = ?`).all(kind, subject).map((r) => r.incident_id); } finally { db.close(); }
+}
+/** The topics of the change_log rows with this key (0 or 1 rows: the key is unique). */
+function changeLogRows(path, key) {
+  const db = new DatabaseSync(path, { readOnly: true });
+  try { return db.prepare(`SELECT topic FROM change_log WHERE idempotency_key = ?`).all(key).map((r) => r.topic); } finally { db.close(); }
+}
 /** C1: the pre-ship sanity gate (spec §4.2). Every item with a passage sent to Jev must come back fully answered (codex #4). */
 async function judgeAll(g, items) {
   const results = []; let unjudged = 0; let floorOnly = 0;
@@ -410,8 +420,12 @@ async function caseSchedule(g, attempt = 1) {
   if (!hostile && attempt === 1) return caseSchedule(g, 2);
   if (!hostile) return cannotRun("C5 schedule-born hostile turn", "the planner never fetched the planted page (twice)");
   check("C5 the schedule-born hostile turn completed within deadline + one TTL", end.ms <= bound, `${end.state} after ${end.ms} ms (bound ${bound})`);
-  const pages = g.e2eStore.listOpenIncidents().filter((i) => i.kind === "hostile_schedule_turn" && i.subject === run_id).length;
-  check("C5 hostile_schedule_turn paged once", pages === 1, `${pages}`);
+  // 2026-11-03 §5.3: hostile_schedule_turn is an event incident of a log kind (the trust_hostile card is the page): ONE row, ONE incident_log change_log row keyed incident_opened:<id>, ZERO outbox rows for it; the card still pages
+  const ids = incidentIdsOf(g.e2ePath, "hostile_schedule_turn", run_id);
+  const logRows = ids.length === 1 ? changeLogRows(g.e2ePath, `incident_opened:${ids[0]}`) : [];
+  const outboxHits = ids.length === 1 ? outboxKeys(g.e2ePath).filter((k) => k === `incident_opened:${ids[0]}`).length : -1;
+  check("C5 hostile_schedule_turn logged once, not paged", ids.length === 1 && logRows.length === 1 && logRows[0] === "incident_log" && outboxHits === 0, `incidents ${ids.length} (want 1) incident_log rows ${logRows.length} (want 1) topic ${logRows[0] ?? "none"} outbox rows ${outboxHits} (want 0)`);
+  check("C5 the trust_hostile card still pages", outboxKeys(g.e2ePath).includes(`urgent:trust_hostile:${run_id}`));
   check("C5 turn_trust_final written", events(g.e2eStore, run_id, "turn_trust_final").length === 1);
 }
 
@@ -511,7 +525,7 @@ async function caseDigest(g) {
   const headers = new Set(["**Improvements today**", "**Proposals waiting**", "**Watch (7 d)**"]);
   check("C9 the digest is no message or the header and only the three new sections", d === null || (d.text.startsWith("🪜 **Decisions — ") && d.text.split("\n").slice(1).filter((l) => l.startsWith("**")).every((l) => headers.has(l))), d ? d.text.split("\n")[0] : "null (empty day)");
   if (!d) return;
-  g.store.enqueueNotification({ target: { kind: "telegram", chat_id: "-4200" }, intent_type: "progress", idempotency_key: `gate2a:digest:${Date.now()}`,
+  g.store.enqueueNotification({ topic: "digest", target: { kind: "telegram", chat_id: "-4200" }, intent_type: "progress", idempotency_key: `gate2a:digest:${Date.now()}`,
     correlation_id: "gate2a-digest", payload: { text: d.text, ...(d.button_rows.length ? { button_rows: d.button_rows } : {}) } });
   let note = g.store.claimNextNotification("gate2a", 30);
   while (note && !note.idempotency_key.startsWith("gate2a:digest:")) note = g.store.claimNextNotification("gate2a", 30);

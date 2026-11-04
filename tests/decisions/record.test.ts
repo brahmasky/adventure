@@ -31,9 +31,11 @@ const jevAnswers = vi.fn(async (): Promise<RungResult<V>> => ({ verdict: "pass",
 const jevAbstains = vi.fn(async (): Promise<RungResult<V>> => ({ abstain: true }));
 const modelDown = vi.fn(async (): Promise<RungResult<V>> => ({ failed: "outage", reason: "transport" }));
 const open = (store: RunStore) => store.listOpenIncidents().map((i) => [i.kind, i.subject]);
+/** The decision_fallback card is decision_internal: a change_log row, never chat (spec 2026-11-03 §4). */
+const logged = (store: RunStore) => store.listChangeLog("1970-01-01T00:00:00.000Z", 50).map((r) => r.text);
 const cards = (store: RunStore) => [...drainOutbox(store).values()].map((p) => p.text);
 
-afterEach(() => { vi.restoreAllMocks(); });
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); });
 
 describe("shouldRecord", () => {
   it("routine: the first rule gave the default verdict, nothing shadowed: no row", () => {
@@ -77,12 +79,15 @@ describe("storeRecorder: the row", () => {
 });
 
 describe("storeRecorder: decision_fallback (ruling 9)", () => {
-  it("three named fallbacks in an hour open decision_fallback:<entry> and send ONE urgent card; a fourth sends nothing more", async () => {
+  it("three named fallbacks in an hour open decision_fallback:<entry> and log ONE card (no chat needed); a fourth logs nothing more", async () => {
     const store = RunStore.openInMemory();
-    const rec = storeRecorder(store, { env: ENV });
+    vi.stubEnv("HOUGE_TELEGRAM_CHAT_ID", "");
+    const rec = storeRecorder(store, { env: {} });
     for (let k = 0; k < 4; k += 1) await decide(E, { v: "abstain" }, { run_id: null, recorder: rec, exec: { system_one: jevDown } });
     expect(open(store)).toEqual([["decision_fallback", "test.judge"]]);
-    expect(cards(store)).toEqual([fallbackCardText("test.judge", 3)]);
+    expect(logged(store)).toHaveLength(2); // the incident line and the card text
+    expect(logged(store)).toContain(fallbackCardText("test.judge", 3));
+    expect(cards(store)).toEqual([]);
     store.close();
   });
   it("a rule answer (a photo, an ack) does not clear it; the next Jev or model answer does", async () => {
@@ -95,16 +100,21 @@ describe("storeRecorder: decision_fallback (ruling 9)", () => {
     expect(store.listOpenIncidents()).toEqual([]);
     store.close();
   });
-  it("a reopen within 10 minutes of resolving records the incident but sends no second card (E12 damping)", async () => {
+  it("a reopen within 10 minutes of resolving logs a second card: a log row is not paged, so no flap damping, and no chat is needed", async () => {
+    vi.stubEnv("HOUGE_TELEGRAM_CHAT_ID", "");
     const store = RunStore.openInMemory();
     let t = Date.parse("2026-10-12T10:00:00.000Z");
-    const rec = storeRecorder(store, { env: ENV, now: () => new Date(t).toISOString() });
+    const rec = storeRecorder(store, { env: {}, now: () => new Date(t).toISOString() });
     const step = async (jev: () => Promise<RungResult<V>>) => { t += 60_000; await decide(E, { v: "abstain" }, { run_id: null, recorder: rec, exec: { system_one: jev } }); };
     for (let k = 0; k < 3; k += 1) await step(jevDown); // pages at 10:03
     await step(jevAnswers);                            // resolved at 10:04
     await step(jevDown);                               // 10:05: four fails in the hour, reopened inside the quiet window
     expect(open(store)).toEqual([["decision_fallback", "test.judge"]]);
-    expect(cards(store)).toHaveLength(1);
+    const lines = logged(store); // each open logs its incident line and its card; the fix logs one line
+    expect(lines.filter((t) => t.startsWith("A decider kept falling back"))).toHaveLength(2);
+    expect(lines.filter((t) => t.startsWith("⚠️ *test.judge*"))).toHaveLength(2);
+    expect(lines.filter((t) => t.startsWith("✅ Fixed:"))).toHaveLength(1);
+    expect(cards(store)).toEqual([]);
     store.close();
   });
   it("turn.handler: Jev-rung failures never page here (the Jev incidents do); three cascade failures do", async () => {

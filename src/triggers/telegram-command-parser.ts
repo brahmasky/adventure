@@ -5,7 +5,7 @@ import { ROLE_NAMES, type RoleName } from "../omp/model-roles.js";
 export type TelegramCommand =
   | { type: "turn"; goal: string }
   | { type: "run"; program: string; goal: string }
-  | { type: "status"; run_id?: string; view?: "decisions" }
+  | { type: "status"; run_id?: string; view?: "decisions" | "changes" }
   | { type: "usage" }
   | { type: "radar"; radar_number?: number }
   | { type: "idea"; idea_action: "show" }
@@ -54,6 +54,8 @@ export function parseTelegramCommand(text: string): TelegramCommandParseResult {
 
   if (command === "/run") return parseRun(rest);
   if (command === "/status") return parseStatus(rest);
+  // `/changes` is `/status changes` (spec 2026-11-03 §7): the background change log, same status event.
+  if (command === "/changes") return rest.length === 0 ? { ok: true, command: { type: "status", view: "changes" } } : invalid("/changes takes no arguments");
   if (command === "/usage") return { ok: true, command: { type: "usage" } };
   // Idea Radar R1/R2: read-only viewers over the ideas store (no run, no budget — /usage
   // twins). /idea is a silent alias for the /radar week/pick branches since the merge.
@@ -105,6 +107,7 @@ function parseStatus(words: string[]): TelegramCommandParseResult {
   if (words.length > 1) return invalid("/status requires at most one run id");
   // `/status decisions`: the last decision rows (Paco 2026-10-14). Run ids are `run_<uuid>`, so the word never shadows one.
   if (words[0]?.toLowerCase() === "decisions") return { ok: true, command: { type: "status", view: "decisions" } };
+  if (words[0]?.toLowerCase() === "changes") return { ok: true, command: { type: "status", view: "changes" } };
   const run_id = words[0];
   return run_id ? { ok: true, command: { type: "status", run_id } } : { ok: true, command: { type: "status" } };
 }

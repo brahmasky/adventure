@@ -300,6 +300,7 @@ if (command === "run") {
   try {
     const outbox = new NotificationOutbox(store);
     const record = outbox.enqueue({
+      topic: "reply",
       target: { kind: "local" },
       intent_type: "progress",
       idempotency_key: "smoke:progress",

@@ -366,6 +366,15 @@ describe("/status decisions (Paco 2026-10-14)", () => {
   });
 });
 
+describe("/changes (spec 2026-11-03 §7)", () => {
+  it("/changes and /status changes are the status view; extra words are invalid", () => {
+    const view = { ok: true, command: { type: "status", view: "changes" } };
+    expect(parseTelegramCommand("/changes")).toEqual(view);
+    expect(parseTelegramCommand("/status changes")).toEqual(view);
+    expect(parseTelegramCommand("/changes x").ok).toBe(false);
+  });
+});
+
 describe("parseMemLaneCallback (spec §5.6)", () => {
   const lc = "lc_12345678-1234-1234-1234-123456789abc"; const run = "run_12345678-1234-1234-1234-123456789abc";
   // Stage B §3: new cards send lane:ask:; cards already in chats send memlane:ask: and must keep working.

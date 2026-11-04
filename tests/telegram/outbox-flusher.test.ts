@@ -79,7 +79,7 @@ describe("the daemon retries a notification whose send failed once", () => {
     let failures = 0;
     try {
       useFakeOmp({ "*": { rpcText: "x" } }, root);
-      store.enqueueNotification({ target: { kind: "telegram", chat_id: "222" }, intent_type: "progress",
+      store.enqueueNotification({ topic: "reply", target: { kind: "telegram", chat_id: "222" }, intent_type: "progress",
         idempotency_key: "reply:transient", correlation_id: "c", payload: { text: "the reply" } });
       let calls = 0;
       const elapseBackoff = () => (store as unknown as { db: { prepare(sql: string): { run(...a: unknown[]): unknown } } }).db
@@ -126,7 +126,7 @@ describe("the daemon never sends a reply that went stale while it was down", () 
     const sent: string[] = [];
     try {
       useFakeOmp({ "*": { rpcText: "x" } }, root);
-      const row = store.enqueueNotification({ target: { kind: "telegram", chat_id: "222" }, intent_type: "progress",
+      const row = store.enqueueNotification({ topic: "reply", target: { kind: "telegram", chat_id: "222" }, intent_type: "progress",
         idempotency_key: "reply:stale", correlation_id: "c", payload: { text: "the stale reply" } });
       if (row.status !== "queued") throw new Error("expected queued");
       (store as unknown as { db: { prepare(sql: string): { run(...a: unknown[]): unknown } } }).db

@@ -35,6 +35,8 @@ import {
 import { resolveSkillName, SkillStore, type SkillMeta } from "../skills/skill-store.js";
 import { join } from "node:path";
 import { evolutionLaneSnapshot } from "../core/evolution-lane.js";
+import { changesText } from "../notifications/change-log-view.js";
+import { INCIDENT_ROUTE, isRoutedKind } from "../run/incident-route.js";
 import { queryStatus } from "../status/status-query.js";
 import { formatUsageTable } from "../status/usage-report.js";
 import { resolveRadarAt, resolveRadarEnabled, resolveRadarTz } from "../capabilities/idea-radar.js";
@@ -424,6 +426,7 @@ export class Gateway {
       applied_lesson_ids: applied
     };
     this.runStore.enqueueNotification({
+      topic: "reply",
       target: event.notify,
       intent_type: "progress",
       idempotency_key: `${event.idempotency_key}:rating`,
@@ -470,6 +473,7 @@ export class Gateway {
 
     const result: GatewayIntakeResult = { ok: true, status: "lessons_returned", run_id: "" };
     this.runStore.enqueueNotification({
+      topic: "reply",
       target: event.notify,
       intent_type: "progress",
       idempotency_key: `${event.idempotency_key}:lessons`,
@@ -522,6 +526,7 @@ export class Gateway {
 
     const result: GatewayIntakeResult = { ok: true, status: "skills_returned", run_id: "" };
     this.runStore.enqueueNotification({
+      topic: "reply",
       target: event.notify,
       intent_type: "progress",
       idempotency_key: `${event.idempotency_key}:skills`,
@@ -599,6 +604,7 @@ export class Gateway {
 
     const result: GatewayIntakeResult = { ok: true, status: "forgotten", run_id: "" };
     this.runStore.enqueueNotification({
+      topic: "reply",
       target: event.notify,
       intent_type: "progress",
       idempotency_key: `${event.idempotency_key}:forget`,
@@ -650,6 +656,7 @@ export class Gateway {
 
     const result: GatewayIntakeResult = { ok: true, status: "schedule_admin_returned", run_id: "" };
     this.runStore.enqueueNotification({
+      topic: "reply",
       target: event.notify,
       intent_type: "progress",
       idempotency_key: `${event.idempotency_key}:schedule`,
@@ -719,6 +726,7 @@ export class Gateway {
 
     const result: GatewayIntakeResult = { ok: true, status: "killed", run_id: "" };
     this.runStore.enqueueNotification({
+      topic: "reply",
       target: event.notify,
       intent_type: "progress",
       idempotency_key: `${event.idempotency_key}:kill`,
@@ -755,6 +763,7 @@ export class Gateway {
 
     const result: GatewayIntakeResult = { ok: true, status: "disarmed", run_id: "" };
     this.runStore.enqueueNotification({
+      topic: "reply",
       target: event.notify,
       intent_type: "progress",
       idempotency_key: `${event.idempotency_key}:disarm`,
@@ -788,6 +797,7 @@ export class Gateway {
 
     const result: GatewayIntakeResult = { ok: true, status: "rearmed", run_id: "" };
     this.runStore.enqueueNotification({
+      topic: "reply",
       target: event.notify,
       intent_type: "progress",
       idempotency_key: `${event.idempotency_key}:rearm`,
@@ -820,6 +830,7 @@ export class Gateway {
       : { ok: true, status: "status_returned", run_id: "" };
 
     this.runStore.enqueueNotification({
+      topic: "reply",
       target: event.notify,
       intent_type: "progress",
       idempotency_key: `${event.idempotency_key}:status`,
@@ -854,6 +865,7 @@ export class Gateway {
     const table = formatUsageTable(this.runStore.usageByModel());
     const result: GatewayIntakeResult = { ok: true, status: "usage_returned", run_id: "" };
     this.runStore.enqueueNotification({
+      topic: "reply",
       target: event.notify,
       intent_type: "progress",
       idempotency_key: `${event.idempotency_key}:usage`,
@@ -903,6 +915,7 @@ export class Gateway {
     }
     const result: GatewayIntakeResult = { ok: true, status: "radar_returned", run_id: "" };
     this.runStore.enqueueNotification({
+      topic: "reply",
       target: event.notify,
       intent_type: "progress",
       // The list reply keeps the R1 `:radar` key; a detail reply keys on its ordinal so a
@@ -955,6 +968,7 @@ export class Gateway {
       action === "pick" && typeof rawNumber === "number" ? `:pick:${rawNumber}` : "";
     const result: GatewayIntakeResult = { ok: true, status: "idea_returned", run_id: "" };
     this.runStore.enqueueNotification({
+      topic: "reply",
       target: event.notify,
       intent_type: "progress",
       idempotency_key: `${event.idempotency_key}:idea${pickSuffix}`,
@@ -1039,6 +1053,7 @@ export class Gateway {
     const text = attempted ? `${attempted} 不是命令。\n\n${HELP_TEXT}` : HELP_TEXT;
     const result: GatewayIntakeResult = { ok: true, status: "help_returned", run_id: "" };
     this.runStore.enqueueNotification({
+      topic: "reply",
       target: event.notify,
       intent_type: "progress",
       idempotency_key: `${event.idempotency_key}:help`,
@@ -1081,6 +1096,7 @@ export class Gateway {
     if (reason === undefined) return;
     const id = (event.approval_id ?? "").replace(/[^A-Za-z0-9_-]/g, "").slice(0, APPROVAL_ID_ECHO_MAX);
     this.runStore.enqueueNotification({
+      topic: "reply",
       target: event.notify,
       intent_type: "progress",
       idempotency_key: `${event.idempotency_key}:approval_refused`,
@@ -1102,6 +1118,7 @@ export class Gateway {
     }
     const result: GatewayIntakeResult = { ok: true, status: "approvals_returned", run_id: "" };
     this.runStore.enqueueNotification({
+      topic: "reply",
       target: event.notify,
       intent_type: "progress",
       idempotency_key: `${event.idempotency_key}:approvals`,
@@ -1135,6 +1152,7 @@ export class Gateway {
       const fuse = this.runStore.armGlobalFuseIfNeeded(now);
       if (fuse.armed) {
         this.runStore.enqueueNotification({
+          topic: "budget_fuse",
           target: event.notify,
           intent_type: "progress",
           idempotency_key: `global-budget-fuse:${fuse.since}`,
@@ -1218,6 +1236,7 @@ export class Gateway {
   private refuseContract(event: TypedTaskEvent, error: { code: "TASK_CONTRACT_INVALID"; message: string }): GatewayIntakeResult {
     if (event.source === "telegram") {
       this.runStore.enqueueNotification({
+        topic: "reply",
         target: event.notify,
         intent_type: "progress",
         idempotency_key: `${event.idempotency_key}:contract_invalid`,
@@ -1293,6 +1312,7 @@ export class Gateway {
   /** `/status decisions` lists the newest decision rows; every other form is the overview or one run, as before. */
   private statusPayload(event: TypedTaskEvent, run_id: string | undefined, now: string): NotificationPayload {
     if (event.metadata?.status_view === "decisions") return { text: decisionListText(this.runStore) };
+    if (event.metadata?.status_view === "changes") return { text: changesText(this.runStore, now) };
     const status = queryStatus(this.runStore, run_id);
     const chatId = event.notify.kind === "telegram" ? event.notify.chat_id : null;
     return { text: this.formatStatusText(status, now, chatId), status };
@@ -1303,6 +1323,14 @@ export class Gateway {
     const t = chatId ? this.runStore.getTranscriptTrustSince(chatId) : null;
     if (!t || (t.level !== "untrusted" && t.level !== "hostile")) return [];
     return [`Conversation carries ${t.level}${t.at ? ` since ${localOf(t.at)}` : ""} · /fresh clears it`];
+  }
+
+  /** Spec 2026-11-03 §7: the self-check tail counts open incidents by where they go (a card counts as paged) and the week's log rows. */
+  private changesLine(now: string): string {
+    let paged = 0, internal = 0;
+    for (const i of this.runStore.listOpenIncidents()) { if (isRoutedKind(i.kind) && INCIDENT_ROUTE[i.kind].route === "log") internal += 1; else paged += 1; }
+    const week = this.runStore.countChangeLogSince(new Date(Date.parse(now) - 7 * 86_400_000).toISOString());
+    return `${paged} paged · ${internal} internal open · ${week} changes this week · /changes`;
   }
 
   private formatStatusText(status: ReturnType<typeof queryStatus>, now: string, chatId: string | null): string {
@@ -1339,7 +1367,6 @@ export class Gateway {
           : "polling · last never"
         : "not running";
       const sweptText = sweep.last_swept_at ? `${relativeTimeAgo(sweep.last_swept_at, now)} ago` : "never";
-      const incidentText = `${sweep.open_incidents} open incident${sweep.open_incidents === 1 ? "" : "s"}`;
       // Idea Radar R1: the sweeps-section rot line — last tick + active-card count. Absent
       // when the flag is off (a dark feature must not advertise itself in /status).
       const radarLine = resolveRadarEnabled(process.env)
@@ -1393,7 +1420,7 @@ export class Gateway {
         "",
         "🟢 HEALTH",
         `Daemon: ${daemonText}`,
-        `Self-check: swept ${sweptText} · ${incidentText}`,
+        `Self-check: swept ${sweptText} · ${this.changesLine(now)}`,
         ...this.carryLine(chatId, localOf),
         ...radarLine,
         ...panelLine,
@@ -1618,6 +1645,7 @@ export const HELP_TEXT = [
   "Houge · 命令",
   "",
   "/status — 运行与健康状态",
+  "/changes — 后台变更记录（模型切换、内部自检）",
   "/usage — 各模型 token/费用用量",
   "/radar — 创意雷达：/radar · /radar <n> · /radar week · /radar pick <n>",
   "/schedule — 列出定时任务（/schedule cancel <编号或 id> 取消）",

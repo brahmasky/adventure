@@ -106,7 +106,7 @@ describe("/models set", () => {
   it("saves a pattern that matches an allowed model for the role, as one model_role_override row keyed by the role", () => {
     expect(gateway().intake(command("/models set thinking opus"))).toMatchObject({ ok: true, status: "models_returned" });
     expect(store.latestModelRoleOverrides().get("thinking")).toBe("opus");
-    expect(overrides().map((e) => e.payload)).toEqual([{ key: "thinking", pattern: "opus", actor: "paco" }]);
+    expect(overrides().map((e) => e.payload)).toEqual([{ key: "thinking", pattern: "opus", actor: "paco", via: "set" }]);
     expect(replies()[0]).toContain("thinking → override `opus`");
   });
 

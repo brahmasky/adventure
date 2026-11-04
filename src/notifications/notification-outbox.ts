@@ -1,5 +1,5 @@
 import type { NotificationRecord, RunStore } from "../run/run-store.js";
-import type { NotificationIntent } from "./notification-types.js";
+import type { ChatIntent } from "./notification-types.js";
 
 /**
  * Thin wrapper over the RunStore notification_outbox methods. Provides a
@@ -9,10 +9,13 @@ import type { NotificationIntent } from "./notification-types.js";
 export class NotificationOutbox {
   constructor(private readonly store: RunStore) {}
 
-  enqueue(intent: NotificationIntent): NotificationRecord {
+  enqueue(intent: ChatIntent): NotificationRecord {
     const result = this.store.enqueueNotification(intent);
     if (result.status === "conflict") {
       throw new Error(result.error);
+    }
+    if (!("record" in result)) {
+      throw new Error(`NOTIFICATION_NOT_QUEUED: ${result.status}`);
     }
     return result.record;
   }

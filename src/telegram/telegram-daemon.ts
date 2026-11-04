@@ -252,6 +252,7 @@ export async function runTelegramDaemon(
     // in-loop dispatch flush delivers it. Deterministic key → idempotent across restarts.
     acknowledgeSink: (ack) => {
       new NotificationOutbox(options.store).enqueue({
+        topic: "reply",
         target: { kind: "telegram", chat_id: ack.chat_id },
         intent_type: "progress",
         idempotency_key: ack.idempotency_key,
@@ -735,18 +736,16 @@ export function modelRolesTickInput(store: RunStore, roles: RoleResolver, now: s
 }
 
 /**
- * The daily model-roles tick (spec §4.1): change notices go to the operator chat (the rating ask's chat), through the outbox
- * and the rich renderer; `role_unresolved` pages through openAlertedIncident. Its own catch: a failed tick never skips the
- * memory, idea and schedule ticks after it.
+ * The daily model-roles tick (spec §4.1): change notices go to the change log (chat is for Paco, spec 2026-11-03 §4), needing no chat; `role_unresolved` pages through openAlertedIncident. Its own catch: a failed tick never skips the
+ * memory, idea and schedule ticks after it. Exported for the wiring test.
  */
-async function runRolesTick(
+export async function runRolesTick(
   options: RunTelegramDaemonOptions, worker: CoreWorker, now: string, chatId: string | null, signal: AbortSignal
 ): Promise<void> {
   const notify = (text: string): void => {
-    if (!chatId) return;
     options.store.enqueueNotification({
-      target: { kind: "telegram", chat_id: chatId }, intent_type: "progress",
-      idempotency_key: `model_roles:notice:${now}:${stableHash(text)}`, correlation_id: "model-roles", payload: { text }
+      topic: "model_change",
+      idempotency_key: `model_roles:notice:${now}:${stableHash(text)}`, correlation_id: "model-roles", text, now
     });
   };
   const card = (c: EmptyTierCard): void => { if (chatId) enqueueTierCard(options.store, chatId, now, c); };
@@ -865,6 +864,7 @@ function notifyReloadOnBoot(options: RunTelegramDaemonOptions, marker: ReloadMar
       // The staleness probe is best-effort; never block the confirmation on it.
     }
     new NotificationOutbox(options.store).enqueue({
+      topic: "self_write",
       target: { kind: "telegram", chat_id: String(chat.telegram_chat_id) },
       intent_type: "final_report",
       idempotency_key: `selfwrite:reloaded:${marker.sha}:${marker.merged_at}`,

@@ -28,6 +28,7 @@ const notes = () => {
   for (let n = store.claimNextNotification(`t${out.length}`, 30); n; n = store.claimNextNotification(`t${out.length}`, 30)) out.push(n.payload);
   return out;
 };
+const driftLogs = () => store.listChangeLog("1970-01-01T00:00:00.000Z", 50).filter((r) => r.text.includes("`omp_contract_drift`"));
 const probeRows = () => store.getLedgerEvents().filter((e) => e.event_type === "omp_contract_probe").length;
 const drift = () => store.listOpenIncidents().filter((i) => i.kind === OMP_CONTRACT_DRIFT);
 const roles = (tiny: ModelString[] = [TINY], fast: ModelString[] = [FAST]) =>
@@ -49,11 +50,13 @@ describe("omp probe runner", () => {
     expect(drift().map((i) => [i.subject, JSON.parse(i.detail_json)])).toEqual([
       ["omp:18.7.0", { version: "18.7.0", failed: { start_refusal: "fail:unclassified" } }]
     ]);
-    expect(notes()).toHaveLength(1);
+    expect(driftLogs()).toHaveLength(1); // a log kind: the change log, not chat
+    expect(notes()).toHaveLength(0);
     runner(answering("fail")).maybeProbe("18.7.0");
     await flush();
     expect(calls).toHaveLength(2);
     expect(drift()).toHaveLength(1);
+    expect(driftLogs()).toHaveLength(1);
     expect(notes()).toHaveLength(0);
   });
 

@@ -15,6 +15,11 @@
 //   HOUGE_TOMBSTONE_PATH / HOUGE_DISARM_PATH under the temp root (P2), HOUGE_TELEGRAM_CHAT_ID = -1003 (P3, a numeric id that is no real chat),
 //   HOUGE_MODEL_ROLES deleted (resolved mode); scheduler / radar / media flags deleted. HOUGE_OMP_BIN is read from the env file if set.
 // --only <n>[,<n>]: assert only those lines plus the setup they need (lines 3-6 run the tick; line 6 needs the tick for the empty gemini-pro tier).
+// 2026-11-03 (chat-is-for-paco): the real gemini-pro tier now contains gemini-4-argon (spec §6.1), so the live catalog has no EMPTY family tier
+// and argon is no longer a card proposal. This gate keeps the card / tap-probe path covered by planting a SYNTHETIC empty family tier: it narrows
+// the gemini-pro pattern in the loaded dist module (in memory only) to `-pro` ids, so only the planted gemini-3.1-pro is a member and argon is a
+// proposal exactly as before the slice. The copy's card-tap override of judges:2 (Paco's 13:36 tap) is reset on the copy so seat 2 is the empty
+// tier's unresolved seat. The real-tier behaviour (argon adopted, override retired) is live-gate-chat-is-for-paco.mjs.
 // The tick's clock is P27: the copy's latest model_roles_resolved.resolved_at + 25 h, else the wall clock.
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -36,6 +41,7 @@ const MIGRATION = "2026-11-02-loud-degradation";
 const PLANTED = { provider: "google-antigravity", id: "gemini-3.1-pro", thinking: null };
 const PLANTED_SELECTOR = `${PLANTED.provider}/${PLANTED.id}`;
 const PROPOSAL = "gemini-4-argon";
+const SYNTHETIC_PRO = /^gemini-(\d{1,2})(?:\.(\d{1,2}))?-pro$/; // members: the planted gemini-3.1-pro only; argon falls out of the tier and becomes a proposal
 /** Spec §4.2 bootstrap, literal (Global Constraints): the heads that matched each tier and ran on 2026-11-01. */
 const LITERAL_SEED = { "opus@anthropic": "claude-opus-5-5", "opus@antigravity": "claude-opus-5-5", "sonnet@anthropic": "claude-sonnet-5-5", "sonnet@antigravity": "claude-sonnet-5-5",
   "gemini-flash": "gemini-3.8-flash", "gemini-pro": null, "codex-sol": "gpt-6.1-sol", kimi: "k3" };
@@ -204,7 +210,7 @@ async function line5() {
     const before = outboxByKey(`${target}%`).length; // the copy may already hold today's card; the key is idempotent
     G.d.enqueueTierCard(G.store, STUB_CHAT, G.now, c);
     if (argv.includes("--sim-duplicate-card")) {
-      G.store.enqueueNotification({ target: { kind: "telegram", chat_id: STUB_CHAT }, intent_type: "progress", idempotency_key: `${target}-dup`, correlation_id: "model-roles", payload: { text: G.d.tierCardText(c) } });
+      G.store.enqueueNotification({ topic: "model_card", target: { kind: "telegram", chat_id: STUB_CHAT }, intent_type: "progress", idempotency_key: `${target}-dup`, correlation_id: "model-roles", payload: { text: G.d.tierCardText(c) } });
     }
     const found = outboxByKey(`${target}%`);
     total = found.length; added = total - before;
@@ -256,6 +262,9 @@ async function loadDistModules() {
     load("run/run-store.js"), load("omp/role-resolver.js"), load("omp/model-tiers.js"), load("omp/model-roles.js"), load("omp/tier-step.js"), load("omp/model-probe.js"),
     load("omp/model-roles-tick.js"), load("gateway/model-tier-commands.js"), load("gateway/gateway.js"), load("omp/omp-config.js"), load("llm/registry.js"),
     load("omp/model-catalog.js"), load("run/schedule-spec.js"), load("domain/types.js")]);
+  const proDef = tiers.TIERS.find((t) => t.id === "gemini-pro");
+  if (!proDef) throw new SetupError("gemini-pro tier missing from dist: rebuild");
+  proDef.pattern = SYNTHETIC_PRO; // the synthetic empty family tier (see the header)
   const d = { RunStore: store.RunStore, storeOptionsFor: (await load("run/store-options.js")).storeOptionsFor, RoleResolver: roles.RoleResolver, tierHeadsOf: tiers.tierHeadsOf,
     isTierId: tiers.isTierId, roleSelectors: mroles.roleSelectors, staticRoleChains: mroles.staticRoleChains, planTier: step.planTier, applyProbe: step.applyProbe,
     ompProbe: probe.ompProbe, runModelRolesTick: tick.runModelRolesTick, failedLine: tick.failedLine, enqueueTierCard: cmds.enqueueTierCard, tierCardText: cmds.tierCardText,
@@ -281,6 +290,13 @@ async function setup() {
   G.d = await loadDistModules();
   G.store = G.d.RunStore.open(copy, G.d.storeOptionsFor(undefined, {}));
   G.cfg = G.d.resolveOmpConfig(process.env);
+  if (G.store.latestModelRoleOverrides().has("judges:2")) { G.store.recordModelRoleOverride({ key: "judges:2", pattern: "", actor: "gate:model-tiers" }); note("judges:2 override reset on the copy (the card-tap override would hide the empty tier)"); }
+  // Once the live daemon adopts gemini-4-argon, the copy's gemini-pro row is adopted and no card is owed: put it back to unadopted on the copy (mirrors the chat-is-for-paco gate).
+  const pro = G.store.listModelTiers().find((t) => t.tier === "gemini-pro");
+  if (pro && (pro.adopted !== null || pro.previous !== null || pro.rejected_selector !== null)) {
+    G.store.writeModelTier({ tier: "gemini-pro", adopted: null, previous: null, adopted_at: null, rejected_selector: null, rejected_at: null }, new Date().toISOString());
+    note("gemini-pro tier put back to unadopted on the copy");
+  }
   G.catalog = await G.d.readOmpCatalog(G.d.resolveOmpCatalogConfig(process.env));
   if (!G.catalog || G.catalog.length === 0) throw new SetupError("catalog unavailable");
   G.roles = new G.d.RoleResolver({ store: G.store, env: () => process.env, readCatalog: async () => [...G.catalog, PLANTED] });

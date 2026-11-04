@@ -1,4 +1,4 @@
-import type { NotificationIntent } from "../notifications/notification-types.js";
+import type { ChatIntent } from "../notifications/notification-types.js";
 import { computeNextRunAt, type ScheduleWeekday } from "../run/schedule-spec.js";
 import type { SkillStore } from "../skills/skill-store.js";
 import { resolveSkillsEnabled } from "../skills/skill-store.js";
@@ -68,7 +68,7 @@ export interface SkillReverifyStateStore {
   getSkillReverifyLastRun(): string | null;
   setSkillReverifyLastRun(now: string): void;
   recordSkillReverifyTick(p: { checked: number; passed: number; flagged: number }): void;
-  enqueueNotification(intent: NotificationIntent): unknown;
+  enqueueNotification(intent: ChatIntent): unknown;
 }
 
 /** One Gate B failure worth flagging: identity + score margin + the failing criteria. */
@@ -197,6 +197,7 @@ export async function runSkillReverifyTick(input: {
 
     if (flags.length > 0 && input.chatId !== null) {
       input.store.enqueueNotification({
+        topic: "skill_reverify",
         target: { kind: "telegram", chat_id: input.chatId },
         intent_type: "progress",
         idempotency_key: `skill_reverify:${input.now.slice(0, 10)}`,

@@ -115,6 +115,7 @@ export function maybeAskSessionRating(input: SessionRatingAskInput): boolean {
   const window_start = lastCapture && lastCapture > dayAgo ? lastCapture : dayAgo;
   store.writePendingRating({ chat_id: chatId, asked_at: now, window_start });
   store.enqueueNotification({
+    topic: "rating_ask",
     target: { kind: "telegram", chat_id: chatId },
     intent_type: "progress",
     idempotency_key: `rating:ask:${chatId}:${now}`,

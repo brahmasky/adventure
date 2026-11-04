@@ -179,6 +179,7 @@ export async function runTelegramPollOnce(
     // dispatch flush at the end of this cycle delivers it. Deterministic key → idempotent.
     acknowledgeSink: (ack) => {
       new NotificationOutbox(options.store).enqueue({
+        topic: "reply",
         target: { kind: "telegram", chat_id: ack.chat_id },
         intent_type: "progress",
         idempotency_key: ack.idempotency_key,

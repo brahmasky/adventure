@@ -32,6 +32,7 @@ export function oncePerTrigger(store: RunStore, event: TypedTaskEvent, fn: () =>
 /** One code-owned reply to the event's chat, keyed on the event so a redelivery never replies twice. */
 export function replyTo(store: RunStore, event: TypedTaskEvent, suffix: string, text: string): void {
   store.enqueueNotification({
+    topic: "reply",
     target: event.notify, intent_type: "progress", idempotency_key: `${event.idempotency_key}:${suffix}`,
     correlation_id: event.source_reference, payload: { text }
   });

@@ -343,6 +343,7 @@ function enqueueDurableChatNotification(
 ): void {
   try {
     new NotificationOutbox(store).enqueue({
+      topic: "self_write",
       target: { kind: "telegram", chat_id: event.chat_id },
       intent_type: "final_report",
       idempotency_key: `selfwrite:${event.action}:${event.callback_id}:notify`,

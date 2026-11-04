@@ -12,13 +12,15 @@ import { RunStore } from "../../src/run/run-store.js";
 import { parseModelTierCallback } from "../../src/triggers/telegram-command-parser.js";
 
 // Spec §4.4: an empty tier asks Paco instead of failing quietly for three weeks. A tap probes first and only a pass writes
-// the override (the same row `/models set judges 2 <id>` writes) in the probe event's transaction: code never adopts a
-// codename without a tap, and a model the subscription cannot reach is never adopted at all.
+// the override (the same row `/models set judges 2 <id>` writes) in the probe event's transaction: a card proposal outside the tier's
+// family still needs the tap (renamed Gemini ids join the pro tier, spec 2026-11-03 §6.1), and a model the subscription cannot reach is never adopted at all.
 let store: RunStore; let cb = 0;
 beforeEach(() => { store = RunStore.openInMemory(); vi.stubEnv("HOUGE_MODEL_ROLES", "resolved"); vi.stubEnv("HOUGE_TELEGRAM_CHAT_ID", ""); });
 afterEach(() => { store.close(); vi.unstubAllEnvs(); });
-const FIX = (): CatalogModel[] => parseOmpCatalog(readFileSync(new URL("../fixtures/omp-catalog-2026-11-02.json", import.meta.url).pathname, "utf8"))!;
-const CARD = { tier: "gemini-pro" as const, keys: ["judges:2"], proposals: ["gemini-4-argon", "gpt-oss-120b"] };
+// Spec 2026-11-03 §6.1: gemini-4-argon is now the pro tier's own member, so the empty-tier card needs a Gemini no tier reads.
+const FIX = (): CatalogModel[] => [...parseOmpCatalog(readFileSync(new URL("../fixtures/omp-catalog-2026-11-02.json", import.meta.url).pathname, "utf8"))!.filter((m) => m.id !== "gemini-4-argon"),
+  { provider: "google-antigravity", id: "gemini-exp-1", thinking: null, price: { output: 10, rates: [] } }];
+const CARD = { tier: "gemini-pro" as const, keys: ["judges:2"], proposals: ["gemini-exp-1"] };
 const outbox = () => (store as unknown as { db: { prepare(s: string): { all(): unknown[] } } }).db
   .prepare("SELECT idempotency_key, payload_json FROM notification_outbox ORDER BY created_at, rowid").all() as Array<{ idempotency_key: string; payload_json: string }>;
 const texts = () => outbox().map((r) => (JSON.parse(r.payload_json) as { text: string }).text);
@@ -38,14 +40,13 @@ const probeRows = () => store.getLedgerEvents().filter((e) => e.event_type === "
 
 describe("the card", () => {
   it("is spec §4.4's text with Use buttons per proposal and Not now; one per tier per day", () => {
-    expect(tierCardText(CARD)).toBe("Judges:2 has no model: Google's pro tier is empty. Use `gemini-4-argon`?");
+    expect(tierCardText(CARD)).toBe("Judges:2 has no model: Google's pro tier is empty. Use `gemini-exp-1`?");
     enqueueTierCard(store, "-1003", "2026-11-02T09:00:00.000Z", CARD);
     enqueueTierCard(store, "-1003", "2026-11-02T21:00:00.000Z", CARD);
     enqueueTierCard(store, "-1003", "2026-11-03T09:00:00.000Z", CARD);
     expect(outbox().map((r) => r.idempotency_key)).toEqual(["model_tier_card:gemini-pro:2026-11-02", "model_tier_card:gemini-pro:2026-11-03"]); // Sydney days: 09:00Z → 11-02 20:00; 21:00Z → 11-03 08:00; next 09:00Z → 11-03 20:00
     expect((JSON.parse(outbox()[0]!.payload_json) as { button_rows: unknown }).button_rows).toEqual([[
-      { text: "Use gemini-4-argon", data: tierCallbackData("gemini-pro", "gemini-4-argon") },
-      { text: "Use gpt-oss-120b", data: tierCallbackData("gemini-pro", "gpt-oss-120b") },
+      { text: "Use gemini-exp-1", data: tierCallbackData("gemini-pro", "gemini-exp-1") },
       { text: "Not now", data: "mt:gemini-pro:no" }]]);
   });
   it("callback data fits Telegram's 64 bytes and round-trips through the parser", () => {
@@ -58,7 +59,7 @@ describe("the card", () => {
   it("with no proposal, names the /models set form and offers no button", () => {
     enqueueTierCard(store, "-1003", "2026-11-02T09:00:00.000Z", { ...CARD, proposals: [] });
     expect(JSON.parse(outbox()[0]!.payload_json)).not.toHaveProperty("button_rows");
-    expect(tierCardText({ ...CARD, proposals: [] })).toBe("Judges:2 has no model: Google's pro tier is empty. The catalog offers no other google-antigravity model; /models set judges 2 <pattern> fills it.");
+    expect(tierCardText({ ...CARD, proposals: [] })).toBe("Judges:2 has no model: Google's pro tier is empty. The catalog offers no other gemini model; /models set judges 2 <pattern> fills it.");
   });
 });
 
@@ -66,23 +67,23 @@ describe("a tap", () => {
   it("on a passing model: probe, then the override + probe event in one transaction; judges:2 resolves; role_unresolved closes", async () => {
     const { gw, roles } = await gateway({ result: "pass", kind: "ok" });
     store.openIncident({ kind: "role_unresolved", subject: "judges:2", detail: { role: "judges:2" } });
-    expect(gw.intake(tap(tierCallbackData("gemini-pro", "gemini-4-argon")))).toMatchObject({ ok: true, status: "model_tier_tapped" });
+    expect(gw.intake(tap(tierCallbackData("gemini-pro", "gemini-exp-1")))).toMatchObject({ ok: true, status: "model_tier_tapped" });
     await gw.whenTierTapsSettled();
-    expect(store.latestModelRoleOverrides().get("judges:2")).toBe("gemini-4-argon");
-    expect(probeRows()).toEqual([{ tier: "gemini-pro", selector: "google-antigravity/gemini-4-argon", purpose: "tap", result: "pass", kind: "ok" }]);
-    expect(roles.resolveAll().find((r) => r.key === "judges:2")?.head).toBe("google-antigravity/gemini-4-argon");
+    expect(store.latestModelRoleOverrides().get("judges:2")).toBe("gemini-exp-1");
+    expect(probeRows()).toEqual([{ tier: "gemini-pro", selector: "google-antigravity/gemini-exp-1", purpose: "tap", result: "pass", kind: "ok" }]);
+    expect(roles.resolveAll().find((r) => r.key === "judges:2")?.head).toBe("google-antigravity/gemini-exp-1");
     expect(store.listOpenIncidents().filter((i) => i.kind === "role_unresolved")).toEqual([]);
-    expect(texts()).toEqual(["🔎 Checking `gemini-4-argon` with one short prompt…",
-      "✅ `gemini-4-argon` passed its check; judges:2 now uses it (an override: /models reset judges 2 undoes it)."]);
+    expect(texts()).toEqual(["🔎 Checking `gemini-exp-1` with one short prompt…",
+      "✅ `gemini-exp-1` passed its check; judges:2 now uses it (an override: /models reset judges 2 undoes it)."]);
   });
   it("on a failing or inconclusive model writes no override and says so", async () => {
-    for (const [answer, line] of [[{ result: "model_missing", kind: "model_missing" }, "❌ `gemini-4-argon` failed its check (not available on this subscription); nothing changed."],
-      [{ result: "inconclusive", kind: "quota" }, "⏳ `gemini-4-argon` could not be checked right now (quota); nothing changed. Tap again later."]] as const) {
+    for (const [answer, line] of [[{ result: "model_missing", kind: "model_missing" }, "❌ `gemini-exp-1` failed its check (not available on this subscription); nothing changed."],
+      [{ result: "inconclusive", kind: "quota" }, "⏳ `gemini-exp-1` could not be checked right now (quota); nothing changed. Tap again later."]] as const) {
       store.close(); store = RunStore.openInMemory();
       const { gw } = await gateway(answer);
-      gw.intake(tap(tierCallbackData("gemini-pro", "gemini-4-argon"))); await gw.whenTierTapsSettled();
+      gw.intake(tap(tierCallbackData("gemini-pro", "gemini-exp-1"))); await gw.whenTierTapsSettled();
       expect(store.latestModelRoleOverrides().has("judges:2")).toBe(false);
-      expect(probeRows()).toEqual([{ tier: "gemini-pro", selector: "google-antigravity/gemini-4-argon", purpose: "tap", result: answer.result, kind: answer.kind }]);
+      expect(probeRows()).toEqual([{ tier: "gemini-pro", selector: "google-antigravity/gemini-exp-1", purpose: "tap", result: answer.result, kind: answer.kind }]);
       expect(texts()[1]).toBe(line);
     }
   });
@@ -90,10 +91,10 @@ describe("a tap", () => {
     const calls: string[] = []; const { gw } = await gateway({ result: "pass", kind: "ok" }, calls);
     gw.intake(tap("mt:gemini-pro:000000000000:use")); await gw.whenTierTapsSettled();
     expect([calls, texts()]).toEqual([[], [TAP_HANDLED_TEXT]]);
-    const ev = tap(tierCallbackData("gemini-pro", "gemini-4-argon"), "same");
+    const ev = tap(tierCallbackData("gemini-pro", "gemini-exp-1"), "same");
     gw.intake(ev); gw.intake(ev); await gw.whenTierTapsSettled();
-    expect(calls).toEqual(["google-antigravity/gemini-4-argon"]);
-    gw.intake(tap(tierCallbackData("gemini-pro", "gemini-4-argon"))); await gw.whenTierTapsSettled();
+    expect(calls).toEqual(["google-antigravity/gemini-exp-1"]);
+    gw.intake(tap(tierCallbackData("gemini-pro", "gemini-exp-1"))); await gw.whenTierTapsSettled();
     expect(calls).toHaveLength(1);
     expect(texts().at(-1)).toBe(TAP_HANDLED_TEXT);
   });
@@ -101,19 +102,19 @@ describe("a tap", () => {
     const { gw, roles } = await gateway({ result: "pass", kind: "ok" });
     store.recordModelRoleOverride({ key: "judges:2", pattern: "model-that-was-retired", actor: "paco" });
     expect(roles.resolveAll().find((r) => r.key === "judges:2")?.head).toBeNull();
-    gw.intake(tap(tierCallbackData("gemini-pro", "gemini-4-argon"))); await gw.whenTierTapsSettled();
-    expect(store.latestModelRoleOverrides().get("judges:2")).toBe("gemini-4-argon");
+    gw.intake(tap(tierCallbackData("gemini-pro", "gemini-exp-1"))); await gw.whenTierTapsSettled();
+    expect(store.latestModelRoleOverrides().get("judges:2")).toBe("gemini-exp-1");
   });
   it("a /models set that lands while the probe is pending is not overwritten by the older tap (review round 1)", async () => {
     const roles = new RoleResolver({ store, env: () => ({ HOUGE_MODEL_ROLES: "resolved" }), readCatalog: async () => FIX() }); await roles.refreshCatalog();
     let release!: (o: ProbeOutcome) => void;
     const probe: ProbeFn = () => new Promise((r) => { release = r; });
     const gw = new Gateway(store, undefined, undefined, undefined, undefined, { roles, modelProbe: probe });
-    gw.intake(tap(tierCallbackData("gemini-pro", "gemini-4-argon")));
+    gw.intake(tap(tierCallbackData("gemini-pro", "gemini-exp-1")));
     store.recordModelRoleOverride({ key: "judges:2", pattern: "gpt-oss-120b", actor: "paco" });
     release({ result: "pass", kind: "ok" }); await gw.whenTierTapsSettled();
     expect(store.latestModelRoleOverrides().get("judges:2")).toBe("gpt-oss-120b");
-    expect(texts().at(-1)).toBe("ℹ️ `gemini-4-argon` passed its check, but judges:2 got a model meanwhile; nothing changed.");
+    expect(texts().at(-1)).toBe("ℹ️ `gemini-exp-1` passed its check, but judges:2 got a model meanwhile; nothing changed.");
   });
   it("during a catalog outage, or in static mode, says why nothing changed instead of 'Already handled.' (final review Minor 2)", async () => {
     // Paco taps the morning card after the catalog read failed: "Already handled." would tell him judges:2 is filled while it stays empty.
@@ -121,10 +122,10 @@ describe("a tap", () => {
     const down = new RoleResolver({ store, env: () => ({ HOUGE_MODEL_ROLES: "resolved" }), readCatalog: async () => null }); await down.refreshCatalog();
     const probe: ProbeFn = async (sel) => { calls.push(sel); return { result: "pass", kind: "ok" }; };
     const gw = new Gateway(store, undefined, undefined, undefined, undefined, { roles: down, modelProbe: probe });
-    gw.intake(tap(tierCallbackData("gemini-pro", "gemini-4-argon"))); await gw.whenTierTapsSettled();
+    gw.intake(tap(tierCallbackData("gemini-pro", "gemini-exp-1"))); await gw.whenTierTapsSettled();
     vi.stubEnv("HOUGE_MODEL_ROLES", "static"); // a catalog in hand, but static applies no override: writing one would be a silent no-op
     const { gw: gw2 } = await gateway({ result: "pass", kind: "ok" }, calls);
-    gw2.intake(tap(tierCallbackData("gemini-pro", "gemini-4-argon"))); await gw2.whenTierTapsSettled();
+    gw2.intake(tap(tierCallbackData("gemini-pro", "gemini-exp-1"))); await gw2.whenTierTapsSettled();
     expect([calls, texts(), store.latestModelRoleOverrides().has("judges:2")]).toEqual([[], [TAP_NO_CATALOG_TEXT, TAP_STATIC_TEXT], false]);
   });
   it("Not now only answers", async () => {
@@ -137,25 +138,30 @@ describe("a tap", () => {
     const roles = new RoleResolver({ store, env: () => ({ HOUGE_MODEL_ROLES: "resolved" }), readCatalog: async () => FIX() }); await roles.refreshCatalog();
     const probe: ProbeFn = (_sel, signal) => { seen = signal; return new Promise((r) => signal?.addEventListener("abort", () => r("aborted"), { once: true })); };
     const gw = new Gateway(store, undefined, undefined, undefined, undefined, { roles, modelProbe: probe, stopSignal: ac.signal });
-    gw.intake(tap(tierCallbackData("gemini-pro", "gemini-4-argon")));
+    gw.intake(tap(tierCallbackData("gemini-pro", "gemini-exp-1")));
     ac.abort(); await gw.whenTierTapsSettled();
     expect(seen).toBe(ac.signal);
-    expect([probeRows(), store.latestModelRoleOverrides().has("judges:2"), texts()]).toEqual([[], false, ["🔎 Checking `gemini-4-argon` with one short prompt…"]]);
+    expect([probeRows(), store.latestModelRoleOverrides().has("judges:2"), texts()]).toEqual([[], false, ["🔎 Checking `gemini-exp-1` with one short prompt…"]]);
   });
   it("a probe that passes after the stop fired commits nothing: the stop wins the race (M68, P16)", async () => {
     const ac = new AbortController(); let release!: (o: ProbeOutcome) => void;
     const roles = new RoleResolver({ store, env: () => ({ HOUGE_MODEL_ROLES: "resolved" }), readCatalog: async () => FIX() }); await roles.refreshCatalog();
     const probe: ProbeFn = () => new Promise((r) => { release = r; }); // ignores its signal, as a child that outlives the kill would
     const gw = new Gateway(store, undefined, undefined, undefined, undefined, { roles, modelProbe: probe, stopSignal: ac.signal });
-    gw.intake(tap(tierCallbackData("gemini-pro", "gemini-4-argon")));
+    gw.intake(tap(tierCallbackData("gemini-pro", "gemini-exp-1")));
     ac.abort(); release({ result: "pass", kind: "ok" }); await gw.whenTierTapsSettled();
     expect([probeRows(), store.latestModelRoleOverrides().has("judges:2")]).toEqual([[], false]);
   });
   it("the override a tap writes names the tapping user as its actor, as /models set does (M72)", async () => {
     const { gw } = await gateway({ result: "pass", kind: "ok" });
-    gw.intake(tap(tierCallbackData("gemini-pro", "gemini-4-argon"))); await gw.whenTierTapsSettled();
+    gw.intake(tap(tierCallbackData("gemini-pro", "gemini-exp-1"))); await gw.whenTierTapsSettled();
     expect(store.getLedgerEvents().filter((e) => e.event_type === "model_role_override").map((e) => e.payload))
-      .toEqual([{ key: "judges:2", pattern: "gemini-4-argon", actor: "paco" }]);
+      .toEqual([{ key: "judges:2", pattern: "gemini-exp-1", actor: "paco", via: "tap" }]);
+  });
+  it("/models set writes no via, so only a card tap is ever retired by the tier (spec §6.4)", () => {
+    store.recordModelRoleOverride({ key: "judges:2", pattern: "gemini-exp-1", actor: "paco" });
+    expect(store.getLedgerEvents().filter((e) => e.event_type === "model_role_override").map((e) => e.payload))
+      .toEqual([{ key: "judges:2", pattern: "gemini-exp-1", actor: "paco" }]);
   });
   it("is exempt from the per-chat rate limit, like the other card taps", async () => {
     const { gw } = await gateway({ result: "pass", kind: "ok" });

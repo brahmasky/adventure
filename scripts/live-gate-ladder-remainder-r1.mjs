@@ -141,6 +141,8 @@ async function line5() {
 // ---- line 6: record faults ----
 const openFailed = () => countOf("SELECT COUNT(*) AS n FROM incidents WHERE kind = 'decision_record_failed' AND subject = 'intake.rate_limit' AND state = 'open'");
 const incidentAlertTargets = () => G.store.db.prepare("SELECT target_json FROM notification_outbox WHERE idempotency_key LIKE 'incident_opened:%'").all().map((r) => JSON.parse(r.target_json).chat_id);
+// 2026-11-03 §5.3: decision_record_failed is a log kind: its opened notice is a change_log row (topic incident_log), never an outbox row
+const incidentLogRows = () => countOf("SELECT COUNT(*) AS n FROM change_log WHERE topic = 'incident_log' AND idempotency_key LIKE 'incident_opened:%'");
 /** The line-1 scenario on a fresh identity: five accepted turns, then a sixth. */
 function sixthCommand(gw, n, gate = null) {
   const who = whoFor(n); saturateWindow(G.store, who, "turn", 5, wall());
@@ -150,19 +152,19 @@ function sixthCommand(gw, n, gate = null) {
 const sameAsLine1 = (r) => r.ok === false && r.error?.code === G.line1.code && r.error?.message === G.line1.message;
 async function line6() {
   const real = G.store.insertDecision.bind(G.store); let fired = 0;
-  const inc0 = openFailed(); const targets0 = incidentAlertTargets().length;
+  const inc0 = openFailed(); const targets0 = incidentAlertTargets().length; const log0 = incidentLogRows();
   G.store.insertDecision = (...a) => { if (++fired === 1) throw new Error("gate fault: insertDecision"); return real(...a); };
   let faulted;
   try { faulted = await captured(() => sixthCommand(gateway(), "6a")); } finally { G.store.insertDecision = real; }
   const opened = openFailed() - inc0;
-  const targets = incidentAlertTargets().slice(targets0);
+  const targets = incidentAlertTargets().slice(targets0); const logged0 = incidentLogRows() - log0;
   const gw = gateway(); gw.recorderCache = { record: () => { throw new Error("gate fault: record"); } };
   const inc1 = openFailed();
   const thrown = await captured(() => sixthCommand(gw, "6b"));
   const logged = thrown.seen.filter((l) => l.startsWith("decisions: intake.rate_limit record threw past the recorder")).length;
-  const ok = fired >= 1 && opened === 1 && sameAsLine1(faulted.value) && targets.length === 1 && targets.every((t) => t === STUB_CHAT)
+  const ok = fired >= 1 && opened === 1 && sameAsLine1(faulted.value) && targets.length === 0 && logged0 === 1
     && openFailed() === inc1 && sameAsLine1(thrown.value) && logged === 1;
-  return { ok, detail: `store fault ${fired >= 1 ? "once" : "never"}: incidents +${opened} (want 1), result same ${sameAsLine1(faulted.value)}, alerts queued ${targets.length} (want 1) all to ${STUB_CHAT} ${targets.every((t) => t === STUB_CHAT)} | recorder throw: incidents +${openFailed() - inc1} (want 0), result same ${sameAsLine1(thrown.value)}, logged ${logged} (want 1)` };
+  return { ok, detail: `store fault ${fired >= 1 ? "once" : "never"}: incidents +${opened} (want 1), result same ${sameAsLine1(faulted.value)}, alerts queued ${targets.length} (want 0), change_log rows +${logged0} (want 1) | recorder throw: incidents +${openFailed() - inc1} (want 0), result same ${sameAsLine1(thrown.value)}, logged ${logged} (want 1)` };
 }
 
 // ---- line 7: /status ----

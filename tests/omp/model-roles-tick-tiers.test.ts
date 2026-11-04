@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { parseOmpCatalog } from "../../src/omp/model-catalog.js";
 import type { CatalogModel } from "../../src/omp/model-roles.js";
 import type { ProbeFn, ProbeOutcome } from "../../src/omp/model-probe.js";
-import { changeLine, failedLine, runModelRolesTick, shadowLine } from "../../src/omp/model-roles-tick.js";
+import { changeLine, failedLine, moveLines, runModelRolesTick, shadowLine } from "../../src/omp/model-roles-tick.js";
 import { RoleResolver } from "../../src/omp/role-resolver.js";
 import { RunStore } from "../../src/run/run-store.js";
 
@@ -12,7 +12,10 @@ import { RunStore } from "../../src/run/run-store.js";
 let store: RunStore;
 beforeEach(() => { store = RunStore.openInMemory(); vi.stubEnv("HOUGE_MODEL_ROLES", "resolved"); vi.stubEnv("HOUGE_TELEGRAM_CHAT_ID", ""); });
 afterEach(() => { store.close(); vi.unstubAllEnvs(); });
-const FIX = (): CatalogModel[] => parseOmpCatalog(readFileSync(new URL("../fixtures/omp-catalog-2026-11-02.json", import.meta.url).pathname, "utf8"))!;
+const FULL = (): CatalogModel[] => parseOmpCatalog(readFileSync(new URL("../fixtures/omp-catalog-2026-11-02.json", import.meta.url).pathname, "utf8"))!;
+// Spec 2026-11-03 §6.1 made gemini-4-argon the pro tier's own member. FIX keeps the tick tests that are not about Gemini on a
+// catalog where gemini-pro stays empty (with one Gemini no tier reads, for the card); FULL is today's real catalog.
+const FIX = (): CatalogModel[] => [...FULL().filter((m) => m.id !== "gemini-4-argon"), { provider: "google-antigravity", id: "gemini-exp-1", thinking: null, price: { output: 10, rates: [] } }];
 const T0 = Date.parse("2026-11-02T09:00:00.000Z");
 const day = (n: number) => new Date(T0 + n * 86_400_000).toISOString();
 const PASS: ProbeOutcome = { result: "pass", kind: "ok" };
@@ -27,35 +30,57 @@ const resolvedRows = () => store.getLedgerEvents().filter((e) => e.event_type ==
 async function tick(r: RoleResolver, probe: ProbeFn | undefined, now: string, notes: string[] = [], signal?: AbortSignal) {
   return runModelRolesTick({ store, roles: r, ...(probe ? { probe } : {}), now, notify: (t) => notes.push(t), ...(signal ? { signal } : {}) });
 }
-const FIRST_CALLS = ["openai-codex/gpt-6-sol", "google-antigravity/gemini-2.5-flash", "kimi-code/k3.1-pro", "anthropic/claude-opus-5", "anthropic/claude-sonnet-5"];
+const FIRST_CALLS = ["openai-codex/gpt-6-sol", "google-antigravity/gemini-2.5-flash", "google-antigravity/gemini-4-argon", "kimi-code/k3.1-pro", "anthropic/claude-opus-5", "anthropic/claude-sonnet-5"];
 beforeEach(() => { catalog = FIX; });
 
 describe("the first tick over the 2026-11-02 catalog", () => {
   it("probes each moved head and each missing previous, once, in tier order; passes adopt; one event per probe", async () => {
-    const calls: string[] = []; const r = roles();
+    catalog = FULL; const calls: string[] = []; const r = roles();
     expect((await tick(r, probeBy(() => PASS, calls), day(0))).ran).toBe(true);
     expect(calls).toEqual(FIRST_CALLS);
     expect(tiers()).toEqual({
-      "codex-sol": ["gpt-6.1-sol", "gpt-6-sol", null], "gemini-flash": ["gemini-3.8-flash", "gemini-2.5-flash", null], "gemini-pro": [null, null, null],
+      "codex-sol": ["gpt-6.1-sol", "gpt-6-sol", null], "gemini-flash": ["gemini-3.8-flash", "gemini-2.5-flash", null], "gemini-pro": ["gemini-4-argon", null, null],
       kimi: ["k3.1-pro", "k3", null], "opus@anthropic": ["claude-opus-5-5", "claude-opus-5", null], "opus@antigravity": ["claude-opus-5-5", null, null],
       "sonnet@anthropic": ["claude-sonnet-5-5", "claude-sonnet-5", null], "sonnet@antigravity": ["claude-sonnet-5-5", null, null]
     });
     expect(probes()).toEqual([
       { tier: "codex-sol", selector: "openai-codex/gpt-6-sol", purpose: "previous", result: "pass", kind: "ok" },
       { tier: "gemini-flash", selector: "google-antigravity/gemini-2.5-flash", purpose: "previous", result: "pass", kind: "ok" },
+      { tier: "gemini-pro", selector: "google-antigravity/gemini-4-argon", purpose: "head", result: "pass", kind: "ok" },
       { tier: "kimi", selector: "kimi-code/k3.1-pro", purpose: "head", result: "pass", kind: "ok" },
       { tier: "opus@anthropic", selector: "anthropic/claude-opus-5", purpose: "previous", result: "pass", kind: "ok" },
       { tier: "sonnet@anthropic", selector: "anthropic/claude-sonnet-5", purpose: "previous", result: "pass", kind: "ok" }
     ]);
   });
-  it("with a baseline, the notice names exactly the keys whose head moved (Kimi's adoption)", async () => {
+  it("a tier move is one line naming the roles it moved, not one line per role (spec 2026-11-03 §6.2)", async () => {
     const r = roles(); const notes: string[] = [];
     await tick(r, undefined, day(0));                       // baseline, no probe (P26)
     await tick(r, probeBy(() => PASS), day(1), notes);
-    const [before, after] = resolvedRows().map((e) => new Map((e.payload as { roles: Array<{ key: string; head: string | null }> }).roles.map((x) => [x.key, x.head])));
-    const moved = [...after!.keys()].filter((k) => before!.get(k) !== after!.get(k));
-    expect(moved).toEqual(["tiny", "judges:0", "reviewer"]);
-    expect(notes).toEqual(moved.map((k) => changeLine(k, before!.get(k) ?? null, after!.get(k) ?? null)));
+    expect(notes).toEqual(["🔁 Kimi K: k3 → k3.1-pro (used by Tiny, Judges 0, Reviewer)"]);
+  });
+  it("the gemini-pro tier adopts the renamed head on its first pass, and the line names Judges 2", async () => {
+    catalog = FULL; const r = roles(); const notes: string[] = [];
+    await tick(r, undefined, day(0));
+    await tick(r, probeBy((sel) => (sel.startsWith("kimi-code/") ? { result: "inconclusive", kind: "quota" } : PASS)), day(1), notes);
+    expect(tiers()["gemini-pro"]).toEqual(["gemini-4-argon", null, null]);
+    expect(notes).toEqual(["🔁 Google pro: nothing → gemini-4-argon (used by Judges 2)"]);
+  });
+  it("a key whose head changed with no tier move (an override) keeps its own line", async () => {
+    const r = roles(); const notes: string[] = [];
+    await tick(r, undefined, day(0));
+    store.recordModelRoleOverride({ key: "judges:1", pattern: "gpt-5.6-sol", actor: "paco" });
+    await tick(r, probeBy(() => ({ result: "inconclusive", kind: "quota" })), day(1), notes);
+    expect(notes).toEqual([changeLine("judges:1", "openai-codex/gpt-6.1-sol", "openai-codex/gpt-5.6-sol")]);
+  });
+});
+
+describe("moveLines", () => {
+  it("matches changed keys by provider/id with the effort stripped, and says nothing for a move no key followed", () => {
+    const { lines, explained } = moveLines(
+      [{ tier: "kimi", from: "kimi-code/k3", head: "kimi-code/k3.1-pro" }, { tier: "codex-sol", from: null, head: "openai-codex/gpt-6.1-sol" }],
+      [{ key: "tiny", from: "kimi-code/k3:low", to: "kimi-code/k3.1-pro:low" }, { key: "reviewer", from: "x", to: "kimi-code/k3.1-pro:high" }, { key: "chair", from: "a", to: "anthropic/other" }]);
+    expect(lines).toEqual(["🔁 Kimi K: k3 → k3.1-pro (used by Tiny, Reviewer)", "🔁 OpenAI sol: nothing → gpt-6.1-sol"]);
+    expect([...explained]).toEqual(["tiny", "reviewer"]);
   });
 });
 
@@ -152,9 +177,8 @@ describe("a shadowing override", () => {
     await tick(r, undefined, day(0));
     store.recordModelRoleOverride({ key: "judges:0", pattern: "k3", actor: "paco" });
     await tick(r, probeBy(() => PASS), day(1), notes);
-    const [before, after] = resolvedRows().map((e) => new Map((e.payload as { roles: Array<{ key: string; head: string | null }> }).roles.map((x) => [x.key, x.head])));
-    const moved = [...after!.keys()].filter((k) => before!.get(k) !== after!.get(k));
-    expect(notes).toEqual([...moved.map((k) => changeLine(k, before!.get(k) ?? null, after!.get(k) ?? null)), shadowLine("judges:0", "kimi-code/k3.1-pro", "k3")]);
+    // judges:0 is shadowed by the override, so it did not move: the one line names only the keys that did
+    expect(notes).toEqual(["🔁 Kimi K: k3 → k3.1-pro (used by Tiny, Reviewer)", shadowLine("judges:0", "kimi-code/k3.1-pro", "k3")]);
     expect(shadowLine("judges:0", "kimi-code/k3.1-pro", "k3")).toBe("ℹ️ Tier head `kimi-code/k3.1-pro` is available; your override `k3` is in place (/models reset judges 0).");
     expect(failedLine("kimi-code/k3.1-pro", null)).toBe("⚠️ `kimi-code/k3.1-pro` failed its check; staying on nothing.");
   });
@@ -195,10 +219,10 @@ describe("empty-tier cards (spec §4.4)", () => {
     const r = roles(); const cards: unknown[] = [];
     const run = (now: string) => runModelRolesTick({ store, roles: r, now, notify: () => {}, card: (c) => cards.push(c) });
     await run(day(0));
-    expect(cards).toEqual([{ tier: "gemini-pro", keys: ["judges:2"], proposals: ["gemini-4-argon", "gpt-oss-120b"] }]);
+    expect(cards).toEqual([{ tier: "gemini-pro", keys: ["judges:2"], proposals: ["gemini-exp-1"] }]);
     await run(day(1));
     expect(cards).toHaveLength(2);
-    store.recordModelRoleOverride({ key: "judges:2", pattern: "gemini-4-argon", actor: "paco" });
+    store.recordModelRoleOverride({ key: "judges:2", pattern: "gemini-exp-1", actor: "paco" });
     await run(day(2));
     expect(cards).toHaveLength(2);
   });

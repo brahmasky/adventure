@@ -699,7 +699,7 @@ This file is protected (ADR 0011); drafted for Paco's hand, signed off by Paco 2
 - **Evidence.** Differential with a sixth stamped pair (`--old-dist-r3`, `6c75b03`, provenance on `omp/planner-supervisor.js`) and a dist-built supervisor fixture; new corpus `supervisor` (17 items, run ownership compared); 13 corpora, 0 differences. Live gate `scripts/live-gate-ladder-remainder-r3.mjs` 8/8; R2, R1, 4C, 4B gates PASS; rollback `scripts/check-ladder-remainder-r3-rollback.mjs` 9/9.
 - **Rollback.** No schema change: revert + rebuild. The previous build reads the new rows unchanged and refuses `review_ok` naming the new ids.
 
-## Amendment (2026-11-01): Stage 3 remainder slice R4, `planner.crash_guard` and `turn.retry` on the ladder (awaiting Paco's signature)
+## Amendment (2026-11-01): Stage 3 remainder slice R4, `planner.crash_guard` and `turn.retry` on the ladder (signed off by Paco 2026-11-04)
 
 This file is protected (ADR 0011); this amendment is drafted for Paco's hand. Spec: `docs/superpowers/specs/2026-11-01-ladder-remainder-r4-crash-retry-design.md` (Rev 1.2, approved 2026-11-01, Decisions 1-A, 2-A). Plan: `docs/superpowers/plans/2026-11-01-remainder-r4-crash-retry.md`.
 
@@ -711,7 +711,7 @@ This file is protected (ADR 0011); this amendment is drafted for Paco's hand. Sp
 - **Evidence.** Differential with a seventh stamped pair (`--old-dist-r4`, merge base `c6eae37`, provenance on `omp/planner-supervisor.js`); new corpus `supervision` (18 items); 14 corpora, 0 differences. Live gate `scripts/live-gate-ladder-remainder-r4.mjs` 8/8; R3, R2, R1, 4C, 4B gates PASS; rollback `scripts/check-ladder-remainder-r4-rollback.mjs` PASS.
 - **Rollback.** No schema change: revert + rebuild. The previous build reads the new rows unchanged and refuses `review_ok` naming the new ids.
 
-## Amendment (2026-11-02): carry with an exit — trust causes, `/fresh`, the daily reminder (awaiting Paco's signature)
+## Amendment (2026-11-02): carry with an exit — trust causes, `/fresh`, the daily reminder (signed off by Paco 2026-11-04)
 
 This file is protected (ADR 0011); this amendment is drafted for Paco's hand. Spec: `docs/superpowers/specs/2026-11-02-loud-degradation-design.md` (Rev 1.2, approved 2026-11-02, Decisions D1-A, D2-A, D3-A, D4-A). Plan: `docs/superpowers/plans/2026-11-02-loud-degradation.md`. It amends the 2026-10-13 stage 2a amendment ("trust is sticky per planner transcript until the planner starts a fresh transcript"). The conversation had carried a raised level for 19 days with no exit; a withheld passage on 2026-10-30 raised the carry to `hostile`, and every shell command since asked for a tap.
 
@@ -726,7 +726,7 @@ This file is protected (ADR 0011); this amendment is drafted for Paco's hand. Sp
 - **Evidence.** Live gates `scripts/live-gate-model-tiers.mjs` and `scripts/live-gate-loud-degradation.mjs` (the `/fresh` step drives a real omp RPC session across a restart); rollback `scripts/check-loud-degradation-rollback.mjs`; differential, 14 corpora, 0 differences.
 - **Rollback.** Revert and rebuild: the previous build ignores the new columns and rows. An unserved `/fresh` marker is inert there.
 
-## Amendment (2026-11-02): Stage 3 remainder slice R5, `context.recall`, `context.catch_up`, `context.lessons` and `turn.clarify_cap` on the ladder (awaiting Paco's signature)
+## Amendment (2026-11-02): Stage 3 remainder slice R5, `context.recall`, `context.catch_up`, `context.lessons` and `turn.clarify_cap` on the ladder (signed off by Paco 2026-11-04)
 
 This file is protected (ADR 0011); this amendment is drafted for Paco's hand. Spec: `docs/superpowers/specs/2026-11-02-ladder-remainder-r5-context-clarify-design.md` (Rev 1.2, approved 2026-11-02, Decisions 1-A, 2-A). Plan: `docs/superpowers/plans/2026-11-02-remainder-r5-context-clarify.md`.
 
@@ -740,7 +740,7 @@ This file is protected (ADR 0011); this amendment is drafted for Paco's hand. Sp
 - **Evidence.** Differential with an eighth stamped pair (`--old-dist-r5`, merge base `9c23f08`, provenance on `omp/turn-context.js`); new corpus `context` (32 items); 15 corpora, 0 differences. Live gate `scripts/live-gate-ladder-remainder-r5.mjs` 8/8 (real retrieval on a copy, prompt bytes and `loop_started` values equal to the merge-base build's); R4, R3, R2, R1, 4C, 4B gates and the R3/R4 rollback checks PASS; rollback `scripts/check-ladder-remainder-r5-rollback.mjs` PASS.
 - **Rollback.** No schema change: revert + rebuild. The previous build reads the new rows unchanged and refuses `review_ok` naming the new ids.
 
-## Amendment (2026-11-03): Stage 3 remainder slice R6, `lookup.rewrite`, `lookup.thin` and `turn.model` on the ladder (awaiting Paco's signature)
+## Amendment (2026-11-03): Stage 3 remainder slice R6, `lookup.rewrite`, `lookup.thin` and `turn.model` on the ladder (signed off by Paco 2026-11-04)
 
 This file is protected (ADR 0011); this amendment is drafted for Paco's hand. Spec: `docs/superpowers/specs/2026-11-03-ladder-remainder-r6-lookup-model-design.md` (Rev 1.2, Decisions 1-A, 2-A given 2026-11-03). Plan: `docs/superpowers/plans/2026-11-03-remainder-r6-lookup-model.md`.
 
@@ -752,3 +752,12 @@ This file is protected (ADR 0011); this amendment is drafted for Paco's hand. Sp
 - **R12 consequence.** `rewrite`, `fetch`, `fallback`, `held` are `effect` verdicts; `rewrite` is over `mixed` input, allowed for a rule-only entry. A later Jev or model rung needs a compliant effect contract first, and `entryProblems` fails the registry test until it has one. A rule that throws writes a `fail`-rung row with the default verdict: read `rung` first.
 - **Evidence.** Differential with a ninth stamped pair (`--old-dist-r6`, merge base `b0da208`, provenance on `core/lanes/lookup-lane.js`); new lane fixture and corpora `lookup` (22 items) and `model` (17); 17 corpora, 0 differences. Live gate `scripts/live-gate-ladder-remainder-r6.mjs` 7/7 (the production lookup deps over a copy, the real `RoleResolver`, `CoreWorker.submitTurn` over fake omp); R5, R4, R3, R2, R1, 4C, 4B gates PASS; rollback `scripts/check-ladder-remainder-r6-rollback.mjs` 10/10.
 - **Rollback.** No schema change: revert + rebuild. The previous build reads the new rows unchanged and refuses `review_ok` naming the new ids.
+
+
+## Amendment (2026-11-03): chat is for Paco (decision-health kinds to the log) (signed off by Paco 2026-11-04)
+
+This file is protected (ADR 0011); this amendment is drafted for Paco's hand. Spec: `docs/superpowers/specs/2026-11-03-chat-is-for-paco-design.md` (Rev 1.2, approved 2026-11-03); see [ADR 0031](0031-chat-carries-what-needs-paco.md).
+
+- **`decision_record_failed`, `decision_golden_drift`, `decision_fallback` → log** (reading of "and its alert" and "drift pages"). They are self-checks of the ladder's own bookkeeping; the decision still runs on its fallback. `/status` counts them as internal open incidents and `/changes` lists them. The `decision_fallback` card becomes a log row (topic `decision_internal`).
+- **`decision_health` is a card kind:** its urgent card is the page; the generic incident text is not sent.
+- **The daily reminder** (2026-11-02 amendment) keeps `role_unresolved` and `planner_session_reset_failed`; `static_list_stale` and `model_catalog_unavailable` leave it (log kinds); `omp_contract_drift` joins it at 7 days. This touches the unsigned 2026-11-02 amendment; the two sign together.

@@ -302,3 +302,11 @@ the decision is ADR 0030's `memory.kind` (amendment 2026-10-17).
   the save. The planner's own `lesson_write` does not ask Jev: the distill decides.
 - **Every save is announced** on the memory card with one ↩️ Undo per item (rule: `memlane:undo`, fact: `memory:undo`).
   The run that saved is skipped by the background episodic pass.
+
+
+## Amendment (2026-11-03): chat is for Paco (`triage_overrides` to the log) (signed off by Paco 2026-11-04)
+
+This file is protected (ADR 0011); this amendment is drafted for Paco's hand. Spec: `docs/superpowers/specs/2026-11-03-chat-is-for-paco-design.md` (Rev 1.2, approved 2026-11-03); see [ADR 0031](0031-chat-carries-what-needs-paco.md).
+
+- **`triage_overrides` → log** (reading of "taps page"). The taps are Paco's own corrections; the lane is throttled either way, and a lane that truly fails still pages through `lane_fallthrough_rate`.
+- **Unchanged:** every Jev outage class (`jev_auth`, `jev_rate_limited`, `jev_overloaded`, `jev_question_invalid`, `jev_no_key`) and `jev_skip_rate` page. `jev_model_drifted`, `jev_model_insufficient` and `jev_model_check_stalled` are card kinds: the Accept card or the stalled notice is the page, sent to the job's chat or the operator chat. Routine version-check notices (deferred, passed) are log rows.

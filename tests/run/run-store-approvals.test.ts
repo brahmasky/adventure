@@ -489,6 +489,7 @@ describe("RunStore approval storage", () => {
     store = RunStore.openInMemory();
     const run_id = createRunningRun(store, "approval:notification-record");
     const intent = {
+      topic: "reply" as const,
       target: { kind: "local" } as const,
       intent_type: "progress" as const,
       idempotency_key: `${run_id}:progress:test`,

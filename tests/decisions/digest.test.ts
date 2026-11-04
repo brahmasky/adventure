@@ -138,7 +138,7 @@ describe("buildDecisionDigest (2b-ii)", () => {
     expect(s.getDecisionDigest("2026-10-21")).toMatchObject({ sent: 1, offered: [] });
     const s2 = RunStore.openInMemory();
     const more = open(s2, 1);
-    s2.enqueueNotification({ target: { kind: "telegram", chat_id: "555" }, intent_type: "progress", idempotency_key: "decision_digest:2026-10-21", correlation_id: "other", payload: { text: "taken" } });
+    s2.enqueueNotification({ topic: "digest", target: { kind: "telegram", chat_id: "555" }, intent_type: "progress", idempotency_key: "decision_digest:2026-10-21", correlation_id: "other", payload: { text: "taken" } });
     expect(runDecisionDigestTick({ store: s2, chatId: "555", now: NOW, env: ENV })).toEqual({ ran: true, sent: false }); // conflict: another payload holds the key
     expect(s2.getImprovementProposal(more[0]!)?.offered_at).toBeNull();
   });
@@ -215,7 +215,7 @@ describe("buildDecisionDigest (2b-ii fix round 1)", () => {
     const s = RunStore.openInMemory();
     const ids = open(s, 1);
     const d = buildDecisionDigest(s, NOW, ENV, "555")!;
-    s.enqueueNotification({ target: { kind: "telegram", chat_id: "555" }, intent_type: "progress", idempotency_key: "decision_digest:2026-10-21", correlation_id: "decision-digest",
+    s.enqueueNotification({ topic: "digest", target: { kind: "telegram", chat_id: "555" }, intent_type: "progress", idempotency_key: "decision_digest:2026-10-21", correlation_id: "decision-digest",
       payload: { text: d.text, button_rows: d.button_rows } });
     expect(runDecisionDigestTick({ store: s, chatId: "555", now: NOW, env: ENV })).toEqual({ ran: true, sent: false });
     expect(s.getImprovementProposal(ids[0]!)!.offered_at).toBeNull();

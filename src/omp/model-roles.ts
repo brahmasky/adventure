@@ -76,7 +76,7 @@ export function soleKeysOf(tier: TierId): Array<RoleName | `judges:${number}`> {
 /**
  * The lists `static` mode runs (spec 2026-11-02 §4.3, D4-A: the rollback switch): re-pinned at this ship to the seeded tier
  * heads, gpt-5.5 -> gpt-6.1-sol. Static adds no model: Fast and Thinking are the Default list. Judge seat 2 has no static
- * selector: pinning gemini-4-argon would adopt a codename without Paco's tap; a code re-pin fills it after the tap. A
+ * selector: static is catalog-free and gemini-4-argon is a renamed Gemini id that joins the pro tier only via the tier resolver (spec 2026-11-03 §6.1), so static pins nothing; a code re-pin fills it. A
  * resolved role that comes up empty also falls back here (RoleResolver). The daily tick (resolved mode) reports any
  * selector here the catalog no longer lists as static_list_stale.
  */

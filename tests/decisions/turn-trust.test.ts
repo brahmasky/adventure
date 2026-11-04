@@ -7,7 +7,7 @@ import { RunStore } from "../../src/run/run-store.js";
 import { createQueuedTurnRun } from "../helpers/runs.js";
 
 // Spec §7.2: what a turn has read sets how far it is trusted, and the level only rises. Every rise is ledgered; every turn
-// end writes the final level; a hostile turn tells Paco at once, and a schedule-born one (no one to tap) pages once.
+// end writes the final level; a hostile turn tells Paco at once, and a schedule-born one (no one to tap) opens its incident once.
 // turn.trust is locked: no judge may ever decide it (ADR 0030 decision 6).
 function setup(born: "telegram" | "schedule" = "telegram") {
   const store = RunStore.openInMemory(); const run_id = createQueuedTurnRun(store);
@@ -52,7 +52,7 @@ describe("turn.trust", () => {
     expect(turnTrustFinal(store, run_id)).toBe("clean");
     expect(trust.raise("wall_read")).toBe(false); // after the end nothing rises
   });
-  it("hostile sends one urgent card; a schedule-born hostile turn also pages hostile_schedule_turn once, as an event (opened and resolved)", () => {
+  it("hostile sends one urgent card; a schedule-born hostile turn also logs hostile_schedule_turn once to the change log, as an event (opened and resolved)", () => {
     const tg = setup();
     tg.trust.raise("injection_withheld");
     const q = (s: RunStore, sql: string) => (s as unknown as { db: { prepare(q: string): { all(): Array<Record<string, string>> } } }).db.prepare(sql).all();
@@ -62,18 +62,20 @@ describe("turn.trust", () => {
     // an event: a carried turn re-paged the same morning twice when it stayed open (spec 2026-11-02 §5)
     expect(sc.store.listOpenIncidents().filter((i) => i.kind === "hostile_schedule_turn")).toEqual([]);
     expect(q(sc.store, `SELECT state FROM incidents WHERE kind = 'hostile_schedule_turn'`)).toEqual([{ state: "resolved" }]);
-    expect(q(sc.store, `SELECT idempotency_key FROM notification_outbox WHERE idempotency_key LIKE 'incident_opened:%'`)).toHaveLength(1);
+    // hostile_schedule_turn routes to the log (spec 2026-11-03 §5.1); the trust_hostile urgent card is the only page
+    expect(q(sc.store, `SELECT idempotency_key FROM notification_outbox`)).toHaveLength(1);
     expect(q(sc.store, `SELECT payload_json FROM notification_outbox WHERE idempotency_key LIKE 'urgent:trust_hostile:%'`)).toHaveLength(1);
+    expect(sc.store.listChangeLog("1970-01-01T00:00:00.000Z", 10).filter((r) => r.topic === "incident_log")).toHaveLength(1);
     expect(HOSTILE_CARD_TEXT).toContain("text aimed at the assistant");
   });
-  it("two schedule turns that each raise it page twice, once each (the subject is the run id)", () => {
+  it("two schedule turns that each raise it log twice, once each (the subject is the run id)", () => {
     const store = RunStore.openInMemory();
     for (let n = 0; n < 2; n++) {
       const run_id = createQueuedTurnRun(store);
       new TurnTrust({ store, run_id, chat_id: "555", born: "schedule", env: { HOUGE_TELEGRAM_CHAT_ID: "555" } }).raise("injection_withheld");
     }
-    const keys = (store as unknown as { db: { prepare(q: string): { all(): unknown[] } } }).db.prepare(`SELECT idempotency_key FROM notification_outbox WHERE idempotency_key LIKE 'incident_opened:%'`).all();
-    expect(keys).toHaveLength(2);
+    const keys = store.listChangeLog("1970-01-01T00:00:00.000Z", 20).filter((r) => r.topic === "incident_log");
+    expect(keys).toHaveLength(2); // a log kind: one row per event, none in chat
     store.close();
   });
   it("a hostile card that cannot be queued opens trust_card_failed, so Paco still learns the turn is hostile", () => {
@@ -144,7 +146,7 @@ describe("D3-A", () => {
     const sc = setup("schedule"); sc.trust.carry("hostile");
     expect(sc.store.getLedgerEvents().filter((e) => e.event_type === "incident_opened")).toEqual([]);
   });
-  it("a schedule turn that itself raises hostile still pages once", () => {
+  it("a schedule turn that itself raises hostile opens its incident once", () => {
     const sc = setup("schedule"); sc.trust.raise("injection_withheld");
     expect(sc.store.getLedgerEvents().filter((e) => e.event_type === "incident_opened").map((e) => (e.payload as { kind: string }).kind)).toEqual(["hostile_schedule_turn"]);
   });

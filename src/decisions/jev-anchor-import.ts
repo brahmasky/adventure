@@ -101,7 +101,7 @@ const rowsOf = (k: Kept, r: TreeReplayRow, run: "A" | "B"): JevAnchorRow[] =>
   treeQuestions(run === "B").map((q) => ({ turn_id: k.turn, lang: k.lang, question_id: q.id, criteria_hash: criteriaHash(q), run,
     answer_json: JSON.stringify(r.answers?.[q.id]), model: r.model as string }));
 
-function incident(store: RunStore, kind: string, detail: Record<string, unknown>, now?: string): void {
+function incident(store: RunStore, kind: "jev_anchor_missing" | "jev_anchor_mixed_models" | "jev_anchor_insufficient", detail: Record<string, unknown>, now?: string): void {
   openAlertedIncident(store, { kind, subject: INCIDENT_SUBJECT, detail: { ...detail, command: ANCHOR_COMMAND }, ...(now ? { now } : {}) });
 }
 
