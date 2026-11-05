@@ -1334,20 +1334,11 @@ export class Gateway {
     return `${paged} paged · ${internal} internal open · ${week} changes this week · /changes`;
   }
 
-  /** The HEALTH block of the /status overview: liveness, self-check, front door, radar/panel, errors, evolution lane. */
-  private healthLines(h: {
-    poller: PollHeartbeat | null; sweep: { last_swept_at: string | null }; now: string; chatId: string | null; localOf: (iso: string) => string;
-  }): string[] {
-    const { poller, sweep, now, chatId, localOf } = h;
-    const daemonText = poller
-      ? poller.last_success_at
-        ? `polling · last ${localOf(poller.last_success_at)} · ${relativeTimeAgo(poller.last_success_at, now)} ago`
-        : "polling · last never"
-      : "not running";
-    const sweptText = sweep.last_swept_at ? `${relativeTimeAgo(sweep.last_swept_at, now)} ago` : "never";
+  /** Idea Radar R1 /status line; absent when the flag is off. */
+  private radarStatusLines(now: string): string[] {
     // Idea Radar R1: the sweeps-section rot line — last tick + active-card count. Absent
     // when the flag is off (a dark feature must not advertise itself in /status).
-    const radarLine = resolveRadarEnabled(process.env)
+    return resolveRadarEnabled(process.env)
       ? [
           `Radar: last tick ${
             this.runStore.getRadarLastRun()
@@ -1356,10 +1347,14 @@ export class Gateway {
           } · ${this.runStore.countActiveIdeas()} active cards`
         ]
       : [];
+  }
+
+  /** Idea Radar R2 /status panel line; absent when the panel flag is off. */
+  private panelStatusLines(now: string): string[] {
     // Idea Radar R2: the panel health line — last weekly tick, the RESOLVED schedule
     // slot (a swallowed HOUGE_RADAR_PANEL_AT typo is visible here as the default), and
     // the latest shortlist size. Absent when the panel flag is off (dark feature).
-    const panelLine = resolvePanelEnabled(process.env)
+    return resolvePanelEnabled(process.env)
       ? [
           (() => {
             const lastRun = this.runStore.getPanelLastRun();
@@ -1378,6 +1373,19 @@ export class Gateway {
           })()
         ]
       : [];
+  }
+
+  /** The HEALTH block of the /status overview: liveness, self-check, front door, radar/panel, errors, evolution lane. */
+  private healthLines(h: {
+    poller: PollHeartbeat | null; sweep: { last_swept_at: string | null }; now: string; chatId: string | null; localOf: (iso: string) => string;
+  }): string[] {
+    const { poller, sweep, now, chatId, localOf } = h;
+    const daemonText = poller
+      ? poller.last_success_at
+        ? `polling · last ${localOf(poller.last_success_at)} · ${relativeTimeAgo(poller.last_success_at, now)} ago`
+        : "polling · last never"
+      : "not running";
+    const sweptText = sweep.last_swept_at ? `${relativeTimeAgo(sweep.last_swept_at, now)} ago` : "never";
     // Only a STILL-CURRENT error shows: if a poll succeeded after the last error, it
     // already recovered — don't leave a stale red line under a green header.
     const errorRecovered =
@@ -1398,8 +1406,8 @@ export class Gateway {
       `Self-check: swept ${sweptText} · ${this.changesLine(now)}`,
       frontDoorLine(process.env, this.options.dataDir ?? this.projectRoot),
       ...this.carryLine(chatId, localOf),
-      ...radarLine,
-      ...panelLine,
+      ...this.radarStatusLines(now),
+      ...this.panelStatusLines(now),
       `Errors: ${errorsText}`,
       ...(lane.busy && lane.current ? [`Evolution: ${lane.current.tool} running since ${lane.current.started_at}`] : [])
     ];

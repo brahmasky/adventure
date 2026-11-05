@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { resolveOmpConfig } from "../../src/omp/omp-config.js";
 import { setSharedOmpVersionCacheForTest } from "../../src/omp/omp-version-cache.js";
+import { JEV_DISARM_MARKER } from "../../src/jev/jev-flags.js";
 import { RunStore, type DaemonBootInput } from "../../src/run/run-store.js";
 import { staticRoleChains } from "../../src/omp/model-roles.js";
 import { parseModelChain } from "../../src/omp/model-string.js";
@@ -55,18 +56,17 @@ function status(store: RunStore, sup: StatusSupervisor | null = supervisor): str
   return renderHougeStatus(collectHougeStatus({ store, env, chatId: "555", pid: 4242, now: NOW, dataDir: dir, ...(sup ? { supervisor: sup } : {}) }));
 }
 
+// An off front door looks like a quiet healthy one unless /status says why; the marker case omits HOUGE_JEV_DISARM_PATH so it proves dataDir is what gets read.
 describe("houge_status front-door line", () => {
   it("armed with Jev on; right after Runtime:", () => {
     env.HOUGE_JEV_ENABLED = "1";
-    env.HOUGE_JEV_DISARM_PATH = join(dir, "no-marker");
     const store = seeded();
     expect(status(store)).toMatch(/Runtime: .*\nJev front door: armed\n/);
     store.close();
   });
   it("names the older-build marker when one sits in dataDir", () => {
     env.HOUGE_JEV_ENABLED = "1";
-    env.HOUGE_JEV_DISARM_PATH = join(dir, "houge.jev-disarmed");
-    writeFileSync(join(dir, "houge.jev-disarmed"), JSON.stringify({ reason: "x", at: "" }));
+    writeFileSync(join(dir, JEV_DISARM_MARKER), JSON.stringify({ reason: "x", at: "" }));
     const store = seeded();
     expect(status(store)).toContain("Jev front door: off (houge.jev-disarmed marker");
     store.close();

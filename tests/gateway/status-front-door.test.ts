@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildTypedTaskEvent } from "../../src/domain/types.js";
 import { Gateway } from "../../src/gateway/gateway.js";
+import { JEV_DISARM_MARKER } from "../../src/jev/jev-flags.js";
 import { RunStore } from "../../src/run/run-store.js";
 import { drainOutbox } from "../helpers/omp-worker.js";
 
@@ -14,7 +15,7 @@ let dir: string;
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "sfd-"));
   vi.stubEnv("HOUGE_DISARM_PATH", join(dir, "houge.disarm"));
-  vi.stubEnv("HOUGE_JEV_DISARM_PATH", join(dir, "houge.jev-disarmed"));
+  vi.stubEnv("HOUGE_JEV_DISARM_PATH", "");
 });
 afterEach(() => { vi.unstubAllEnvs(); rmSync(dir, { recursive: true, force: true }); });
 
@@ -36,6 +37,11 @@ describe("/status front-door line", () => {
     writeFileSync(join(dir, "houge.disarm"), "{}");
     vi.stubEnv("HOUGE_JEV_ENABLED", "false");
     expect(statusText()).toContain("Jev front door: off (/disarm; /rearm restores it)");
+  });
+  it("marker in the gateway's dataDir option (no path override): names the older-build marker", () => {
+    writeFileSync(join(dir, JEV_DISARM_MARKER), JSON.stringify({ reason: "x", at: "" }));
+    vi.stubEnv("HOUGE_JEV_ENABLED", "1");
+    expect(statusText()).toContain("Jev front door: off (houge.jev-disarmed marker");
   });
   it("flag on: armed", () => {
     vi.stubEnv("HOUGE_JEV_ENABLED", "1");
