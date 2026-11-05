@@ -1,10 +1,11 @@
-# Jev decision layer (ADR 0029)
+# Jev decision layer (ADR 0033)
 
-Reference for the System One layer as of the stage B lanes and the decision ladder's stage 1: where Jev sits, how a turn is routed, how to read
-what it logged, how to arm it and how to roll it back. Design: [ADR 0029](../decisions/0029-jev-system-one.md) and [ADR 0030](../decisions/0030-decision-ladder.md) and
+Reference for the System One layer: where Jev sits, how a turn is routed, how to read
+what it logged, how to arm it and how to roll it back. It covers the front door (`turn.handler`, `turn.gear`), `turn.settle` and `improve.route`;
+every other ladder entry is in [decision-map.md](decision-map.md). Design: [ADR 0033](../decisions/0033-jev-system-one-consolidated.md) and [ADR 0034](../decisions/0034-decision-ladder-consolidated.md) and
 [the decision-tree spec](../superpowers/specs/2026-10-06-jev-decision-tree-design.md) (Rev 9) and [the stage B spec](../superpowers/specs/2026-10-10-jev-tree-stage-b-design.md) (Rev 5). Flags, events, tables and
-the CLI: [configuration.md](configuration.md#jev-system-one-adr-0029); model roles:
-[configuration.md § Model roles](configuration.md#model-roles). Whole-turn map of every decider and category:
+the CLI: [configuration.md](configuration.md#jev-system-one-adr-0033); model roles:
+[configuration.md § Model roles](configuration.md#model-roles). Whole-turn map of every decider, category and registry entry:
 [decision-map.md](decision-map.md). Stages A and B are built; the `schedule` and `wiki` lanes (stage C) are specified, not built.
 
 Jev answers typed questions and cannot generate text. **Code** applies every bar and falls through to the Default role on
@@ -48,7 +49,7 @@ message on the planner.
 
 ## The decision ladder
 
-Since ADR 0030 this decision point is the registry entry `turn.handler` (`src/decisions/entries/turn-handler.ts`),
+Since ADR 0034 this decision point is the registry entry `turn.handler` (`src/decisions/entries/turn-handler.ts`),
 walked by the ladder runner (`src/decisions/decide.ts`):
 
 | Rung | What it is | When it decides | Recorded as |
@@ -63,22 +64,24 @@ walked by the ladder runner (`src/decisions/decide.ts`):
 Every `turn.handler` decision is recorded (`decisions` row) in the same transaction as the turn's `jev_verdicts` row
 (`decision_id`) and its `jev_decisions` rows (`ladder_decision_id`), all linked; a turn lost before it settles writes none.
 `turn.gear` records the route's role from the same call (rung `system_one` when the gear questions were armed and applied, else
-`rule`). The entry declares what each verdict causes (ADR 0030 decision 4, R12): the status card is a reversible reply;
+`rule`). The entry declares what each verdict causes (ADR 0034 2.1 to 2.3, R12): the status card is a reversible reply;
 `answer`, `lookup`, `memory` and `planner` may save a lesson first on a confident `sets_rule`, and every such automatic save
 is announced on the memory card with ↩️ Undo — on the lane card itself, as the memory lane's reply, or as a separate
 Undo-only card on the planner path (Paco, 2026-10-12). Whatever the route, an automatic lesson save shows the memory card
-with Undo. `HOUGE_JEV_TRIAGE_ENABLED=shadow` runs the Jev and cascade
-rungs in shadow: asked and recorded (`armed_mode shadow`), never applied. Stage 1 changed no routing: the pinned
-characterisation tests (`tests/core/turn-handler-pin.test.ts`) and the P6 dual run (`scripts/live-gate-decisions-parity.mjs`)
-compare every persisted column with the pre-ladder build.
+with Undo. `HOUGE_JEV_TRIAGE_ENABLED=shadow` (to be removed: Paco 2026-11-04, spec pending) asks and records the Jev and
+cascade rungs (`armed_mode shadow`) but arms nothing and applies nothing: every turn takes the Default route. The ladder
+changed no routing when it landed: the pinned characterisation tests (`tests/core/turn-handler-pin.test.ts`) and the P6 dual
+run (`scripts/live-gate-decisions-parity.mjs`) compare every persisted column with the pre-ladder build.
 
 When a handler falls back after the ladder decided (a lane that falls through to the planner, a card that fails to render), the `decisions` row keeps the ladder's verdict: it records what the ladder decided, not what the handler then did. The `jev_verdicts` row (`handler`, e.g. `fallthrough:<why>`) carries the handler's outcome.
 
 The daily decision digest (`HOUGE_DECISION_DIGEST_AT`, default 21:00) arrives in the operator chat: improvements today,
-proposals waiting for a tap, an Unsure section (System One judgements within 0.15 of their bar, newest first, at most 8, in
+standing approvals, proposals waiting for a tap, an Unsure section (System One judgements within 0.15 of their bar, newest first, at most 8, in
 the digest's chat, one code-built line each with ✅ / ❌ review taps that write `review_ok` / `review_bad`, which the
 improvement tick turns into ladder proposals) and a watch line
-([configuration.md](configuration.md#decision-ladder-adr-0030)).
+([configuration.md](configuration.md#decision-ladder-adr-0034)). Routine Jev notices (a model move that agreed with the anchor,
+for example) are not sent to chat: they are `jev_notice` rows in the change log, read with `/changes`
+(ADR 0031, [configuration.md](configuration.md#notification-routing-adr-0031)).
 
 ## Noise band and tap labels
 
@@ -185,8 +188,8 @@ Any failure falls through to the planner on Default, recorded on the verdict (ne
 `jev_verdicts.paco_correction` records the first correction on a verdict: `think_harder` (the next message), `escalation`,
 `low_rating`, or `ask_anyway` (the **🔍 Dig deeper** tap, formerly "Ask Houge anyway", which overwrites). The ratings table and the
 `routed_escalation` and `triage_override` events keep the rest.
-Three taps on one lane in seven days open `triage_overrides` for that lane (subject `jev:lane:<lane>`, one page per
-episode); it resolves when the lane's count is under three. A tap never disarms anything: raise a bar or switch the lane off.
+Three taps on one lane in seven days open `triage_overrides` for that lane (subject `jev:lane:<lane>`, a change-log
+line per episode, not a page); it resolves when the lane's count is under three. A tap never disarms anything: raise a bar or switch the lane off.
 
 ## Reading a `triage` row
 
@@ -218,9 +221,9 @@ labels) and the tree is unarmed for it meanwhile: **about 45 minutes** (asks pac
 uncalibrated (Default route). A version within Jev's noise arms with one notice; a drift disarms the failing questions and
 dependent lanes and opens one `jev_model_drifted` incident with an Accept button. Paco's Accept also makes the accepted
 version the reference the next one is checked against (his labels stay). A canary day (the alias serving two ids) defers
-the check with one notice and retries within the hour; a check that cannot finish pages once after 3 h.
+the check with one notice and retries within the hour; a check that cannot finish sends one card after 3 h (`jev_model_check_stalled`).
 `houge jev models | check | accept`, `houge jev anchor import [--replace]`; details in
-[configuration.md](configuration.md#jev-system-one-adr-0029).
+[configuration.md](configuration.md#jev-system-one-adr-0033).
 
 ## Reading a lane row
 
@@ -233,9 +236,9 @@ model that composed. A reply reads `route_outcome = act`, `handler_outcome = lan
 ends `fallthrough:aborted`. The lookup lane's provenance is `web_search_performed` / `http_fetch_performed`; what the
 planner will be told is the `lane_replies` row (`catch_up`), never the ledger.
 
-## The settle point (`turn.settle`, 2b-i)
+## The settle point (`turn.settle`)
 
-Built on `feat/ladder-2b-hooks` (live after Paco's merge and kickstart). `turn.settle` runs when omp's `session_stop` hook
+Live. `turn.settle` runs when omp's `session_stop` hook
 fires at the end of a planner pass. Its rule rung (claims check against the run's ledger, todo check) decides first; when it
 abstains, Jev is asked in its **own** request (decision point `settle`, audit role `settle`, 1.5 s, no re-ask), never in the
 tree request. The request carries the redacted reply cut to its head and tail, the tool summary and Paco's message. The
@@ -260,16 +263,16 @@ band; an `unverified` send-back is never offered for a tap.
 
 A daily golden tick (`runSettleGoldenTick`, `src/decisions/golden.ts`) asks the same request on eight synthetic items (four
 claims or promises that must send back, four clean replies that must settle) and fires on any question over its bar; a miss
-pages `decision_golden_drift:turn.settle`, a moved model runs the golden sets on the new id and a drift pages `decision_golden_drift` (the old `decision_bar_stale` is retired); neither disarms. Reading a row:
+opens `decision_golden_drift:turn.settle` (a change-log line, read with `/changes`), a moved model runs the golden sets on the new id and a drift opens `decision_golden_drift` (also a log line) (the old `decision_bar_stale` is retired); neither disarms. Reading a row:
 `decisions` where `entry = 'turn.settle'`; reasons, outcomes (`settle_sent_back`, `settle_unverified`, `settle_discarded`)
-and the settle detail are in [ADR 0030](../decisions/0030-decision-ladder.md)'s 2b-i amendment. Reason `pass_errored` (an
+and the settle detail are in [ADR 0034](../decisions/0034-decision-ladder-consolidated.md) § 9. Reason `pass_errored` (an
 errored pass 0 is never sent back) joins `budget` and `todo_unavailable` in the settle health count and the digest's Health
 line. The reply is redacted through the one redactor, including the turn's code-extracted codes and links, before Jev sees
 it; the after-delivery audit judges the text Paco received, not the last pass alone.
 
-## The improvement point (`improve.route`, 2b-ii)
+## The improvement point (`improve.route`)
 
-Built on `feat/ladder-2b-ii` (live after Paco's merge and kickstart). `improve.route` runs once a day inside the improvement
+Live. `improve.route` runs once a day inside the improvement
 tick, not in a turn. Signals (corrections, ratings, denials and expiries, planner failures, recurrence) are grouped by
 (signal, scope); each group is one decision, recorded `after_turn`, mixed input, fail value `nothing`.
 
@@ -305,8 +308,8 @@ tick, not in a turn. Signals (corrections, ratings, denials and expiries, planne
 
 ## Arming
 
-**Armed 2026-10-09.** `CALIBRATED_ROWS` (`src/jev/calibration.ts`) holds 14 rows: the six tree questions plus
-`category:status`, zh and en (no version in a row; the version check arms per model). Evidence: 301 replayed turns, 111 labelled by Paco, no turn
+**Armed 2026-10-09.** `CALIBRATED_ROWS` (`src/jev/calibration.ts`) holds the six tree questions plus
+`category:status`, zh and en (no version in a row; the version check arms per model; the row count is in that file). Evidence: 301 replayed turns, 111 labelled by Paco, no turn
 misrouted into a lane (memory 7/7, status 2/2), category agreement 181/301, option-order agreement 276/301; the known
 weakness is research read as lookup (26 of 59). Without rows, or for a model the version check has not trusted, **nothing is armed**: every turn
 routes `uncalibrated` to the planner on Default, and the memory and status lanes do not act. The sequence (for a new
@@ -317,9 +320,9 @@ turn: every memory or status candidate plus a random sample), then Paco reads th
 commits rows for the decisions he chooses, then `node scripts/live-gate-jev-tree.mjs --real-calibration` must
 PASS with both lanes acting, then merge and kickstart.
 
-**Lanes armed 2026-10-10.** Four more rows, `category:answer` and `category:lookup` for zh and en, bring `CALIBRATED_ROWS` to
-18. Each lane arms on its own row at the category hash, so the `category` row alone never arms a lane. To switch one off
-without `/disarm`, set `HOUGE_JEV_LANES_OFF` (below).
+**Lanes armed 2026-10-10.** Four more rows, `category:answer` and `category:lookup` for zh and en, arm those two lanes.
+Each lane arms on its own row at the category hash, so the `category` row alone never arms a lane. To switch one off
+without `/disarm`, set `HOUGE_JEV_LANES_OFF` (to be removed: Paco 2026-11-04, spec pending; below).
 
 Each decision arms on its own rows. Couplings to decide at commit time:
 
@@ -339,10 +342,10 @@ ack rule is the only path that acts without a Jev call, and only in `arm` mode.
 
 Three levels, from the mildest:
 
-00. **The decision ladder itself has no off switch** (ruling R13, ADR 0030 decision 10). If a ladder build is
+00. **The decision ladder itself has no off switch** (ruling R13, ADR 0034 1.6). If a ladder build is
     fundamentally wrong: revert its commit, rebuild `dist/`, kickstart. Its migrations are additive, so the previous build
     runs on the migrated DB (`scripts/check-decisions-rollback.mjs`). The items below still roll back the tree's behaviour.
-0. **One lane off** (`.env`, then kickstart): `HOUGE_JEV_LANES_OFF` switches the answer or lookup lane off while every other
+0. **One lane off** (`.env`, then kickstart): `HOUGE_JEV_LANES_OFF` (to be removed: Paco 2026-11-04, spec pending) switches the answer or lookup lane off while every other
    decision stays armed; details in [configuration.md](configuration.md) (`HOUGE_JEV_LANES_OFF`).
 
 1. **Model-list rollback** (`.env`, then `launchctl kickstart -k gui/$(id -u)/com.houge.daemon`): set
@@ -361,15 +364,23 @@ For a live kill with no restart, `/disarm` forces `HOUGE_JEV_ENABLED` off.
 
 ## Failure and the sweep
 
-A broken lane or a silent Jev outage must reach Paco:
+A broken lane or a silent Jev outage must reach Paco. Since ADR 0031 each kind has a route in `INCIDENT_ROUTE`
+(`src/run/incident-route.ts`): a page is one chat message, a card is the caller's own card, a log is a change-log line
+read with `/changes`. The kinds named here:
 
-- Every Jev outage class pages (`jev_auth`, `jev_rate_limited`, `jev_overloaded`, `jev_question_invalid`, `jev_no_key`), and the next answered call resolves it.
+| Kind | Route |
+|---|---|
+| `jev_auth`, `jev_rate_limited`, `jev_overloaded`, `jev_question_invalid`, `jev_no_key`, `jev_skip_rate`, `lane_fallthrough_rate`, `role_unresolved` | page |
+| `jev_model_drifted`, `jev_model_check_stalled` | card |
+| `decision_fallback`, `decision_record_failed`, `decision_golden_drift`, `triage_overrides`, `model_catalog_unavailable` | log |
+
+- Every Jev outage class pages, and the next answered call resolves it.
 - `jev_skip_rate`: half or more of at least 3 triage calls in 24 h failing silently. `ack_rule` skips are not calls.
 - `lane_fallthrough_rate`: half or more of at least 3 settled turns of one lane (memory, status, answer or lookup) in 24 h falling through
   to the planner. A fall-through is a verdict whose handler outcome starts `fallthrough:` or a lane turn closed
   `planner_done` / `planner_failed`. A killed turn (`fallthrough:aborted`) counts in neither number.
 - `decision_fallback` (subject `turn.handler`): three cascade failures in one hour (a Jev outage pages through the Jev
-  incidents instead); one urgent card, none for a reopen within 10 minutes; the next cascade answer clears it.
+  incidents instead); a change-log line, no urgent card; the next cascade answer clears it.
 - `decision_record_failed`: a `decisions` write failed; the routing stood (the verdict row then has `decision_id` null).
 - `role_unresolved` and `model_catalog_unavailable` (the model-role side, [configuration.md](configuration.md#model-roles)).
 
@@ -401,6 +412,6 @@ A broken lane or a silent Jev outage must reach Paco:
 ## Deviations from the spec
 
 The Jev client is built per call, not once at boot (cheap; the broker key is read each time), so `jev_no_key` opens on the
-first armed turn rather than at boot. `shadow` is mostly a legacy flag value now: it arms nothing, so every shadow verdict
-reads `uncalibrated` with `category` null. The status lane applies lane 1's confidence and gap floors, which lane 1
-applied to memory only (stricter, toward the planner). Recorded in the ADR 0029 amendment and the spec's Rev 9 entry.
+first armed turn rather than at boot. `shadow` (to be removed: Paco 2026-11-04, spec pending) arms nothing, so every
+shadow verdict reads `uncalibrated` with `category` null. The status lane applies lane 1's confidence and gap floors, which lane 1
+applied to memory only (stricter, toward the planner). Recorded in ADR 0033 and the spec's Rev 9 entry.

@@ -13,9 +13,11 @@ layer, and have the README *link* to the rest:
 | Layer | Holds | Audience |
 |-------|-------|----------|
 | `README.md` | What Houge is, status, quickstart, a Documentation index. **No low-level tables.** | First-time visitor |
-| [`docs/reference/`](docs/reference/) | Exhaustive parameter catalogs — every env var, default, purpose ([configuration.md](docs/reference/configuration.md)). | Operator looking something up |
+| [`docs/reference/`](docs/reference/) | Exhaustive catalogs — every env var, default, purpose ([configuration.md](docs/reference/configuration.md)); every decision-ladder entry ([decision-map.md](docs/reference/decision-map.md)); the Jev layer ([jev-decision-layer.md](docs/reference/jev-decision-layer.md)). | Operator looking something up |
+| [`docs/ROADMAP.md`](docs/ROADMAP.md) | Charter, locked decisions, sequenced next builds, one delta per shipped slice. | Planner |
+| [`tasks/todo.md`](tasks/todo.md) | The top "CURRENT SYSTEM STATE" block is the live state; the rest is shipped history. [`tasks/lessons.md`](tasks/lessons.md) holds orchestration mistakes and their rules; [`sessions.md`](sessions.md) one arc entry per build session, newest last. | Orchestrator |
 | [`docs/decisions/`](docs/decisions/) | Architecture Decision Records — the **why** behind significant choices. | Collaborator / future-you |
-| [`docs/superpowers/specs/`](docs/superpowers/specs/) | The living architecture & milestone spec. | Contributor |
+| [`docs/superpowers/specs/`](docs/superpowers/specs/) | Dated per-slice design specs (Rev N), with the matching plans under `docs/superpowers/plans/`. | Contributor |
 | `.env.example` | Terse copy-paste config template. | Anyone setting up |
 
 **Rule:** a configuration parameter is documented in `docs/reference/configuration.md`
@@ -23,6 +25,13 @@ layer, and have the README *link* to the rest:
 decision — architecture, a security trade-off, a default that needs justifying — gets
 an **ADR**. Don't bury these in the README, and don't leave them only in commit
 messages or chat.
+
+### Docs sync on ship
+
+When a slice ships, re-read the docs it touches and fix every claim it made false; do not only append.
+The docs to re-read: `README.md`, `CONTEXT.md`, `docs/reference/configuration.md`, `decision-map.md`,
+`jev-decision-layer.md`, `deploy/launchd/README.md` and the ROADMAP delta. Then the ADR (amendment) and its index row, the `tasks/todo.md` state block, `tasks/lessons.md`, and a `sessions.md` entry.
+Prefer claims that do not go stale: point at `tasks/todo.md` instead of writing a test count or an entry count.
 
 ### Architecture Decision Records (ADRs)
 
@@ -46,7 +55,10 @@ non-executable path, so no test can reach a real binary or spend subscription qu
    non-TypeScript runtime asset under `src/omp/` must be added to that script.
 2. A **live end-to-end run** demonstrates the user-facing behavior — via Telegram when
    the feature is bot-facing, otherwise a live CLI run (`npm run houge -- …`) against a
-   real on-disk DB with real env. Show the result. A change to the omp runtime (planner,
+   real on-disk DB with real env. Show the result. Every shipped slice gets a gate script,
+   `node scripts/live-gate-<name>.mjs`. Gate scripts import `../dist/`, so build the branch first.
+   A worktree has no `.env`: run
+   `HOUGE_ENV_FILE=/abs/path/to/main/.env node scripts/live-gate-<name>.mjs`. A change to the omp runtime (planner,
    bridge, extension, floors, seats) also needs the real-binary smoke,
    `node scripts/live-gate-omp.mjs --smoke`: the omp single-extension load, model rejection
    at spawn and Seatbelt answers cannot be reproduced under vitest. A refused safety probe
@@ -61,6 +73,7 @@ integration seams.
 
 ## Working rhythm
 
-Plan → spec → TDD → **live** verification. Keep changes minimal and idiomatic to the
+Plan → spec → TDD → **live** verification, with the review gates (spec review, a second
+model family, a whole-diff pass) in [AGENTS.md](AGENTS.md) Build flow. Keep changes minimal and idiomatic to the
 surrounding code; zero runtime dependencies is a deliberate constraint (see
 [ADR 0001](docs/decisions/0001-deterministic-harness-governs-everything.md)).

@@ -60,15 +60,17 @@ This file defines domain language for Houge architecture reviews and implementat
 
 **Lane**: A handler whose control flow is code, with at most one composing one-shot; it falls through to the planner on any doubt. Stage B has four: memory, status, answer and lookup; every other category runs the planner, which is the floor.
 
-**Role**: A named model seat (Fast, Default, Thinking, Reader, Vision, Tiny, Judges, Chair, Reviewer). Each role is a code-owned ordered list of `provider/model[:effort]` selectors resolved against omp's live catalog, with Paco's `/models` override on top. Fast, Default and Thinking are the planner's gears.
+**Role**: A named model seat (Fast, Default, Thinking, Reader, Vision, Tiny, Judges, Chair, Reviewer). Each role is a code-owned ordered list of legs; a leg names a tier, which resolves to its adopted head in omp's live catalog, with Paco's `/models` override on top. Fast, Default and Thinking are the planner's gears.
 
 **Quoted Turn**: The earlier message a Telegram reply points at, resolved to a stored chat turn (`chat_turns.quoted_turn_id`) and carried into Jev's state and the planner prompt. A quote that does not resolve is a ledger note, not a failure.
 
-**Decision**: A choice that changes a turn's path and whose answer an outcome could show wrong (ADR 0030). Mechanics — validation, timeouts, retries — are not decisions and stay plain code.
+**Jev (System One)**: A non-generative typed decider (TypeSafe) that is one rung of the decision ladder. It answers typed questions with a calibrated confidence in a few hundred milliseconds. What it may cause depends on what it read; it never gates an action, and every outage reaches Paco (ADR 0033, ADR 0034 § 2).
+
+**Decision**: A choice that changes a turn's path and whose answer an outcome could show wrong (ADR 0034 § 1). Mechanics — validation, timeouts, retries — are not decisions and stay plain code.
 
 **Entry**: One decision in the code-owned registry (`src/decisions/`, protected): its id, version, stage, the input its judges read (`paco`, `tool`, `mixed`), closed verdicts, ladder, `fail` and default verdicts, what each verdict causes (and whether that is reversible and announced), and the outcome signals that can show it wrong. `turn.handler` and `turn.gear` are the first two.
 
-**Rung**: One decider on an entry's ladder: a code `rule`, Jev (stored as `system_one`), a `model` one-shot, or `paco`. A rung answers, abstains (optionally with a monotone floor) or fails (`timeout`, `outage`, `parse`, `threw`, `stale_bar`, `budget`). Every entry ships armed; the only shadow is the front door's configured triage shadow (asked and recorded, never applied).
+**Rung**: One decider on an entry's ladder: a code `rule`, Jev (stored as `system_one`), a `model` one-shot, or `paco`. A rung answers, abstains (optionally with a monotone floor) or fails (`timeout`, `outage`, `parse`, `threw`, `stale_bar`, `budget`). Every entry ships armed; the only shadow is the front door's configured triage shadow (asked and recorded, never applied; to be removed: Paco 2026-11-04, spec pending).
 
 **Ladder**: An entry's rungs in order, code first; the first rung that answers decides, and the entry's `fail` verdict stands when none does. On a monotone entry a later rung can only tighten. What a Jev or model verdict may cause depends on what it read: over tool output only a tightening or a proposal, over Paco's own message a reversible, announced effect. The runner decides, then records (`decisions`); recording never changes a decision.
 
@@ -80,9 +82,23 @@ This file defines domain language for Houge architecture reviews and implementat
 
 **Trust level**: Clean, untrusted or hostile: what a turn has read so far (`turn.trust`, locked code). It only rises, and it only adds taps.
 
-**Hostile turn**: A turn in which `tool.injection` withheld a passage, withheld an outside passage unjudged, or lost its judgement on outside text (framed as not checked); or a turn whose planner transcript carries a hostile level. Shell commands off the read-only list and all writes ask.
+**Trust carry**: The highest trust level a planner transcript reached, stored on the chat (`transcript_trust_at`). It survives restarts and makes the next turns ask more until Paco sends `/fresh` (ADR 0034 § 8).
 
-**Settle**: The last decision of a planner turn (`turn.settle`, ADR 0030 2b-i): when omp's `session_stop` hook fires, Houge decides whether the reply stands or goes back once. A code rule checks claims against the run's ledger and open todo items; a Jev rung asks four typed questions at per-question provisional bars. The reply Paco receives (the delivered text, not the last pass alone) is audited again at the terminal `agent_end`. An errored pass 0 is never sent back (`pass_errored`).
+**Fresh session**: What `/fresh` starts: a new planner conversation at the next message, which clears a carried trust level. Persisted, so a restart does not lose it; a failed reset keeps the marker and opens `planner_session_reset_failed`.
+
+**Standing approval**: A ladder move that lets a repeated, approved shell command run without a tap. After three approved runs the fourth is a sealed trial in a clean room; the grant is automatic when it seals, lapses after 30 days and Paco holds Revoke (ADR 0034 § 11).
+
+**Clean room**: The sealed execution room (`src/omp/cleanroom-run.ts`) a standing-approval trial runs in. It has its own Seatbelt profile and a swept directory under the daemon temp root, and a trial that escapes or tampers with it does not seal.
+
+**Hostile turn**: A turn in which `tool.injection` withheld a passage, withheld an outside passage unjudged, or lost its judgement on outside text (framed as not checked); or a turn whose planner transcript carries a hostile level (the trust carry). Shell commands off the read-only list and all writes ask.
+
+**Settle**: The last decision of a planner turn (`turn.settle`, ADR 0034 § 9): when omp's `session_stop` hook fires, Houge decides whether the reply stands or goes back once. A code rule checks claims against the run's ledger and open todo items; a Jev rung asks four typed questions at per-question provisional bars. The reply Paco receives (the delivered text, not the last pass alone) is audited again at the terminal `agent_end`. An errored pass 0 is never sent back (`pass_errored`).
+
+**Digest**: The one daily summary of what the ladder did (`HOUGE_DECISION_DIGEST_AT`): improvements, standing approvals, proposals waiting for a tap, unsure judgements with review taps, and a watch line (ADR 0034 § 10). Counts and health stay in `/status`.
+
+**Golden set**: A fixed list of labelled items a provisional bar is checked against. Drift opens a `decision_golden_drift:<entry>` incident and never disarms the entry (ADR 0034 § 6.2).
+
+**Stage**: A numbered slice of the decision ladder's build (1, 2a, 2b, 3, 4A to 4C) and its remainder slices (R1 and on). `tasks/todo.md` says which is next.
 
 **Pass**: One agent leg of a turn between settle points. Pass 0 is the planner's first answer; pass 1 is the continuation a send-back starts (it opens at that leg's `agent_start`). A turn has at most two.
 
@@ -90,7 +106,7 @@ This file defines domain language for Houge architecture reviews and implementat
 
 **Withhold**: Replacing a passage of tool output with `[withheld: text aimed at the assistant]` before any model reads it.
 
-**Anchor**: Paco's approved reference for the Jev version check (ADR 0029): the replayed Telegram turns (run A canonical, run B permuted) with the answers Jev gave on the model he approved, each turn's rebuilt state, and his hand labels, stored in `jev_anchor*`. A new model's answers are compared with it, never with another model's; it is never replaced by a later model.
+**Anchor**: Paco's approved reference for the Jev version check (ADR 0033): the replayed Telegram turns (run A canonical, run B permuted) with the answers Jev gave on the model he approved, each turn's rebuilt state, and his hand labels, stored in `jev_anchor*`. A new model's answers are compared with it, never with another model's; it is never replaced by a later model.
 
 **Noise band**: A reviewed per-question margin around a bar inside which a decision asks Jev once more and uses the mean (or, over tool input, the more cautious call).
 
@@ -120,6 +136,10 @@ This file defines domain language for Houge architecture reviews and implementat
 
 **Incident**: A durable record of a violated invariant, fingerprinted `kind:subject`, with an open→resolved lifecycle. Rows are never deleted; a recurrence after resolution opens a new row so recurrence stays countable. Alerts fire on transitions only, never per sweep.
 
+**Topic**: The closed name every notification carries (`reply`, `approval`, `model_change`, `jev_notice`, …). `TOPIC_ROUTE` maps each topic to `chat` or `log`; the topic alone decides where a notification goes (ADR 0031).
+
+**Route (incident)**: What an incident kind does when it opens, per `INCIDENT_ROUTE`: a page (one message to Paco's chat), a card (the caller's own card) or a log (a change-log row). An unknown kind pages. A daily reminder repeats the open actionable kinds (`REMIND_KINDS`) until they are fixed.
+
 **Change log**: A background notice that left chat — a `change_log` row written by the topic router (`TOPIC_ROUTE`) or an incident whose kind routes `log`. Code-owned text with masked subjects; read with `/changes`; never pushed (ADR 0031).
 
 **Provenance Strip**: The rule that a run born from a schedule fire (`event.source === "schedule"`) has `schedule_task` removed from its task contract, so replayed schedule text can never be acted on as a fresh instruction to create or mutate schedules. The general principle: a capability is withheld based on how a run was *born*, not on what its text says.
@@ -132,13 +152,13 @@ This file defines domain language for Houge architecture reviews and implementat
 
 **Lesson Consolidation (Preserve-All Merge)**: A daily merge tick that clusters near-duplicate ACTIVE lessons within a scope and merges each cluster into one lesson keeping every directive and every AVOID. It is **ADD-then-supersede-all**: the merged lesson is added and the originals are superseded (never deleted), reuse value carried (capped/clamped). A cluster-size cap plus gross-collapse and avoid-drop floors prevent over-collapse. It mirrors episodic consolidation and is the lesson-side analogue of reconcile-on-write, operating in bulk rather than per-write.
 
-**API-vs-Subscription Usage Split**: The `/usage` (Telegram) and `houge usage` (CLI) accounting distinction between **metered API legs**, pay-per-token providers whose real dollar cost is tracked, and **subscription legs**, reported in tokens only and labelled "sub". Since the omp cutover every default leg is a subscription leg (omp under profile `houge`, `agy-cli` for voice, `codex`), so no row is priced and the metered-$ ceiling is dormant (ADR 0019 amendment). The audit sink (`RunStore.llmAuditSink`) remains the one pricing seam if a metered leg returns. The SQLite ledger is the telemetry substrate (OTel deferred by design).
+**API-vs-Subscription Usage Split**: The `/usage` (Telegram) and `houge usage` (CLI) accounting distinction between **metered API legs**, pay-per-token providers whose real dollar cost is tracked, and **subscription legs**, reported in tokens only and labelled "sub". Since the omp cutover every default leg is a subscription leg (omp under profile `houge`, `agy-cli` for voice, `codex`), so no omp row is priced; Jev is the one metered leg, its rows are priced and the metered-$ ceiling is active for it (ADR 0019 amendment, ADR 0033 E1). The audit sink (`RunStore.llmAuditSink`) remains the one pricing seam if a metered leg returns. The SQLite ledger is the telemetry substrate (OTel deferred by design).
 
-## Runtime terms (omp, ADR 0028)
+## Runtime terms (omp, ADR 0032)
 
 **omp**: The agent runtime (`@oh-my-pi/pi-coding-agent`, an oh-my-pi fork), with no version pin and always run under its own profile `houge`, on subscription OAuth only. Any version `omp --version` reports runs; only an omp that will not run or prints no version is refused (`omp_unavailable`).
 
-**Planner**: The one supervised omp RPC process per Telegram chat that runs every chat turn. It has omp's `read`, `edit` and `write` built-ins plus Houge's tools, runs under `sandbox-exec`, and keeps the chat's transcript in its omp session. It spawns on the Default role and each turn is pinned to its routed role (Fast, Default or Thinking); a role is a code-owned list resolved against omp's catalog, never a pinned model.
+**Planner**: The one supervised omp RPC process per Telegram chat that runs every chat turn. It has omp's `read`, `edit` and `write` built-ins plus Houge's tools, runs under `sandbox-exec`, and keeps the chat's transcript in its omp session. It spawns on the Default role and each turn is pinned to its routed role (Fast, Default or Thinking); a role is a code-owned list of tier legs resolved against omp's catalog, never a pinned model.
 
 **PlannerSupervisor**: The daemon-side owner of one chat's planner: it spawns and restarts the child, holds the run lease, queues and steers messages, enforces the turn deadline and frame watchdog, and finishes the run. A child counts as started only after the bridge has served it the tool manifest.
 
@@ -156,7 +176,9 @@ This file defines domain language for Houge architecture reviews and implementat
 
 **Seat**: A named LLM role with its own model chain. The planner is the conversational seat; every other seat (reader, photo, ticks, judges, chair, reviewer) is a **one-shot seat**: a tool-less, sessionless, extension-less omp spawn, one per call. Voice transcription (agy-cli) and the self-write writer (codex) are seats outside omp.
 
-**Model String**: `provider/model[:effort]`, one entry in a seat's ordered chain. On a retryable error (quota, auth, transport, timeout, model missing) the next string serves; a refusal is final.
+**Tier**: A provider plus an anchored pattern over catalog model ids (`src/omp/model-tiers.ts`), such as `opus@anthropic` or `gemini-pro`. The newest id in the tier is its head, adopted only after a probe call passes; the previous head stays as a fallback. A different family is Paco's call (`/models`), never the tier's.
+
+**Model String**: `provider/model[:effort]`, the form of a model once a tier leg has resolved (or an override is set). A seat's chain is ordered. On a retryable error (quota, auth, transport, timeout, model missing) the next string serves; a refusal is final.
 
 **Floor A**: The file floor. The planner process and every `bash` command run under rendered Seatbelt profiles (`planner.sb`, `shell.sb`): writes denied by default outside `$HOME`, `/private/tmp` and the workspace, then denied again for the Houge repo, `dist/`, binary install trees and code-running dotfiles; credential stores read- and write-denied. The policy hook denies the same paths with a clean reason. Code-owned, not bypassable by the model.
 
@@ -181,5 +203,7 @@ These appear in older ledger rows, specs and sessions. They no longer describe t
 **llm_answer**: The inner-loop tool that asked the model chain for a final answer. Deleted as a planner tool; the planner answers directly. The internal `/run` research programs still use an answer capability.
 
 **Dual-LLM Arming Couple**: The rule that `gmail_read`/`google_api` armed only when both the Google flag and the dual-LLM flag were on. Gone: the wall is unconditional, so the Google flag alone arms them.
+
+**Intent Shadow**: The live Jev shadow that ran beside the intent classifier. Removed 2026-10-06 (superseded by Jev as System One, ADR 0033); only offline replay (`houge jev-shadow replay`) remains. Not the front door's configured triage `shadow` mode, which still exists.
 
 **Money Track**: The earning tools (`bounty_scan`, `project_*`, `external_work`) and the external workspace (ADR 0022, 0023). Code deleted at `3aabc04`; the tables and historical rows stay readable.

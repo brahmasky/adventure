@@ -4,7 +4,7 @@
 (Opus 4.8, GPT, Gemini, Kimi, …) can pick up the build and continue without verbal context
 transfer. It records where the project is, the rules that must not be broken, the sequenced
 plan (Paco's decisions of 2026-07-07), and the design briefs for each next step. **Updated
-2026-10-02 for the omp runtime (ADR 0028):** §1, §2′, §3, §4′ and §5 are current; §2 and §4 are the
+2026-10-02 for the omp runtime (ADR 0032, which consolidates ADR 0028):** §1, §2′, §3, §4′ and §5 are current; §2 and §4 are the
 dated record they replaced.
 
 **How to use this file (successor model):** read the onboarding set first —
@@ -18,12 +18,12 @@ still goes through Paco's `/goal` gate; nothing here is pre-authorization to sta
 
 Houge (猴哥) is an **autonomous self-evolving agent** (NOT a chatbot) living as a Telegram-first
 daemon on Paco's Mac mini. Zero runtime dependencies; Node + TypeScript; SQLite. Every chat turn runs
-on an **omp agent loop** ([ADR 0028](decisions/0028-omp-runtime.md)): one supervised omp planner per
+on an **omp agent loop** ([ADR 0032](decisions/0032-omp-runtime-consolidated.md)): one supervised omp planner per
 chat with real tools, under code-owned floors, and one-shot omp seats for everything else. Every
 default LLM leg is **subscription OAuth** (omp under profile `houge`; agy-cli for voice; codex for the
 self-write writer); the metered APIs stay a capped escape hatch with no leg on any default chain
-(ADR 0019, dormant). Claude runs in the runtime **only** as a subscription model inside omp (planner
-and chair, ADR 0028 D7, Paco 2026-09-30; the model comes from the role lists, never a pin), never through a metered API or the Claude Code CLI;
+(ADR 0019; the ceiling is active for its one metered leg, Jev, ADR 0033 E1). Claude runs in the runtime **only** as a subscription model inside omp (planner
+and chair, ADR 0032 D7, Paco 2026-09-30; the model comes from the role lists, never a pin), never through a metered API or the Claude Code CLI;
 this replaces the 2026-07-12 exclusion. Claude Code remains the build-orchestrator seat.
 
 **Thesis (LOCKED 2026-06-26):** Houge improves himself without asking permission; mechanical
@@ -40,16 +40,16 @@ framing; OK for Houge to fail; only core principles stay constant.
 2. First build = the self-evolution SPINE, before task capabilities.
 3. Money fork RE-OPENED NARROWLY (2026-07-17, ADR 0022) and now **dormant**: the money-track code
    was deleted with the omp cutover (ADR 0022 amendment, `3aabc04`); Earn is parked behind SP1 and
-   returns, if at all, as a bridge tool under ADR 0028's floors. The decision itself stands: EARNING is IN (human-fronted — Houge
+   returns, if at all, as a bridge tool under ADR 0032's floors. The decision itself stands: EARNING is IN (human-fronted — Houge
    does the engineering; the human owns account/wallet/KYC and receives funds). Holding
    funds/keys, trading, and fund CUSTODY stay DEFERRED. (Original: "Real money / trading / fund
    custody DEFERRED until the spine proves stable autonomy" — the spine-complete precondition was
    met.) Roadmap: `docs/superpowers/specs/2026-07-17-money-work-roadmap.md`.
-4. Best model per seat, subscription OAuth only (ADR 0028 D7): each seat is an ordered chain of
-   `provider/model[:effort]` strings that falls back on quota, auth, transport, timeout or a missing
-   model.
+4. Best model per seat, subscription OAuth only (ADR 0032 D7): each seat names a role, a code-owned
+   list of tier legs resolved against omp's catalog, that falls back on quota, auth, transport, timeout
+   or a missing model (ADR 0032 §7).
 
-**Locked runtime decisions (ADR 0028, D1–D12; change only by a new ADR and Paco's hand):**
+**Locked runtime decisions (ADR 0032, D1–D12; change only by a new ADR and Paco's hand):**
 D1 omp under profile `houge`, no version pin (amended 2026-10-07) · D2 hard cutover (inner loop,
 classifier and pi/kimi/gemini providers deleted) · D3 the dual-LLM wall kept for the four read tools,
 enforced in the bridge, with `bash` output exempt · D4 the omp session owns the transcript, Houge owns
@@ -147,7 +147,7 @@ gate works; convergence under the evidence regime is now the top functional gap.
    cognitive interior. Never move a gate into the LLM.
 2. **The floor is never weakened**: guard · test gate · reviewer isolation · branch-only +
    human-tapped merge · unforgeable `/approve` `/deny` · breaker · DATA channel · secrets
-   firewall · dual-LLM wall · ADR 0028's floor A (Seatbelt + policy hook) and floor B (the
+   firewall · dual-LLM wall · ADR 0032's floor A (Seatbelt + policy hook) and floor B (the
    `/approve` matcher). `PROTECTED_FILES`/`PROTECTED_DIRS` (in `self-write-guard.ts`), including
    every file the planner process executes, are changed only by Paco's hand.
 3. **`/goal` is the stop-gate** — no build starts from an approved plan alone; wait for Paco's
@@ -181,8 +181,7 @@ gate works; convergence under the evidence regime is now the top functional gap.
 Paco's review session found the harness had one real tool and usage had collapsed; the runtime is replaced
 before any new capability. Four sub-projects, each its own spec → review → plan → build → live gate:
 **SP1 omp runtime** (spec `docs/superpowers/specs/2026-09-30-omp-runtime-design.md`, decisions D1–D12,
-[ADR 0028](decisions/0028-omp-runtime.md); **built on `feat/omp-runtime`, reviewed, smoke PASS — awaiting
-merge, kickstart and the full live gate; not yet live**) → **SP2 Paco's personal tools** (own Gmail/Calendar/reminders/files) → **SP3 hardening** (auth broker,
+[ADR 0032](decisions/0032-omp-runtime-consolidated.md); **LIVE on the mini since 2026-10-01**) → **SP2 Paco's personal tools** (own Gmail/Calendar/reminders/files) → **SP3 hardening** (auth broker,
 OS user for the planner, quota invariant) → **SP4 self-evolution v2** (weakness mining, replay eval as a gate).
 Phase R below is subsumed by SP1 (a real agent loop replaces the step-cap fallback work); episodic/wiki stay as
 knowledge Houge owns; Earn is parked behind SP1.
@@ -248,7 +247,7 @@ now has its handler. Open: an in-turn "remember" typed during a running planner 
   any other command, or this one from a non-scheduled turn, still asks. It can be revoked from `/schedule`.
   Reported where scheduled runs use it. It touches the gate machinery, so it needs its own spec and Paco's sign-off.
   It is preferred over an endpoint allowlist, which would also exempt a real booking POST to the same host.
-- **omp contract probe.** BUILT 2026-10-09 (ADR 0028 amendment): seven checks per omp version with no passing probe,
+- **omp contract probe.** BUILT 2026-10-09 (ADR 0032 8.2 to 8.4): seven checks per omp version with no passing probe,
   `omp_contract_drift` pages without blocking, `omp --version` once per binary, `houge omp probe`; live gate 4/4.
 
 **Next, in order (re-sequenced 2026-10-04, [ADR 0029](decisions/0029-jev-system-one.md); lane 1 and lane 2 became the
@@ -318,14 +317,14 @@ that outlives a Telegram turn; omp `ask` routed to an option card; (2) **verifie
 SP4 (`scripts/eval-replay.mjs` in the self-write gate, the S-3 post-restart probe with auto-rollback, weakness mining
 over the ledger) plus every self-write outcome written as a row the next proposal reads; (3) **proposal artefact as
 the approvable unit** — a docs-only self-write profile writes `docs/superpowers/proposals/<run>.md`; Paco taps the
-proposal, not the diff (amends ADR 0011 §7, 0028 decision 3); (4) **trust ledger + per-class autonomy levels**
+proposal, not the diff (amends ADR 0011 §7, 0032 5.1); (4) **trust ledger + per-class autonomy levels**
 (0 forbidden · 1 propose · 2 branch, Paco merges · 3 auto-merge in a window with auto-rollback · 4 + push),
 promotion by code on consecutive clean outcomes, demotion on one revert or incident; code-computed blast radius sets
 eligibility; Jev may demote, never promote; (5) **omp organs under the policy hook** — `todo`/plan files, native
 skills, `task` subagents only after probing that children inherit the single extension; (6) **planner-owned scratch
 worktree** for Houge's own code, test-runnable, code-owned gate kept (new ADR; touches hard line a). Stays with
 Claude Code + Paco: multi-task slices, the protected surface, ADR decisions, deploy until S-3, and publishing to the
-public repo permanently. Follow-ups recorded in ADR 0028: voice on omp or local whisper (voice stays on agy-cli
+public repo permanently. Follow-ups recorded in ADR 0032: voice on omp or local whisper (voice stays on agy-cli
 until then), a `tool_started` row so a dropped bridge call is visible, and the matcher misses listed there.
 
 ## 4. The sequenced roadmap (Paco's decisions, 2026-07-07; historical record)
@@ -509,8 +508,8 @@ Flip [Merge & reload] from human-tapped to autonomous (notify-after) ONLY when A
   **lesson consolidation** (preserve-all daily merge, ARMED + first live merge tick 2026-07-24,
   flag `HOUGE_LESSON_CONSOLIDATE_ENABLED`, design spec
   `docs/superpowers/specs/2026-07-23-lesson-consolidation-design.md` — no ADR).
-  **ADR range is now 0001–0029** (0028 = the omp runtime, 2026-09-30; 0029 = Jev as System One, 2026-10-06).
-- **What the runtime depends on (since ADR 0028).** The planner and chair default to Claude on
+  **ADR range is now 0001–0034** (0032, 0033 and 0034 consolidate the omp runtime, Jev as System One and the decision ladder, which were 0028, 0029 and 0030, with no change of meaning; 0031 is "chat is for Paco").
+- **What the runtime depends on (since ADR 0028, now ADR 0032).** The planner and chair default to Claude on
   Anthropic Max OAuth inside omp; if Anthropic blocks that, the planner walks its role list (Claude via
   Antigravity, then Kimi) automatically, and an incident tells Paco. The role lists live in `src/omp/model-roles.ts`
   and resolve against omp's catalog. Every other seat is a
@@ -523,8 +522,8 @@ Flip [Merge & reload] from human-tapped to autonomous (notify-after) ONLY when A
   gates, close out `tasks/todo.md` + `sessions.md`, capture lessons after corrections.
 - **Where truth lives:** `tasks/todo.md` (current state; reverse-chronological work log),
   `tasks/lessons.md` (process rules — binding), `sessions.md` (narrative), `docs/decisions/`
-  (ADRs 0001–0028; 0028 is the runtime and its threat model, 0012/0013/0014/0015 are the
-  load-bearing spine ones as amended by 0028, and 0024 adds the behavioral **sense** stage),
+  (ADRs 0001–0034; 0032 is the runtime and its threat model, 0012/0013/0014/0015 are the
+  load-bearing spine ones as amended by 0032, and 0024 adds the behavioral **sense** stage),
   `docs/superpowers/specs/` (spine and omp runtime designs; the inner-loop design is historical), `docs/reference/configuration.md`
   (flag reference). The production `.env` (gitignored) is the arming truth — read it, don't
   assume defaults.
