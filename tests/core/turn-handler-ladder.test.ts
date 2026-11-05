@@ -74,9 +74,9 @@ describe("turn.handler decisions link to what triage persisted", () => {
     const t = h.turn("以后回复短一点");
     await h.worker.triageTurn(t.input);
     expect(fetchImpl).not.toHaveBeenCalled();
-    expect(handlerRow(h.store, t.run_id)).toHaveLength(1);
-    expect(handlerRow(h.store, t.run_id)[0]).toMatchObject({ rung: "rule", reason_code: "disabled", armed_mode: "on" });
-    expect(h.store.getJevVerdictForRun(t.run_id)).toMatchObject({ skip_reason: "disabled", decision_id: handlerRow(h.store, t.run_id)[0]!.decision_id });
+    const id = expectLinked(h.store, t.run_id); // the skipped jev_decisions row and the verdict both link to the one handler row
+    expect(handlerRow(h.store, t.run_id)[0]).toMatchObject({ decision_id: id, rung: "rule", reason_code: "disabled", armed_mode: "on" });
+    expect(h.store.getJevVerdictForRun(t.run_id)).toMatchObject({ skip_reason: "disabled" });
     h.store.close();
   });
   it("a memory lane save links inside the save's transaction too", async () => {
