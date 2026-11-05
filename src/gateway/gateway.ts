@@ -158,6 +158,18 @@ const LOW_RATING_MAX = 1;
 /** ADR 0018 + decision ladder plan ruling 16: commands the per-chat rate limit never delays (kill; digest review taps). */
 export const RATE_LIMIT_EXEMPT: ReadonlySet<string> = new Set(["kill", "decision_review", "improvement_tap", "jev_accept_tap", "model_tier_tap"]); // + empty-tier card taps (spec 2026-11-02 §4.4)
 
+/** ⓪·3 S2c: the rating signal at a glance — an open ask, or the last capture (local time). */
+function ratingStatusText(
+  rating: { pending_since: string | null; last_rating: number | null; last_rating_at: string | null },
+  localOf: (iso: string) => string
+): string {
+  return rating.pending_since
+    ? `pending ask since ${rating.pending_since}`
+    : rating.last_rating !== null && rating.last_rating_at
+      ? `last ${rating.last_rating}/3 at ${localOf(rating.last_rating_at)}`
+      : "none yet";
+}
+
 export class Gateway {
   private readonly caps: GlobalBudgetCaps;
   private readonly projectRoot: string;
@@ -1433,12 +1445,7 @@ export class Gateway {
       const city = zone.split("/").pop() ?? zone;
       const localOf = (iso: string): string => `${formatInstantInZone(iso, zone)} (${city})`;
 
-      // ⓪·3 S2c: the rating signal at a glance — an open ask, or the last capture (local time).
-      const ratingText = rating.pending_since
-        ? `pending ask since ${rating.pending_since}`
-        : rating.last_rating !== null && rating.last_rating_at
-          ? `last ${rating.last_rating}/3 at ${localOf(rating.last_rating_at)}`
-          : "none yet";
+      const ratingText = ratingStatusText(rating, localOf);
 
       const healthLines = this.healthLines({ poller, sweep, now, chatId, localOf });
 

@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -19,9 +19,11 @@ beforeEach(() => {
 });
 afterEach(() => { vi.unstubAllEnvs(); rmSync(dir, { recursive: true, force: true }); });
 
-function statusText(): string {
+function statusText(dataDir: string = dir): string {
+  const root = join(dir, "project-root");
+  mkdirSync(root, { recursive: true });
   const s = RunStore.openInMemory();
-  new Gateway(s, undefined, dir, undefined, undefined, { dataDir: dir }).intake(buildTypedTaskEvent({ source: "telegram", type: "status", requested_by: { kind: "user", id: "paco" },
+  new Gateway(s, undefined, root, undefined, undefined, { dataDir }).intake(buildTypedTaskEvent({ source: "telegram", type: "status", requested_by: { kind: "user", id: "paco" },
     notify: { kind: "telegram", chat_id: "222" }, idempotency_key: "telegram:fd", source_reference: "telegram:update:fd" }), NOW);
   const text = String([...drainOutbox(s).values()][0]?.text);
   s.close();
@@ -42,6 +44,13 @@ describe("/status front-door line", () => {
     writeFileSync(join(dir, JEV_DISARM_MARKER), JSON.stringify({ reason: "x", at: "" }));
     vi.stubEnv("HOUGE_JEV_ENABLED", "1");
     expect(statusText()).toContain("Jev front door: off (houge.jev-disarmed marker");
+  });
+  it("a marker only under projectRoot is not read when dataDir is elsewhere: armed", () => {
+    mkdirSync(join(dir, "project-root"), { recursive: true });
+    writeFileSync(join(dir, "project-root", JEV_DISARM_MARKER), "{}");
+    mkdirSync(join(dir, "elsewhere"), { recursive: true });
+    vi.stubEnv("HOUGE_JEV_ENABLED", "1");
+    expect(statusText(join(dir, "elsewhere"))).toContain("Jev front door: armed");
   });
   it("flag on: armed", () => {
     vi.stubEnv("HOUGE_JEV_ENABLED", "1");
