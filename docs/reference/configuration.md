@@ -13,7 +13,7 @@ var → general env var → code default. Secrets are env-only and never written
 reports, memory, logs, or chat.
 
 To share one `.env` across git worktrees, point each at an absolute path:
-`set -x HOUGE_ENV_FILE /Users/pluo/Projects/adventure/.env`.
+`set -x HOUGE_ENV_FILE /abs/path/to/adventure/.env`.
 
 ---
 
@@ -41,10 +41,10 @@ launchd: [deploy/launchd/README.md](../../deploy/launchd/README.md).
 | `HOUGE_DAEMON_TMP_DIR` | `~/Library/Caches/houge-daemon` | The daemon's temp root (media downloads, codex out-files, agy workdirs). Two fixed subdirectories (2026-10-28): `children/` is every CLI child's `TMPDIR` (agy, codex, omp one-shots, the catalog; codex keeps `$TMPDIR` writable there — denying it broke `mktemp` in a probe, and the sibling placement is the lock), and `cleanroom/` holds the per-run rooms and homes of sealed commands; neither is ever an ancestor of the other, and nothing else may write under `cleanroom/`. Must be absolute (a relative value falls back to the default). Created and kept at 0700; both Seatbelt profiles read- and write-deny it. It must sit outside any git repo: at boot an ancestor holding `.git` raises the `daemon_tmp_in_git_repo` incident (one alert) and voice ingest refuses with the code-owned "media ingest is off" reply, because agy may root file access at the repo's top level (`.env` included). Never `<repo>/tmp`. |
 | `HOUGE_DAEMON_LOCK_PATH` | `houge.daemon.lock` (cwd) | PID lockfile for the single-instance guard; a second daemon with the same lock exits instead of fighting over the Telegram long-poll (which would cause HTTP 409). |
 
-## LLM runtime — omp (ADR 0028)
+## LLM runtime — omp (ADR 0032)
 
 Every LLM call runs on **omp** (`@oh-my-pi/pi-coding-agent`; no version pin, any version that runs and reports an
-`x.y.z` is accepted) under its own profile `houge` on subscription OAuth only ([ADR 0028](../decisions/0028-omp-runtime.md)). Each Telegram
+`x.y.z` is accepted) under its own profile `houge` on subscription OAuth only ([ADR 0032](../decisions/0032-omp-runtime-consolidated.md)). Each Telegram
 chat gets one supervised omp RPC process, the **planner**: sandboxed, with the built-ins `read,edit,write`
 and Houge's tools served through the bridge. Every other seat (reader, photo, ticks and the cascade, judges, chair,
 reviewer) is a one-shot spawn (`-p --mode json --no-session --no-tools --no-extensions`). The self-write
@@ -84,7 +84,7 @@ set for every child: `<workspace>/.tmp` for the planner and each `bash` command,
 one-shots, codex and agy. The Seatbelt profiles deny `os.tmpdir()` (`/private/var/folders`), so a child never writes
 where the daemon later reads. The daemon's own temp space (media downloads, codex out-files, agy workdirs) is the
 daemon temp root below, outside the repo; self-write worktrees live in `<data>/selfwrite` (git by design; `<data>`
-is the directory holding `houge.sqlite`, gitignored, write-denied to every sandboxed child; ADR 0028, decision 18).
+is the directory holding `houge.sqlite`, gitignored, write-denied to every sandboxed child; ADR 0032 5.1).
 `HOUGE_CONFIG_YML` is not an environment variable: it is the name of the code constant
 (`src/omp/planner-supervisor.ts`) holding the profile config the daemon writes to
 `<data>/omp/houge-config.yml` (`tools.xdev: false`, `startup.checkUpdate: false`,
@@ -98,11 +98,11 @@ and `openai-codex`. Every omp row has `cost_usd` 0 (shown as "sub" in `/usage`).
 version refuses a spawn (incident `omp_unavailable`, resolved by the next passing check). `houge_status` reports the
 version in use (the daemon checks it once at boot).
 
-**Contract probe (2026-10-09, ADR 0028).** When the omp version in use has no passing probe, the daemon probes it in
+**Contract probe (2026-10-09, ADR 0032 8.2 to 8.4).** When the omp version in use has no passing probe, the daemon probes it in
 the background: the catalog, the start and pin refusals, a session open, an effort change, `new_session` and one tiny
 prompt on the Tiny role, in throwaway sandboxed children with no tools. Each run is one `omp_contract_probe` ledger
 row (`version`, `result` pass/fail/inconclusive, a fixed code per check, token usage). A failed check opens
-`omp_contract_drift` (subject `omp:<version>`, the failed checks in its detail; one page while open; `omp_read_format_drift`, below, is its sibling for the read text shape) and every spawn
+`omp_contract_drift` (subject `omp:<version>`, the failed checks in its detail; a change-log line, read with `/changes`, and a daily reminder once it has stayed open a week; `omp_read_format_drift`, below, is its sibling for the read text shape) and every spawn
 carries on; a pass resolves it. A timeout or a provider condition is inconclusive and pages nothing. Only a pass is
 final: after a fail or an inconclusive run, the next boot probes again. By hand, from the project root:
 `npm run houge -- omp probe` prints one line per check and exits 0 pass, 1 fail, 2 inconclusive or interrupted, 3 omp
@@ -115,14 +115,14 @@ copy) were tested against one omp read shape: the hashline header `[path#HASH]` 
 line (`details.rowPrefixes: true`, on whenever `edit` is on, as it always is for the planner). The mask's line-start rule
 accepts any non-letter run of up to 24 characters, so a prefix form omp has not shipped yet needs no code change; the
 bridge still classifies every judged read, and the first *succeeded* read on an omp version whose text is not in that
-shape opens `omp_read_format_drift` (subject `omp:<version>`; one page while open). The next conforming read on that
+shape opens `omp_read_format_drift` (subject `omp:<version>`; a change-log line while open). The next conforming read on that
 version resolves it. An errored read (omp's "not found" text) never counts. On that page: run
 `node scripts/live-gate-ladder-2b-hooks.mjs --only 9` from a built worktree (the masked-read case) before trusting the mask.
 
 ### Model roles
 
 Spec: [2026-10-06-jev-decision-tree-design.md](../superpowers/specs/2026-10-06-jev-decision-tree-design.md) §4;
-[ADR 0028 amendment 2026-10-07](../decisions/0028-omp-runtime.md). The seven `HOUGE_OMP_PLANNER`, `_READER`, `_MEDIA`,
+[ADR 0032 7.1](../decisions/0032-omp-runtime-consolidated.md). The seven `HOUGE_OMP_PLANNER`, `_READER`, `_MEDIA`,
 `_TICKS`, `_JUDGES`, `_CHAIR` and `_REVIEWER` chain variables are **retired**: a set value is ignored, and the daemon
 names it once at boot (`[omp-config] … no longer read`). Delete them from `.env`.
 
@@ -134,21 +134,21 @@ names it once at boot (`[omp-config] … no longer read`). Delete them from `.en
 | `reader` | the quarantined reader ([ADR 0014](../decisions/0014-dual-llm-privilege-separation.md)) | `gemini-flash:low`, `kimi:low`, `codex-sol:low` |
 | `vision` | the photo seat | `gemini-flash:low` |
 | `tiny` | memory ticks and the Jev cascade | `kimi:low`, `gemini-flash:low` |
-| `judges` | idea-panel judges, one tier head per seat index, never a chain | seat 0 `kimi`, seat 1 `codex-sol`, seat 2 `gemini-pro` (empty until Paco's tap) |
+| `judges` | idea-panel judges, one tier head per seat index, never a chain | seat 0 `kimi`, seat 1 `codex-sol`, seat 2 `gemini-pro` |
 | `chair` | idea-panel chair | `opus@anthropic:low` |
 | `reviewer` | self-write checker 3 | `kimi:high`, `opus@antigravity:medium` |
 
-**Tiers (spec 2026-11-02, [ADR 0028 amendment 2026-11-02](../decisions/0028-omp-runtime.md)).** A leg names a tier, not a version:
+**Tiers (spec 2026-11-02, [ADR 0032 7.2](../decisions/0032-omp-runtime-consolidated.md)).** A leg names a tier, not a version:
 `opus@anthropic`, `opus@antigravity`, `sonnet@anthropic`, `sonnet@antigravity`, `gemini-flash`, `gemini-pro`, `codex-sol`, `kimi`
 (`src/omp/model-tiers.ts`: a provider and an anchored pattern, newest by the version in the id; dated snapshots, `-lite`,
 `-highspeed`, `-256k` and previews match none). A leg resolves to its tier's **adopted head**, then its **previous** adopted head.
 A new head is adopted only after a probe (a one-leg call through the one-shot seat): a pass adopts, `model_missing` keeps the tier
 and is not retried for 7 days, any other failure retries at the next tick. State is `model_tiers`; outcomes are `model_probe`
 rows. A judge seat resolves to its tier's head only, never a chain; when the head leaves the catalog the daily tick moves the seat
-to its previous head. An empty tier (`gemini-pro` today) gets one tap card a day proposing same-provider ids by price. A tap probes
+to its previous head. A tier that no catalog id matches is empty (the `gemini-pro` tier started empty; it now matches Google's renamed ids and adopts through the first probe) and gets one tap card a day proposing same-provider ids by price. A tap probes
 first and writes the `/models` override only on a pass. No new env var. Changing a family inside a tier is a code edit or `/models`;
 Kimi is not renewed next year, so every list keeps a non-Kimi leg and judge seat 0 needs a replacement then. The `static` lists
-(`STATIC_ROLE_LISTS`) are re-pinned to the seeded heads, with judge seat 2 empty.
+(`STATIC_ROLE_LISTS`) are re-pinned to the seeded heads; in `static` mode there are only two judge seats.
 
 **Resolution order** (`resolved` mode): the catalog (`omp --profile houge models --json`, read at boot, daily and on
 `/models set`) is filtered to the provider allow-list `anthropic`, `google-antigravity`, `kimi-code`, `openai-codex`
@@ -166,14 +166,14 @@ For the reader, candidates of a different family from the planner's run first (D
 | `/models set <role> <pattern>` | Override the role with a case-insensitive substring over `provider/id` of the allow-listed, seat-eligible catalog. Refused when the pattern matches nothing, matches only models outside the role's providers, the catalog is unavailable, the mode is `static`, or the role is `judges`. |
 | `/models set judges <n> <pattern>` | Override judge seat `n` (0-based). |
 | `/models reset <role> [n]` | Clear the override (`reset judges` clears every seat). |
-| `/fresh` | Start a fresh planner conversation at the next message (clears a carried trust level; see [ADR 0030](../decisions/0030-decision-ladder.md) amendment 2026-11-02). Persisted, so a restart does not lose it; `/status` shows the carry while it stands. A failed reset keeps the marker, opens `planner_session_reset_failed` and prefixes the replies. |
+| `/fresh` | Start a fresh planner conversation at the next message (clears a carried trust level; see [ADR 0034 8.3 to 8.5](../decisions/0034-decision-ladder-consolidated.md)). Persisted, so a restart does not lose it; `/status` shows the carry while it stands. A failed reset keeps the marker, opens `planner_session_reset_failed` and prefixes the replies. |
 
 The override's matches serve first, then the catalogued list, so a retired override degrades to the list.
 
-**Daily reminder.** Separately from the tick (so it runs in `static` mode and through a catalog outage, before the model ticks), once a day one message lists every open `role_unresolved`, `static_list_stale`, `model_catalog_unavailable` and `planner_session_reset_failed` incident older than 24 h, with its age and the action to take. No env var.
+**Daily reminder.** Separately from the tick (so it runs in `static` mode and through a catalog outage, before the model ticks), once a day one message lists every open `role_unresolved` and `planner_session_reset_failed` incident older than 24 h, and every open `omp_contract_drift` older than 7 days, with its age and the action to take (`REMIND_KINDS`, `src/run/incident-alert.ts`). `static_list_stale` and `model_catalog_unavailable` are change-log kinds and are not repeated. No env var.
 
-**Daily tick.** Once per 24 h (latched on the last `model_roles_resolved` row) the daemon re-reads the catalog and posts one
-line per role whose head moved ("Thinking now resolves to X, was Y"). A role with no candidate opens the alerted incident
+**Daily tick.** Once per 24 h (latched on the last `model_roles_resolved` row) the daemon re-reads the catalog and writes one
+`model_change` change-log row per role whose head moved ("Thinking now resolves to X, was Y"); read them with `/changes`, they do not go to chat. A role with no candidate opens the alerted incident
 `role_unresolved` (subject = the role key). Only the daily tick opens and clears it, so after a fix it can stay open up
 to 24 h, until the next tick sees the role resolve. Meanwhile a turn routed to an empty Fast steps up to Default; an empty Default
 leaves the planner no candidate to spawn on and an empty Thinking has nothing above it, so those turns end `no_planner_leg`. A failed catalog read is retried
@@ -197,7 +197,7 @@ one-shot), a changed binary is checked again, and a failed check is never cached
 ### Voice leg — agy-cli (voice only)
 
 Voice notes never reach omp, because omp inlines audio bytes as text and the model invents a transcript
-(ADR 0028, decision 16). They are transcribed on the flat-rate `agy-cli` leg. These variables only
+(ADR 0032 1.6). They are transcribed on the flat-rate `agy-cli` leg. These variables only
 affect voice. The media chain and its timeout are in [Multimodal ingest](#multimodal-ingest--voice-notes-and-photos-spec-2026-09-29).
 
 | Variable | Default | Purpose |
@@ -246,7 +246,7 @@ armed): GET/HEAD only, redirects never followed — a 3xx reports its
 target so the next fetch revalidates from scratch. The SSRF floor is **code-owned and
 not configurable**: private/reserved/special-range IPs are always refused
 (resolve-and-pin, one DNS resolution per fetch), credentials-in-URL refused, and the
-byte cap binds the *decompressed* body. Accepted Posture-A residuals are documented in
+byte cap binds the *decompressed* body. The request asks for `identity`, and any reply whose `content-encoding` names `br` (any value, any case, repeated headers) is refused before a byte is decoded (CVE-2026-111497); the Brotli decoder is not imported there. Accepted Posture-A residuals are documented in
 the module docblock (`src/web/http-fetch.ts`); the URLs read are recorded in the ledger
 (`http_fetch_performed`).
 
@@ -289,7 +289,7 @@ a fixed code-owned text is returned instead of the raw bytes.
 
 Since the omp cutover this is **unconditional** and has no variables. The wall is enforced in the
 bridge (`normalizeExternalRead`), and `HOUGE_DUAL_LLM_ENABLED` and `HOUGE_LLM_READER_PROVIDERS` are
-gone. Output of the `bash` tool is **exempt** and reaches the planner raw (ADR 0028 D12). See
+gone. Output of the `bash` tool is **exempt** and reaches the planner raw (ADR 0032 D12). See
 [ADR 0014](../decisions/0014-dual-llm-privilege-separation.md) and its 2026-09-30 amendment.
 
 ## Google identity — `gmail_read` / `google_api` (ADR 0025)
@@ -668,9 +668,13 @@ a turn runs (detached turns).
 
 | Command | Plane | Purpose |
 |---------|-------|---------|
-| `/status` | control | Per-cap breaker headroom, run counts by state, last error. |
-| `/run <program> [args]` | control | Escape hatch to launch a named program directly (consumes budget). |
-| `/approve <id>` · `/deny <id>` | safety | Resolve a pending approval: a run-level gate or an in-turn tool approval (floor B, ADR 0028). Unforgeable — slash-only, never inferred. |
+| `/status` | control | Per-cap breaker headroom, run counts by state, last error, plus the 24 h decision counts per entry, the `turn.settle` health line, per-entry Jev skips, a carried trust level (until `/fresh`), the count of background notices paged and logged, and the self-check line. |
+| `/status decisions` | control | The last 10 decision rows. |
+| `/changes` (same as `/status changes`) | control | The change log of the last 30 days in plain words: at most 20 rows, repeats collapsed to `×N`, capped at 3,900 characters. See [Notification routing](#notification-routing-adr-0031). |
+| `/models` · `/models set <role> <pattern>` · `/models reset <role>` | control | Which model each role resolves to, and the override (details under [Model roles](#model-roles)). |
+| `/fresh` | control | A new planner conversation at the next message; clears a carried trust level (details under [Model roles](#model-roles)). |
+| `/run <program> <goal>` | control | Escape hatch to launch a named program directly (consumes budget). |
+| `/approve <id>` · `/deny <id>` | safety | Resolve a pending approval: a run-level gate or an in-turn tool approval (floor B, ADR 0032). Unforgeable — slash-only, never inferred. |
 | `/approvals` | safety | List the answerable pending approvals (run-level and in-turn tool approvals alike), each with the command to answer it. |
 | `/usage` | control | Token use per provider and model from the ledger; omp rows show "sub", never dollars. |
 | `/help` | control | The command list; an unknown `/command` returns it instead of starting a turn. |
@@ -680,6 +684,7 @@ a turn runs (detached turns).
 | `/forget_memory <id>` | control | (Alias `/forget-memory`.) Retire one active fact of this chat (a reversible status flip, recorded in `memory_changes`) and reply with the card's **Undo** button. Allowlist only; an unknown, retired or other chat's id gets a refusal reply. |
 | `/skills [scope]` | control | Read-only **viewer** of the ambient skills (name · scope · `when:` · version); regenerates `skills/REGISTRY.md`. Never invokes a skill. No scope → lists all scopes. |
 | `/skills pending` | control | Read-only **viewer** of the parked (blocked auto-author) drafts under `skills/_pending/` — inert, never applied. Inspect to hand-fix + promote, or discard. |
+| `/radar week` · `/radar pick <n>` | control | The same as `/idea` and `/idea pick <n>` below (`/idea` is an alias of the `/radar` family). |
 | `/radar [n]` | control | Numbered top-10 active idea cards (picked > shortlisted pinned first, then momentum) + last-tick footer; `/radar <n>` 详情 — per-card drill-down with summary, momentum, panel scores, and source titles + URLs. Flag off → off notice. Read-only view of the ADR 0026 `ideas` store. |
 | `/idea [pick <n>]` | control | Latest weekly panel shortlist snapshot (ADR 0027): rank · title · mean score · chair rationale, with the picked marker. `/idea pick <n>` resolves rank n IN the frozen snapshot and maintains the global pick singleton (at most one `picked` card, ever — re-pick reverts the prior). |
 | `/schedule` | control | List this chat's scheduled tasks (id · spec · next fire · goal; `⚠ failed` rows shown so they can be cleared). |
@@ -687,6 +692,29 @@ a turn runs (detached turns).
 | `/kill [reason]` | safety | **Durable kill switch** (ADR 0018): aborts every chat's omp planner, writes the `houge.kill` tombstone, acks with the revival steps, stops the daemon. launchd relaunches into a PARKED process (no polling, no runs) until the file is manually deleted. Unforgeable — slash-only + allowlist + no-forwards; exempt from the command rate limit. |
 | `/disarm` | safety | One-command posture: forces `HOUGE_SELFWRITE_ENABLED` / `HOUGE_CODEX_ENABLED` / `HOUGE_SKILLS_ENABLED` / `HOUGE_SCHEDULER_ENABLED` to `false` — live AND across restarts (`houge.disarm` posture file outranks `.env`). Conversation + episodic memory stay on. |
 | `/rearm` | safety | Delete the disarm posture; flags re-apply from `.env` on the **next restart** (the ack says how). |
+
+## Notification routing (ADR 0031)
+
+"Chat is for Paco": a proactive Telegram message goes out only if Paco must act, his answers or schedules are affected now, or a
+locked rule says it reaches him. Everything else is written to a durable `change_log` table and read on request. No new
+environment variable. Spec: `docs/superpowers/specs/2026-11-03-chat-is-for-paco-design.md`; decision:
+[ADR 0031](../decisions/0031-chat-carries-what-needs-paco.md).
+
+- **Topics.** Every notification names a closed topic. `TOPIC_ROUTE` (`src/notifications/topics.ts`) maps each topic to `chat` or `log`;
+  the topic alone decides. Replies, run reports, approvals, memory cards, the digest, urgent cards, self-write cards, incident pages,
+  reminders and summaries are chat. `model_change`, `incident_log`, `jev_notice` and `decision_internal` are log. A
+  `NotificationIntent` is a chat intent or a log intent, and `RunStore.enqueueNotification` sends one to the outbox and the other to
+  `logChange` (a log row is deduplicated by its idempotency key).
+- **Incident routes.** `INCIDENT_ROUTE` (`src/run/incident-route.ts`) gives every incident kind one of three routes. A **page** is one
+  chat message to the operator chat. A **card** is the caller's own card (a Jev drift Accept button, a trust card); the router
+  sends nothing itself. A **log** writes a change-log row and sends nothing. An unknown kind pages, with one line on stderr, so a
+  new kind that nobody routed is loud, not silent. Recurrences are silent; `resolveIncident` can resolve without a notice. The
+  route of each kind named in this file is in its own table or paragraph; the full list is the code.
+- **`/changes`.** Shows the last 30 days of change-log rows in plain words, at most 20 rows and 3,900 characters, repeats collapsed to
+  `×N`, subjects masked. `/status` counts what was paged and logged and shows a self-check line.
+- **Storage.** The `change_log` table is created at the start of `migrate()` and has no `schema_migrations` row.
+- **Tiers.** Google's renamed pro ids join the `gemini-pro` tier, so judge seat 2 resolves like any seat. A card-tap override
+  (`via: "tap"`) is retired once the tier head covers it; `/models set` writes `via: "set"` and is never retired.
 
 ## Scheduler (ADR 0017)
 
@@ -746,7 +774,7 @@ brief, bypasses flag and latch by design.
 | `HOUGE_RADAR_PANEL_ENABLED` | off | Arms the weekly panel tick. Accepts 1/true/yes/on. In `DISARM_FLAGS`. Off = no seat calls, no writes, no push; `/idea` still renders the last snapshot. |
 | `HOUGE_RADAR_PANEL_AT` | `sun 09:00` | Weekly slot, grammar exactly `"<day> HH:MM"` (day ∈ sun…sat, zero-padded 24h — `sun 9:00` is malformed). `off` disables tick AND push (no interval fallback). Malformed → default; `/status` renders the RESOLVED slot so a swallowed typo is visible. First arm (no prior run) fires immediately. Tz: `HOUGE_RADAR_TZ`. |
 
-> **Since 2026-10:** the seats are omp one-shots (see [LLM runtime](#llm-runtime--omp-adr-0028)).
+> **Since 2026-10:** the seats are omp one-shots (see [LLM runtime](#llm-runtime--omp-adr-0032)).
 > `HOUGE_RADAR_CHAIR_TIMEOUT_MS` and `HOUGE_CLAUDE_BIN` are no longer read, and `CLAUDE_CODE_OAUTH_TOKEN`
 > has no consumer. The chair uses `HOUGE_OMP_ONESHOT_TIMEOUT_MS`.
 
@@ -771,13 +799,14 @@ undelivered notifications (>15 min, EXCLUDING the sweep's own `incident_*` alert
 schedules (>15 min past cursor) · failed schedules · heartbeat gaps (>10 min; a gap that spans a deliberate `/kill` park is logged, not opened) · **failing LLM legs** (`llm_leg_failing`, slice 2: a provider with ≥3 `llm_attempt` rows and zero `ok` in the rolling 24 h — the shape in which the agy leg died silently for three months; subject = provider, detail = attempts/ok/latest error_kind; a leg that recovers but is not called again stays open until its failed rows age out, ≤24 h at the 12 h cadence).
 
 **Cadence buys detection latency, not quiet.** Alerts fire on incident *transitions*, so a
-persistent violation costs exactly one Telegram message at any cadence and a clean database is
+persistent violation costs at most one chat message at any cadence (none for a kind that routes to the change log, see [Notification routing](#notification-routing-adr-0031)) and a clean database is
 silent at any cadence. Twice a day suits the retro-style invariants; lower it toward 30 min if
 `stuck_run` latency starts to matter (that is the one class meaning Houge is silently not doing
 something Paco asked).
 
 **Alert damping.** At most 3 alerts per sweep plus one summary line (a systemic failure trips
-many invariants at once); a reopen within 30 min of the previous resolve is recorded silently.
+many invariants at once); a reopen within 30 min of the previous resolve is recorded silently. The storm cap counts page and card alerts; a log-route kind
+is never throttled because it never reaches chat. Flapping damping applies to page kinds only.
 Incident rows and ledger events are always complete — only the human channel is throttled.
 
 Inspect: `sqlite3 houge.sqlite "SELECT kind, subject, state, seen_count, first_seen_at FROM incidents ORDER BY first_seen_at DESC"`
@@ -789,13 +818,13 @@ Ids and counts only, never text. Ledger: `lesson_dropped`, `lesson_write_capped`
 `planner_session_reset_degraded`, `evidence_rejected`, `embedding_backfill` (daily tick: up to 20 facts and 10 wiki
 pages with a NULL embedding, stop signal checked before each), `memory_migration`.
 
-| Incident kind | Opens when | Resolves |
-|---|---|---|
-| `lesson_dropped` | an active ask/research lesson did not fit `HOUGE_LESSON_CHAR_CAP` (sweep) | the next sweep that finds none dropped |
-| `lesson_render_failed` | the lesson read or render threw, so the spawn prompt carries no lessons (alerted once) | the next successful render |
-| `core_overflow` | active core facts exceed `HOUGE_EPISODIC_CORE_CAP` (sweep) | the sweep that finds it back under |
-| `embeddings_unavailable` | embedding outage (Ollama down): retrieval is keyword-only (sweep) | embeddings succeed again |
-| `planner_session_reset_failed` | `new_session` failed; the spawn fails. After 3 consecutive failures it degrades to the resumed session and STAYS open | a later successful reset |
+| Incident kind | Route | Opens when | Resolves |
+|---|---|---|---|
+| `lesson_dropped` | page | an active ask/research lesson did not fit `HOUGE_LESSON_CHAR_CAP` (sweep) | the next sweep that finds none dropped |
+| `lesson_render_failed` | page | the lesson read or render threw, so the spawn prompt carries no lessons (alerted once) | the next successful render |
+| `core_overflow` | log | active core facts exceed `HOUGE_EPISODIC_CORE_CAP` (sweep) | the sweep that finds it back under |
+| `embeddings_unavailable` | page | embedding outage (Ollama down): retrieval is keyword-only (sweep) | embeddings succeed again |
+| `planner_session_reset_failed` | page | `new_session` failed; the spawn fails. After 3 consecutive failures it degrades to the resumed session and STAYS open | a later successful reset |
 
 The consolidation tick (`HOUGE_LESSON_CONSOLIDATE_ENABLED`) stays off after A1.
 
@@ -920,7 +949,7 @@ node scripts/live-gate-media.mjs   # opt-in: four real turns in memory on the om
 
 ## Jev intent shadow — offline replay (spec 2026-09-25)
 
-> **Live shadow removed 2026-10-06** (superseded by [ADR 0029](../decisions/0029-jev-system-one.md)): its code,
+> **Live shadow removed 2026-10-06** (superseded by Jev as System One, [ADR 0033](../decisions/0033-jev-system-one-consolidated.md)): its code,
 > its report and `HOUGE_JEV_SHADOW_ENABLED` are gone; historical `intent_shadow` rows stay in the ledger. The offline
 > `houge jev-shadow replay` below still runs.
 
@@ -958,10 +987,10 @@ node scripts/live-gate-jev.mjs             # opt-in real-API gate (3 fixed messa
 |----------|---------|---------|
 | `TYPESAFE_API_KEY` | — | Broker secret #9. Held by the secrets broker when the firewall is armed (stripped from `process.env` like every `*_API_KEY`); sent only as the `Authorization` header to `api.typesafe.ai`; never logged. Unset → every Jev call is audited `unavailable`/`auth` and the replay stops. |
 
-## Jev System One (ADR 0029)
+## Jev System One (ADR 0033)
 
 Jev answers typed questions before the planner runs; code owns every bar and the fall-through. Since the stage A decision
-tree (spec [2026-10-06](../superpowers/specs/2026-10-06-jev-decision-tree-design.md), ADR 0029 amendment 2026-10-07)
+tree (spec [2026-10-06](../superpowers/specs/2026-10-06-jev-decision-tree-design.md), ADR 0033 H1 to H7)
 every Telegram text turn passes **one decision point** of six questions in three answer types: a category (11 values),
 whether the message states a rule and its scope, and three gear scores. The category picks a lane (memory and status
 act without the planner, every other category runs the planner on its routed model role). The flow, the bars and how to
@@ -972,12 +1001,12 @@ Default role.
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `HOUGE_JEV_ENABLED` | off | Master switch. Accepts 1/true/yes/on; read per turn; in `DISARM_FLAGS` (`/disarm` forces it off). Off overrides the tree flag. |
-| `HOUGE_JEV_TRIAGE_ENABLED` | `off` | `off` \| `shadow` \| `arm` (the flag keeps its lane 1 name). `off` asks nothing: one verdict row (`jev_skipped`, skip `disabled`), no route, so the supervisor pins nothing and `think harder` is ignored. `shadow` asks Jev and records rows with every question unarmed, so each verdict reads `uncalibrated` and the planner runs on Default exactly as without Jev. `arm` lets a calibrated verdict route, act and run the ack rule. Any other value (including `/disarm`'s `false`) reads as `off`. |
+| `HOUGE_JEV_TRIAGE_ENABLED` | `off` | `off` \| `shadow` \| `arm` (the flag keeps its lane 1 name). `off` asks nothing: one verdict row (`jev_skipped`, skip `disabled`), no route, so the supervisor pins nothing and `think harder` is ignored. `shadow` (to be removed: Paco 2026-11-04, spec pending) asks Jev and records rows with every question unarmed, so each verdict reads `uncalibrated` and the planner runs on Default exactly as without Jev. `arm` lets a calibrated verdict route, act and run the ack rule. Any other value (including `/disarm`'s `false`) reads as `off`. |
 | `HOUGE_MODEL_ROLES` | `resolved` | See [Model roles](#model-roles). `off` + `static`, after a kickstart, is the model-list rollback. |
-| `HOUGE_JEV_DISARM_PATH` | `<dataDir>/houge.jev-disarmed` | Legacy disarm marker. Nothing writes it since stage B (Dig deeper taps page per lane and never disarm). A marker an older build left caps `arm` at `shadow` (nothing armed, Default route) while it exists; **re-arming is Paco deleting the file**. |
+| `HOUGE_JEV_DISARM_PATH` | `<dataDir>/houge.jev-disarmed` | Legacy disarm marker. Nothing writes it since stage B (Dig deeper taps log per lane and never disarm). A marker an older build left caps `arm` at `shadow` (nothing armed, Default route) while it exists; **re-arming is Paco deleting the file**. |
 | `HOUGE_JEV_CALIBRATION_FILE` | unset | **Gate only.** A JSON array of calibration rows for the live gate or a labelled DB copy. Outside `HOUGE_JEV_GATE=1` a set file caps `arm` at `shadow`. Never set it in the daemon's `.env`. |
 | `HOUGE_JEV_GATE` | unset | Set to `1` by `scripts/live-gate-jev-tree.mjs` only; lifts the file cap above for that process. Never set in the daemon's `.env`. |
-| `HOUGE_JEV_LANES_OFF` | empty | Stage B. Comma list of lanes to switch off: `answer`, `lookup`. A listed lane is unarmed and its turns run the planner on the gear's role (reason `routed`), as if its calibration rows were absent. Read per turn from the process environment; the daemon loads `.env` only at boot, so a `.env` edit needs a kickstart. An unknown name logs one error at boot and is ignored. The memory and status lanes are not listed here: their remedies are their rows and `/disarm`. |
+| `HOUGE_JEV_LANES_OFF` | empty | (To be removed: Paco 2026-11-04, spec pending.) Stage B. Comma list of lanes to switch off: `answer`, `lookup`. A listed lane is unarmed and its turns run the planner on the gear's role (reason `routed`), as if its calibration rows were absent. Read per turn from the process environment; the daemon loads `.env` only at boot, so a `.env` edit needs a kickstart. An unknown name logs one error at boot and is ignored. The memory and status lanes are not listed here: their remedies are their rows and `/disarm`. |
 
 `HOUGE_JEV_TRIAGE_MIN_CONF`, `_MIN_PURE` and `_MIN_STATUS` are **retired**: nothing reads them. The tree's bars are the
 code constants `TREE_BAR_DEFAULTS` (`src/jev/tree-policy.ts`; choice 0.6, `noul` yes 0.8 / no 0.2, memory 0.85, status 0.8,
@@ -1081,40 +1110,39 @@ sends the six questions at each turn's live instant, rebuilds the quote, labels 
 arming combination, which turns would change model. A dry run on a live-DB copy at build time: 301 Telegram turns, estimated
 $0.051. The live-gate script replaces the lane 1 gate (`live-gate-jev-triage.mjs`, removed).
 
-## Decision ladder (ADR 0030)
+## Decision ladder (ADR 0034)
 
 Every decision that changes a turn's path is an entry in the code-owned registry (`src/decisions/`, protected surface),
-decided by a ladder of deciders (code rule → Jev → model → Paco) and recorded after it decides. Stage 1 registers the
-front door: `turn.handler` (the gate rule and ack rule → the Jev tree → the Tiny cascade; the planner is its fail value)
-and `turn.gear` (the role on the route, recorded from the same Jev call). Reference: [jev-decision-layer.md](jev-decision-layer.md#the-decision-ladder).
+decided by a ladder of deciders (code rule → Jev → model → Paco) and recorded after it decides. The registry (`src/decisions/registry.ts`) holds the front door
+(`turn.handler`: the gate rule and ack rule → the Jev tree → the Tiny cascade, the planner its fail value; `turn.gear`: the role on the route) and the intake, context, supervision, lookup, tool-gate, approval, memory and improvement entries. Every entry, with its rungs and what it may cause, is the table in [decision-map.md](decision-map.md#registry-entries). The front door in detail: [jev-decision-layer.md](jev-decision-layer.md#the-decision-ladder).
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `HOUGE_DECISION_DIGEST_AT` | `21:00` | Local time (`HH:MM`, in `HOUGE_DISPLAY_TZ`) of the daily decision digest to the operator chat, or `off` (any case) for no digest: the tick sends nothing and writes no latch row, while decisions and outcomes are recorded as before and the `decision_fallback` page and incidents are unaffected (`/status` still shows the 24 h counts; `/status decisions` the last 10 rows). Any other malformed value → the default. Sent once per local date on the first poll at or after the time; a day with nothing to say sends nothing (the latch row still records the date). **Moving the digest moves the improvement tick**: the tick runs at this time, before the digest, and also when the digest is `off`. While a pass runs, the daemon's loop (Telegram polling, the outbox) waits; a pass has a 120 s budget per cycle and resumes on the next one. |
-| `HOUGE_IMPROVE_ENABLED` | on | Switch for the daily improvement tick (`improve.route`, 2b-ii). Only the exact word `false` (any case) turns it off; unset, empty, `0`, `off` and any typo keep it on, so a typo never silences the loop. Read live at every tick, and in `DISARM_FLAGS`: `/disarm` forces it to `false` in the running process. Off = the tick does nothing at all (no inbox mirror, no seat or Jev call, no proposal, no job, no latch row, no ledger event), logs one line per local date, and the digest's Watch section says `improvement tick off`, so an otherwise empty day is still sent. The digest, the review taps and the ledger are unaffected. |
+| `HOUGE_DECISION_DIGEST_AT` | `21:00` | Local time (`HH:MM`, in `HOUGE_DISPLAY_TZ`) of the daily decision digest to the operator chat, or `off` (any case) for no digest: the tick sends nothing and writes no latch row, while decisions and outcomes are recorded as before and the `decision_fallback` change-log line and incidents are unaffected (`/status` still shows the 24 h counts; `/status decisions` the last 10 rows). Any other malformed value → the default. Sent once per local date on the first poll at or after the time; a day with nothing to say sends nothing (the latch row still records the date). **Moving the digest moves the improvement tick**: the tick runs at this time, before the digest, and also when the digest is `off`. While a pass runs, the daemon's loop (Telegram polling, the outbox) waits; a pass has a 120 s budget per cycle and resumes on the next one. |
+| `HOUGE_IMPROVE_ENABLED` | on | Switch for the daily improvement tick (`improve.route`). Only the exact word `false` (any case) turns it off; unset, empty, `0`, `off` and any typo keep it on, so a typo never silences the loop. Read live at every tick, and in `DISARM_FLAGS`: `/disarm` forces it to `false` in the running process. Off = the tick does nothing at all (no inbox mirror, no seat or Jev call, no proposal, no job, no latch row, no ledger event), logs one line per local date, and the digest's Watch section says `improvement tick off`, so an otherwise empty day is still sent. The digest, the review taps and the ledger are unaffected. |
 | `HOUGE_RECURRENCE_COSINE_GATE` | `0.6` | Cosine similarity at or above which two of Paco's turns in one category count as the same request, for the recurrence that queues a skill-authoring job (3 turns, 14 days, category not `other` / `status` / `memory`, text of 20+ characters). Deliberately above the episodic gate 0.42: on the last 14 days (P2) 0.42 clustered 15 short `other` turns, 0.5 gave four clusters, 0.6 one. A float from 0 to 1; anything else uses the default. Read per tick. |
 | `HOUGE_TRUST_ASK_TTL_MS` | `300000` (5 min) | How long a trust card (an approval asked only because the turn read outside content, spec §7.2) waits for Paco, and the most a turn's trust cards together may pause its deadline and frame watchdog. A positive integer up to 1 800 000; anything else uses the default. Read per call; no restart needed. |
 
 The injection judge, turn trust, the golden set and the noise band have no switch (R13). The noise band has no variable: its values are reviewed rows in `src/decisions/noise-band.ts`.
 
 **No off switch (ruling R13).** There is no variable that turns the decision system off or into shadow. The only shadow
-left is the front door's existing `HOUGE_JEV_TRIAGE_ENABLED=shadow`, unchanged. If a build is fundamentally wrong, revert
+left is the front door's existing `HOUGE_JEV_TRIAGE_ENABLED=shadow` (to be removed: Paco 2026-11-04, spec pending), unchanged. If a build is fundamentally wrong, revert
 its commit, rebuild `dist/`, kickstart: every stage's migrations are additive, and `scripts/check-decisions-rollback.mjs`
 proves the previous build runs on a migrated DB (run by each stage's final task). After such a revert, a digest still in
 the outbox is sent without its buttons (the old adapter ignores `button_rows`), and a tap on an earlier digest is answered
 as unrecognised callback data; neither writes anything.
 
-**The digest** (one Telegram message, rich-rendered, scoped to the digest's chat) has three sections since 2b-ii:
+**The digest** (one Telegram message, rich-rendered, scoped to the digest's chat) has five sections:
 **Improvements today** (what the tick did: lessons and facts saved with Undo, skill jobs and their endings),
-**Proposals waiting** (taps: lesson, fact, schedule, tool gap, ladder; one open per target and scope, expiring at 14 days)
+**Standing approvals** (trials that did not seal, grants that were denied, lapsed or went stale),
+**Proposals waiting** (taps: lesson, fact, schedule, tool gap, ladder; at most 8, one open per target and scope, expiring at 14 days),
+**Unsure** (System One judgements within 0.15 of their bar, at most 8, each with ✅ / ❌ review taps that write `review_ok` / `review_bad`, which the improvement tick turns into ladder proposals)
 and **Watch** (signal groups the ladder left alone, plus `ticks failed N · stopped N · record failed N` when any is
-non-zero; a day with only that still sends; `deferred on an outage N` when groups waited on an outage). It offers no ✅ / ❌
-review taps, so no new `review_bad` signals are produced until a review surface returns; Watch names `review_bad` among the
-silent families meanwhile. The counts and the health lines moved to `/status` (the 24 h counts per entry, the
+non-zero; a day with only that still sends; `deferred on an outage N` when groups waited on an outage). The counts and the health lines moved to `/status` (the 24 h counts per entry, the
 `turn.settle` health line and the per-entry Jev-skip counts). A front-door row counts only when its turn's verdict links it.
 No tool text ever reaches the digest; improvement-side text is Paco's own words through `redactForImprove`.
 
-**The improvement tick** (`improve.route`, 2b-ii) runs once per local date at `HOUGE_DECISION_DIGEST_AT`, before the digest
+**The improvement tick** (`improve.route`) runs once per local date at `HOUGE_DECISION_DIGEST_AT`, before the digest
 and also when the digest is `off`. It reads the inbox, mirrors new `decision_outcomes` rows into it, groups, decides and
 commits one transaction per group. A failing group is isolated (counted `record_failed`, its signals stay unconsumed). At
 most one skill-authoring job starts per tick, up to 3 queue per day, a queued job expires after 3 days. Audit roles:
@@ -1135,7 +1163,7 @@ expires after 14 days.
 `parse` \| `threw` \| `stale_bar` \| `budget`), `fallback_rung` (which rung failed first), `armed_mode`, `latency_ms`,
 `created_at`; no state column; `stage` and `fallback_reason` are validated in code so a later stage can extend them),
 `decision_outcomes` (closed signal and value per row, validated in code; one review label per decision), `ladder_moves`
-(who decides, moved; only `approval.standing` may write an automatic row, for `tool.policy`; every Paco row carries its
+(who decides, moved; only a standing approval may write an automatic row, for `tool.policy`; every Paco row carries its
 callback id, used once; locked entries refuse every move), `decision_digests` (the daily latch and the ids each digest
 offered). `jev_decisions.ladder_decision_id` and `jev_verdicts.decision_id` link the Jev rows and the verdict to their
 `turn.handler` decision; the front door writes its decision row in the same transaction as the verdict, so a lost turn
@@ -1144,8 +1172,8 @@ writes none.
 **Incidents:** `decision_record_failed` (subject = the entry; a decisions write failed, the verdict stood; the next good
 write resolves it), `decision_fallback` (subject = the entry; three named fallbacks to the entry's fail answer in one hour,
 `budget` excluded; for `turn.handler` and `turn.gear` only cascade failures count, because the Jev incidents already page a
-Jev outage, and only a cascade answer resolves it; one urgent card per open incident, none for a reopen within 10 minutes
-of the last resolve; for other entries the next Jev or model answer resolves it; a rule answer never does), and `jev_skip_rate` with subject `decision:<entry>` (the sweep's
+Jev outage, and only a cascade answer resolves it; the kind routes to the change log (no urgent card, no chat message);
+for other entries the next Jev or model answer resolves it; a rule answer never does), and `jev_skip_rate` with subject `decision:<entry>` (the sweep's
 per-entry rate from Jev-rung failures; `turn.handler` and `turn.gear` keep the triage-wide `jev_skip_rate` above in stage 1).
 
 **Live gate:** from the feature worktree, `HOUGE_ENV_FILE=/abs/.env node scripts/live-gate-decisions-parity.mjs --old-dist <pre-stage-1 dist>`
@@ -1205,14 +1233,14 @@ the cutover deletions) and not at the head of `feat/omp-runtime`, checked by gre
 | `HOUGE_EXTWORK_ENABLED` · `HOUGE_EXTWORK_IMAGE` · `HOUGE_EXTWORK_MEMORY` · `HOUGE_EXTWORK_CPUS` · `HOUGE_EXTWORK_PIDS` · `HOUGE_EXTWORK_SIZE_CAP_MB` · `HOUGE_EXTWORK_SCRATCH_DIR` · `HOUGE_EXTWORK_CLONE_TIMEOUT_MS` · `HOUGE_EXTWORK_STAGE_TIMEOUT_MS` | External workspace | Deleted ([ADR 0023 amendment](../decisions/0023-external-workspace.md)) |
 | `HOUGE_OMP_VERSION` · `HOUGE_OMP_VERSION_ALLOW` | The omp version pin and its allow-list | Removed 2026-10-07 (no hard-coded runtime versions): any version omp reports runs; see LLM runtime above |
 
-`HOUGE_JEV_SHADOW_ENABLED` was removed with the live intent shadow (2026-10-06; ADR 0029). Secrets with no consumer: `KIMI_API_KEY`, `GEMINI_API_KEY`,
+`HOUGE_JEV_SHADOW_ENABLED` was removed with the live intent shadow (2026-10-06; ADR 0033). Secrets with no consumer: `KIMI_API_KEY`, `GEMINI_API_KEY`,
 `CLAUDE_CODE_OAUTH_TOKEN` (see [Secrets firewall](#secrets-firewall-adr-0015-phase-1)).
 
 These were documented here but unread even before the cutover, and their rows are gone too:
 `HOUGE_LLM_PROVIDER`, `HOUGE_CLAUDE_MODEL`, `HOUGE_CLAUDE_WRITER_MODEL`,
 `HOUGE_CLAUDE_REVIEWER_MODEL`, `HOUGE_CLAUDE_TIMEOUT_MS`.
 
-## Clean room (sealed runs, ADR 0030 §8.3 — runtime landed 2026-10-28; selected by Stage 4A standing approval)
+## Clean room (sealed runs, ADR 0034 11.1 — runtime landed 2026-10-28; selected by Stage 4A standing approval)
 
 Not configurable; recorded here so an operator knows what a sealed command can and cannot do. A command runs in the clean
 room only when the validated execution record carries `executor: "cleanroom"` (Stage 4A selects it for a scheduled command's fourth approved run and for every standing use; see Standing approval).
@@ -1243,7 +1271,7 @@ room only when the validated execution record carries `executor: "cleanroom"` (S
 - **Gate:** `node scripts/live-gate-cleanroom-runtime.mjs` (23 lines; PASS requires HTTPS 200 from a sealed run; offline
   → INCONCLUSIVE, exit 2).
 
-## Standing approval (Stage 4A, ADR 0030 §8.3)
+## Standing approval (Stage 4A, ADR 0034 11.2 to 11.3)
 
 **No environment variable.** Durations are code constants (`src/decisions/standing-approval.ts`, and `STANDING_STREAK` in `run-store.ts`). Not configurable; recorded here so an operator knows what stands and how to end it.
 

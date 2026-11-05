@@ -1,6 +1,6 @@
 # ADR 0028: omp runtime — agentic mode under code-owned floors
 
-- **Status:** accepted; amended 2026-10-12 by [ADR 0030](0030-decision-ladder.md) (D5 conditional on turn trust; D12 output judged — see end)
+- **Status:** **superseded 2026-11-05 by [ADR 0032](0032-omp-runtime-consolidated.md)** (consolidation; every rule below is restated there, and its Reference map resolves this ADR's locators); was accepted; amended 2026-10-12 by [ADR 0030](0030-decision-ladder.md) (D5 conditional on turn trust; D12 output judged — see end)
 - **Date:** 2026-09-30
 - **Deciders:** Paco
 - **Supersedes:** the agentic clause of [ADR 0002](0002-pi-as-agent-runtime.md) (the agentic mode is

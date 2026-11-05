@@ -1,6 +1,6 @@
 # ADR 0029: Jev as System One — a typed decision layer in front of the models
 
-- **Status:** accepted 2026-10-06 (design approved by Paco 2026-10-04; lane 1 armed and confirmed on the running daemon, boot 9); amended 2026-10-12 by [ADR 0030](0030-decision-ladder.md) (front door as the turn.handler entry; one named exception to "no Jev in any deny path"; Jev effects by input source (R12); R11 egress; no shadow for new entries, provisional bars — see end)
+- **Status:** **superseded 2026-11-05 by [ADR 0033](0033-jev-system-one-consolidated.md)** (consolidation; every rule below is restated there, and its Reference map resolves this ADR's locators); was accepted 2026-10-06 (design approved by Paco 2026-10-04; lane 1 armed and confirmed on the running daemon, boot 9); amended 2026-10-12 by [ADR 0030](0030-decision-ladder.md) (front door as the turn.handler entry; one named exception to "no Jev in any deny path"; Jev effects by input source (R12); R11 egress; no shadow for new entries, provisional bars — see end)
 - **Date:** 2026-10-04
 - **Deciders:** Paco
 - **Amends:** [0028](0028-omp-runtime.md) (D10 reader-family resolver; per-turn planner chain), [0013](0013-llm-inner-composition.md) (composition gains a System One stage; monotone rule),

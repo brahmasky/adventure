@@ -21,14 +21,14 @@ steps work on any macOS machine (e.g. this laptop, for verification).
   `omp --profile houge login anthropic`, `… google-antigravity`, `… kimi-code`,
   `… openai-codex`. launchd runs the daemon on the restricted PATH below, which usually
   does not include omp's bin dir (`~/.bun/bin`, for a bun install), so give the daemon
-  omp's absolute path in `.env` ([LLM runtime — omp](../../docs/reference/configuration.md#llm-runtime--omp-adr-0028)).
+  omp's absolute path in `.env` ([LLM runtime — omp](../../docs/reference/configuration.md#llm-runtime--omp-adr-0032)).
   An absolute path is not enough on its own: omp's launcher is a `#!/usr/bin/env bun` script, so the
   plist's `PATH` must also contain the directory holding `bun` (`~/.bun/bin`). Without it every spawn
   fails `omp not runnable` (seen on the 2026-10-01 cutover). `setup-new-host.sh` puts the dirs of node,
   bun, omp, codex and agy on the plist's `PATH` (add more with `EXTRA_PATH=/a:/b`), and checks that omp runs
   and reports an `x.y.z` version (there is no pin); `bash deploy/launchd/setup-new-host.sh --check-only` runs only the checks and renders the plist
   to a temp file.
-  Every spawn checks the version pin; a different omp is refused with an incident.
+  Every spawn checks that omp runs and prints a version; one that does not is refused with an incident (`omp_unavailable`).
 - `agy` (voice notes) and `codex` (self-diagnose, self-write), also by absolute path in `.env`.
 
 ## Install
@@ -60,7 +60,9 @@ tail -f logs/houge-daemon.err.log          # daemon logs to stderr
 Send the bot a message — the first turn starts the chat's omp planner and is answered
 with no manual poll. `npm run houge -- status` shows the daemon heartbeat (last poll,
 last error). If the first turn replies that the planner is unavailable, check
-`incidents` for `omp_unavailable`, `planner_start_failed` or `sandbox_unavailable`.
+`incidents` for `omp_unavailable`, `planner_start_failed`, `sandbox_unavailable`, `planner_crash_loop`,
+`wrapper_mismatch` or `daemon_tmp_in_git_repo` (the start-time refusals). After a restart, `/status` in Telegram
+shows the new pid and the boot migrations; `/changes` lists the background notices since.
 
 Before kickstarting onto a new build that touches the runtime, run the real-omp smoke from
 the project root; it never touches the running daemon:
@@ -80,7 +82,10 @@ dist/omp/tools/*.json           the tool declarations, copied by scripts/copy-om
 <project>/omp/                  per-chat sessions/ and workspace/, bridge/ sockets, rendered planner.sb and
                                 shell.sb, the omp profile config, per-chat system prompts
 <project>/selfwrite/            self-write worktrees
+<project>/backups/              database snapshots (ADR 0021)
 ~/Library/Caches/houge-daemon/  the daemon's temp root (media, codex out-files, agy workdirs), 0700
+  children/                     every CLI child's TMPDIR
+  cleanroom/                    sealed-run rooms (standing-approval trials); nothing else writes here
 ```
 
 `<project>` here is the directory holding `houge.sqlite` (the working directory under
@@ -129,6 +134,10 @@ rm ~/Library/LaunchAgents/com.houge.daemon.plist
   `npm run`/`tsx` inserts wrapper processes that swallow the signal, so the daemon is
   hard-killed (exit 143) instead of shutting down gracefully. Rebuild (`npm run build`)
   after pulling changes.
+- **After a build, restart.** Rebuilding `dist/` changes what the daemon loads next. A changed
+  `omp/shell-wrapper.sh` fails every turn closed with `wrapper_mismatch` until a restart. Before a
+  `kickstart`, check `houge.parked` and `houge.kill` (a silent daemon may be parked on purpose) and that no
+  turn is in flight; afterwards verify the new pid and the boot migrations.
 - **Auto-restart on crash:** `KeepAlive=true`. **Start at login:** `RunAtLoad=true`.
 - **Graceful shutdown:** `unload` (or `kickstart -k`) sends SIGTERM. Chat turns run
   detached on the omp planners, so they do **not** finish: an in-flight turn and any

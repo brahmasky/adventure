@@ -13,8 +13,9 @@ its own steps. Slash commands survive only for the control and safety plane
 
 The foundation (state machines, run ledger, Telegram gateway, launchd daemon, global budget breaker)
 and the **self-evolution spine** are complete. The core engine is now the **omp runtime**
-([ADR 0028](docs/decisions/0028-omp-runtime.md), sub-project 1 of 4): about 2,870 hermetic tests,
-zero runtime dependencies (Node 25, TypeScript, Vitest, the built-in `node:sqlite`).
+([ADR 0032](docs/decisions/0032-omp-runtime-consolidated.md)): zero runtime dependencies (Node 26,
+TypeScript, Vitest, the built-in `node:sqlite`). The test suite is hermetic (real SQLite; clock, Telegram
+and subprocesses stubbed) and its size is in [tasks/todo.md](tasks/todo.md), not here.
 
 - **An agent with real tools.** Every chat gets one supervised omp planner (Claude on subscription
   OAuth; the model per turn comes from code-owned role lists resolved against omp's catalog). It reads, edits and writes files on the mini, runs shell commands, and calls Houge's own
@@ -24,6 +25,13 @@ zero runtime dependencies (Node 25, TypeScript, Vitest, the built-in `node:sqlit
   Houge's own files out of reach (floor A). Pushes, posts, sends and destructive deletes wait for
   Paco's `/approve` tap (floor B). Untrusted web and mail bytes still pass through a quarantined
   reader before the planner sees them.
+- **A decision ladder in front of the planner.** Each judgment call is a registry entry: a code rule
+  first, then Jev (a typed decider), then a model, then Paco, with every decision recorded and reviewed
+  by outcome ([ADR 0034](docs/decisions/0034-decision-ladder-consolidated.md),
+  [decision map](docs/reference/decision-map.md)).
+- **Chat is for Paco.** A proactive Telegram message goes out only if Paco must act, his answers or
+  schedules are affected now, or a locked rule says it reaches him. Everything else is a `change_log`
+  row read with `/changes` ([ADR 0031](docs/decisions/0031-chat-carries-what-needs-paco.md)).
 - **Self-evolution, proven live.** 13+ merged self-writes: Codex writes a diff in a fresh worktree →
   protected-path guard → test gate → independent reviewer → auto-published branch → Paco's
   [Merge & reload] tap ([ADR 0011](docs/decisions/0011-self-evolution-architecture.md)).
@@ -32,9 +40,9 @@ zero runtime dependencies (Node 25, TypeScript, Vitest, the built-in `node:sqlit
 - **Memory Houge owns:** lessons, skills, episodic facts and wiki pages, folded into each turn by
   the daemon. omp owns the conversation transcript, which survives restarts.
 
-**What's next:** SP2 (Paco's personal tools), SP3 (auth broker, a separate macOS user for the
-planner, a quota invariant) and SP4 (self-evolution v2). The sequence and current state live in
-[docs/ROADMAP.md](docs/ROADMAP.md).
+**What's next:** the live queue is the top block of [tasks/todo.md](tasks/todo.md). The sequence
+after it (Paco's personal tools, an auth broker and a separate macOS user for the planner,
+self-evolution v2) is in [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Quick start
 
@@ -64,10 +72,10 @@ Chat turns also need omp installed and logged in (see [Operations](#operations))
 ```
 Telegram ──long-poll──▶ houge daemon (launchd; ledger, scheduler, sweeps, approvals, outbox)
                           │
-                          ├─ turn ─▶ PlannerSupervisor (one per chat)
+                          ├─ turn ─▶ front door (decision ladder: rules, Jev, lanes) ─▶ PlannerSupervisor (one per chat)
                           │            └─ omp planner, RPC mode, under sandbox-exec (planner.sb)
                           │                 built-ins read / edit / write ── policy hook ─┐
-                          │                 Houge tool stubs (bash + 12) ────────────────┤ Unix socket
+                          │                 Houge tool stubs (one per tool) ─────────────┤ Unix socket
                           │                                                              ▼
                           │            bridge ─▶ CapabilityRunner (contract, budget, /approve, ledger) ─▶ adapters
                           │                        bash ─▶ shell wrapper under sandbox-exec (shell.sb)
@@ -75,7 +83,8 @@ Telegram ──long-poll──▶ houge daemon (launchd; ledger, scheduler, swee
                           │
                           ├─ one-shot omp seats: reader, photo, ticks, idea-panel judges + chair, self-write reviewer
                           ├─ agy-cli: voice transcription (omp cannot carry audio)
-                          └─ codex exec: self-write writer and the read-only self-diagnose consult
+                          ├─ codex exec: self-write writer and the read-only self-diagnose consult
+                          └─ outbox ─▶ topic router ─▶ chat (Paco must act) | change_log (read with /changes)
 ```
 
 - **The daemon** owns everything durable: the SQLite run ledger, contracts, budgets, approvals,
@@ -133,6 +142,8 @@ declaration under `src/omp/tools/` plus a daemon-side adapter:
 | `wiki_build` · `wiki_refine` | Save or improve a durable knowledge page ([ADR 0020](docs/decisions/0020-llm-wiki.md)). |
 | `self_diagnose` · `self_write_propose` | Read Houge's own source, or propose a code change through the self-write pipeline. Both run in the background and end the turn. |
 | `skill_author` | Author or refine a skill (Gate A routing, Gate B verification). Runs in the background. |
+| `houge_status` | Read-only view of Houge's own runtime (uptime, why he booted, live build, open incidents, kill and park state); the planner calls it before answering a question about a restart or his health. |
+| `memory_correct` | Search, then retire or correct one remembered fact when Paco asks. Every change waits for his tap and has an Undo. |
 
 The tool-to-policy mapping is code-owned and protected (`src/omp/capability-map.ts`): a
 declaration describes a tool but can never choose its policy class. Some tools are armed by flags
@@ -144,12 +155,12 @@ amendments).
 ## Models and seats
 
 Every LLM call runs on **subscription OAuth**; no metered API sits on any default chain
-([ADR 0019](docs/decisions/0019-metered-ceiling.md) amendment: the $ ceiling is dormant). Each seat names a
+([ADR 0019](docs/decisions/0019-metered-ceiling.md) amendment: no metered leg on any default chain; the $ ceiling is active for the one metered leg, Jev, [ADR 0033](docs/decisions/0033-jev-system-one-consolidated.md) E1). Each seat names a
 **model role** (Fast, Default and Thinking for the planner's gears; Reader, Vision, Tiny, Judges, Chair, Reviewer for the
 rest). A role is a code-owned list of tier legs (`opus@anthropic`, `gemini-flash`, `kimi`, …): each tier resolves to its newest
 model in omp's live catalog, adopted only after a probe call passes. Paco can override one from Telegram with `/models`. An
-empty tier (a judge seat today) sends Paco a tap card, and an open actionable incident is repeated in a daily reminder until
-it is fixed. The lists, the resolution order, the daily change notice and the
+empty tier sends Paco a tap card, and an open actionable incident is repeated in a daily reminder until
+it is fixed. A daily model change is a `model_change` row in the change log, read with `/changes`, not a chat message. The lists, the resolution order and the
 `HOUGE_MODEL_ROLES` rollback switch live in the
 [configuration reference § Model roles](docs/reference/configuration.md#model-roles), not here.
 
@@ -158,7 +169,7 @@ diffs and the read-only self-diagnose consult).
 
 Houge answers in its own voice, a projection of its Core Identity
 ([memory/core/houge.md](memory/core/houge.md)). The variables, defaults, fallback rules and what was
-removed: [configuration reference](docs/reference/configuration.md#llm-runtime--omp-adr-0028).
+removed: [configuration reference](docs/reference/configuration.md#llm-runtime--omp-adr-0032).
 
 ## Learning
 
@@ -191,9 +202,13 @@ Slash commands keep it inspectable (idempotent, no run, no budget unless noted):
 - `/schedule` · `/schedule cancel <N>` list or cancel this chat's schedules. Schedules are created and
   updated conversationally through `schedule_task`.
 - `/status` health digest (plus 24 h decision counts, the settle health line and per-entry Jev skips when there were any) · `/status decisions` the last 10 decisions · `/changes` background changes of the last 30 days in plain words (model switches, internal self-checks, routine Jev notices — what no longer comes to chat) · `/usage` token use per model (omp rows show "sub", never dollars).
-- The daily digest lists improvements, proposals waiting for a tap, and a watch line
-  ([configuration](docs/reference/configuration.md#decision-ladder-adr-0030)).
-- `/radar [n]` · `/idea pick <n>` the Idea Radar board and the weekly panel's shortlist
+- `/memories [query]` view what Houge remembers about Paco · `/forget_memory <id>` retire one fact (with an Undo card).
+- `/models` which model each role resolves to; `/models set` and `/models reset` override or restore one · `/fresh` a new planner conversation at the next message.
+- `/run <program> <goal>` start a named program run by hand.
+- The daily digest has five sections: improvements today, standing approvals, proposals waiting for a tap, unsure
+  judgements (with review taps) and a watch line
+  ([configuration](docs/reference/configuration.md#decision-ladder-adr-0034)).
+- `/radar [n]` · `/radar week` · `/radar pick <n>` (`/idea` is an alias) the Idea Radar board and the weekly panel's shortlist
   ([ADR 0026](docs/decisions/0026-idea-radar-read-surface.md), [0027](docs/decisions/0027-idea-panel-claude-chair.md)).
 - `/approve <id>` · `/deny <id>` · `/approvals` resolve or list pending approvals. Unforgeable:
   slash-only, never inferred from prose.
@@ -248,8 +263,8 @@ Design: [ADR 0011](docs/decisions/0011-self-evolution-architecture.md) and its a
 Deterministic code owns the irreversible; the model owns judgment
 ([ADR 0001](docs/decisions/0001-deterministic-harness-governs-everything.md) as amended). Under omp
 the planner runs **yolo under `$HOME`**: file reads, edits and ordinary shell commands need no
-prompt, because approve-every-step would recreate the tool starvation ADR 0028 exists to end. The
-floors sit underneath ([ADR 0028](docs/decisions/0028-omp-runtime.md), threat model and layers L0–L4):
+prompt, because approve-every-step would recreate the tool starvation ADR 0032 exists to end. The
+floors sit underneath ([ADR 0032](docs/decisions/0032-omp-runtime-consolidated.md), threat model and layers L0–L4):
 
 - **No secrets in any child env (L0).** Every omp, agy and codex child starts from a five-name env
   allowlist; provider keys and the Telegram token never reach it.
@@ -271,11 +286,14 @@ floors sit underneath ([ADR 0028](docs/decisions/0028-omp-runtime.md), threat mo
   mail and Google API bytes are read by a separate, tool-less reader seat; the planner sees only its
   digest. The wall is unconditional. If planner and reader end up on one model family after
   fallback, the read proceeds but is audited (`wall_collapse`, incident `wall_collapsed`).
+- **Turn trust and standing approvals.** A turn is clean, untrusted or hostile, and a carried level
+  makes Houge ask more until `/fresh` ([ADR 0034](docs/decisions/0034-decision-ladder-consolidated.md) § 8).
+  A standing approval's fourth run is sealed in a clean room ([ADR 0034](docs/decisions/0034-decision-ladder-consolidated.md) § 11).
 - **Global limits.** A rolling 24 h circuit breaker bounds runs, tool calls and gated attempts
-  ([ADR 0003](docs/decisions/0003-global-budget-breaker.md)); the metered-$ ceiling stays dormant for
-  any future metered leg; `/kill` parks the daemon so not even launchd can resurrect it.
+  ([ADR 0003](docs/decisions/0003-global-budget-breaker.md)); the metered-$ ceiling covers the one metered leg, Jev (checked before
+  every request), and any future one; `/kill` parks the daemon so not even launchd can resurrect it.
 
-**Accepted residuals** (Paco, 2026-09-30, recorded in ADR 0028): `bash` output is not quarantined and
+**Accepted residuals** (Paco, 2026-09-30, recorded in ADR 0032): `bash` output is not quarantined and
 network egress stays open, so a steered planner can fetch hostile bytes or send non-secret data out
 through a command the matcher misses; the matcher is best effort; overwriting a file through
 `edit`/`write` is not gated; and the planner process can read its own omp OAuth store, which only the
@@ -291,36 +309,41 @@ Houge's memory stores *content*. The **invariant sweep**
 twice-daily cadence it asserts invariants over his own flight recorder (`runs`, `scheduled_tasks`,
 `notification_outbox`, `daemon_heartbeat`, `llm_attempt` rows): duplicate schedules, stuck runs,
 undelivered notifications, overdue or failed schedules, an LLM leg that keeps failing, heartbeat gaps
-and low disk. The omp runtime adds code-raised incidents of its own (version mismatch, planner start
+and low disk. The omp runtime adds code-raised incidents of its own (`omp_unavailable`, planner start
 failure or crash loop, sandbox unavailable, wall collapse).
 
-A violation opens a durable **incident** (fingerprint `kind:subject`), emits a ledger event and sends
-**one** Telegram line. Recurrences bump a counter silently; a clean sweep resolves the row; rows are
-never deleted. The sweep is least-privileged by construction: SQL reads plus incident bookkeeping, no
+A violation opens a durable **incident** (fingerprint `kind:subject`), emits a ledger event and then
+routes by kind ([ADR 0031](docs/decisions/0031-chat-carries-what-needs-paco.md)): it pages Paco, sends him a card, or writes a
+`change_log` line you read with `/changes`. Recurrences bump a counter silently; a clean sweep resolves the row; rows are
+never deleted. The sweep is not the only source: the decision ladder, Jev, standing approvals and the clean room raise
+their own kinds, and `INCIDENT_ROUTE` (`src/run/incident-route.ts`) names the route of each. The sweep is least-privileged by construction: SQL reads plus incident bookkeeping, no
 LLM, no capability, no run creation.
 
 ```bash
 sqlite3 houge.sqlite "SELECT kind, subject, state, seen_count, first_seen_at FROM incidents ORDER BY first_seen_at DESC"
 ```
 
-## Jev intent shadow (dormant)
+## Jev and the decision ladder
 
 [Jev](https://docs.typesafe.ai/llms.txt) is a decision model that returns a typed choice with
-calibrated confidence in a few hundred milliseconds. Before the omp cutover every turn started with a
-~6 s intent-classifier call, and `houge jev-shadow replay` measured whether Jev could take that label
-over. First run, 2026-09-26: **GO**, 91.7% agreement at confidence ≥ 0.7 on Paco's own 294 messages
-(57% coverage), $0.035.
+calibrated confidence in a few hundred milliseconds. The 2026-09-26 trial (**GO**, 91.7% agreement on
+Paco's own messages) led to Jev running as System One ([ADR 0033](docs/decisions/0033-jev-system-one-consolidated.md));
+the live intent shadow was removed on 2026-10-06. Only the offline replay (`houge jev-shadow replay`) remains.
 
-The classifier call is gone under omp, and the live shadow was removed on 2026-10-06; Jev now runs as System One
-([ADR 0029](docs/decisions/0029-jev-system-one.md)). Design of the original trial:
-`docs/superpowers/specs/2026-09-25-jev-intent-shadow-design.md`.
+**The decision ladder** ([ADR 0034](docs/decisions/0034-decision-ladder-consolidated.md)): every judgment call is a registry
+entry that tries a code rule first, then Jev, then a model, then Paco. What a Jev or model verdict may cause depends on
+what it read, and every decision is recorded with its outcome. The ladder covers intake, context, supervision, lookup,
+tool gates, approvals, memory and improvement. The daily digest, standing approvals, the clean room and turn trust are part of it.
+The full list of entries, with the rung and the effect of each, is the
+[decision map](docs/reference/decision-map.md).
 
-**Jev System One (ADR 0029, stage A decision tree; flags default off, `arm` on the mini).** Jev sits in front of the
+**Jev System One (ADR 0033; flags default off, `arm` on the mini).** Jev sits in front of the
 planner as one decision point: six typed questions pick a category, a lane (memory, status, answer and lookup skip the planner) or a
 planner model role (Fast, Default or Thinking). Armed 2026-10-09 on Paco's calibration rows (zh and en), the answer and lookup lanes 2026-10-10; every unsure
 turn still runs the planner on Default. A Jev version move is checked in the background against Paco's approved reference turns (`houge jev models`); it arms when the new version agrees within Jev's noise and pages him once on a drift. Flow, bars and rollback:
 [docs/reference/jev-decision-layer.md](docs/reference/jev-decision-layer.md); every flag and event:
-[configuration.md](docs/reference/configuration.md#jev-system-one-adr-0029).
+[configuration.md](docs/reference/configuration.md#jev-system-one-adr-0033). Two switches are to be removed
+(`HOUGE_JEV_LANES_OFF` and the front door's `shadow` mode: Paco 2026-11-04, spec pending).
 
 ## Google identity — gmail_read / google_api
 
@@ -339,8 +362,8 @@ lines into the mini's `.env`.
 
 ## Operations
 
-**Prerequisites on the mini.** Node 25; omp (`@oh-my-pi/pi-coding-agent`, any version; the daemon probes a new version's
-contract on its own and pages `omp_contract_drift` if it changed, and `omp_read_format_drift` the first time a file read
+**Prerequisites on the mini.** Node 26; omp (`@oh-my-pi/pi-coding-agent`, any version; the daemon probes a new version's
+contract on its own and logs `omp_contract_drift` to the change log if it changed (a daily reminder after a week), and `omp_read_format_drift` the first time a file read
 arrives in a text shape the secret mask was never tested against; `live-gate-omp.mjs --smoke` after an upgrade stays
 the deeper manual check), with its
 absolute path given to the daemon, because launchd runs on a restricted PATH; `agy` for voice notes;
@@ -394,7 +417,7 @@ gate INCONCLUSIVE (exit 4), never PASS.
 **Upgrading omp.** There is no version pin (2026-10-07): any version `omp --version` reports runs, and only an
 omp that cannot run or prints no version refuses a spawn (incident `omp_unavailable`). After an upgrade, run the
 smoke to confirm the frames and refusal texts Houge parses still hold
-([configuration](docs/reference/configuration.md#llm-runtime--omp-adr-0028)).
+([configuration](docs/reference/configuration.md#llm-runtime--omp-adr-0032)).
 
 **Rollback.** `git revert` the merge, `npm run build`, kickstart. Session and workspace dirs are
 harmless to leave; there is no data migration to reverse.
@@ -420,8 +443,11 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.houge.daemon.plist  
 - [Roadmap](docs/ROADMAP.md): charter, locked decisions, verified state, sequenced next builds.
 - [Configuration reference](docs/reference/configuration.md): every environment variable, default and purpose.
 - [Deploy the daemon (launchd)](deploy/launchd/README.md): run the always-on daemon on macOS.
-- [Architecture decisions](docs/decisions/README.md): the *why* behind significant choices (ADRs). Start with [ADR 0028](docs/decisions/0028-omp-runtime.md) for the runtime.
-- [omp runtime spec](docs/superpowers/specs/2026-09-30-omp-runtime-design.md): the design behind ADR 0028, with its threat model and residuals.
+- [Architecture decisions](docs/decisions/README.md): the *why* behind significant choices (ADRs). Start with [ADR 0032](docs/decisions/0032-omp-runtime-consolidated.md) for the runtime,
+  [0033](docs/decisions/0033-jev-system-one-consolidated.md) for Jev and
+  [0034](docs/decisions/0034-decision-ladder-consolidated.md) for the decision ladder.
+- [Decision map](docs/reference/decision-map.md): every ladder entry, its rungs and what it may cause. [Jev decision layer](docs/reference/jev-decision-layer.md): flow, bars and rollback.
+- [omp runtime spec](docs/superpowers/specs/2026-09-30-omp-runtime-design.md): the design behind ADR 0032, with its threat model and residuals.
 - [Research notes](docs/research/): landscape reviews that inform design (agent memory, web access).
 - [CONTRIBUTING.md](CONTRIBUTING.md): documentation convention and definition of done (tests **and** a live run).
 - [AGENTS.md](AGENTS.md): coding, safety and workflow rules. [CONTEXT.md](CONTEXT.md): domain language.
