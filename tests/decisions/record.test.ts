@@ -6,7 +6,7 @@ import { TURN_SETTLE } from "../../src/decisions/entries/turn-settle.js";
 import { RunStore } from "../../src/run/run-store.js";
 import { drainOutbox } from "../helpers/omp-worker.js";
 
-// Spec §5.2: a row only when it matters (non-default, beyond the first rule, shadow, Paco, or alwaysRecord), so the ledger
+// Spec §5.2: a row only when it matters (non-default, beyond the first rule, late, Paco, or alwaysRecord), so the ledger
 // stays at ~10–15 rows a turn. Spec §4.1: a failed write never changes the decision and opens decision_record_failed.
 // Spec §8.2 + plan ruling 9: three named fallbacks of one entry in an hour page once (decision_fallback:<entry>); only a
 // judge's answer clears it; a reopen inside the 10-minute quiet window sends no second card; a failure another incident
@@ -38,10 +38,10 @@ const cards = (store: RunStore) => [...drainOutbox(store).values()].map((p) => p
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); });
 
 describe("shouldRecord", () => {
-  it("routine: the first rule gave the default verdict, nothing shadowed: no row", () => {
+  it("routine: the first rule gave the default verdict, nothing late: no row", () => {
     expect(shouldRecord(any, result({}))).toBe(false);
   });
-  it("a row for: a non-default verdict, a judge, a fail, a shadow run, a later rule, alwaysRecord", () => {
+  it("a row for: a non-default verdict, a judge, a fail, a late verdict, a later rule, alwaysRecord", () => {
     expect(shouldRecord(any, result({ verdict: "ask" }))).toBe(true);
     expect(shouldRecord(any, result({ rung: "system_one" }))).toBe(true);
     expect(shouldRecord(any, result({ rung: "fail" }))).toBe(true);
