@@ -55,17 +55,17 @@ const web = () => vi.fn(async (_input: Record<string, unknown>): Promise<ToolAda
   output: { query: "q", provider: "tavily", results: [{ title: "BOM", url: "https://weather.example/sydney", content: "Tomorrow: sunny, max 22." }] } }));
 
 /** The gate-only rows: the six questions, status, and the two stage B lane rows, zh + en. */
-function calibrationFile(): string {
+function calibrationFile(without: readonly string[] = []): string {
   const f = join(mkdtempSync(join(tmpdir(), "hlane-cal-")), "rows.json");
   const ids = [...TREE_QUESTIONS.map((q) => [q.id, criteriaHash(q)] as const),
     ...[TREE_STATUS_ARM_ID, TREE_ANSWER_ARM_ID, TREE_LOOKUP_ARM_ID].map((id) => [id, criteriaHash(TREE_CATEGORY)] as const)];
-  writeFileSync(f, JSON.stringify(ids.flatMap(([question_id, criteria_hash]) => (["zh", "en"] as const).map((lang) =>
+  writeFileSync(f, JSON.stringify(ids.filter(([question_id]) => !without.includes(question_id)).flatMap(([question_id, criteria_hash]) => (["zh", "en"] as const).map((lang) =>
     ({ question_id, criteria_hash, model: REPORTED, lang, approved: "test", evidence: "test" })))));
   return f;
 }
 function setup(fetchImpl: unknown, o: { llm?: Llm; web?: Llm; http?: Llm } = {}) {
   vi.stubEnv("HOUGE_JEV_CALIBRATION_FILE", calibrationFile()); vi.stubEnv("HOUGE_JEV_GATE", "1");
-  vi.stubEnv("HOUGE_JEV_ENABLED", "1"); vi.stubEnv("HOUGE_JEV_TRIAGE_ENABLED", "arm"); vi.stubEnv("TYPESAFE_API_KEY", "test-key");
+  vi.stubEnv("HOUGE_JEV_ENABLED", "1"); vi.stubEnv("TYPESAFE_API_KEY", "test-key");
   const store = RunStore.openInMemory();
   trustModel(store, REPORTED);
   const worker = ompWorker(store, mkdtempSync(join(tmpdir(), "hlane-")), { llm: o.llm ?? laneLlm(), jevFetch: fetchImpl as typeof fetch,
@@ -132,9 +132,9 @@ describe("the answer lane through the worker (stage B §4)", () => {
     expect(verdictOf(s.store, t.run_id)).toMatchObject({ lane: "answer", route_outcome: "fallback", handler_outcome: "fallthrough:render_failed" });
     s.store.close();
   });
-  it("HOUGE_JEV_LANES_OFF=answer: an answer turn runs the planner on the gear's role, reason routed, as if its rows were absent", async () => {
+  it("no category:answer calibration row: an answer turn runs the planner on the gear's role, reason routed (the lane is unarmed, not switched)", async () => {
     const s = setup(treeSays(ANSWER));
-    vi.stubEnv("HOUGE_JEV_LANES_OFF", "answer");
+    vi.stubEnv("HOUGE_JEV_CALIBRATION_FILE", calibrationFile([TREE_ANSWER_ARM_ID])); // read per turn
     const t = s.turn("你觉得呢？");
     expect(await s.worker.triageTurn(t.input)).toMatchObject({ kind: "fallthrough", route: { role: "fast", effort: "low" } });
     expect(verdictOf(s.store, t.run_id)).toMatchObject({ category: "answer", lane: "planner", reason: "routed" });

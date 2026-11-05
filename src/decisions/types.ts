@@ -124,8 +124,8 @@ export interface DecideCtx<S, V, D> {
   tool_call_id?: string | null | undefined;
   recorder: DecisionRecorder;
   /**
-   * Overrides the entry's arming for this call. Only the migrated front door passes it, to keep today's configured
-   * `HOUGE_JEV_TRIAGE_ENABLED=shadow` (R13: no off switch, no designed shadow). Ignored for locked entries.
+   * Overrides the entry's arming for this call. Only the front door passed it; nothing does now (removed in Task 3).
+   * Ignored for locked entries.
    */
   armed?: Partial<Record<Exclude<RungKind, "rule">, ArmedMode>> | undefined;
   exec?: RungExecutors<S, V, D> | undefined;

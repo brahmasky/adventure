@@ -49,8 +49,7 @@ export function turnHandlerGate(s: TurnHandlerState): RungAnswer<TurnHandlerVerd
   if (s.posture !== null) return { verdict: "planner", reason: "posture" };
   if (s.modality !== "text") return { verdict: "planner", reason: "modality" };
   if (!s.hasTurnState) return { verdict: "planner", reason: "error" };
-  // shadow never changes behaviour, so the ack rule (which changes the role) acts only when armed
-  return s.mode === "arm" ? ackRule(s) : { abstain: true };
+  return ackRule(s); // the mode is off or armed, and off exited first
 }
 
 /** The ack rule. A throw settles skipped `error`, as a throw at that point did at 3bff437 (plan ruling 19), never a judge's turn. */

@@ -51,8 +51,8 @@ const LEGACY_MODEL_LOGGED = new Set<string>();
 /**
  * Arming sequence (spec §5.9; Codex plan review): production rows come ONLY from this constant, added by Paco's commit.
  * `HOUGE_JEV_CALIBRATION_FILE` (a JSON array of CalibrationRow; a legacy `model` field is ignored) exists for the live gate and a labelled shadow copy
- * of the DB — it is never set in the daemon's .env (configuration.md says so) and `resolveJevTriageMode` caps `arm`
- * at shadow while it is set outside a gate (`HOUGE_JEV_GATE=1`).
+ * of the DB — it is never set in the daemon's .env (configuration.md says so) and `resolveJevFrontDoor` holds the front door
+ * off while it is set outside a gate (`HOUGE_JEV_GATE=1`).
  */
 export function calibrationRows(env: NodeJS.ProcessEnv): readonly CalibrationRow[] {
   const file = env.HOUGE_JEV_CALIBRATION_FILE?.trim();

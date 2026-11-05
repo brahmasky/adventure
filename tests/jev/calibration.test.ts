@@ -10,7 +10,6 @@ import { NOT_ARMED, TREE_ANSWER_ARM_ID, TREE_LOOKUP_ARM_ID, treeArmed, type Mode
 
 /** A model whose check state arms every tree question (trusted / accepted), as treeArmingFor returns it. */
 const TRUSTED: ModelArming = { questions: new Set(TREE_QUESTIONS.map((q) => q.id)), lanesDisarmed: new Set() };
-const NO_OFF = new Set<never>();
 const H = criteriaHash(TREE_CATEGORY);
 const row = (o: Partial<CalibrationRow> = {}): CalibrationRow =>
   ({ question_id: "category", criteria_hash: H, lang: "zh", approved: "test", evidence: "test", ...o });
@@ -33,7 +32,7 @@ describe("calibratedLang", () => {
   // Stage B §1 ruling 1: the build ships armed. A lane row on the wrong hash or model would leave a lane silently dark.
   it("the committed rows arm every tree decision and both stage B lanes in zh and en (Paco 2026-10-10)", () => {
     for (const lang of ["zh", "en"] as const) {
-      expect(treeArmed(lang, CALIBRATED_ROWS, NO_OFF, TRUSTED)).toEqual({ category: true, status: true, memory: true, gear: true, rule: true, answer: true, lookup: true });
+      expect(treeArmed(lang, CALIBRATED_ROWS, TRUSTED)).toEqual({ category: true, status: true, memory: true, gear: true, rule: true, answer: true, lookup: true });
     }
     const lanes = CALIBRATED_ROWS.filter((r) => r.question_id === TREE_ANSWER_ARM_ID || r.question_id === TREE_LOOKUP_ARM_ID);
     expect(lanes).toHaveLength(4);
@@ -44,8 +43,8 @@ describe("calibratedLang", () => {
   // The rows no longer name a model: an unchecked model (no trusted check state) must not ride on them.
   it("a stale criteria hash arms neither lane; an unchecked model arms nothing on the committed rows", () => {
     const stale = CALIBRATED_ROWS.map((r) => (r.question_id.startsWith("category:") ? { ...r, criteria_hash: "deadbeef" } : r));
-    expect(treeArmed("zh", stale, NO_OFF, TRUSTED)).toMatchObject({ answer: false, lookup: false });
-    expect(Object.values(treeArmed("zh", CALIBRATED_ROWS, NO_OFF, NOT_ARMED)).some(Boolean)).toBe(false);
+    expect(treeArmed("zh", stale, TRUSTED)).toMatchObject({ answer: false, lookup: false });
+    expect(Object.values(treeArmed("zh", CALIBRATED_ROWS, NOT_ARMED)).some(Boolean)).toBe(false);
   });
 });
 

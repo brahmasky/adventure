@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { RunStore } from "../../src/run/run-store.js";
-import { cat, HEAVY, jevDown, picks, scriptedLlm, SHADOW, treeSays, triageHarness, webOk, type Says } from "../helpers/triage-harness.js";
+import { cat, HEAVY, jevDown, picks, scriptedLlm, disarmMarkerEnv, treeSays, triageHarness, webOk, type Says } from "../helpers/triage-harness.js";
 
 // ADR 0030 / spec §5.3: every turn.handler decision is one `decisions` row, and each jev_verdicts row and each jev_decisions
 // row of the turn links to it — the outcome trail a digest tap or a later correction follows. Plan ruling 14 (codex B1):
@@ -68,13 +68,15 @@ describe("turn.handler decisions link to what triage persisted", () => {
     expect(handlerRow(h.store, t.run_id)[0]).toMatchObject({ rung: "fail", reason_code: "cascade_failed", fallback_reason: "outage", fallback_rung: "model" });
     h.store.close();
   });
-  it("configured shadow: armed_mode shadow, rung fail, the Jev rows say shadow", async () => {
-    const h = triageHarness(treeSays(RULE), { env: SHADOW });
+  it("a disarm marker: the gate rule answers disabled, armed_mode on, Jev not asked; the skipped verdict links to the handler row", async () => {
+    const fetchImpl = treeSays(RULE);
+    const h = triageHarness(fetchImpl, { env: disarmMarkerEnv() });
     const t = h.turn("以后回复短一点");
     await h.worker.triageTurn(t.input);
-    expectLinked(h.store, t.run_id);
-    expect(handlerRow(h.store, t.run_id)[0]).toMatchObject({ rung: "fail", armed_mode: "shadow", fallback_reason: null });
-    expect(h.store.listJevDecisions(t.run_id).every((r) => r.decision === "shadow")).toBe(true);
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(handlerRow(h.store, t.run_id)).toHaveLength(1);
+    expect(handlerRow(h.store, t.run_id)[0]).toMatchObject({ rung: "rule", reason_code: "disabled", armed_mode: "on" });
+    expect(h.store.getJevVerdictForRun(t.run_id)).toMatchObject({ skip_reason: "disabled", decision_id: handlerRow(h.store, t.run_id)[0]!.decision_id });
     h.store.close();
   });
   it("a memory lane save links inside the save's transaction too", async () => {

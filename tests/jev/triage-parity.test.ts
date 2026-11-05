@@ -19,8 +19,7 @@ const REPORTED = "jev-1.13.0";
 const liveFetch = vi.fn(async () => json(200, { model: REPORTED, usage: { input_tokens: 800, output_tokens: 0 }, answers: ANSWERS }));
 const replayJev = async (_r: JevRequest): Promise<JevResult> => ({ ok: true, model: REPORTED, input_tokens: 800, latency_ms: 300, answers: ANSWERS });
 const ENV = {
-  HOUGE_JEV_ENABLED: "1", HOUGE_JEV_TRIAGE_ENABLED: "arm", HOUGE_CHAT_CONTEXT_WINDOW_MINUTES: "60",
-  HOUGE_JEV_LANES_OFF: "answer,lookup" // stage B: the parity run proves the planner path; the lanes have their own suites
+  HOUGE_JEV_ENABLED: "1", HOUGE_CHAT_CONTEXT_WINDOW_MINUTES: "60"
 };
 const at = (iso: string) => new Date(iso);
 
@@ -44,7 +43,7 @@ describe("tree state parity: live decision ↔ replay", () => {
     const claim = store.claimRun(run_id, "w", 120)!;
     worker.buildOmpTools(claim, "555"); // the live thread is cut here, at the claim
     store.recordChatTurn({ chat_id: "555", run_id: "next", role: "user", text: "also this", created_at: "2026-10-06T10:00:00.200Z" });
-    // No tree calibration row exists, so the live route is `uncalibrated` → planner; the state is what matters here.
+    // The reported model is unchecked, so nothing arms and the live route is `uncalibrated` → planner; the state is what matters here.
     expect(await worker.triageTurn({ claim, text: "how is the weather", userText: "how is the weather", modality: "text", posture: null,
       signal: new AbortController().signal })).toMatchObject({ kind: "fallthrough" });
     const sent = JSON.parse(String((liveFetch.mock.calls.at(-1) as unknown as [unknown, RequestInit])[1].body)) as { state: { recent_turns: Array<{ text: string }> } };

@@ -78,14 +78,20 @@ export const picks = (answer: string): Llm => async () => ({ ok: true, output: {
 export const webOk = () => vi.fn(async (_input: Record<string, unknown>): Promise<ToolAdapterResult> => ({ ok: true,
   output: { query: "q", provider: "tavily", results: [{ title: "BOM", url: "https://weather.example/sydney", content: "Tomorrow: sunny, max 22." }] } }));
 
-/** The gate-only rows: the six questions and the three lane pseudo-rows, zh + en, on REPORTED. */
-export function calibrationFile(): string {
+/** The gate-only rows: the six questions and the three lane pseudo-rows, zh + en, on REPORTED; `without` drops rows by question id. */
+export function calibrationFile(without: readonly string[] = []): string {
   const f = join(mkdtempSync(join(tmpdir(), "hpin-cal-")), "rows.json");
   const ids = [...TREE_QUESTIONS.map((q) => [q.id, criteriaHash(q)] as const),
     ...[TREE_STATUS_ARM_ID, TREE_ANSWER_ARM_ID, TREE_LOOKUP_ARM_ID].map((id) => [id, criteriaHash(TREE_CATEGORY)] as const)];
-  writeFileSync(f, JSON.stringify(ids.flatMap(([question_id, criteria_hash]) => (["zh", "en"] as const).map((lang) =>
+  writeFileSync(f, JSON.stringify(ids.filter(([question_id]) => !without.includes(question_id)).flatMap(([question_id, criteria_hash]) => (["zh", "en"] as const).map((lang) =>
     ({ question_id, criteria_hash, lang, approved: "test", evidence: "test" })))));
   return f;
+}
+/** Env for a houge.jev-disarmed marker an older build left: it holds the front door off (spec 2026-11-05 §4). */
+export function disarmMarkerEnv(): Record<string, string> {
+  const p = join(mkdtempSync(join(tmpdir(), "hpin-marker-")), "houge.jev-disarmed");
+  writeFileSync(p, JSON.stringify({ reason: "old", at: "" }));
+  return { ...ARM, HOUGE_JEV_DISARM_PATH: p };
 }
 /**
  * Jev version check Task 3: the tree arms only for a model whose check state allows it. The harness marks REPORTED
@@ -95,8 +101,7 @@ export function trustModel(store: RunStore, model: string = REPORTED): void {
   store.noteJevModel(model, "2026-10-22T00:00:00Z");
   store.setJevModelState(model, "checking", "trusted", "{}", "2026-10-22T00:00:00Z");
 }
-export const ARM: Record<string, string> = { HOUGE_JEV_ENABLED: "1", HOUGE_JEV_TRIAGE_ENABLED: "arm" };
-export const SHADOW: Record<string, string> = { HOUGE_JEV_ENABLED: "1", HOUGE_JEV_TRIAGE_ENABLED: "shadow" };
+export const ARM: Record<string, string> = { HOUGE_JEV_ENABLED: "1" };
 
 export interface HarnessOptions { env?: Record<string, string>; llm?: Llm; web?: Llm; jevNow?: () => Date; broker?: SecretBroker }
 /** `noState`: skip buildOmpTools, so the turn has no OmpTurnState (today's `!state` exit, skip reason `error`). */
