@@ -1,5 +1,7 @@
 # Jev: no off switch, no shadow — Implementation Plan
 
+**Rev 1.1 · 2026-11-05** — plan reviews: senior (Fable 5.1: 1 B / 10 W / 7 S, Task 1 trial-compiled 14/14) and codex (2 B / 1 W); all closed, see the end.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** The front door is armed whenever `HOUGE_JEV_ENABLED` is on (unless a safety cap holds it off, with the cause shown
@@ -48,6 +50,8 @@ Read it before your task; section numbers below (§N) refer to it.
 | `scripts/*` (gates listed in Task 5), `scripts/live-gate-jev-no-off-switch.mjs` (new) | gates | 5 |
 | `docs/decisions/0033-*`, `0034-*`, `README.md` index cells unchanged, docs listed in Task 6 | ADR amendments, docs sync | 6 |
 
+**Pre-step (orchestrator, done before Task 1):** `npm ci` in the worktree (it has no `node_modules`).
+
 ---
 
 ### Task 1: The front-door resolver, status line and retired-flag warning
@@ -84,9 +88,10 @@ describe("front door (spec 2026-11-05 §4): armed whenever Jev is on, unless a c
       expect(resolveJevFrontDoor({ HOUGE_JEV_ENABLED: "1", ...extra }, d)).toEqual({ mode: "arm", cause: "armed" });
     }
   });
+  // HOUGE_DISARM_PATH always points into the temp dir: the default is a cwd-relative houge.disarm, which a /disarm'd checkout has.
   it("flag off: env_off; flag off with the /disarm posture file: disarmed", () => {
     const d = dir();
-    expect(resolveJevFrontDoor({}, d)).toEqual({ mode: "off", cause: "env_off" });
+    expect(resolveJevFrontDoor({ HOUGE_DISARM_PATH: join(d, "none") }, d)).toEqual({ mode: "off", cause: "env_off" });
     expect(resolveJevFrontDoor({ HOUGE_JEV_ENABLED: "false", HOUGE_DISARM_PATH: posture(d) }, d)).toEqual({ mode: "off", cause: "disarmed" });
   });
   it("a posture file with the flag on (a gate's child env) does not disarm: the flag decides", () => {
@@ -106,7 +111,7 @@ describe("front door (spec 2026-11-05 §4): armed whenever Jev is on, unless a c
   it("the status line names the cause and env var names, never a value", () => {
     const d = dir();
     expect(frontDoorLine({ HOUGE_JEV_ENABLED: "1" }, d)).toBe("Jev front door: armed");
-    expect(frontDoorLine({}, d)).toBe("Jev front door: off (HOUGE_JEV_ENABLED is off in this process: .env, or /rearm awaiting a restart)");
+    expect(frontDoorLine({ HOUGE_DISARM_PATH: join(d, "none") }, d)).toBe("Jev front door: off (HOUGE_JEV_ENABLED is off in this process: .env, or /rearm awaiting a restart)");
     expect(frontDoorLine({ HOUGE_JEV_ENABLED: "0", HOUGE_DISARM_PATH: posture(d) }, d)).toBe("Jev front door: off (/disarm; /rearm restores it)");
     expect(frontDoorLine({ HOUGE_JEV_ENABLED: "1", HOUGE_JEV_CALIBRATION_FILE: "/secret/path.json" }, d))
       .toBe("Jev front door: off (HOUGE_JEV_CALIBRATION_FILE is set outside a gate)");
@@ -219,8 +224,10 @@ Model: standard tier (multi-file, judgment on test re-pointing).
   - `planAnswered` (≈3162): drop the `mode` parameter; `const arming = treeArmingFor(this.runStore, d, lang);` (the off
     path never reaches it: the gate rule exits first); call `planTree(d, { userText, lang, thinkHarder, rows, arming })`;
     drop `NOT_ARMED` from imports if now unused;
-  - `treeRung`, `routeDecided`, `routeAnswered`: drop the `mode` parameter where its only remaining use was the removed
-    branches (follow the compiler);
+  - `treeRung` (≈3143), `planAnswered` (≈3162), `routeDecided` (≈3180), `routeAnswered` (≈3210) drop the `mode` parameter
+    (tsconfig has no `noUnusedParameters`, so the compiler will NOT flag them: remove them by this list);
+    `turnHandlerState` (≈3131, `overridden: mode !== "off"`) and `triageTurnInner` keep it; drop the `JevTriageMode`
+    import only if nothing else in the file uses it;
   - `decisionFor` (≈4540): `function decisionFor(r: Route, save: SaveOutcome, outcome?: "act" | "fallback"): "act" | "fallback"`,
     first line removed; `TriageSettle.answered.decision: "act" | "fallback"`;
   - the `triageOff` docstring keeps "Flag off" (still true: `HOUGE_JEV_ENABLED` off or a cap).
@@ -234,24 +241,41 @@ Model: standard tier (multi-file, judgment on test re-pointing).
 - Modify comments naming the retired vars or the front door's shadow: `src/jev/tree-policy.ts:12` (the `LaneSwitch`
   type: keep the type if `jev-version-check.ts` or tests still use it, otherwise delete it with its comment),
   `src/gateway/memlane-commands.ts:58` ("or switches the lane off (…)" → "or disarms Jev"), `src/jev/calibration.ts:53-55`
-  ("caps `arm` at shadow" → "holds the front door off"), `src/decisions/types.ts:128` (the `ctx.armed` docstring goes in
-  Task 3; leave it), `src/config/disarm-posture.ts:55` comment ("switches every Jev lane off" → "switches Jev's front door
+  ("caps `arm` at shadow" → "holds the front door off"), `src/decisions/types.ts:128` (rewrite the `ctx.armed` docstring sentence that names `HOUGE_JEV_TRIAGE_ENABLED=shadow` to
+  "Only the front door passed it; nothing does now (removed in Task 3)" — the field itself goes in Task 3),
+  `src/jev/tree-policy.ts:12` (`LaneSwitch` stays — tree-policy uses it at :98 and :201 — but its comment becomes "The two
+  lanes the version check can disarm one by one"), `src/config/disarm-posture.ts:55` comment ("switches every Jev lane off" → "switches Jev's front door
   off; Jev's other entries do not read this flag").
 - Modify: `src/telegram/telegram-daemon.ts:37,455`: `warnRetiredJevFlags(process.env);`.
+- Modify (same commit as the `treeArmed` signature, plain JS so no compiler catches them): `scripts/live-gate-jev-tree.mjs:714`
+  and `scripts/live-gate-memory-write.mjs:94`: `treeArmed(lang, rows, new Set(), allQuestions)` → `treeArmed(lang, rows, allQuestions)`.
+  `grep -rn "treeArmed(" scripts src tests` must show only 3-argument calls.
 - Tests (re-point, don't delete, where the guarded behaviour survives):
   - `tests/jev/jev-flags.test.ts`: delete the `resolveJevTriageMode`, `resolveJevLanesOff`, `warnUnknownJevLanesOff`
     cases; keep `resolveJevEnabled`, marker-path and marker-read cases.
-  - `tests/helpers/triage-harness.ts:99`: delete `SHADOW`; each user (`turn-handler-pin`, `turn-handler-ladder`,
-    `core-worker-triage`) moves its shadow case to `ARM` or to Jev off by what it asserts. A case that asserted "shadow
+  - `tests/helpers/triage-harness.ts:99`: delete `SHADOW`; each user (`turn-handler-pin`, `turn-handler-ladder`) moves its
+    shadow case to `ARM` or to Jev off by what it asserts.
+  - `tests/core/core-worker-triage.test.ts` has its own `SHADOW` (:80): :616 and :628 (`vi.stubEnv(…, "shadow")`) use it only
+    as "Jev on" → `ARM`; :348 ("shadow arms nothing, so a below-bar answer never reaches the cascade") has no surviving
+    behaviour → turn it into the marker case (no `jev_decisions` row, so no cascade); :520 ("rows say shadow") → the
+    disarm-marker case below. A case that asserted "shadow
     records but never applies" becomes "a disarm marker → planner, reason `disabled`, no `jev_decisions` row, the skipped
     verdict and the `turn.handler` row written" (spec §4 / S2). Delete the `tests/core/__pins__/turn-handler/shadow.json`
-    pin and its case; add a `disarm-marker` pin case if the pin suite covers caps.
+    pin and its case; add a `disarm-marker` pin case: the case writes a marker file in a temp dir and passes
+    `HOUGE_JEV_DISARM_PATH` in `opts.env` (the harness takes arbitrary env, `triage-harness.ts:108`). Pin files are written
+    on first run by `toMatchFileSnapshot` (not under `CI=true`); delete `shadow.json` and `answer-lane-off.json` by hand.
   - `tests/core/core-worker-lanes.test.ts:135` (`HOUGE_JEV_LANES_OFF=answer`) → the answer lane unarmed by calibration rows
-    that lack the `category:answer` pseudo-row; same assertion (planner on the gear's role, reason routed).
+    that lack the `category:answer` pseudo-row (override `HOUGE_JEV_CALIBRATION_FILE` with a case-built file minus that row;
+    `calibrationRows(process.env)` is read per turn); same assertion (planner on the gear's role, reason routed).
   - `tests/core/turn-handler-pin.test.ts:103` (`answer-lane-off`) → `answer-row-missing` the same way.
-  - `tests/jev/tree-policy.test.ts:340` → the missing-pseudo-row case.
-  - `tests/jev/triage-parity.test.ts:23`: drop `HOUGE_JEV_LANES_OFF` and `HOUGE_JEV_TRIAGE_ENABLED`; prove the planner path
-    with calibration rows that carry no lane pseudo-rows (keep the comment's reason).
+  - `tests/jev/tree-policy.test.ts`: every 4-argument `treeArmed` call (:14, :145, :304, :328, :334, :336) drops the Set; the
+    `armed(rows, lang, off)` helper at :304 loses `off`; :340 (lane off) → the missing-pseudo-row case; keep the drift-disarm
+    and missing-row cases at :333-344.
+  - `tests/jev/calibration.test.ts:13,36,47,48` (`NO_OFF`) and `tests/decisions/jev-version-arming.test.ts:20,29,122,132`:
+    drop the Set argument (and the `NO_OFF` constant).
+  - `tests/jev/triage-parity.test.ts:23`: drop `HOUGE_JEV_LANES_OFF` and `HOUGE_JEV_TRIAGE_ENABLED` only (the test never
+    trusts the reported model, so `treeArmingFor` returns `NOT_ARMED` and nothing arms); fix the stale comment at :46 ("No
+    tree calibration row exists" → the model is unchecked, so nothing arms).
   - `tests/core/turn-handler-ladder-glue.test.ts:15`, `tests/core/turn-handler-ladder.test.ts`: `PlanInput` without `mode`
     and `lanesOff`; a former shadow case → a `NOT_ARMED` arming case (all lanes unarmed by the model check).
   - `tests/decisions/jev-version-arming.test.ts:144`: the source pin becomes `/treeArmed\(i\.lang, i\.rows, i\.arming\)/`.
@@ -267,9 +291,9 @@ Model: standard tier (multi-file, judgment on test re-pointing).
 - [ ] **Step 2:** make the source changes above; `npm run typecheck` until clean (the compiler lists every `"shadow"` /
   `mode` / `lanesOff` consumer).
 - [ ] **Step 3:** `grep -rn "HOUGE_JEV_LANES_OFF\|HOUGE_JEV_TRIAGE_ENABLED\|lanesOff\|TREE_SHADOWED" src` → only
-  `src/jev/jev-flags.ts` lines for the two names; nothing else.
-- [ ] **Step 4:** run the same vitest paths → PASS; then `npm test` (full) → green, none skipped. (`tests/adr/0034-no-off-switch.test.ts`
-  will fail here on the mode list and allowlist; that is Task 5's. If so, note it in the report and do not edit it.)
+  `src/jev/jev-flags.ts` lines for the two names; nothing else. `grep -rn "treeArmed(" scripts src tests` → 3-argument calls only.
+- [ ] **Step 4:** run the same vitest paths → PASS; then `npm test` (full) → green, none skipped. (the mode test in `tests/adr/0034-no-off-switch.test.ts`
+  will fail here — `triageModes` reads `["arm","off"]` — and only that test; it is Task 5's. If so, note it in the report and do not edit it.)
 - [ ] **Step 5: Commit** — `refactor(jev): the front door is armed whenever Jev is on; shadow and lane-off paths removed`.
 
 ---
@@ -296,15 +320,22 @@ Model: standard tier.
     it("R13 by type: no entry can be declared shadow or off, and no caller can pass an arming override", () => {
       // @ts-expect-error — ArmedMode is "on" only
       const bad: Entry<never, "a", never>["armed"] = { system_one: "shadow" };
-      // @ts-expect-error — DecideCtx has no `armed`
-      const ctx: DecideCtx<never, "a", never> = { run_id: null, recorder: { record: (_e, r) => r }, armed: {} };
+      const ctx: DecideCtx<never, "a", never> = {
+        run_id: null,
+        recorder: { record: () => null },
+        // @ts-expect-error — DecideCtx has no `armed`
+        armed: {}
+      };
       expect([bad, ctx]).toHaveLength(2);
     });
     ```
-    (adjust the recorder stub to the real `DecisionRecorder` shape; `npm run typecheck` covers `tests/` — verify with
-    `grep -n include tsconfig.json`; if tests are not type-checked, assert with `expectTypeOf` from vitest instead.)
-  - `tests/decisions/record.test.ts:48,155`: a case that recorded because `armedMode` was `"shadow"` now uses `"late"`
-    (the remaining non-`on` value), so `shouldRecord`'s `armedMode !== "on"` stays covered.
+    (Each directive sits directly above the one line that must fail and the recorder stub is well-typed, so neither is
+    satisfied by an unrelated error. `npm run typecheck` covers `tests/` — verified by the plan review.)
+  - `tests/decisions/record.test.ts:48`: `result({ armedMode: "shadow" })` → `"late"` (the remaining non-`on` value), so
+    `shouldRecord`'s `armedMode !== "on"` stays covered. `:155` builds an ENTRY armed `system_one: "shadow"`: replace the
+    shadowed judge with one that abstains (`async () => ({ abstain: true })`), so "a fail with no named failure never pages"
+    stays covered.
+  - `src/decisions/record.ts:30`: `o.kind === "paco" && o.result !== null` → `o.kind === "paco"` once `result` is non-null.
   - `tests/decisions/registry.test.ts:78`: delete the "armed other than on" case.
   - `tests/run/decisions-store.test.ts`, `tests/run/invariant-sweep-jev.test.ts`, `tests/decisions/digest*.test.ts`: no
     change (they write historical `shadow` values the store must still accept and readers must still skip).
@@ -325,15 +356,18 @@ Model: cheap-to-standard tier.
   `dataDir: string` and fills `frontDoor: frontDoorLine(d.env, d.dataDir)`; `renderHougeStatus` adds `i.frontDoor` right after
   the `Runtime:` line.
 - Modify: `src/core/core-worker.ts` `hougeStatusText`: pass `dataDir: this.ompDataDir()`.
-- Modify: `src/gateway/gateway.ts` `formatStatusText`, HEALTH section: after the `Self-check:` line add
+- Modify: `src/gateway/gateway.ts` `formatStatusText` is already ≈110 lines (pre-existing): extract its HEALTH block
+  (≈1363-1423) into `private healthLines(…): string[]` in this task (behaviour-identical; existing gateway status tests stay
+  green unchanged), then in it, after the `Self-check:` line add
   `frontDoorLine(process.env, this.options.dataDir ?? this.projectRoot)` (the daemon passes
   `options.omp?.dataDir ?? options.projectRoot`, the same value as the worker's `ompDataDir()`).
 - Tests:
-  - `tests/status/houge-status.test.ts` (or the existing status test file; find it with `grep -rln renderHougeStatus tests`):
-    the rendered block contains `Jev front door: armed` after `Runtime:` with Jev on, and the marker line with a marker in
+  - `tests/status/houge-status.test.ts`: its four direct `collectHougeStatus` calls (from :55) gain a temp `dataDir`; the
+    rendered block contains `Jev front door: armed` after `Runtime:` with Jev on, and the marker line with a marker in
     `dataDir`; existing fixtures gain `frontDoor`.
   - Gateway: in the existing `/status` overview test (find with `grep -rln "HEALTH" tests/gateway`), drive the real `/status`
-    command through the gateway with `HOUGE_JEV_ENABLED` unset → the reply contains the `env_off` line; with a posture file
+    command through the gateway (`vi.stubEnv("HOUGE_DISARM_PATH", <temp path>)`, as `tests/core/core-worker-houge-status.test.ts:31`
+    does, so a cwd `houge.disarm` cannot leak in) with `HOUGE_JEV_ENABLED` unset → the reply contains the `env_off` line; with a posture file
     and the flag `"false"` → the `disarmed` line. Why: Paco's `/status` is this renderer, not `renderHougeStatus` (codex B).
 - [ ] Red → green → `npm test` full → commit `feat(status): /status names why Jev's front door is off`.
 
@@ -363,25 +397,29 @@ Model: standard tier.
   `check-standing-rollback.mjs:68`, `live-gate-ladder-2b-hooks.mjs:89`, `live-gate-ladder-stage4b.mjs:340`,
   `live-gate-ladder-stage4c.mjs:311`, `live-gate-standing-approval.mjs:76`. Read each line first: if `HOUGE_JEV_ENABLED`
   is already set there, set it to `"0"` rather than adding a duplicate key.
-- Modify: `scripts/live-gate-decisions-parity.mjs:119`: drop `HOUGE_JEV_LANES_OFF` from the scrubbed keys only if the scrub
-  is a list of keys the gate deletes from `.env` before loading (a retired var in `.env` is harmless either way — keep it
-  scrubbed if unsure, and say which in the report).
-- Create: `scripts/live-gate-jev-no-off-switch.mjs`, modelled on `scripts/live-gate-jev-tree.mjs` (copy its env setup,
-  temp-root, DB-copy and CoreWorker harness; read it first). Before loading `.env` (via `HOUGE_ENV_FILE`), delete
-  `HOUGE_TELEGRAM_BOT_TOKEN`, `HOUGE_TELEGRAM_CHAT_ID`, `HOUGE_TELEGRAM_USER_ID` and set `HOUGE_DISARM_PATH`,
-  `HOUGE_JEV_DISARM_PATH`, `HOUGE_TOMBSTONE_PATH`, `HOUGE_PARK_MARKER_PATH` under the temp root. Checks (spec §9), each
+- Modify: `scripts/live-gate-decisions-parity.mjs:119`: drop `HOUGE_JEV_LANES_OFF` from its delete list (it runs after
+  `loadHougeEnv`; the new build ignores the var either way).
+- Create: `scripts/live-gate-jev-no-off-switch.mjs`, reusing the cheap seams of `scripts/live-gate-jev-tree.mjs` (no omp:
+  checks 1-5 need no planner): `loadModules`/`loadHougeEnv`, `probeReportedModel` (:111), `gateEnv` **without** the
+  calibration file and `HOUGE_JEV_GATE` (else check 1 says nothing about the real `.env`), `copyDb` (:149),
+  `ensureModelArmed` with `strict=true` (:727), and the `caseJevProbes` pattern (:363: `claimRun` + `worker.triageTurn`).
+  `.env` loading is first-writer-wins, so: **after** `loadHougeEnv()`, delete `HOUGE_TELEGRAM_BOT_TOKEN`,
+  `HOUGE_TELEGRAM_CHAT_ID`, `HOUGE_TELEGRAM_USER_ID`, then `Object.assign` `HOUGE_DISARM_PATH`, `HOUGE_JEV_DISARM_PATH`,
+  `HOUGE_TOMBSTONE_PATH`, `HOUGE_PARK_MARKER_PATH` under the temp root (copy `gateEnv`'s order). Checks (spec §9), each
   printing `PASS`/`FAIL <name>`; exit 1 on any FAIL:
   1. `resolveJevFrontDoor(realEnv, tmpData)` = `{ mode: "arm", cause: "armed" }`;
   2. child env + `HOUGE_JEV_TRIAGE_ENABLED=off` + `HOUGE_JEV_LANES_OFF=answer`: resolver still `arm`;
      `warnRetiredJevFlags` returns both names (exactly two lines); `treeArmed(lang, liveRows, trustedArming)` arms `answer`
-     (with the live calibration rows from the DB copy and the trusted arming the live model has);
-  3. a marker in the temp data dir: resolver `disarm_marker`; `renderHougeStatus(collectHougeStatus({ …, dataDir }))` and the
-     gateway's `/status` reply both carry the marker line;
+     (the live calibration rows, and the arming from `treeArmingFor(store, { model }, lang)` on the copy);
+  3. a marker at `process.env.HOUGE_JEV_DISARM_PATH`: resolver `disarm_marker`; `renderHougeStatus(collectHougeStatus({ …, dataDir }))`
+     and the gateway's `/status` reply (a `type: "status"` intake and an outbox read, as `tests/gateway/rating-capture.test.ts:285-345`)
+     both carry the marker line;
   4. `HOUGE_JEV_ENABLED=0` → `env_off`; plus a posture file → `disarmed`;
   5. one status-lane turn (a zh status question, e.g. the one `live-gate-jev-tree.mjs` uses for its status case) through the
      real Jev in arm on the temp DB: `handler_outcome = lane_reply`, `route_outcome = act`, zero `compose` attempts, one
-     `turn.handler` decisions row with `rung IN ('system_one','model')` and `armed_mode = 'on'`, and one `jev_decisions` row
-     with `decision = 'act'`; then zero rows with `armed_mode = 'shadow'` or `decision = 'shadow'` written by this run.
+     `turn.handler` decisions row with `rung IN ('system_one','model')` and `armed_mode = 'on'`, at least one
+     `jev_decisions` row for the run with `status = 'answered'` and every such row `decision = 'act'` (one row per question,
+     plus a re-ask row when one fires); then zero rows with `armed_mode = 'shadow'` or `decision = 'shadow'` written by this run.
 - [ ] Red: the new R13 cases fail before the test edits match the tree (run `npx vitest run tests/adr`); green after.
 - [ ] `npm run build`; run every gate edited above that runs without old-dist arguments, plus the new gate:
   `HOUGE_ENV_FILE=/Users/xiaochuan/Projects/adventure/.env node scripts/live-gate-jev-no-off-switch.mjs`. Rollback checks
@@ -442,3 +480,15 @@ Whole-branch review (most capable non-orchestrator model) + codex whole-diff; `n
 the new live gate; `live-gate-jev-tree`, `live-gate-memory-write`, `live-gate-decisions-parity`; each edited rollback
 check with its `--old-dist` arguments where its header requires them; docs sync (`sessions.md`, `tasks/lessons.md`);
 Paco signs the ADR amendments; merge, rebuild, kickstart, `/status` shows `Jev front door: armed`.
+
+## Review changes (Rev 1.0 → 1.1)
+
+- B (both): the two live gates calling `treeArmed` with 4 args from `dist/` are edited in Task 2's commit; grep check added.
+- B/W (both): missed 4-arg test callers (`calibration`, `jev-version-arming`, `tree-policy`) listed in Task 2.
+- W: Task 3's type test — directive per failing line, well-typed recorder stub. W: Task 2's grep — `types.ts:128` and
+  `tree-policy.ts:12` comments move into Task 2. W: `record.test.ts:155` (abstaining judge). W: `core-worker-triage`'s own
+  `SHADOW` lines named. W: gate token deletion after `loadHougeEnv`. W: check 5 counts every answered row. W: env_off tests
+  pin `HOUGE_DISARM_PATH` to the temp dir. W: `npm ci` pre-step. W: dead `mode` params enumerated. W (codex):
+  `houge-status.test.ts` calls gain `dataDir`.
+- S: HEALTH block extracted (50-line rule); gate reuses cheap seams; Step 4 names the one ADR test; parity test drops only
+  the two vars; pin-case mechanics decided; `record.ts:30` simplified; parity delete list resolved.
