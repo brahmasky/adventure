@@ -1,5 +1,5 @@
 import type {
-  AnyDecideResult, AnyEntry, ArmedMode, DecideCtx, DecideResult, Entry, FallbackReason, JevRung, ModelRung, PacoRung, Reask, RuleRung, RungAnswer,
+  AnyDecideResult, AnyEntry, DecideCtx, DecideResult, Entry, FallbackReason, JevRung, ModelRung, PacoRung, Reask, RuleRung, RungAnswer,
   RungKind, RungOutcome, RungResult
 } from "./types.js";
 import { FALLBACK_REASONS } from "./types.js";
@@ -10,10 +10,10 @@ import { FALLBACK_REASONS } from "./types.js";
  */
 interface Walk<V, D> {
   outcomes: RungOutcome<V, D>[]; floor: V | undefined; floorRung: RungKind | undefined; fallback: FallbackReason | null; fallbackCode: string | null;
-  fallbackRung: RungKind | null; shadowed: boolean;
+  fallbackRung: RungKind | null;
 }
 type Decided<V, D> = { rung: RungKind; answer: RungAnswer<V, D> } | null;
-const newWalk = <V, D>(): Walk<V, D> => ({ outcomes: [], floor: undefined, floorRung: undefined, fallback: null, fallbackCode: null, fallbackRung: null, shadowed: false });
+const newWalk = <V, D>(): Walk<V, D> => ({ outcomes: [], floor: undefined, floorRung: undefined, fallback: null, fallbackCode: null, fallbackRung: null });
 /** The one error-message helper for src/decisions/ (the recorder imports it from here). */
 export const message = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
@@ -26,9 +26,7 @@ export function decideSync<S, V extends string, D = never>(entry: Entry<S, V, D>
   if (nonRule) throw new Error(`decideSync: ${entry.id} has a ${nonRule.kind} rung; use decide`);
   for (const rung of entry.ladder) {
     if (rung.kind !== "rule") continue;
-    const mode = modeOf(entry, rung.kind, ctx);
-    if (mode === "off") { w.outcomes.push({ kind: rung.kind, name: rung.name, mode, result: null }); continue; }
-    const answer = apply(entry, w, rung.kind, rung.name, mode, safeRule(entry.id, rung, s, ctx));
+    const answer = apply(entry, w, rung.kind, rung.name, safeRule(entry.id, rung, s, ctx));
     if (answer) return record(entry, finish(entry, w, { rung: "rule", answer }, clock() - started), ctx);
   }
   return record(entry, finish(entry, w, null, clock() - started), ctx);
@@ -39,20 +37,11 @@ export async function decide<S, V extends string, D = never>(entry: Entry<S, V, 
   const started = clock();
   const w = newWalk<V, D>();
   for (const rung of entry.ladder) {
-    const mode = modeOf(entry, rung.kind, ctx);
-    if (mode === "off") { w.outcomes.push({ kind: rung.kind, name: rung.name, mode, result: null }); continue; }
     const raw = rung.kind === "rule" ? safeRule(entry.id, rung, s, ctx) : await runAsync(entry.id, rung, s, [...w.outcomes], ctx);
-    const answer = apply(entry, w, rung.kind, rung.name, mode, raw);
+    const answer = apply(entry, w, rung.kind, rung.name, raw);
     if (answer) return record(entry, finish(entry, w, { rung: rung.kind, answer }, clock() - started), ctx);
   }
   return record(entry, finish(entry, w, null, clock() - started), ctx);
-}
-
-/** A locked entry never reads ctx.armed (spec §4.1); otherwise ctx.armed (the front door's configured shadow) overrides the entry's arming. */
-function modeOf<S, V extends string, D>(entry: Entry<S, V, D>, kind: RungKind, ctx: DecideCtx<S, V, D>): ArmedMode {
-  // R13: code goes first; no caller can shadow or switch off a rule rung
-  if (entry.locked || kind === "rule") return entry.armed[kind] ?? "on";
-  return ctx.armed?.[kind] ?? entry.armed[kind] ?? "on";
 }
 
 function safeRule<S, V extends string, D>(id: string, rung: RuleRung<S, V, D>, s: S, ctx: DecideCtx<S, V, D>): RungResult<V, D> {
@@ -92,11 +81,10 @@ function withTimeout<V, D>(p: Promise<RungResult<V, D>>, ms: number | undefined)
   return Promise.race([p, expired]).finally(() => clearTimeout(timer));
 }
 
-/** Records the outcome in the walk; returns the answer only when it applies (not shadow, not a failure, not an abstention). */
-function apply<S, V extends string, D>(entry: Entry<S, V, D>, w: Walk<V, D>, kind: RungKind, name: string, mode: ArmedMode, raw: RungResult<V, D>): RungAnswer<V, D> | null {
+/** Records the outcome in the walk; returns the answer only when it applies (not a failure, not an abstention). */
+function apply<S, V extends string, D>(entry: Entry<S, V, D>, w: Walk<V, D>, kind: RungKind, name: string, raw: RungResult<V, D>): RungAnswer<V, D> | null {
   const result = checked(entry, raw);
-  w.outcomes.push({ kind, name, mode, result });
-  if (mode === "shadow") { w.shadowed = true; return null; }
+  w.outcomes.push({ kind, name, mode: "on", result });
   if ("failed" in result) {
     if (w.fallback === null) { w.fallback = result.failed; w.fallbackCode = result.reason ?? null; w.fallbackRung = kind; }
     return null;
@@ -143,13 +131,13 @@ function cautious<S, V extends string, D>(entry: Entry<S, V, D>, a: V | undefine
 }
 
 function walkReask<V, D>(w: Walk<V, D>): Reask | undefined {
-  for (const o of w.outcomes) if (o.result && !("failed" in o.result) && o.result.reask) return o.result.reask;
+  for (const o of w.outcomes) if (!("failed" in o.result) && o.result.reask) return o.result.reask;
   return undefined;
 }
 
 function finish<S, V extends string, D>(entry: Entry<S, V, D>, w: Walk<V, D>, d: Decided<V, D>, elapsed: number): DecideResult<V, D> {
   const reask = d?.answer.reask ?? walkReask(w);
-  const base = { fallbackReason: w.fallback, fallbackRung: w.fallbackRung, armedMode: w.shadowed ? ("shadow" as const) : ("on" as const), decisionId: null,
+  const base = { fallbackReason: w.fallback, fallbackRung: w.fallbackRung, armedMode: "on" as const, decisionId: null,
     walk: w.outcomes, latencyMs: Math.max(0, Math.round(elapsed)), ...(reask ? { reask } : {}) };
   if (d === null) {
     const verdict = entry.monotone ? cautious(entry, w.floor, entry.fail) : entry.fail;

@@ -1,11 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { decide, decideSync } from "../../src/decisions/decide.js";
 import { ENTRY_IDS, FRONT_DOOR_ENTRIES } from "../../src/decisions/entry-ids.js";
-import type { AnyDecideResult, DecisionRecorder, Entry, RungResult } from "../../src/decisions/types.js";
+import type { AnyDecideResult, DecideCtx, DecisionRecorder, Entry, RungResult } from "../../src/decisions/types.js";
 
 // Spec §4.1 / §5.1: code goes first; a thrown rule, a timeout or an outage is an abstention, so `fail` decides, never an
-// accident; a monotone judge can only tighten; a shadow rung (the front door's configured shadow, R13) is asked and never
-// applied; recording never changes a decision.
+// accident; a monotone judge can only tighten; no rung has a shadow or off mode (R13, by type); recording never changes a decision.
 type V = "pass" | "ask" | "deny";
 const NO_FX = { kind: "none", reversible: true, announced: "none" } as const;
 type S = { rule: V | "abstain" | "throw"; floor?: V };
@@ -79,7 +78,7 @@ describe("decide: the walk", () => {
   });
 });
 
-describe("decide: monotone, shadow, locked", () => {
+describe("decide: monotone, locked", () => {
   const mono = (o: Partial<Entry<S, V>> = {}) => entry({ monotone: { order: ["pass", "ask", "deny"] }, ...o });
   // Ruling 17: the floor's verdict is the rule's, so the row must not credit Jev with it (stage 2a calibrates on these rows).
   it("a judge less cautious than the rule's floor cannot loosen it; the floor's rung is named, floor_held, no judge p", async () => {
@@ -96,28 +95,16 @@ describe("decide: monotone, shadow, locked", () => {
     expect(r).toMatchObject({ verdict: "ask", rung: "rule", reason: "floor_held" });
     expect(r.fallbackReason).toBe("outage"); // the failure stays on the row
   });
-  it("a shadow rung is asked and recorded, never applied", async () => {
-    const jev = answers("deny");
-    const r = await decide(entry({ armed: { rule: "on", system_one: "shadow", model: "off" } }), { rule: "abstain" }, { run_id: null, recorder, exec: { system_one: jev } });
-    expect(jev).toHaveBeenCalledOnce();
-    expect(r).toMatchObject({ verdict: "ask", rung: "fail", armedMode: "shadow" });
-    expect(r.walk.map((o) => [o.kind, o.mode, o.result === null])).toEqual([["rule", "on", false], ["system_one", "shadow", false], ["model", "off", true]]);
-  });
-  it("ctx.armed (the front door's configured shadow) shadows a non-locked entry's judges", async () => {
-    const r = await decide(entry(), { rule: "abstain" }, { run_id: null, recorder, armed: { system_one: "shadow", model: "shadow" }, exec: { system_one: answers("deny"), model: answers("deny") } });
-    expect(r).toMatchObject({ verdict: "ask", rung: "fail", armedMode: "shadow" });
-  });
-  it("a locked entry ignores ctx.armed (no caller can shadow or switch off a locked gate)", () => {
-    const locked = entry({ locked: true, ladder: [{ kind: "rule", name: "r", decide: rule }], armed: { rule: "on" } });
-    const r = decideSync(locked, { rule: "deny" }, { run_id: null, recorder, armed: { rule: "off" } as never });
-    expect(r).toMatchObject({ verdict: "deny", rung: "rule" });
-  });
-  it("ctx.armed cannot switch off or shadow a rule rung on a non-locked entry either (R13: code goes first)", () => {
-    const sync = entry({ ladder: [{ kind: "rule", name: "r", decide: rule }] });
-    for (const mode of ["off", "shadow"] as const) {
-      const r = decideSync(sync, { rule: "deny" }, { run_id: null, recorder, armed: { rule: mode } as never });
-      expect(r).toMatchObject({ verdict: "deny", rung: "rule", armedMode: "on" });
-    }
+  it("R13 by type: no entry can be declared shadow or off, and no caller can pass an arming override", () => {
+    // @ts-expect-error — ArmedMode is "on" only
+    const bad: Entry<never, "a", never>["armed"] = { system_one: "shadow" };
+    const ctx: DecideCtx<never, "a", never> = {
+      run_id: null,
+      recorder: { record: () => null },
+      // @ts-expect-error — DecideCtx has no `armed`
+      armed: {}
+    };
+    expect([bad, ctx]).toHaveLength(2);
   });
 });
 
@@ -150,15 +137,7 @@ describe("decide: untrusted rung results", () => {
   });
 });
 
-describe("decide: shadow floors and the paco rung", () => {
-  it("a shadowed rung's abstention floor does not bind (shadow is never applied)", async () => {
-    const shadowed = entry({ monotone: { order: ["pass", "ask", "deny"] }, fail: "pass", armed: { rule: "on", system_one: "shadow", model: "on" },
-      ladder: [{ kind: "rule", name: "r", decide: rule }, { kind: "system_one", name: "j", questions: [], bars: { kind: "calibrated", questionIds: [] }, timeoutMs: 50 }] });
-    const sysOne = vi.fn(async (): Promise<RungResult<V>> => ({ abstain: true, floor: "deny" }));
-    const r = await decide(shadowed, { rule: "abstain" }, { run_id: null, recorder, exec: { system_one: sysOne } });
-    expect(sysOne).toHaveBeenCalledOnce();
-    expect(r).toMatchObject({ verdict: "pass", rung: "fail", armedMode: "shadow" });
-  });
+describe("decide: the paco rung", () => {
   it("a paco rung has no timeout: a late tap still answers", async () => {
     vi.useFakeTimers();
     const withPaco = entry({ armed: { rule: "on", paco: "on" }, ladder: [{ kind: "rule", name: "r", decide: rule }, { kind: "paco", name: "p", surface: "card" }] });

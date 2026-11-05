@@ -45,7 +45,7 @@ describe("shouldRecord", () => {
     expect(shouldRecord(any, result({ verdict: "ask" }))).toBe(true);
     expect(shouldRecord(any, result({ rung: "system_one" }))).toBe(true);
     expect(shouldRecord(any, result({ rung: "fail" }))).toBe(true);
-    expect(shouldRecord(any, result({ armedMode: "shadow" }))).toBe(true);
+    expect(shouldRecord(any, result({ armedMode: "late" }))).toBe(true);
     expect(shouldRecord(any, result({ walk: [{ kind: "rule", name: "a", mode: "on", result: { abstain: true } }, { kind: "rule", name: "b", mode: "on", result: { verdict: "pass" } }] }))).toBe(true);
     expect(shouldRecord({ ...any, alwaysRecord: true }, result({}))).toBe(true);
   });
@@ -147,13 +147,13 @@ describe("storeRecorder: decision_fallback (ruling 9)", () => {
     expect(open(store)).toEqual([["decision_fallback", "test.judge"]]);
     store.close();
   });
-  it("budget (an oversized state) and a fail with no named failure (shadowed or abstained) are not fallbacks and never page", async () => {
+  it("budget (an oversized state) and a fail with no named failure (abstained) are not fallbacks and never page", async () => {
     const store = RunStore.openInMemory();
     const rec = storeRecorder(store, { env: ENV });
     const budget = vi.fn(async (): Promise<RungResult<V>> => ({ failed: "budget", reason: "state_too_large" }));
     for (let k = 0; k < 4; k += 1) await decide(E, { v: "abstain" }, { run_id: null, recorder: rec, exec: { system_one: budget } });
-    const shadow = { ...E, armed: { rule: "on" as const, system_one: "shadow" as const } };
-    for (let k = 0; k < 4; k += 1) await decide(shadow, { v: "abstain" }, { run_id: null, recorder: rec, exec: { system_one: jevDown } });
+    const abstain = vi.fn(async (): Promise<RungResult<V>> => ({ abstain: true }));
+    for (let k = 0; k < 4; k += 1) await decide(E, { v: "abstain" }, { run_id: null, recorder: rec, exec: { system_one: abstain } });
     expect(store.listOpenIncidents()).toEqual([]);
     store.close();
   });

@@ -27,7 +27,7 @@ const RUNNER_CODES: ReadonlySet<string> = new Set(RUNNER_REASON_CODES);
 export function shouldRecord(entry: AnyEntry, r: AnyDecideResult): boolean {
   if (entry.alwaysRecord || r.verdict !== entry.defaultVerdict || r.armedMode !== "on") return true;
   if (r.rung !== "rule") return true;
-  return r.walk.length > 1 || r.walk.some((o) => o.kind === "paco" && o.result !== null);
+  return r.walk.length > 1 || r.walk.some((o) => o.kind === "paco");
 }
 
 export interface RecorderOptions { env?: NodeJS.ProcessEnv; now?: () => string }

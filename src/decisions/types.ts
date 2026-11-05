@@ -10,9 +10,9 @@ export const RUNG_KINDS = ["rule", "system_one", "model", "paco"] as const;
 export type RungKind = (typeof RUNG_KINDS)[number];
 /** The rung a decision names: one of the four, or `fail` when no rung answered and the entry's `fail` verdict stands. */
 export type DecidedBy = RungKind | "fail";
-/** `shadow` and `off` exist for the runner's input only: R13 forbids them on a registered entry (registry.ts). */
-export type ArmedMode = "on" | "shadow" | "off";
-/** How a recorded row's non-rule rungs ran; `late` is a verdict that arrived after its caller stopped waiting (stage 2b). */
+/** Every rung runs armed (R13): the type admits nothing else. */
+export type ArmedMode = "on";
+/** How a recorded row's non-rule rungs ran; `shadow` only on rows older builds wrote; `late` is a verdict that arrived after its caller stopped waiting (stage 2b). */
 export type RecordedArmedMode = "on" | "shadow" | "late";
 export const FALLBACK_REASONS = ["timeout", "outage", "parse", "threw", "stale_bar", "budget"] as const;
 export type FallbackReason = (typeof FALLBACK_REASONS)[number];
@@ -79,7 +79,7 @@ export interface Entry<S, V extends string, D = never> {
   defaultVerdict: V;
   alwaysRecord?: true;
   outcomes: readonly DecisionSignal[];
-  /** Every registered entry is armed `on` (R13); the type keeps the runner's modes for tests and for ctx.armed. */
+  /** Every registered entry is armed `on` (R13), by type. */
   armed: Partial<Record<RungKind, ArmedMode>>;
   effects: Readonly<Record<V, VerdictEffect>>;
   /** The code-owned reason codes a row may carry (plus RUNNER_REASON_CODES); anything else is recorded as null. */
@@ -88,8 +88,8 @@ export interface Entry<S, V extends string, D = never> {
 /** Any entry, for the registry and the recorder (a rule's state parameter is contravariant, so `never` accepts all). */
 export type AnyEntry = Entry<never, string, unknown>;
 
-/** One rung's turn in the walk; `result: null` = the rung was off and not asked. */
-export interface RungOutcome<V, D = never> { kind: RungKind; name: string; mode: ArmedMode; result: RungResult<V, D> | null }
+/** One rung's turn in the walk. */
+export interface RungOutcome<V, D = never> { kind: RungKind; name: string; mode: ArmedMode; result: RungResult<V, D> }
 export interface DecideResult<V, D = never> {
   verdict: V;
   rung: DecidedBy;
@@ -123,11 +123,6 @@ export interface DecideCtx<S, V, D> {
   run_id: string | null;
   tool_call_id?: string | null | undefined;
   recorder: DecisionRecorder;
-  /**
-   * Overrides the entry's arming for this call. Only the front door passed it; nothing does now (removed in Task 3).
-   * Ignored for locked entries.
-   */
-  armed?: Partial<Record<Exclude<RungKind, "rule">, ArmedMode>> | undefined;
   exec?: RungExecutors<S, V, D> | undefined;
   clock?: (() => number) | undefined;
   log?: ((line: string) => void) | undefined;
