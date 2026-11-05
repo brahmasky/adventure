@@ -1,6 +1,6 @@
 # Jev: no off switch, no shadow — design
 
-**Rev 1.1 · 2026-11-05 · Decisions 0 (Paco, 2026-11-04), 1-A and 2-A (Paco, 2026-11-05)**
+**Rev 1.2 (wording) · 2026-11-05 · Decisions 0 (Paco, 2026-11-04), 1-A and 2-A (Paco, 2026-11-05)**
 **Amends:** ADR 0034 rule 1.6 (R13) and the rules that name the front door's shadow; ADR 0033 (the front door's shadow,
 lane 5's shadow plan). No new ADR.
 **Rests on:** a code map of `main` @ `2c549379` (2026-11-05) and the live `.env` read for key names and the one triage value
@@ -75,8 +75,8 @@ file): `arm` both. No change.
 
 **Other configurations:** `HOUGE_JEV_TRIAGE_ENABLED=off` or `shadow` with Jev on was off or shadow, is now armed (the
 point of 1-A), with the boot line of §5. A marker or a gate-only calibration file was shadow (Jev asked, rows recorded,
-nothing applied), is now off: no `jev_decisions` row; the skipped verdict (reason `disabled`) and the always-recorded
-`turn.handler` row are written as the `off` path writes them today.
+nothing applied), is now off: Jev is not called; the skipped `jev_decisions` row (reason `disabled`) and the always-recorded
+`turn.handler` row are written as the `off` path writes them today (no answered row).
 
 ## 5. Retired env vars
 
@@ -228,3 +228,4 @@ out. The docs-parity test must stay green.
 - S1: no lane-off case exists in `live-gate-jev-tree` (dropped). S2: what the off path still writes (§4). S3: boot wiring test
   (§8). S4: no-send mechanism (§9). S5: precedence reason (§4). S6: ROADMAP:208 is a dated delta, left; README:331 is the
   removed intent shadow, left.
+- Rev 1.2 (wording): §4's "no `jev_decisions` row" was wrong; the off path writes the skipped `disabled` row. Found at the docs sync (Task 6).
