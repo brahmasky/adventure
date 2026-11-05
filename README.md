@@ -342,7 +342,7 @@ planner as one decision point: six typed questions pick a category, a lane (memo
 planner model role (Fast, Default or Thinking). Armed 2026-10-09 on Paco's calibration rows (zh and en), the answer and lookup lanes 2026-10-10; every unsure
 turn still runs the planner on Default. A Jev version move is checked in the background against Paco's approved reference turns (`houge jev models`); it arms when the new version agrees within Jev's noise and pages him once on a drift. Flow, bars and rollback:
 [docs/reference/jev-decision-layer.md](docs/reference/jev-decision-layer.md); every flag and event:
-[configuration.md](docs/reference/configuration.md#jev-system-one-adr-0033). The only switch over the front door's arming is `HOUGE_JEV_ENABLED` (the gate-only calibration file and a legacy disarm marker also hold it off); `HOUGE_JEV_LANES_OFF` and
+[configuration.md](docs/reference/configuration.md#jev-system-one-adr-0033). The only env switch over the front door's arming is `HOUGE_JEV_ENABLED` (the gate-only calibration file and a legacy disarm marker also hold it off); `HOUGE_JEV_LANES_OFF` and
 `HOUGE_JEV_TRIAGE_ENABLED` are retired (2026-11-05). `/status` shows `Jev front door: armed` or `off (cause)`.
 
 ## Google identity — gmail_read / google_api

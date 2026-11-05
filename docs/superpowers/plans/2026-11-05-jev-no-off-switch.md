@@ -23,7 +23,7 @@ Read it before your task; section numbers below (§N) refer to it.
 - Functions under 50 lines. Match surrounding style. Every changed line traces to the spec.
 - No migration; CHECK constraints keep `'shadow'`; `RecordedArmedMode` and `JevDecisionOutcome` keep `"shadow"` for rows older
   builds wrote; no writer emits `"shadow"`.
-- Never write the live DB `/Users/xiaochuan/Projects/adventure/houge.sqlite`; never send real Telegram from a gate.
+- Never write the live DB `<main checkout>/houge.sqlite`; never send real Telegram from a gate.
 - Status lines name env vars, never values. No message text or ids in rows or prints.
 - `src/decisions/jev-version-check.ts` and `src/decisions/` are protected surface: edited here under the approved spec.
 - Tests live in `tests/<area>/` mirroring `src/`; each test says why the behaviour matters; red before green.
@@ -422,7 +422,7 @@ Model: standard tier.
      plus a re-ask row when one fires); then zero rows with `armed_mode = 'shadow'` or `decision = 'shadow'` written by this run.
 - [ ] Red: the new R13 cases fail before the test edits match the tree (run `npx vitest run tests/adr`); green after.
 - [ ] `npm run build`; run every gate edited above that runs without old-dist arguments, plus the new gate:
-  `HOUGE_ENV_FILE=/Users/xiaochuan/Projects/adventure/.env node scripts/live-gate-jev-no-off-switch.mjs`. Rollback checks
+  `HOUGE_ENV_FILE=<main checkout>/.env node scripts/live-gate-jev-no-off-switch.mjs`. Rollback checks
   that need `--old-dist` are run by the orchestrator in the final gate pass; list them in the report.
 - [ ] Commit — `test(adr): R13 test tracks retired Jev flags; gates keep Jev off by HOUGE_JEV_ENABLED` and, separately,
   `test(gate): live gate for the front door without an off switch`.

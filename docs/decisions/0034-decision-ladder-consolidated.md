@@ -52,7 +52,7 @@ code-owned registry under `src/decisions/`. Everything else stays plain code (me
   and state-fenced). A gate entry's glue lives under `src/decisions/entries/`; a non-gate entry's may live outside (as
   `turn.handler`'s `src/core/turn-handler-ladder.ts` and `src/jev/tree-policy.ts`).
 - 1.6 **No off switch, no shadow by design (R13).** No env var, no switchable check; a new entry ships armed and stays
-  armed. The only switch over the front door's arming is the STOP flag
+  armed. The only env switch over the front door's arming is the STOP flag
   `HOUGE_JEV_ENABLED` (ADR 0018), which arms and disarms the front door — Jev's other entries do not read it; the gate-only
   calibration file and a legacy `houge.jev-disarmed` marker hold it off (ADR 0033 G6), and `/status` names the cause. `HOUGE_JEV_LANES_OFF` and `HOUGE_JEV_TRIAGE_ENABLED` are retired (2026-11-05); the runner has no
   shadow or off mode. (Ruling A5, signed by
