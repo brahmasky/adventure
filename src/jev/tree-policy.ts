@@ -9,7 +9,7 @@ import { CATEGORIES, type Category, type LastHougeTurn } from "./questions/tree.
 export type TurnRole = "fast" | "default" | "thinking";
 export type Effort = "low" | "medium" | "high";
 export type Lane = "answer" | "lookup" | "memory" | "status" | "planner";
-/** The two lanes Paco can switch off one by one (HOUGE_JEV_LANES_OFF, stage B spec §6). */
+/** The two lanes the version check can disarm one by one. */
 export type LaneSwitch = "answer" | "lookup";
 export type PreJudge = { kind: "ack_answer" } | { kind: "judge"; thinkHarder: boolean };
 

@@ -1000,13 +1000,13 @@ Default role.
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `HOUGE_JEV_ENABLED` | off | Master switch. Accepts 1/true/yes/on; read per turn; in `DISARM_FLAGS` (`/disarm` forces it off). Off overrides the tree flag. |
-| `HOUGE_JEV_TRIAGE_ENABLED` | `off` | `off` \| `shadow` \| `arm` (the flag keeps its lane 1 name). `off` asks nothing: one verdict row (`jev_skipped`, skip `disabled`), no route, so the supervisor pins nothing and `think harder` is ignored. `shadow` (to be removed: Paco 2026-11-04, spec pending) asks Jev and records rows with every question unarmed, so each verdict reads `uncalibrated` and the planner runs on Default exactly as without Jev. `arm` lets a calibrated verdict route, act and run the ack rule. Any other value (including `/disarm`'s `false`) reads as `off`. |
+| `HOUGE_JEV_ENABLED` | off | The front door's flag and ADR 0018 STOP flag. Accepts 1/true/yes/on; read per turn; in `DISARM_FLAGS` (`/disarm` forces it off). On, the front door is armed (unless the calibration file or a disarm marker below holds it off); off, Jev is not called: one skipped `disabled` verdict row, no route, so the supervisor pins nothing and `think harder` is ignored. Jev's other entries do not read it. `/status` shows `Jev front door: armed` or `off (cause)`. |
+| `HOUGE_JEV_TRIAGE_ENABLED` | `off` | Retired 2026-11-05 (ADR 0034 1.6): read for no behaviour; a value other than `arm` logs one line at boot. Keep `HOUGE_JEV_TRIAGE_ENABLED=arm` in `.env` while an older `dist/` is a rollback target: older builds read it. |
 | `HOUGE_MODEL_ROLES` | `resolved` | See [Model roles](#model-roles). `off` + `static`, after a kickstart, is the model-list rollback. |
-| `HOUGE_JEV_DISARM_PATH` | `<dataDir>/houge.jev-disarmed` | Legacy disarm marker. Nothing writes it since stage B (Dig deeper taps log per lane and never disarm). A marker an older build left caps `arm` at `shadow` (nothing armed, Default route) while it exists; **re-arming is Paco deleting the file**. |
-| `HOUGE_JEV_CALIBRATION_FILE` | unset | **Gate only.** A JSON array of calibration rows for the live gate or a labelled DB copy. Outside `HOUGE_JEV_GATE=1` a set file caps `arm` at `shadow`. Never set it in the daemon's `.env`. |
+| `HOUGE_JEV_DISARM_PATH` | `<dataDir>/houge.jev-disarmed` | Legacy disarm marker. Nothing writes it since stage B (Dig deeper taps log per lane and never disarm). A marker an older build left holds the front door off (Jev not called, Default route) while it exists; **re-arming is Paco deleting the file**. |
+| `HOUGE_JEV_CALIBRATION_FILE` | unset | **Gate only.** A JSON array of calibration rows for the live gate or a labelled DB copy. Outside `HOUGE_JEV_GATE=1` a set file holds the front door off. Never set it in the daemon's `.env`. |
 | `HOUGE_JEV_GATE` | unset | Set to `1` by `scripts/live-gate-jev-tree.mjs` only; lifts the file cap above for that process. Never set in the daemon's `.env`. |
-| `HOUGE_JEV_LANES_OFF` | empty | (To be removed: Paco 2026-11-04, spec pending.) Stage B. Comma list of lanes to switch off: `answer`, `lookup`. A listed lane is unarmed and its turns run the planner on the gear's role (reason `routed`), as if its calibration rows were absent. Read per turn from the process environment; the daemon loads `.env` only at boot, so a `.env` edit needs a kickstart. An unknown name logs one error at boot and is ignored. The memory and status lanes are not listed here: their remedies are their rows and `/disarm`. |
+| `HOUGE_JEV_LANES_OFF` | empty | Retired 2026-11-05 (ADR 0034 1.6): read for no behaviour; any non-empty value logs one line at boot. Remove it from `.env`. |
 
 `HOUGE_JEV_TRIAGE_MIN_CONF`, `_MIN_PURE` and `_MIN_STATUS` are **retired**: nothing reads them. The tree's bars are the
 code constants `TREE_BAR_DEFAULTS` (`src/jev/tree-policy.ts`; choice 0.6, `noul` yes 0.8 / no 0.2, memory 0.85, status 0.8,
@@ -1125,8 +1125,8 @@ decided by a ladder of deciders (code rule → Jev → model → Paco) and recor
 
 The injection judge, turn trust, the golden set and the noise band have no switch (R13). The noise band has no variable: its values are reviewed rows in `src/decisions/noise-band.ts`.
 
-**No off switch (ruling R13).** There is no variable that turns the decision system off or into shadow. The only shadow
-left is the front door's existing `HOUGE_JEV_TRIAGE_ENABLED=shadow` (to be removed: Paco 2026-11-04, spec pending), unchanged. If a build is fundamentally wrong, revert
+**No off switch (ruling R13).** There is no variable that turns the decision system off or into shadow. The one flag over the
+front door is the ADR 0018 STOP flag `HOUGE_JEV_ENABLED`, outside the rule (ruling A5). If a build is fundamentally wrong, revert
 its commit, rebuild `dist/`, kickstart: every stage's migrations are additive, and `scripts/check-decisions-rollback.mjs`
 proves the previous build runs on a migrated DB (run by each stage's final task). After such a revert, a digest still in
 the outbox is sent without its buttons (the old adapter ignores `button_rows`), and a tap on an earlier digest is answered

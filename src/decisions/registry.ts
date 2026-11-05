@@ -76,7 +76,6 @@ function shapeProblems(e: AnyEntry): string[] {
   if (!has(e.defaultVerdict)) p.push("defaultVerdict not in verdicts");
   if (e.ladder.length === 0) p.push("empty ladder");
   if (e.monotone && [...e.monotone.order].sort().join() !== [...e.verdicts].sort().join()) p.push("monotone order is not the verdict set");
-  if (Object.values(e.armed).some((m) => m !== "on")) p.push("entry armed other than on (R13: no designed shadow or off state)");
   if (e.locked && e.ladder.some((r) => r.kind !== "rule")) p.push("locked entry with a non-rule rung");
   if (LOCKED_IDS.has(e.id) && e.locked !== true) p.push("id is in LOCKED_ENTRY_IDS but the entry is not locked");
   if (e.locked && !LOCKED_IDS.has(e.id)) p.push("locked entry whose id is not in LOCKED_ENTRY_IDS");

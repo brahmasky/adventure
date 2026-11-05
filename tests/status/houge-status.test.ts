@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { resolveOmpConfig } from "../../src/omp/omp-config.js";
 import { setSharedOmpVersionCacheForTest } from "../../src/omp/omp-version-cache.js";
+import { JEV_DISARM_MARKER } from "../../src/jev/jev-flags.js";
 import { RunStore, type DaemonBootInput } from "../../src/run/run-store.js";
 import { staticRoleChains } from "../../src/omp/model-roles.js";
 import { parseModelChain } from "../../src/omp/model-string.js";
@@ -52,8 +53,30 @@ function seeded(): RunStore {
 const supervisor: StatusSupervisor = { ompVersion: () => "18.4.4", answeredModel: () => ({ provider: "anthropic", model: "claude-opus-5-5" }) };
 
 function status(store: RunStore, sup: StatusSupervisor | null = supervisor): string {
-  return renderHougeStatus(collectHougeStatus({ store, env, chatId: "555", pid: 4242, now: NOW, ...(sup ? { supervisor: sup } : {}) }));
+  return renderHougeStatus(collectHougeStatus({ store, env, chatId: "555", pid: 4242, now: NOW, dataDir: dir, ...(sup ? { supervisor: sup } : {}) }));
 }
+
+// An off front door looks like a quiet healthy one unless /status says why; the marker case omits HOUGE_JEV_DISARM_PATH so it proves dataDir is what gets read.
+describe("houge_status front-door line", () => {
+  it("armed with Jev on; right after Runtime:", () => {
+    env.HOUGE_JEV_ENABLED = "1";
+    const store = seeded();
+    expect(status(store)).toMatch(/Runtime: .*\nJev front door: armed\n/);
+    store.close();
+  });
+  it("names the older-build marker when one sits in dataDir", () => {
+    env.HOUGE_JEV_ENABLED = "1";
+    writeFileSync(join(dir, JEV_DISARM_MARKER), JSON.stringify({ reason: "x", at: "" }));
+    const store = seeded();
+    expect(status(store)).toContain("Jev front door: off (houge.jev-disarmed marker");
+    store.close();
+  });
+  it("names the env var when the flag is unset", () => {
+    const store = seeded();
+    expect(status(store)).toContain("Jev front door: off (HOUGE_JEV_ENABLED is off");
+    store.close();
+  });
+});
 
 describe("houge_status rendering", () => {
   const cacheWith = (v: string | null) => setSharedOmpVersionCacheForTest(resolveOmpConfig(env), { current: async () => ({ ok: true, version: v ?? "" }), lastVersion: () => v, setNewVersionListener: () => {} });
@@ -61,15 +84,15 @@ describe("houge_status rendering", () => {
   it("reports the shared cache's version with no supervisor, and falls back to the supervisor's", () => {
     const store = seeded();
     cacheWith("18.7.0");
-    expect(collectHougeStatus({ store, env, chatId: "555", pid: 4242, now: NOW }).omp).toBe("18.7.0");
+    expect(collectHougeStatus({ store, env, chatId: "555", pid: 4242, now: NOW, dataDir: dir }).omp).toBe("18.7.0");
     cacheWith(null);
-    expect(collectHougeStatus({ store, env, chatId: "555", pid: 4242, now: NOW, supervisor: { ompVersion: () => "18.6.0", answeredModel: () => undefined } }).omp).toBe("18.6.0");
+    expect(collectHougeStatus({ store, env, chatId: "555", pid: 4242, now: NOW, dataDir: dir, supervisor: { ompVersion: () => "18.6.0", answeredModel: () => undefined } }).omp).toBe("18.6.0");
   });
   // houge_status answers "which model am I on": once roles resolve, the head it reports must be the resolved one.
   it("reports the planner and reader heads the model roles resolve to, not a fixed chain", () => {
     const store = seeded();
     const chains = { ...staticRoleChains(), planner: parseModelChain("kimi-code/k3:low"), reader: parseModelChain("google-antigravity/gemini-3.8-flash:low") };
-    const s = collectHougeStatus({ store, env, chatId: "555", pid: 4242, now: NOW, chains });
+    const s = collectHougeStatus({ store, env, chatId: "555", pid: 4242, now: NOW, dataDir: dir, chains });
     expect([s.plannerTop, s.readerTop]).toEqual(["kimi-code/k3:low", "google-antigravity/gemini-3.8-flash:low"]);
     store.close();
   });

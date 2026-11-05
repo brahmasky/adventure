@@ -14,6 +14,9 @@
 // for the identical request body. The gate asks "does stage-1 code make the same decisions from the same Jev answers"; Jev's own drift is not its
 // subject. A request the old build never sent (other body, extra call) or a recorded call the new build never made is a
 // MISMATCH. Replay halves the TypeSafe calls (≈ 200 for the full run, plus retries), under Paco's approval below.
+// Determinism: Date.now is pinned to the shared clock around each build's triageTurn (triagePair), because CoreWorker.memoryKindAsker
+// stamps memory.kind's last_houge_turn.age_s from the wall clock (since bba828f7) while triage reads jevNow; the old side's real Jev
+// latency would otherwise shift the rounded second and the replay would miss on every memory-lane turn with context.
 // Admission: a turn one build admits and the other refuses is a MISMATCH (each side's refusal is printed); only a turn both
 // builds refuse identically is skipped, and those are counted. Lanes, planner, Telegram and the outbox are stubbed: the
 // cascade stub picks the first candidate, every other seat fails, search and fetch fail. Later jev_verdicts mutations are
@@ -116,7 +119,7 @@ function guardCopy(path, root, live) {
  * file), the answer and lookup lanes on for coverage (both builds see the same env; the live .env is untouched).
  */
 function gateEnv(m, root) {
-  for (const k of ["HOUGE_TELEGRAM_BOT_TOKEN", "HOUGE_TELEGRAM_CHAT_ID", "HOUGE_TELEGRAM_USER_ID", "HOUGE_JEV_CALIBRATION_FILE", "HOUGE_JEV_GATE", "HOUGE_JEV_LANES_OFF"]) delete process.env[k];
+  for (const k of ["HOUGE_TELEGRAM_BOT_TOKEN", "HOUGE_TELEGRAM_CHAT_ID", "HOUGE_TELEGRAM_USER_ID", "HOUGE_JEV_CALIBRATION_FILE", "HOUGE_JEV_GATE"]) delete process.env[k];
   for (const f of m.DISARM_FLAGS) process.env[f] = "false";
   Object.assign(process.env, {
     HOUGE_EPISODIC_ENABLED: "false", HOUGE_WIKI_ENABLED: "false", HOUGE_TOMBSTONE_PATH: join(root, "houge.kill"), HOUGE_PARK_MARKER_PATH: join(root, "houge.parked"),
@@ -213,9 +216,17 @@ const pick = (cols, clockT) => (row) => Object.fromEntries(cols.filter((c) => !I
   .map((c) => [c, c === "state_built_at" || c === "thread_cut_at" ? clockCol(c, row[c], clockT) : row[c]]));
 const linkOf = (id, v) => (id === null || id === undefined ? null : v && id === v.verdict_id ? "<own verdict>" : "<other>");
 
+/**
+ * Spec 2026-11-05-jev-no-off-switch-no-shadow-design.md §7: the /status reply gained one line, "Jev front door: …", an
+ * intended change the old build cannot emit. Drop exactly that line (and its newline) from a lane reply's text on both sides.
+ */
+const FRONT_DOOR_LINE = /^Jev front door: .*(?:\n|$)/m;
+const maskFrontDoor = (text) => (typeof text === "string" && FRONT_DOOR_LINE.test(text) ? text.replace(FRONT_DOOR_LINE, "").trimEnd() : text);
+
 /** The whole returned outcome; route.verdict_id as a link to the run's own verdict, uuids elsewhere masked. */
 function outcomeOf(out, v) {
-  const linked = out.route ? { ...out, route: { ...out.route, verdict_id: linkOf(out.route.verdict_id, v) } } : out;
+  const masked = out.kind === "lane_reply" ? { ...out, text: maskFrontDoor(out.text) } : out;
+  const linked = masked.route ? { ...masked, route: { ...masked.route, verdict_id: linkOf(masked.route.verdict_id, v) } } : masked;
   return JSON.parse(JSON.stringify(linked).replace(UUID, "<uuid>"));
 }
 
@@ -255,6 +266,13 @@ function linkOk(side, run_id) {
   return v?.decision_id === d[0].decision_id && jd.length > 0 && jd.every((r) => r.ladder_decision_id === d[0].decision_id);
 }
 
+/** Date.now() reads the shared clock for the duration of one build's triageTurn; the real one is restored in a finally. */
+async function withPinnedNow(clock, fn) {
+  const real = Date.now;
+  Date.now = () => clock.t;
+  try { return await fn(); } finally { Date.now = real; }
+}
+
 /**
  * One attempt: old build on real Jev (recorded), then the new build on the replay, paced after both. `bothRefused` when the
  * two builds refuse the turn identically; `oneRefused` (a mismatch) when they disagree about admitting it.
@@ -267,8 +285,8 @@ async function triagePair(g, item, attempt) {
     const refusal = { old: a.refused ?? "admitted", new: b.refused ?? "admitted" };
     return refusal.old === refusal.new ? { bothRefused: refusal } : { oneRefused: refusal };
   }
-  const outA = await g.oldSide.worker.triageTurn(a.input);
-  const outB = await g.newSide.worker.triageTurn(b.input);
+  const outA = await withPinnedNow(g.clock, () => g.oldSide.worker.triageTurn(a.input));
+  const outB = await withPinnedNow(g.clock, () => g.newSide.worker.triageTurn(b.input));
   await sleep(PACE_MS);
   const replay = { calls: g.tape.entries.length, misses: g.tape.misses, unused: g.tape.entries.filter((x) => !x.used).length };
   return { a: project(g.oldSide, a.run_id, g.cols, outA, g.clock.t), b: project(g.newSide, b.run_id, g.cols, outB, g.clock.t),
@@ -310,7 +328,7 @@ async function dualRun(g, items, limit) {
 function reportDualRun(t, retries) {
   const det = t.match + t.mismatch.length;
   console.log(`  pairs ${t.completed}: match ${t.match} · mismatch ${t.mismatch.length} · inconclusive ${t.inconclusive} · retried ${retries} · refused identically by both builds (skipped) ${t.skipped}`);
-  for (const m of t.mismatch.slice(0, 5)) console.log(`  mismatch #${m.k} (${m.replay ? `Jev replay ${JSON.stringify(m.replay)}` : "admission"}):\n    old ${JSON.stringify(m.old)}\n    new ${JSON.stringify(m.new)}`);
+  for (const m of t.mismatch) console.log(`  mismatch #${m.k} (${m.replay ? `Jev replay ${JSON.stringify(m.replay)}` : "admission"}):\n    old ${JSON.stringify(m.old)}\n    new ${JSON.stringify(m.new)}`);
   // senior re-review S3: a shortfall that the inconclusive (both-failed) pairs explain is infrastructure, not code
   if (det < MIN_DETERMINISTIC && MIN_DETERMINISTIC - det <= t.inconclusive) cannotRun(`P6: at least ${MIN_DETERMINISTIC} deterministic pairs`, `${det}; ${t.inconclusive} pair(s) lost to Jev failures`);
   else check(`P6: at least ${MIN_DETERMINISTIC} deterministic pairs`, det >= MIN_DETERMINISTIC, `${det}; inconclusive (both sides failed Jev) ${t.inconclusive}`);

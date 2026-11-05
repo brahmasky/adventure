@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { recordTriageOverride } from "../../src/gateway/memlane-commands.js";
 import { createQueuedTurnRun } from "../helpers/runs.js";
 import {
-  ARM, cat, HEAVY, IdMap, kind, jevDown, jevNotJson, jevStatus, LIGHT, only, picks, projectRun, scriptedLlm, SHADOW, sinkOf, treeSays, triageHarness, webOk,
+  ARM, cat, HEAVY, IdMap, kind, jevDown, jevNotJson, jevStatus, LIGHT, only, picks, projectRun, scriptedLlm, calibrationFile, disarmMarkerEnv, sinkOf, treeSays, triageHarness, webOk,
   type Harness, type HarnessOptions, type Says, type TurnOptions
 } from "../helpers/triage-harness.js";
 
@@ -77,7 +77,7 @@ const CASES: PinCase[] = [
   { name: "jev-429", text: "以后回复短一点", fetch: () => jevStatus(429) },
   { name: "jev-parse", text: "以后回复短一点", fetch: jevNotJson },
   { name: "jev-transport-think-harder", text: "认真想：这个怎么办", fetch: jevDown },
-  { name: "shadow", text: "以后回复短一点", fetch: () => treeSays(RULE), opts: { env: SHADOW } },
+  { name: "disarm-marker", text: "以后回复短一点", fetch: () => treeSays(RULE), opts: { env: disarmMarkerEnv() } },
   // Jev version check: a reported id with no check state (never seen, or not yet checked) arms nothing: the planner fallback.
   { name: "unchecked-model", text: "明天悉尼天气怎么样？", fetch: () => treeSays({ model: "jev-9.9.9" }) },
   { name: "routed-other-light", text: "帮我整理一下这周的待办", fetch: () => treeSays({ category: cat({ other: 0.9 }) }) },
@@ -100,7 +100,9 @@ const CASES: PinCase[] = [
   { name: "answer-lane-compose-failed", text: "你觉得呢？", fetch: () => treeSays({ category: cat({ answer: 0.9 }) }),
     opts: { llm: scriptedLlm({ compose: async () => ({ ok: false, error: "all lane legs failed" }) }) } },
   { name: "answer-lane-card-throws", text: "你觉得呢？", fetch: () => treeSays({ category: cat({ answer: 0.9 }) }), breakCard: "lane" },
-  { name: "answer-lane-off", text: "你觉得呢？", fetch: () => treeSays({ category: cat({ answer: 0.9 }) }), opts: { env: { ...ARM, HOUGE_JEV_LANES_OFF: "answer" } } },
+  // the answer lane unarmed by calibration: the file lacks the category:answer pseudo-row, so the turn runs the planner (reason routed)
+  { name: "answer-row-missing", text: "你觉得呢？", fetch: () => treeSays({ category: cat({ answer: 0.9 }) }),
+    opts: { env: { ...ARM, HOUGE_JEV_CALIBRATION_FILE: calibrationFile(["category:answer"]) } } },
   { name: "lookup-lane", text: "明天悉尼天气怎么样？", fetch: () => treeSays({ category: cat({ lookup: 0.9 }), actions: LIGHT }), opts: { web: webOk() } },
   { name: "lookup-url-rule", text: "帮我看看 https://weather.example/sydney 说了什么", fetch: () => treeSays({ category: cat({ lookup: 0.9 }), actions: LIGHT }) },
   { name: "routed-then-routeEnd-escalation", text: "帮我整理一下这周的待办", fetch: () => treeSays({ category: cat({ other: 0.9 }) }),

@@ -138,7 +138,7 @@ async function setup() {
   mkdirSync(join(root, "daemon"), { recursive: true, mode: 0o700 });
   for (const k of ["HOUGE_TELEGRAM_BOT_TOKEN", "HOUGE_TELEGRAM_USER_ID", ...DELETE_PINS]) delete process.env[k];
   Object.assign(process.env, { HOUGE_DAEMON_TMP_DIR: join(root, "daemon"), HOUGE_TOMBSTONE_PATH: join(root, "houge.kill"), HOUGE_DISARM_PATH: join(root, "houge.disarm"),
-    HOUGE_TELEGRAM_CHAT_ID: STUB_CHAT, HOUGE_OMP_BIN: "/nonexistent/houge-rollback/omp", HOUGE_EPISODIC_ENABLED: "false", HOUGE_WIKI_ENABLED: "false", HOUGE_JEV_TRIAGE_ENABLED: "off" });
+    HOUGE_TELEGRAM_CHAT_ID: STUB_CHAT, HOUGE_OMP_BIN: "/nonexistent/houge-rollback/omp", HOUGE_EPISODIC_ENABLED: "false", HOUGE_WIKI_ENABLED: "false", HOUGE_JEV_ENABLED: "0", HOUGE_JEV_TRIAGE_ENABLED: "off" });
   const mods = async (dist) => {
     const [store, so, roles, cat, tick] = await Promise.all(["run/run-store.js", "run/store-options.js", "omp/role-resolver.js", "omp/model-catalog.js", "omp/model-roles-tick.js"].map((m) => import(join(dist, m))));
     return { RunStore: store.RunStore, storeOptionsFor: so.storeOptionsFor, RoleResolver: roles.RoleResolver, parseOmpCatalog: cat.parseOmpCatalog, runModelRolesTick: tick.runModelRolesTick };

@@ -55,7 +55,7 @@ export function memLaneAskTurnEvent(store: RunStore, event: TypedTaskEvent): { o
 /**
  * The override label (spec §5.9) and the per-lane correction signal (stage B §6): the tap marks the original verdict
  * `ask_anyway`, and the third tap on ONE lane in seven days opens that lane's `triage_overrides` page. Nothing is disarmed:
- * Paco raises a bar or switches the lane off (HOUGE_JEV_LANES_OFF). A run with no verdict writes `lane: null` and counts nowhere.
+ * Paco raises a bar or disarms Jev. A run with no verdict writes `lane: null` and counts nowhere.
  */
 export function recordTriageOverride(store: RunStore, original_run_id: string, new_run_id: string, chat_id: string, now: string = new Date().toISOString()): void {
   const change_id = store.getLessonChangeByRun(original_run_id)?.change_id ?? store.getMemoryChangeByRun(original_run_id)?.change_id ?? null;

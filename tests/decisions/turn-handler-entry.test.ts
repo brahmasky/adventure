@@ -18,10 +18,11 @@ describe("turnHandlerGate", () => {
     expect(turnHandlerGate({ ...S, hasTurnState: false })).toEqual({ verdict: "planner", reason: "error" });
     expect(turnHandlerGate({ ...S, isAck: () => true })).toEqual({ verdict: "planner", reason: "ack_rule" });
   });
-  it("shadow never runs the ack rule (it changes the role), and the ack check runs only after the earlier exits", () => {
+  it("the ack rule runs for mode arm, and the ack check runs only after the earlier exits", () => {
     const isAck = vi.fn(() => true);
-    expect(turnHandlerGate({ ...S, mode: "shadow", isAck })).toEqual({ abstain: true });
-    expect(isAck).not.toHaveBeenCalled();
+    expect(turnHandlerGate({ ...S, mode: "arm", isAck })).toEqual({ verdict: "planner", reason: "ack_rule" });
+    expect(isAck).toHaveBeenCalledTimes(1);
+    isAck.mockClear();
     turnHandlerGate({ ...S, posture: "killed", isAck });
     expect(isAck).not.toHaveBeenCalled();
   });

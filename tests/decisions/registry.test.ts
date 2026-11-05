@@ -40,7 +40,7 @@ describe("the registry", () => {
   });
 });
 
-describe("entryProblems (R12 and R13 as data)", () => {
+describe("entryProblems (R12 as data: a judged entry over Paco's message must be reversible and announced)", () => {
   it("fails a judged entry over Paco's message whose verdict causes an irreversible or unannounced effect", () => {
     expect(entryProblems(base({ effects: { ...HANDLER.effects, memory: fx("effect", false) } })))
       .toContain("a jev/model rung can choose memory, an effect not reversible or not announced on a card");
@@ -72,10 +72,9 @@ describe("entryProblems (R12 and R13 as data)", () => {
     const codeOnly = base({ ladder: [HANDLER.ladder[0]!], armed: { rule: "on" }, effects: { ...HANDLER.effects, memory: fx("effect", false, "none") } });
     expect(entryProblems(codeOnly)).toEqual([]);
   });
-  it("fails a missing effect, a shadow or off arming (R13), a locked entry with a judge, and a fail or default outside the verdicts", () => {
+  it("fails a missing effect, a locked entry with a judge, and a fail or default outside the verdicts", () => {
     const noMemory = Object.fromEntries(Object.entries(HANDLER.effects).filter(([v]) => v !== "memory"));
     expect(entryProblems(base({ effects: noMemory }))).toContain("no effect declared for memory");
-    expect(entryProblems(base({ armed: { rule: "on", system_one: "shadow", model: "on" } }))).toContain("entry armed other than on (R13: no designed shadow or off state)");
     expect(entryProblems(base({ locked: true }))).toContain("locked entry with a non-rule rung");
     // the locked check runs both ways: an id spec §6.1 locks must carry locked: true, and locked: true must be a listed id
     const rulesOnly = { ladder: [HANDLER.ladder[0]!], armed: { rule: "on" as const } };

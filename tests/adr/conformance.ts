@@ -46,14 +46,17 @@ export function switchEnvNames(texts: readonly string[]): string[] {
 }
 
 /**
- * The modes the front door's flag accepts: the string literals of the `JevTriageMode` union plus every `raw === "x"`
- * comparison inside `resolveJevTriageMode` (where the env value is read). Sorted, distinct.
+ * The modes the front door can take: the string literals of the `JevTriageMode` union. The resolver reads no raw env
+ * string any more (it returns a typed {mode, cause}), so the union is the whole surface. Sorted, distinct.
  */
 export function triageModes(jevFlagsSrc: string): string[] {
   const modes = new Set<string>();
   const union = /export type JevTriageMode =([^;]+);/.exec(jevFlagsSrc)?.[1] ?? "";
   for (const m of union.matchAll(/"([a-z]+)"/g)) modes.add(m[1] as string);
-  const fn = /export function resolveJevTriageMode[\s\S]*?\n}\n/.exec(jevFlagsSrc)?.[0] ?? "";
-  for (const m of fn.matchAll(/\braw === "([a-z]+)"/g)) modes.add(m[1] as string);
   return [...modes].sort();
+}
+
+/** ADR 0034 1.6 (R13): the paths of the files whose text contains any retired flag name. Sorted. */
+export function retiredNameFiles(files: readonly { path: string; text: string }[], names: readonly string[]): string[] {
+  return files.filter((f) => names.some((n) => f.text.includes(n))).map((f) => f.path).sort();
 }

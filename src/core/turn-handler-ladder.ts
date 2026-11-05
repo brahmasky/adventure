@@ -1,11 +1,10 @@
 import { safeReason } from "../domain/error-code.js";
 import type { CalibrationRow } from "../jev/calibration.js";
 import { topProbOf, type Decision, type SkipReason } from "../jev/decide.js";
-import type { JevTriageMode } from "../jev/jev-flags.js";
 import type { Lang } from "../jev/intent-question.js";
 import type { JevAnswer, JevChoiceAnswer } from "../jev/jev-client.js";
 import { criteriaHash, type Question } from "../jev/questions/types.js";
-import { LANE_LIMITS, routeTree, TREE_BAR_DEFAULTS, TWO_REQUEST_ACTIONS, type Armed, type LaneSwitch, type Route, type RoutePlan,
+import { LANE_LIMITS, routeTree, TREE_BAR_DEFAULTS, TWO_REQUEST_ACTIONS, type Armed, type Route, type RoutePlan,
   type TreeBars } from "../jev/tree-policy.js";
 import { isBareAck } from "../omp/bare-ack.js";
 import { isSkipReason, type TurnHandlerVerdict } from "../decisions/entries/turn-handler.js";
@@ -21,7 +20,6 @@ import type { DecideResult, FallbackReason, Reask, RungOutcome, RungResult } fro
 export type AnsweredDecision = Extract<Decision, { status: "answered" }>;
 /** What the tree rung hands the cascade rung and the handlers: Jev's answer and rows, the arming, the plan, the route. */
 export interface TreeDetail { d: AnsweredDecision; armed: Armed; plan?: RoutePlan; route?: Route; error?: string }
-export const UNARMED: Armed = { category: false, status: false, memory: false, gear: false, rule: false, answer: false, lookup: false };
 const URL_IN_TEXT = /https?:\/\//i;
 type TreeOpts = Omit<Parameters<typeof routeTree>[1], "armed">;
 
@@ -82,9 +80,8 @@ export function reaskOf(d: AnsweredDecision): Reask | undefined {
   return { kind: d.reask, pFirst: first ? topProbOf(first) : 0 };
 }
 
-/** `arming`: the reported model's check state (treeArmingFor, src/decisions/jev-version-check.ts); arm mode reads it, shadow arms nothing. */
-export interface PlanInput { userText: string; mode: JevTriageMode; lang: Lang; thinkHarder: boolean; rows: readonly CalibrationRow[]; lanesOff: ReadonlySet<LaneSwitch>;
-  arming: ModelArming }
+/** `arming`: the reported model's check state (treeArmingFor, src/decisions/jev-version-check.ts). */
+export interface PlanInput { userText: string; lang: Lang; thinkHarder: boolean; rows: readonly CalibrationRow[]; arming: ModelArming }
 
 /**
  * Jev answered: arming, routeTree, urlRule — today's routeAnswered head (core-worker.ts:2782-2792 at 3bff437). Below the bar
@@ -97,7 +94,7 @@ export function planTree(d: AnsweredDecision, i: PlanInput): RungResult<TurnHand
   let plan: RoutePlan;
   try {
     opts = { bars: TREE_BAR_DEFAULTS, thinkHarder: i.thinkHarder, bareAck: isBareAck(i.userText) };
-    armed = i.mode === "arm" ? treeArmed(i.lang, i.rows, i.lanesOff, i.arming) : UNARMED;
+    armed = treeArmed(i.lang, i.rows, i.arming);
     plan = routeTree(d.answers, { ...opts, armed });
   } catch (e) {
     console.error(`triage: threw: ${safeReason(e)}`); // today's line (the old triageTurn catch logged this throw); the ledger keeps only `threw`

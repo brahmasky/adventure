@@ -86,7 +86,7 @@ export function recordSkip(store: RunStore, point: DecisionPoint, run_id: string
 }
 
 /** Inside the caller's transaction: the rows land with their final decision (and the ladder decision they answered), next to the lane's own writes. */
-export function persistDecisionRows(store: RunStore, rows: JevDecisionInsert[], decision: "act" | "fallback" | "shadow", threshold_used: string | null,
+export function persistDecisionRows(store: RunStore, rows: JevDecisionInsert[], decision: "act" | "fallback", threshold_used: string | null,
   ladder_decision_id: string | null = null): string[] {
   return rows.map((r) => store.insertJevDecision({ ...r, decision, threshold_used, ladder_decision_id }));
 }

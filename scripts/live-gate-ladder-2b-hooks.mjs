@@ -86,7 +86,7 @@ function copyDb(from, to) {
 function gateEnv(root) {
   for (const k of ["HOUGE_TELEGRAM_BOT_TOKEN", "HOUGE_TELEGRAM_USER_ID"]) delete process.env[k];
   Object.assign(process.env, { HOUGE_TELEGRAM_CHAT_ID: CHAT, HOUGE_TRUST_ASK_TTL_MS: String(TTL_MS), HOUGE_OMP_TURN_TIMEOUT_MS: String(TURN_MS),
-    HOUGE_EPISODIC_ENABLED: "false", HOUGE_WIKI_ENABLED: "false", HOUGE_JEV_TRIAGE_ENABLED: "off",
+    HOUGE_EPISODIC_ENABLED: "false", HOUGE_WIKI_ENABLED: "false", HOUGE_JEV_ENABLED: "0", HOUGE_JEV_TRIAGE_ENABLED: "off",
     HOUGE_TOMBSTONE_PATH: join(root, "houge.kill"), HOUGE_PARK_MARKER_PATH: join(root, "houge.parked"), HOUGE_DISARM_PATH: join(root, "houge.disarm"),
     HOUGE_DAEMON_TMP_DIR: join(root, "daemon-tmp") }); // the gate never shares the running daemon's temp space
 }

@@ -52,9 +52,10 @@ code-owned registry under `src/decisions/`. Everything else stays plain code (me
   and state-fenced). A gate entry's glue lives under `src/decisions/entries/`; a non-gate entry's may live outside (as
   `turn.handler`'s `src/core/turn-handler-ladder.ts` and `src/jev/tree-policy.ts`).
 - 1.6 **No off switch, no shadow by design (R13).** No env var, no switchable check; a new entry ships armed and stays
-  armed. The runner's `shadow` mode exists only so the front door keeps its configured triage shadow mode. (Paco
-  2026-11-04: `HOUGE_JEV_LANES_OFF`, the front door's `shadow` mode and lane 5's shadow plan are to be removed; the
-  code change has its own spec (Jev: no off switch, no shadow), and this rule is amended when it ships.) (Ruling A5, signed by
+  armed. The only env switch over the front door's arming is the STOP flag
+  `HOUGE_JEV_ENABLED` (ADR 0018), which arms and disarms the front door — Jev's other entries do not read it; the gate-only
+  calibration file and a legacy `houge.jev-disarmed` marker hold it off (ADR 0033 G6), and `/status` names the cause. `HOUGE_JEV_LANES_OFF` and `HOUGE_JEV_TRIAGE_ENABLED` are retired (2026-11-05); the runner has no
+  shadow or off mode. (Ruling A5, signed by
   Paco 2026-11-05: the `/disarm` STOP flags of ADR 0018, `HOUGE_JEV_ENABLED` and
   `HOUGE_IMPROVE_ENABLED`, are the operator's brake on a whole capability (`/disarm` forces them off and `/status`
   then shows `disarmed`; the improvement tick's flag also shows in the digest's Watch line), and are outside this
@@ -92,8 +93,8 @@ code-owned registry under `src/decisions/`. Everything else stays plain code (me
 ### 3. Recording: decide, then record
 
 - 3.1 **Ledger.** Recording never changes a decision. A `decisions` row is written when the verdict differs from the
-  default, a rung beyond the first rule answered or was asked in shadow (the runner's `shadow` mode, rule 1.6), Paco was
-  involved, or the entry always records (`alwaysRecord`). Rows hold ids, closed enums and numbers: no state column,
+  default, a rung beyond the first rule answered, Paco was
+  involved, or the entry always records (`alwaysRecord`). (Rows written before 2026-11-05 may carry `armed_mode = 'shadow'`.) Rows hold ids, closed enums and numbers: no state column,
   never text. `decision_outcomes` holds closed-enum outcome signals, validated at insert. Domain detail stays in the
   entry's table (`jev_verdicts.decision_id`, `jev_decisions.ladder_decision_id`).
 - 3.2 **A turn's row is written with that turn's own records, so a lost turn writes no row.** Rows are written only
@@ -501,6 +502,7 @@ write.
 | 2026-11-03 | ADR 0031: decision-health kinds to the log, `decision_health` a card, reminder kinds | [chat](../superpowers/specs/2026-11-03-chat-is-for-paco-design.md) | 2026-11-04 |
 | 2026-11-04 | This consolidation, no change of meaning | — | 2026-11-05 |
 | 2026-11-05 | Ruling A5: the ADR 0018 `/disarm` STOP flags are outside 1.6; found by the R13 conformance test (`tests/adr/`) | — | 2026-11-05 |
+| 2026-11-05 | No off switch, no shadow: front-door shadow, HOUGE_JEV_LANES_OFF and HOUGE_JEV_TRIAGE_ENABLED removed; HOUGE_JEV_ENABLED is the front door's STOP flag | [no off switch](../superpowers/specs/2026-11-05-jev-no-off-switch-no-shadow-design.md) | 2026-11-06 |
 
 ## Reference map
 

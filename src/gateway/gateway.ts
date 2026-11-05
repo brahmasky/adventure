@@ -17,7 +17,7 @@ import {
   writeDisarmPosture
 } from "../config/disarm-posture.js";
 import { formatKillAckText, writeTombstone } from "../run/tombstone.js";
-import { parseRatingHistory, type LessonRow, type RunStore, type ScheduledTaskRow } from "../run/run-store.js";
+import { parseRatingHistory, type LessonRow, type PollHeartbeat, type RunStore, type ScheduledTaskRow } from "../run/run-store.js";
 import {
   computeNextRunAt,
   describeScheduleSpec,
@@ -37,6 +37,7 @@ import { join } from "node:path";
 import { evolutionLaneSnapshot } from "../core/evolution-lane.js";
 import { changesText } from "../notifications/change-log-view.js";
 import { INCIDENT_ROUTE, isRoutedKind } from "../run/incident-route.js";
+import { frontDoorLine } from "../jev/jev-flags.js";
 import { queryStatus } from "../status/status-query.js";
 import { formatUsageTable } from "../status/usage-report.js";
 import { resolveRadarAt, resolveRadarEnabled, resolveRadarTz } from "../capabilities/idea-radar.js";
@@ -156,6 +157,18 @@ const LOW_RATING_MAX = 1;
 
 /** ADR 0018 + decision ladder plan ruling 16: commands the per-chat rate limit never delays (kill; digest review taps). */
 export const RATE_LIMIT_EXEMPT: ReadonlySet<string> = new Set(["kill", "decision_review", "improvement_tap", "jev_accept_tap", "model_tier_tap"]); // + empty-tier card taps (spec 2026-11-02 §4.4)
+
+/** ⓪·3 S2c: the rating signal at a glance — an open ask, or the last capture (local time). */
+function ratingStatusText(
+  rating: { pending_since: string | null; last_rating: number | null; last_rating_at: string | null },
+  localOf: (iso: string) => string
+): string {
+  return rating.pending_since
+    ? `pending ask since ${rating.pending_since}`
+    : rating.last_rating !== null && rating.last_rating_at
+      ? `last ${rating.last_rating}/3 at ${localOf(rating.last_rating_at)}`
+      : "none yet";
+}
 
 export class Gateway {
   private readonly caps: GlobalBudgetCaps;
@@ -1333,6 +1346,85 @@ export class Gateway {
     return `${paged} paged · ${internal} internal open · ${week} changes this week · /changes`;
   }
 
+  /** Idea Radar R1 /status line; absent when the flag is off. */
+  private radarStatusLines(now: string): string[] {
+    // Idea Radar R1: the sweeps-section rot line — last tick + active-card count. Absent
+    // when the flag is off (a dark feature must not advertise itself in /status).
+    return resolveRadarEnabled(process.env)
+      ? [
+          `Radar: last tick ${
+            this.runStore.getRadarLastRun()
+              ? `${relativeTimeAgo(this.runStore.getRadarLastRun()!, now)} ago`
+              : "never"
+          } · ${this.runStore.countActiveIdeas()} active cards`
+        ]
+      : [];
+  }
+
+  /** Idea Radar R2 /status panel line; absent when the panel flag is off. */
+  private panelStatusLines(now: string): string[] {
+    // Idea Radar R2: the panel health line — last weekly tick, the RESOLVED schedule
+    // slot (a swallowed HOUGE_RADAR_PANEL_AT typo is visible here as the default), and
+    // the latest shortlist size. Absent when the panel flag is off (dark feature).
+    return resolvePanelEnabled(process.env)
+      ? [
+          (() => {
+            const lastRun = this.runStore.getPanelLastRun();
+            const slot = resolvePanelAt(process.env);
+            const shortlist = this.runStore.getLatestShortlist();
+            // Spec §2 W3: a rejected chair argv flag would silently fall back to
+            // mean-score forever — when EVERY rationale in the latest snapshot is the
+            // fallback constant, the last panel ran chairless; say so here.
+            const chairOff =
+              shortlist !== null &&
+              shortlist.cards.length > 0 &&
+              shortlist.cards.every((c) => c.chair_rationale === CHAIR_FALLBACK_RATIONALE);
+            return `Panel: last ${lastRun ? `${relativeTimeAgo(lastRun, now)} ago` : "never"} · ${
+              slot ? `${slot.day} ${slot.at}` : "off"
+            } · shortlist ${shortlist ? shortlist.cards.length : "none"}${chairOff ? " · chair off" : ""}`;
+          })()
+        ]
+      : [];
+  }
+
+  /** The HEALTH block of the /status overview: liveness, self-check, front door, radar/panel, errors, evolution lane. */
+  private healthLines(h: {
+    poller: PollHeartbeat | null; sweep: { last_swept_at: string | null }; now: string; chatId: string | null; localOf: (iso: string) => string;
+  }): string[] {
+    const { poller, sweep, now, chatId, localOf } = h;
+    const daemonText = poller
+      ? poller.last_success_at
+        ? `polling · last ${localOf(poller.last_success_at)} · ${relativeTimeAgo(poller.last_success_at, now)} ago`
+        : "polling · last never"
+      : "not running";
+    const sweptText = sweep.last_swept_at ? `${relativeTimeAgo(sweep.last_swept_at, now)} ago` : "never";
+    // Only a STILL-CURRENT error shows: if a poll succeeded after the last error, it
+    // already recovered — don't leave a stale red line under a green header.
+    const errorRecovered =
+      !!poller?.last_success_at &&
+      !!poller?.last_error_at &&
+      Date.parse(poller.last_success_at) > Date.parse(poller.last_error_at);
+    const errorsText =
+      poller && poller.last_error && !errorRecovered
+        ? `${poller.last_error}${poller.last_error_at ? ` · ${localOf(poller.last_error_at)}` : ""}`
+        : "none";
+
+    // ⓪·3g: surface an in-flight background evolution pipeline (in-process lane state,
+    // so only the daemon's own /status shows it — exactly where it is meaningful).
+    const lane = evolutionLaneSnapshot();
+
+    return [
+      `Daemon: ${daemonText}`,
+      `Self-check: swept ${sweptText} · ${this.changesLine(now)}`,
+      frontDoorLine(process.env, this.options.dataDir ?? this.projectRoot),
+      ...this.carryLine(chatId, localOf),
+      ...this.radarStatusLines(now),
+      ...this.panelStatusLines(now),
+      `Errors: ${errorsText}`,
+      ...(lane.busy && lane.current ? [`Evolution: ${lane.current.tool} running since ${lane.current.started_at}`] : [])
+    ];
+  }
+
   private formatStatusText(status: ReturnType<typeof queryStatus>, now: string, chatId: string | null): string {
     if (!status.ok) {
       return status.error.message;
@@ -1353,81 +1445,15 @@ export class Gateway {
       const city = zone.split("/").pop() ?? zone;
       const localOf = (iso: string): string => `${formatInstantInZone(iso, zone)} (${city})`;
 
-      // ⓪·3 S2c: the rating signal at a glance — an open ask, or the last capture (local time).
-      const ratingText = rating.pending_since
-        ? `pending ask since ${rating.pending_since}`
-        : rating.last_rating !== null && rating.last_rating_at
-          ? `last ${rating.last_rating}/3 at ${localOf(rating.last_rating_at)}`
-          : "none yet";
+      const ratingText = ratingStatusText(rating, localOf);
 
-      // HEALTH — daemon liveness, the invariant-sweep self-check, and the last poll error.
-      const daemonText = poller
-        ? poller.last_success_at
-          ? `polling · last ${localOf(poller.last_success_at)} · ${relativeTimeAgo(poller.last_success_at, now)} ago`
-          : "polling · last never"
-        : "not running";
-      const sweptText = sweep.last_swept_at ? `${relativeTimeAgo(sweep.last_swept_at, now)} ago` : "never";
-      // Idea Radar R1: the sweeps-section rot line — last tick + active-card count. Absent
-      // when the flag is off (a dark feature must not advertise itself in /status).
-      const radarLine = resolveRadarEnabled(process.env)
-        ? [
-            `Radar: last tick ${
-              this.runStore.getRadarLastRun()
-                ? `${relativeTimeAgo(this.runStore.getRadarLastRun()!, now)} ago`
-                : "never"
-            } · ${this.runStore.countActiveIdeas()} active cards`
-          ]
-        : [];
-      // Idea Radar R2: the panel health line — last weekly tick, the RESOLVED schedule
-      // slot (a swallowed HOUGE_RADAR_PANEL_AT typo is visible here as the default), and
-      // the latest shortlist size. Absent when the panel flag is off (dark feature).
-      const panelLine = resolvePanelEnabled(process.env)
-        ? [
-            (() => {
-              const lastRun = this.runStore.getPanelLastRun();
-              const slot = resolvePanelAt(process.env);
-              const shortlist = this.runStore.getLatestShortlist();
-              // Spec §2 W3: a rejected chair argv flag would silently fall back to
-              // mean-score forever — when EVERY rationale in the latest snapshot is the
-              // fallback constant, the last panel ran chairless; say so here.
-              const chairOff =
-                shortlist !== null &&
-                shortlist.cards.length > 0 &&
-                shortlist.cards.every((c) => c.chair_rationale === CHAIR_FALLBACK_RATIONALE);
-              return `Panel: last ${lastRun ? `${relativeTimeAgo(lastRun, now)} ago` : "never"} · ${
-                slot ? `${slot.day} ${slot.at}` : "off"
-              } · shortlist ${shortlist ? shortlist.cards.length : "none"}${chairOff ? " · chair off" : ""}`;
-            })()
-          ]
-        : [];
-      // Only a STILL-CURRENT error shows: if a poll succeeded after the last error, it
-      // already recovered — don't leave a stale red line under a green header.
-      const errorRecovered =
-        !!poller?.last_success_at &&
-        !!poller?.last_error_at &&
-        Date.parse(poller.last_success_at) > Date.parse(poller.last_error_at);
-      const errorsText =
-        poller && poller.last_error && !errorRecovered
-          ? `${poller.last_error}${poller.last_error_at ? ` · ${localOf(poller.last_error_at)}` : ""}`
-          : "none";
-
-      // ⓪·3g: surface an in-flight background evolution pipeline (in-process lane state,
-      // so only the daemon's own /status shows it — exactly where it is meaningful).
-      const lane = evolutionLaneSnapshot();
+      const healthLines = this.healthLines({ poller, sweep, now, chatId, localOf });
 
       return [
         "📊 Houge · status",
         "",
         "🟢 HEALTH",
-        `Daemon: ${daemonText}`,
-        `Self-check: swept ${sweptText} · ${this.changesLine(now)}`,
-        ...this.carryLine(chatId, localOf),
-        ...radarLine,
-        ...panelLine,
-        `Errors: ${errorsText}`,
-        ...(lane.busy && lane.current
-          ? [`Evolution: ${lane.current.tool} running since ${lane.current.started_at}`]
-          : []),
+        ...healthLines,
         "",
         "📈 ACTIVITY (24h)",
         `Runs: ${byState || "no runs"}`,

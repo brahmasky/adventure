@@ -6,7 +6,7 @@ import { TURN_SETTLE } from "../../src/decisions/entries/turn-settle.js";
 import { RunStore } from "../../src/run/run-store.js";
 import { drainOutbox } from "../helpers/omp-worker.js";
 
-// Spec §5.2: a row only when it matters (non-default, beyond the first rule, shadow, Paco, or alwaysRecord), so the ledger
+// Spec §5.2: a row only when it matters (non-default, beyond the first rule, late, Paco, or alwaysRecord), so the ledger
 // stays at ~10–15 rows a turn. Spec §4.1: a failed write never changes the decision and opens decision_record_failed.
 // Spec §8.2 + plan ruling 9: three named fallbacks of one entry in an hour page once (decision_fallback:<entry>); only a
 // judge's answer clears it; a reopen inside the 10-minute quiet window sends no second card; a failure another incident
@@ -38,14 +38,14 @@ const cards = (store: RunStore) => [...drainOutbox(store).values()].map((p) => p
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); });
 
 describe("shouldRecord", () => {
-  it("routine: the first rule gave the default verdict, nothing shadowed: no row", () => {
+  it("routine: the first rule gave the default verdict, nothing late: no row", () => {
     expect(shouldRecord(any, result({}))).toBe(false);
   });
-  it("a row for: a non-default verdict, a judge, a fail, a shadow run, a later rule, alwaysRecord", () => {
+  it("a row for: a non-default verdict, a judge, a fail, a late verdict, a later rule, alwaysRecord", () => {
     expect(shouldRecord(any, result({ verdict: "ask" }))).toBe(true);
     expect(shouldRecord(any, result({ rung: "system_one" }))).toBe(true);
     expect(shouldRecord(any, result({ rung: "fail" }))).toBe(true);
-    expect(shouldRecord(any, result({ armedMode: "shadow" }))).toBe(true);
+    expect(shouldRecord(any, result({ armedMode: "late" }))).toBe(true);
     expect(shouldRecord(any, result({ walk: [{ kind: "rule", name: "a", mode: "on", result: { abstain: true } }, { kind: "rule", name: "b", mode: "on", result: { verdict: "pass" } }] }))).toBe(true);
     expect(shouldRecord({ ...any, alwaysRecord: true }, result({}))).toBe(true);
   });
@@ -147,13 +147,13 @@ describe("storeRecorder: decision_fallback (ruling 9)", () => {
     expect(open(store)).toEqual([["decision_fallback", "test.judge"]]);
     store.close();
   });
-  it("budget (an oversized state) and a fail with no named failure (shadowed or abstained) are not fallbacks and never page", async () => {
+  it("budget (an oversized state) and a fail with no named failure (abstained) are not fallbacks and never page", async () => {
     const store = RunStore.openInMemory();
     const rec = storeRecorder(store, { env: ENV });
     const budget = vi.fn(async (): Promise<RungResult<V>> => ({ failed: "budget", reason: "state_too_large" }));
     for (let k = 0; k < 4; k += 1) await decide(E, { v: "abstain" }, { run_id: null, recorder: rec, exec: { system_one: budget } });
-    const shadow = { ...E, armed: { rule: "on" as const, system_one: "shadow" as const } };
-    for (let k = 0; k < 4; k += 1) await decide(shadow, { v: "abstain" }, { run_id: null, recorder: rec, exec: { system_one: jevDown } });
+    const abstain = vi.fn(async (): Promise<RungResult<V>> => ({ abstain: true }));
+    for (let k = 0; k < 4; k += 1) await decide(E, { v: "abstain" }, { run_id: null, recorder: rec, exec: { system_one: abstain } });
     expect(store.listOpenIncidents()).toEqual([]);
     store.close();
   });

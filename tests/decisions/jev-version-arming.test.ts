@@ -17,7 +17,6 @@ import { RunStore, type JevModelState } from "../../src/run/run-store.js";
 const NEW = "jev-test-new";
 const ALL: Armed = { category: true, status: true, memory: true, gear: true, rule: true, answer: true, lookup: true };
 const NONE: Armed = { category: false, status: false, memory: false, gear: false, rule: false, answer: false, lookup: false };
-const NO_OFF = new Set<never>();
 
 function storeWith(model: string, state: JevModelState, detail: JevDriftDetail | string = "{}"): RunStore {
   const store = RunStore.openInMemory();
@@ -26,7 +25,7 @@ function storeWith(model: string, state: JevModelState, detail: JevDriftDetail |
   return store;
 }
 const armedFor = (store: RunStore, model: string, lang: Lang = "zh"): Armed =>
-  treeArmed(lang, CALIBRATED_ROWS, NO_OFF, treeArmingFor(store, { model }, lang));
+  treeArmed(lang, CALIBRATED_ROWS, treeArmingFor(store, { model }, lang));
 const drift = (o: Partial<JevDriftDetail>): JevDriftDetail => ({ failed_questions: [], route_failed: false, lanes_disarmed: [], ...o });
 
 afterEach(() => { vi.restoreAllMocks(); });
@@ -119,7 +118,7 @@ describe("treeArmingFor: a store error", () => {
     const boom = Object.assign(new Error("database is locked at /secret/path"), { code: "SQLITE_BUSY" });
     const store = { getJevModel: () => { throw boom; } };
     expect(treeArmingFor(store, { model: NEW }, "zh")).toEqual(NOT_ARMED);
-    expect(treeArmed("zh", CALIBRATED_ROWS, NO_OFF, treeArmingFor(store, { model: NEW }, "zh"))).toEqual(NONE);
+    expect(treeArmed("zh", CALIBRATED_ROWS, treeArmingFor(store, { model: NEW }, "zh"))).toEqual(NONE);
     const line = String(err.mock.calls[0]![0]);
     expect(line).toContain("SQLITE_BUSY");
     expect(line).not.toContain("/secret/path");
@@ -129,7 +128,7 @@ describe("treeArmingFor: a store error", () => {
 describe("treeArmed: the status lane also needs category (named behaviour change, spec §2.3 / §7)", () => {
   it("rows for everything but category: status is unarmed with category", () => {
     const rows = CALIBRATED_ROWS.filter((r) => r.question_id !== "category");
-    expect(treeArmed("zh", rows, NO_OFF, treeArmingFor(storeWith(NEW, "trusted"), { model: NEW }, "zh"))).toMatchObject({ category: false, status: false });
+    expect(treeArmed("zh", rows, treeArmingFor(storeWith(NEW, "trusted"), { model: NEW }, "zh"))).toMatchObject({ category: false, status: false });
   });
   it("a trusted model with every row arms status", () => {
     expect(armedFor(storeWith(NEW, "trusted"), NEW).status).toBe(true);
@@ -141,7 +140,7 @@ describe("the live turn path reads the gate", () => {
   it("core-worker's planAnswered computes treeArmingFor and planTree passes it to the protected treeArmed", () => {
     const src = (f: string) => readFileSync(join(import.meta.dirname, "..", "..", "src", f), "utf8");
     expect(src("core/core-worker.ts")).toMatch(/treeArmingFor\(this\.runStore, d, lang\)/);
-    expect(src("core/turn-handler-ladder.ts")).toMatch(/treeArmed\(i\.lang, i\.rows, i\.lanesOff, i\.arming\)/);
+    expect(src("core/turn-handler-ladder.ts")).toMatch(/treeArmed\(i\.lang, i\.rows, i\.arming\)/);
     expect(src("core/turn-handler-ladder.ts")).toMatch(/import \{[^}]*\btreeArmed\b[^}]*\} from "\.\.\/decisions\/jev-version-check\.js"/);
   });
   it("every tree question is covered by the arming set", () => {

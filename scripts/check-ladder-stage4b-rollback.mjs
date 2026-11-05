@@ -305,7 +305,7 @@ async function setup() {
   mkdirSync(join(root, "daemon"), { recursive: true, mode: 0o700 });
   for (const k of ["HOUGE_TELEGRAM_BOT_TOKEN", "HOUGE_TELEGRAM_USER_ID"]) delete process.env[k];
   Object.assign(process.env, { HOUGE_DAEMON_TMP_DIR: join(root, "daemon"), HOUGE_TELEGRAM_CHAT_ID: CHAT, HOUGE_TOMBSTONE_PATH: join(root, "houge.kill"), HOUGE_PARK_MARKER_PATH: join(root, "houge.parked"),
-    HOUGE_DISARM_PATH: join(root, "houge.disarm"), HOUGE_EPISODIC_ENABLED: "false", HOUGE_WIKI_ENABLED: "false", HOUGE_JEV_TRIAGE_ENABLED: "off" });
+    HOUGE_DISARM_PATH: join(root, "houge.disarm"), HOUGE_EPISODIC_ENABLED: "false", HOUGE_WIKI_ENABLED: "false", HOUGE_JEV_ENABLED: "0", HOUGE_JEV_TRIAGE_ENABLED: "off" });
   const [dNew, dOld] = [await loadDist(DIST), await loadDist(oldDist)];
   for (const k of ["storeOptionsFor", "CapabilityRunner", "Gateway", "createToolApprovalSink"]) if (!dNew[k]) throw new SetupError(`${k} missing from the new dist: rebuild`);
   for (const k of ["RunStore", "CapabilityRunner", "Gateway", "createToolApprovalSink"]) if (!dOld[k]) throw new SetupError(`${k} missing from the old dist`);

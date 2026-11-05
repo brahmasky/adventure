@@ -76,8 +76,13 @@ function calibrationFile(omit: readonly string[] = []): string {
     ({ question_id, criteria_hash, model: REPORTED, lang, approved: "test", evidence: "test" })))));
   return f;
 }
-const ARM = { HOUGE_JEV_ENABLED: "1", HOUGE_JEV_TRIAGE_ENABLED: "arm" };
-const SHADOW = { HOUGE_JEV_ENABLED: "1", HOUGE_JEV_TRIAGE_ENABLED: "shadow" };
+const ARM = { HOUGE_JEV_ENABLED: "1" };
+/** A houge.jev-disarmed marker an older build left: it holds the front door off (spec 2026-11-05 §4). */
+const disarmMarker = (): Record<string, string> => {
+  const p = join(mkdtempSync(join(tmpdir(), "htri-marker-")), "houge.jev-disarmed");
+  writeFileSync(p, JSON.stringify({ reason: "old", at: "" }));
+  return { ...ARM, HOUGE_JEV_DISARM_PATH: p };
+};
 
 function setup(fetchImpl: unknown, env: Record<string, string> = ARM, o: { llm?: Llm; jevNow?: () => Date; omit?: string[] } = {}) {
   vi.stubEnv("HOUGE_JEV_CALIBRATION_FILE", calibrationFile(o.omit)); vi.stubEnv("HOUGE_JEV_GATE", "1");
@@ -343,11 +348,15 @@ describe("triageTurn — below the choice bar: the live cascade (Decision 14, Ti
     expect(triageRows(store, t.run_id)[0]).not.toHaveProperty("cascade_between");
     store.close();
   });
-  it("shadow arms nothing, so a below-bar answer never reaches the cascade (shadow never changes behaviour)", async () => {
+  it("a disarm marker holds the front door off, so Jev is never asked and a below-bar answer never reaches the cascade", async () => {
     const cascade = vi.fn(picks("research"));
-    const { store, worker, turn } = setup(treeSays(BELOW), SHADOW, { llm: lessonLlm({ cascade }) });
-    await worker.triageTurn(turn("比较一下这三个城市的冬天").input);
+    const fetchImpl = treeSays(BELOW);
+    const { store, worker, turn } = setup(fetchImpl, disarmMarker(), { llm: lessonLlm({ cascade }) });
+    const t = turn("比较一下这三个城市的冬天");
+    await worker.triageTurn(t.input);
+    expect(fetchImpl).not.toHaveBeenCalled();
     expect(cascade).not.toHaveBeenCalled();
+    expect(decisions(store, t.run_id).some((r) => r.status === "answered")).toBe(false);
     store.close();
   });
   // Exact token (Decision 14): wrappers a model adds around one word are stripped; anything with more words is no pick.
@@ -515,15 +524,33 @@ describe("triageTurn — a partial row commit (F6: each decision arms on its own
   });
 });
 
-describe("triageTurn — arming, shadow and outages", () => {
-  it("shadow: rows say shadow, the route is Default, nothing acts", async () => {
-    const { store, worker, turn } = setup(treeSays(RULE), SHADOW);
+describe("triageTurn — arming, the disarm marker and outages", () => {
+  // Spec 2026-11-05 §4 / S2: a marker was shadow (Jev asked, rows recorded, nothing applied); it is now off. The off path
+  // writes a skipped `disabled` jev_decisions row (no answered row), the skipped verdict and the always-recorded handler row.
+  it("a disarm marker: the planner, reason disabled, Jev not asked, no answered row, the skipped verdict and turn.handler row written", async () => {
+    const fetchImpl = treeSays(RULE);
+    const { store, worker, turn } = setup(fetchImpl, disarmMarker());
     const t = turn("以后回复短一点");
-    expect(await worker.triageTurn(t.input)).toMatchObject({ kind: "fallthrough", route: { role: "default", effort: null } });
-    expect(triageRows(store, t.run_id)).toMatchObject([{ status: "answered", decision: "shadow" }]);
-    expect(decisions(store, t.run_id).every((r) => r.decision === "shadow")).toBe(true);
-    expect(verdictOf(store, t.run_id)).toMatchObject({ reason: "uncalibrated", route_outcome: "fallback" });
+    expect(await worker.triageTurn(t.input)).toEqual({ kind: "fallthrough" });
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(decisions(store, t.run_id)).toMatchObject([{ status: "skipped", skip_reason: "disabled" }]);
+    expect(triageRows(store, t.run_id)).toMatchObject([{ status: "skipped", skip_reason: "disabled", decision: "fallback" }]);
+    expect(verdictOf(store, t.run_id)).toMatchObject({ reason: "jev_skipped", skip_reason: "disabled", route_outcome: "fallback" });
+    expect(store.listDecisionsForRun(t.run_id).filter((d) => d.entry_id === "turn.handler")).toMatchObject([{ rung: "rule", reason_code: "disabled", armed_mode: "on" }]);
     expect(store.getLedgerEvents().filter((e) => e.event_type === "lesson_saved")).toHaveLength(0);
+    store.close();
+  });
+  // ADR 0033 G6: a calibration file is gate-only. Set outside a gate (HOUGE_JEV_GATE not "1") it holds the door off, so a
+  // stray env var cannot swap in a hand-made calibration for the live daemon.
+  it("a calibration file outside a gate: the planner, reason disabled, Jev not asked, the skipped disabled row written", async () => {
+    const fetchImpl = treeSays(RULE);
+    const { store, worker, turn } = setup(fetchImpl);
+    vi.stubEnv("HOUGE_JEV_GATE", "");
+    const t = turn("以后回复短一点");
+    expect(await worker.triageTurn(t.input)).toEqual({ kind: "fallthrough" });
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(decisions(store, t.run_id)).toMatchObject([{ status: "skipped", skip_reason: "disabled" }]);
+    expect(verdictOf(store, t.run_id)).toMatchObject({ reason: "jev_skipped", skip_reason: "disabled" });
     store.close();
   });
   // The daemon reads no gate file: what arms it is CALIBRATED_ROWS alone (Paco's 2026-10-09 commit). If those rows ever
@@ -613,7 +640,7 @@ describe("triageTurn — arming, shadow and outages", () => {
   });
   it("the triage state carries the code-observed keys and no quoted_turn on a plain message", async () => {
     const fetchImpl = treeSays();
-    const { store, worker, turn } = setup(fetchImpl, SHADOW);
+    const { store, worker, turn } = setup(fetchImpl);
     await worker.triageTurn(turn("明天天气怎么样").input);
     const body = JSON.parse(String((fetchImpl.mock.calls[0]![1] as RequestInit).body)) as { state: Record<string, unknown>; questions: Record<string, unknown> };
     expect(Object.keys(body.state)).toEqual(expect.arrayContaining(["last_houge_turn", "latest_message", "modality", "recent_turns"]));
@@ -625,7 +652,7 @@ describe("triageTurn — arming, shadow and outages", () => {
     let seenAuth = "";
     const body = treeSays();
     const fetchImpl = vi.fn(async (url: string, init: RequestInit) => { seenAuth = String((init.headers as Record<string, string>).authorization); return body(url, init); });
-    vi.stubEnv("HOUGE_JEV_ENABLED", "1"); vi.stubEnv("HOUGE_JEV_TRIAGE_ENABLED", "shadow"); vi.stubEnv("TYPESAFE_API_KEY", "env-key");
+    vi.stubEnv("HOUGE_JEV_ENABLED", "1"); vi.stubEnv("TYPESAFE_API_KEY", "env-key");
     const store = RunStore.openInMemory();
     const worker = ompWorker(store, mkdtempSync(join(tmpdir(), "htri-")), { llm: lessonLlm(), jevFetch: fetchImpl as unknown as typeof fetch,
       broker: { typesafeKey: () => "test-key", redact: (s: string) => s } as unknown as SecretBroker });

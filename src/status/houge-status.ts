@@ -3,6 +3,7 @@ import { uptime } from "node:os";
 import { join } from "node:path";
 import { resolveGlobalBudgetCaps, type GlobalBudgetHeadroom } from "../budget/global-budget-ledger.js";
 import { disarmPosturePresent } from "../config/disarm-posture.js";
+import { frontDoorLine } from "../jev/jev-flags.js";
 import { formatModelString } from "../omp/model-string.js";
 import { resolveOmpConfig } from "../omp/omp-config.js";
 import { sharedOmpVersionCache } from "../omp/omp-version-cache.js";
@@ -110,6 +111,8 @@ export interface HougeStatusInput {
   now: string; tz: string; pid: number; boot: DaemonBoot | null; lastMerge: SelfWriteMergeRecord | null;
   omp: string | null; plannerTop: string; readerTop: string; answeredBy: string | null;
   incidentKinds: string[]; budget: GlobalBudgetHeadroom[]; posture: string[]; lastPoll: string | null;
+  /** The Jev front-door line (armed, or off and why). */
+  frontDoor: string;
 }
 
 function chainTops(env: NodeJS.ProcessEnv, chains?: RoleChains): { planner: string; reader: string } {
@@ -133,7 +136,7 @@ function cachedOmpVersion(env: NodeJS.ProcessEnv): string | null {
 }
 
 export function collectHougeStatus(d: {
-  store: RunStore; env: NodeJS.ProcessEnv; chatId: string; pid: number; now?: Date; supervisor?: StatusSupervisor; chains?: RoleChains;
+  store: RunStore; env: NodeJS.ProcessEnv; dataDir: string; chatId: string; pid: number; now?: Date; supervisor?: StatusSupervisor; chains?: RoleChains;
 }): HougeStatusInput {
   const now = (d.now ?? new Date()).toISOString();
   const tops = chainTops(d.env, d.chains);
@@ -145,7 +148,8 @@ export function collectHougeStatus(d: {
     answeredBy: live ? `${live.provider}/${live.model}` : recorded ? `${recorded.provider}/${recorded.model} (last recorded)` : null,
     incidentKinds: d.store.listOpenIncidents().map((i) => i.kind),
     budget: d.store.globalBudgetUsage(resolveGlobalBudgetCaps(d.env), now),
-    posture: postureOf(d.env), lastPoll: d.store.getPollHeartbeat()?.last_success_at ?? null
+    posture: postureOf(d.env), lastPoll: d.store.getPollHeartbeat()?.last_success_at ?? null,
+    frontDoor: frontDoorLine(d.env, d.dataDir)
   };
 }
 
@@ -209,7 +213,7 @@ export function renderHougeStatus(i: HougeStatusInput): string {
   const text = [
     daemonLine(i), `Boot reason: ${reason}`, codeLine(i), mergeLine(i),
     `Runtime: omp ${i.omp ?? "unknown"}; planner top ${i.plannerTop}; last answered by ${i.answeredBy ?? "unknown"}; reader top ${i.readerTop}`,
-    healthLine(i)
+    i.frontDoor, healthLine(i)
   ].join("\n");
   return text.length <= HOUGE_STATUS_MAX_CHARS ? text : `${text.slice(0, HOUGE_STATUS_MAX_CHARS - 1)}…`;
 }

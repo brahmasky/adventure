@@ -23,11 +23,11 @@ const JEV_PAGED_ELSEWHERE: ReadonlySet<string> = new Set([...FRONT_DOOR_ENTRIES,
 const RECORD_FAILED: ReadonlySet<string> = new Set(["decision_record_failed"]);
 const RUNNER_CODES: ReadonlySet<string> = new Set(RUNNER_REASON_CODES);
 
-/** Spec §5.2: a row when the verdict is not the default, a rung past the first rule decided or ran in shadow, Paco took part, or the entry always records. */
+/** Spec §5.2: a row when the verdict is not the default, a rung past the first rule decided, a verdict that arrived late, Paco took part, or the entry always records. */
 export function shouldRecord(entry: AnyEntry, r: AnyDecideResult): boolean {
   if (entry.alwaysRecord || r.verdict !== entry.defaultVerdict || r.armedMode !== "on") return true;
   if (r.rung !== "rule") return true;
-  return r.walk.length > 1 || r.walk.some((o) => o.kind === "paco" && o.result !== null);
+  return r.walk.length > 1 || r.walk.some((o) => o.kind === "paco");
 }
 
 export interface RecorderOptions { env?: NodeJS.ProcessEnv; now?: () => string }

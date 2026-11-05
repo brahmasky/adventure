@@ -201,7 +201,7 @@ Slash commands keep it inspectable (idempotent, no run, no budget unless noted):
 - `/skills [scope]` view skills; `/skills retire|restore <name>`, `/skills retired`, `/skills pending`.
 - `/schedule` · `/schedule cancel <N>` list or cancel this chat's schedules. Schedules are created and
   updated conversationally through `schedule_task`.
-- `/status` health digest (plus 24 h decision counts, the settle health line and per-entry Jev skips when there were any) · `/status decisions` the last 10 decisions · `/changes` background changes of the last 30 days in plain words (model switches, internal self-checks, routine Jev notices — what no longer comes to chat) · `/usage` token use per model (omp rows show "sub", never dollars).
+- `/status` health digest (with a `Jev front door: armed` or `off (cause)` line, plus 24 h decision counts, the settle health line and per-entry Jev skips when there were any) · `/status decisions` the last 10 decisions · `/changes` background changes of the last 30 days in plain words (model switches, internal self-checks, routine Jev notices — what no longer comes to chat) · `/usage` token use per model (omp rows show "sub", never dollars).
 - `/memories [query]` view what Houge remembers about Paco · `/forget_memory <id>` retire one fact (with an Undo card).
 - `/models` which model each role resolves to; `/models set` and `/models reset` override or restore one · `/fresh` a new planner conversation at the next message.
 - `/run <program> <goal>` start a named program run by hand.
@@ -342,8 +342,8 @@ planner as one decision point: six typed questions pick a category, a lane (memo
 planner model role (Fast, Default or Thinking). Armed 2026-10-09 on Paco's calibration rows (zh and en), the answer and lookup lanes 2026-10-10; every unsure
 turn still runs the planner on Default. A Jev version move is checked in the background against Paco's approved reference turns (`houge jev models`); it arms when the new version agrees within Jev's noise and pages him once on a drift. Flow, bars and rollback:
 [docs/reference/jev-decision-layer.md](docs/reference/jev-decision-layer.md); every flag and event:
-[configuration.md](docs/reference/configuration.md#jev-system-one-adr-0033). Two switches are to be removed
-(`HOUGE_JEV_LANES_OFF` and the front door's `shadow` mode: Paco 2026-11-04, spec pending).
+[configuration.md](docs/reference/configuration.md#jev-system-one-adr-0033). The only env switch over the front door's arming is `HOUGE_JEV_ENABLED` (the gate-only calibration file and a legacy disarm marker also hold it off); `HOUGE_JEV_LANES_OFF` and
+`HOUGE_JEV_TRIAGE_ENABLED` are retired (2026-11-05). `/status` shows `Jev front door: armed` or `off (cause)`.
 
 ## Google identity — gmail_read / google_api
 

@@ -105,8 +105,7 @@ fall-through; **System Two (omp seats)** composes inside the lane code picked. J
 - **F7.** Replay tools compare against no pin. A run's evidence is its own reported model; a model change mid-run warns,
   across a resume too. The intent replay's reference is the first model Jev reported; off-model rows are recorded but
   excluded from the verdict. The triage report refuses a file (canonical or permuted) with more than one reported model,
-  suggests rows only with the model the rows reported, and reads (and refuses) live shadow stats per that model (the
-  front door's shadow mode: to be removed; Paco 2026-11-04, see ADR 0034 1.6).
+  suggests rows only with the model the rows reported.
 - **F8.** Golden-set drift does not disarm, and `decision_bar_stale` is retired; ADR 0034 holds both kinds.
 
 ### G. Arming (old decision 5, as amended)
@@ -121,9 +120,9 @@ fall-through; **System Two (omp seats)** composes inside the lane code picked. J
   `category:answer` and `category:lookup`, zh and en, on the `category` question's hash (2026-10-10).
 - **G5.** The memory lane acts on the `category` plus `rule` rows; the status lane on `category:status` plus `rule`;
   the answer and lookup lanes on their `category:answer` / `category:lookup` rows (I2).
-- **G6.** `HOUGE_JEV_CALIBRATION_FILE` is for live gates only: outside `HOUGE_JEV_GATE=1` a set file caps arming at
-  shadow. A `houge.jev-disarmed` marker an older build left still caps the tree at shadow until removed by hand; no code
-  writes it any more. (Shadow here is the front door's shadow mode: to be removed; Paco 2026-11-04, see ADR 0034 1.6.)
+- **G6.** `HOUGE_JEV_CALIBRATION_FILE` is for live gates only: outside `HOUGE_JEV_GATE=1` a set file holds the front door off.
+  A `houge.jev-disarmed` marker an older build left also holds it off until removed by hand; no code writes it any more.
+  `/status` names either cause.
 
 ### H. The front door: one decision tree (amendment 2026-10-07)
 - **H1.** Every Telegram text turn passes one Jev request of six questions: `category` (11 values), `sets_rule`,
@@ -150,8 +149,7 @@ fall-through; **System Two (omp seats)** composes inside the lane code picked. J
 - **I1.** Lanes today: `memory`, `status`, `answer`, `lookup`. `answer` and `lookup`: code owns the steps, one Fast-role
   one-shot composes, no planner session and no tool in the model's hands. A status verdict is handled in code
   (ADR 0013 amendment, L1).
-- **I2.** An answer or lookup lane fires only when its row is armed (and it is not in `HOUGE_JEV_LANES_OFF`; to be
-  removed, see ADR 0034 1.6), the
+- **I2.** An answer or lookup lane fires only when its row is armed, the
   rule and gear rows are armed, `category` picks it at p ≥ 0.6, the message is no bare ack and no `think harder`, and
   the scores sit inside its limits (answer: `actions` ≤ 0.5 and `breadth` ≤ 1.5; lookup: both ≤ 1.5). Otherwise the
   planner runs, the reason naming why (`routed`, `lane_limits`, `bare_ack_guard`). A lookup that names a URL is the
@@ -191,8 +189,8 @@ fall-through; **System Two (omp seats)** composes inside the lane code picked. J
 ### K. Planned lanes (old decision 7)
 Each is its own spec → review → plan → build → live gate: (3) `injection_suspected` on reader-wall output (partly
 delivered by ADR 0034's `tool.injection`), then a `risk` score on plain shell commands, both monotone; (4) an inbound
-triage envelope, a digest tick and a `wrong urgency` label, before SP2; (5) context relevance in shadow, driving lesson
-credit (Paco 2026-11-04: it ships armed, not in shadow; see ADR 0034 1.6). Lane 1 is I–J; lane 2 (model routing by
+triage envelope, a digest tick and a `wrong urgency` label, before SP2; (5) context relevance, driving lesson
+credit (ships armed, ADR 0034 1.6). Lane 1 is I–J; lane 2 (model routing by
 judged complexity) is H2 on ADR 0032's roles, and resolving the reader cross-family is ADR 0032's D10.
 
 ### L. Rules this ADR places on other ADRs
@@ -212,8 +210,7 @@ judged complexity) is H2 on ADR 0032's roles, and resolving the reader cross-fam
   one turn (bars, Dig deeper, the catch-up block); the memory lane is not faster than the planner, only cheaper and
   deterministic; research read as lookup routes some research turns to Fast instead of Thinking.
 - Revisit when: TypeSafe ships adversarial hardening or a retention commitment; Jev volume makes the metered ceiling
-  bind; omp exposes per-turn tool toggling or native skills (lane 5 may move from shadow to selection; its shadow plan
-  is to be removed, Paco 2026-11-04, see K); SP3's quota invariant lands (lane 2 v2 reads 7-day utilisation); `actions`
+  bind; omp exposes per-turn tool toggling or native skills; SP3's quota invariant lands (lane 2 v2 reads 7-day utilisation); `actions`
   proves blind to a second request (then a seventh `noul` question, parked).
 
 ## Alternatives considered
@@ -245,6 +242,7 @@ judged complexity) is H2 on ADR 0032's roles, and resolving the reader cross-fam
 | 2026-11-03 | ADR 0031: `triage_overrides` to the log; outage kinds and `jev_skip_rate` still page; version-check kinds are cards | [chat-is-for-paco](../superpowers/specs/2026-11-03-chat-is-for-paco-design.md) | 2026-11-04 |
 | 2026-11-04 | Consolidated into this ADR, no change of meaning | — | 2026-11-05 |
 | 2026-11-04 | Version-drift wording (F3–F4): ADR 0029 decision 5 said a drift "disarms only the drifting triage questions"; ADR 0030 decision 9 said it "disarms the failing questions and their dependents, pages once with Accept, and arms again on Paco's tap". This ADR states 0030's form, with Accept making the new answers the reference | [version-check](../superpowers/specs/2026-10-22-jev-version-check-design.md) | 2026-11-05 |
+| 2026-11-05 | No off switch, no shadow: front-door shadow, HOUGE_JEV_LANES_OFF and HOUGE_JEV_TRIAGE_ENABLED removed; HOUGE_JEV_ENABLED is the front door's STOP flag; F7's live-shadow-stats clause named a reader no code had | [no off switch](../superpowers/specs/2026-11-05-jev-no-off-switch-no-shadow-design.md) | 2026-11-06 |
 
 ## Reference map
 

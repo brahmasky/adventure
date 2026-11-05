@@ -70,7 +70,7 @@ This file defines domain language for Houge architecture reviews and implementat
 
 **Entry**: One decision in the code-owned registry (`src/decisions/`, protected): its id, version, stage, the input its judges read (`paco`, `tool`, `mixed`), closed verdicts, ladder, `fail` and default verdicts, what each verdict causes (and whether that is reversible and announced), and the outcome signals that can show it wrong. `turn.handler` and `turn.gear` are the first two.
 
-**Rung**: One decider on an entry's ladder: a code `rule`, Jev (stored as `system_one`), a `model` one-shot, or `paco`. A rung answers, abstains (optionally with a monotone floor) or fails (`timeout`, `outage`, `parse`, `threw`, `stale_bar`, `budget`). Every entry ships armed; the only shadow is the front door's configured triage shadow (asked and recorded, never applied; to be removed: Paco 2026-11-04, spec pending).
+**Rung**: One decider on an entry's ladder: a code `rule`, Jev (stored as `system_one`), a `model` one-shot, or `paco`. A rung answers, abstains (optionally with a monotone floor) or fails (`timeout`, `outage`, `parse`, `threw`, `stale_bar`, `budget`). Every entry ships armed; there is no shadow mode.
 
 **Ladder**: An entry's rungs in order, code first; the first rung that answers decides, and the entry's `fail` verdict stands when none does. On a monotone entry a later rung can only tighten. What a Jev or model verdict may cause depends on what it read: over tool output only a tightening or a proposal, over Paco's own message a reversible, announced effect. The runner decides, then records (`decisions`); recording never changes a decision.
 
@@ -204,6 +204,6 @@ These appear in older ledger rows, specs and sessions. They no longer describe t
 
 **Dual-LLM Arming Couple**: The rule that `gmail_read`/`google_api` armed only when both the Google flag and the dual-LLM flag were on. Gone: the wall is unconditional, so the Google flag alone arms them.
 
-**Intent Shadow**: The live Jev shadow that ran beside the intent classifier. Removed 2026-10-06 (superseded by Jev as System One, ADR 0033); only offline replay (`houge jev-shadow replay`) remains. Not the front door's configured triage `shadow` mode, which still exists.
+**Intent Shadow**: The live Jev shadow that ran beside the intent classifier. Removed 2026-10-06 (superseded by Jev as System One, ADR 0033); only offline replay (`houge jev-shadow replay`) remains.
 
 **Money Track**: The earning tools (`bounty_scan`, `project_*`, `external_work`) and the external workspace (ADR 0022, 0023). Code deleted at `3aabc04`; the tables and historical rows stay readable.

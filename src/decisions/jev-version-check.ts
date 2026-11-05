@@ -98,10 +98,10 @@ export const TREE_LOOKUP_ARM_ID = "category:lookup";
  * memory lane on category alone (the rule rows only sharpen its lesson scope, Rev 2.1 item 1). Dependencies (spec §2.3):
  * category disarms memory, status, answer, lookup; rule disarms status, answer, lookup; gear disarms answer, lookup. The
  * status lane needs category (named change 2026-10-22) and rule (statusBranch F6). The answer and lookup lanes arm on their
- * pseudo-rows and are unarmed while listed in `lanesOff` (HOUGE_JEV_LANES_OFF) or disarmed by the model's label check.
+ * pseudo-rows and are unarmed while disarmed by the model's label check.
  * Computed only here (protected); tree-policy.ts routes on the result.
  */
-export function treeArmed(lang: Lang, rows: readonly CalibrationRow[], lanesOff: ReadonlySet<LaneSwitch>, arming: ModelArming): Armed {
+export function treeArmed(lang: Lang, rows: readonly CalibrationRow[], arming: ModelArming): Armed {
   const on = (qs: readonly Question[]): boolean =>
     qs.every((q) => arming.questions.has(q.id) && calibratedLang(q.id, criteriaHash(q), lang, rows) !== undefined);
   const pseudo = (id: string): boolean => calibratedLang(id, criteriaHash(TREE_CATEGORY), lang, rows) !== undefined;
@@ -109,7 +109,7 @@ export function treeArmed(lang: Lang, rows: readonly CalibrationRow[], lanesOff:
   const category = on([TREE_CATEGORY]);
   const rule = on([TREE_SETS_RULE, TREE_RULE_SCOPE]);
   const gear = on([TREE_BREADTH, TREE_REASONING, TREE_ACTIONS]);
-  const routed = (id: string, l: LaneSwitch): boolean => pseudo(id) && category && rule && gear && lane(l) && !lanesOff.has(l);
+  const routed = (id: string, l: LaneSwitch): boolean => pseudo(id) && category && rule && gear && lane(l);
   return {
     category, rule, gear, memory: category && lane("memory"), status: pseudo(TREE_STATUS_ARM_ID) && category && rule && lane("status"),
     answer: routed(TREE_ANSWER_ARM_ID, "answer"), lookup: routed(TREE_LOOKUP_ARM_ID, "lookup")

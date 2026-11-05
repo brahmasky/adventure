@@ -68,8 +68,7 @@ Every `turn.handler` decision is recorded (`decisions` row) in the same transact
 `answer`, `lookup`, `memory` and `planner` may save a lesson first on a confident `sets_rule`, and every such automatic save
 is announced on the memory card with ↩️ Undo — on the lane card itself, as the memory lane's reply, or as a separate
 Undo-only card on the planner path (Paco, 2026-10-12). Whatever the route, an automatic lesson save shows the memory card
-with Undo. `HOUGE_JEV_TRIAGE_ENABLED=shadow` (to be removed: Paco 2026-11-04, spec pending) asks and records the Jev and
-cascade rungs (`armed_mode shadow`) but arms nothing and applies nothing: every turn takes the Default route. The ladder
+with Undo. Rows an older build wrote in `shadow` (`armed_mode shadow`) asked and recorded without applying; no code writes that mode now. The ladder
 changed no routing when it landed: the pinned characterisation tests (`tests/core/turn-handler-pin.test.ts`) and the P6 dual
 run (`scripts/live-gate-decisions-parity.mjs`) compare every persisted column with the pre-ladder build.
 
@@ -165,7 +164,7 @@ category remains it is taken without a call. The whole pick is bounded at **20 s
 an 18 s chain deadline inside it). The answer is parsed as an exact token (quotes, backticks and a final full stop
 stripped, case folded). A failure, a timeout or an answer outside the two means the planner on Default and **nothing
 saved**. The verdict's `cascade` value is `tiny` whenever the call was made (the Tiny leg that answered is on the
-`llm_attempt` row), and the `triage` event names the pair as `cascade_between`. Shadow mode makes no call.
+`llm_attempt` row), and the `triage` event names the pair as `cascade_between`.
 
 ## The answer and lookup lanes
 
@@ -204,7 +203,7 @@ the events are the denominator for any rate. Payload fields (ids, enums and numb
 | `verdict_id` | The `jev_verdicts` row; the turn's first routed model call carries it as `routed_by`. |
 | `confidence`, `top_prob`, `margin` | Numbers from the `category` answer. Code compares them to the bars; Jev never does. |
 | `lang` | `zh`, `en` or `mixed` (mixed uses the zh calibration). |
-| `decision` | `act` (the route took effect), `shadow` (rows only) or `fallback` (the Default route; always the value for a skip, except `ack_rule`). |
+| `decision` | `act` (the route took effect), `shadow` (rows written before 2026-11-05) or `fallback` (the Default route; always the value for a skip, except `ack_rule`). |
 | `verdict` | The route reason: `routed`, `uncalibrated`, `below_bar`, `bare_ack_guard`, `lane_limits`, `two_request`, `correction`, `cascade`, `cascade_failed`, `ack_rule` or `jev_skipped`. |
 | `cascade_between` | Only when the cascade ran: the two category enums. |
 
@@ -321,8 +320,7 @@ commits rows for the decisions he chooses, then `node scripts/live-gate-jev-tree
 PASS with both lanes acting, then merge and kickstart.
 
 **Lanes armed 2026-10-10.** Four more rows, `category:answer` and `category:lookup` for zh and en, arm those two lanes.
-Each lane arms on its own row at the category hash, so the `category` row alone never arms a lane. To switch one off
-without `/disarm`, set `HOUGE_JEV_LANES_OFF` (to be removed: Paco 2026-11-04, spec pending; below).
+Each lane arms on its own row at the category hash, so the `category` row alone never arms a lane.
 
 Each decision arms on its own rows. Couplings to decide at commit time:
 
@@ -332,11 +330,11 @@ Each decision arms on its own rows. Couplings to decide at commit time:
   on at least Default, even with `gear` unarmed. "Lane parity only" (memory and status, no model change) is not available.
 - `gear` arms the three scores together; unarmed, the route takes the category's floor.
 
-Nothing writes the disarm marker (`houge.jev-disarmed`) since stage B. A marker an older build left still caps `arm` at
-`shadow` (nothing armed, the Default route); remove it by hand (`rm <dataDir>/houge.jev-disarmed`, or the path in
+Nothing writes the disarm marker (`houge.jev-disarmed`) since stage B. A marker an older build left holds the front door off
+(Jev not called, the Default route; `/status` names it); remove it by hand (`rm <dataDir>/houge.jev-disarmed`, or the path in
 `HOUGE_JEV_DISARM_PATH`), then kickstart. **Failure is Default as resolved**: any Jev failure, skip, unarmed
 question or thrown stage runs the planner on the Default role (a `/models` override included), with one verdict row. The
-ack rule is the only path that acts without a Jev call, and only in `arm` mode.
+ack rule is the only path that acts without a Jev call, and only while the front door is armed.
 
 ## Rolling back
 
@@ -345,11 +343,8 @@ Three levels, from the mildest:
 00. **The decision ladder itself has no off switch** (ruling R13, ADR 0034 1.6). If a ladder build is
     fundamentally wrong: revert its commit, rebuild `dist/`, kickstart. Its migrations are additive, so the previous build
     runs on the migrated DB (`scripts/check-decisions-rollback.mjs`). The items below still roll back the tree's behaviour.
-0. **One lane off** (`.env`, then kickstart): `HOUGE_JEV_LANES_OFF` (to be removed: Paco 2026-11-04, spec pending) switches the answer or lookup lane off while every other
-   decision stays armed; details in [configuration.md](configuration.md) (`HOUGE_JEV_LANES_OFF`).
-
-1. **Model-list rollback** (`.env`, then `launchctl kickstart -k gui/$(id -u)/com.houge.daemon`): set
-   `HOUGE_JEV_TRIAGE_ENABLED=off` and `HOUGE_MODEL_ROLES=static`. `off` writes one verdict row per turn and attaches no
+1. **Model-list rollback**: `/disarm`, or set `HOUGE_JEV_ENABLED=0` in `.env` and
+   `launchctl kickstart -k gui/$(id -u)/com.houge.daemon`; add `HOUGE_MODEL_ROLES=static` in `.env` for the static chains. `off` writes one verdict row per turn and attaches no
    route, so the supervisor pins nothing and `think harder` is ignored; `static` runs today's seven chains as written,
    with no catalog, no override and no tick. This is **not** today's supervisor exactly. Three differences remain:
    (a) a selector the running child refused is skipped for that child's life; (b) the respawn onto the planner's head at the
@@ -412,6 +407,5 @@ read with `/changes`. The kinds named here:
 ## Deviations from the spec
 
 The Jev client is built per call, not once at boot (cheap; the broker key is read each time), so `jev_no_key` opens on the
-first armed turn rather than at boot. `shadow` (to be removed: Paco 2026-11-04, spec pending) arms nothing, so every
-shadow verdict reads `uncalibrated` with `category` null. The status lane applies lane 1's confidence and gap floors, which lane 1
+first armed turn rather than at boot. A `shadow` row an older build wrote armed nothing, so its verdict reads `uncalibrated` with `category` null. The status lane applies lane 1's confidence and gap floors, which lane 1
 applied to memory only (stricter, toward the planner). Recorded in ADR 0033 and the spec's Rev 9 entry.

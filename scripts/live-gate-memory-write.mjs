@@ -91,7 +91,7 @@ async function checkArmed(m) {
     const rows = m.calibrationRows(process.env);
     // Rows only: the reported model's check state is the jev version gate's (scripts/live-gate-jev-version.mjs).
     const allQuestions = { questions: new Set(m.TREE_QUESTIONS.map((q) => q.id)), lanesDisarmed: new Set() };
-    for (const lang of ["zh", "en"]) if (!m.treeArmed(lang, rows, new Set(), allQuestions).memory) throw new Error(`the memory lane is not armed (${lang}) on the committed rows`);
+    for (const lang of ["zh", "en"]) if (!m.treeArmed(lang, rows, allQuestions).memory) throw new Error(`the memory lane is not armed (${lang}) on the committed rows`);
     return r.model;
   } finally { mem.close(); }
 }

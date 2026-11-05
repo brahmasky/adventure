@@ -1,0 +1,59 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { buildTypedTaskEvent } from "../../src/domain/types.js";
+import { Gateway } from "../../src/gateway/gateway.js";
+import { JEV_DISARM_MARKER } from "../../src/jev/jev-flags.js";
+import { RunStore } from "../../src/run/run-store.js";
+import { drainOutbox } from "../helpers/omp-worker.js";
+
+// Paco reads /status through the gateway renderer, not renderHougeStatus (codex B): the front-door
+// line must be here, naming why Jev is off, or an off door looks like a healthy quiet one.
+const NOW = "2026-11-05T10:00:00.000Z";
+let dir: string;
+beforeEach(() => {
+  dir = mkdtempSync(join(tmpdir(), "sfd-"));
+  vi.stubEnv("HOUGE_DISARM_PATH", join(dir, "houge.disarm"));
+  vi.stubEnv("HOUGE_JEV_DISARM_PATH", "");
+});
+afterEach(() => { vi.unstubAllEnvs(); rmSync(dir, { recursive: true, force: true }); });
+
+function statusText(dataDir: string = dir): string {
+  const root = join(dir, "project-root");
+  mkdirSync(root, { recursive: true });
+  const s = RunStore.openInMemory();
+  new Gateway(s, undefined, root, undefined, undefined, { dataDir }).intake(buildTypedTaskEvent({ source: "telegram", type: "status", requested_by: { kind: "user", id: "paco" },
+    notify: { kind: "telegram", chat_id: "222" }, idempotency_key: "telegram:fd", source_reference: "telegram:update:fd" }), NOW);
+  const text = String([...drainOutbox(s).values()][0]?.text);
+  s.close();
+  return text;
+}
+
+describe("/status front-door line", () => {
+  it("flag empty: names HOUGE_JEV_ENABLED, right after the Self-check line", () => {
+    vi.stubEnv("HOUGE_JEV_ENABLED", "");
+    expect(statusText()).toMatch(/Self-check: .*\nJev front door: off \(HOUGE_JEV_ENABLED is off/);
+  });
+  it("posture file with the flag off: says disarmed", () => {
+    writeFileSync(join(dir, "houge.disarm"), "{}");
+    vi.stubEnv("HOUGE_JEV_ENABLED", "false");
+    expect(statusText()).toContain("Jev front door: off (/disarm; /rearm restores it)");
+  });
+  it("marker in the gateway's dataDir option (no path override): names the older-build marker", () => {
+    writeFileSync(join(dir, JEV_DISARM_MARKER), JSON.stringify({ reason: "x", at: "" }));
+    vi.stubEnv("HOUGE_JEV_ENABLED", "1");
+    expect(statusText()).toContain("Jev front door: off (houge.jev-disarmed marker");
+  });
+  it("a marker only under projectRoot is not read when dataDir is elsewhere: armed", () => {
+    mkdirSync(join(dir, "project-root"), { recursive: true });
+    writeFileSync(join(dir, "project-root", JEV_DISARM_MARKER), "{}");
+    mkdirSync(join(dir, "elsewhere"), { recursive: true });
+    vi.stubEnv("HOUGE_JEV_ENABLED", "1");
+    expect(statusText(join(dir, "elsewhere"))).toContain("Jev front door: armed");
+  });
+  it("flag on: armed", () => {
+    vi.stubEnv("HOUGE_JEV_ENABLED", "1");
+    expect(statusText()).toContain("Jev front door: armed");
+  });
+});
