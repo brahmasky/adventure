@@ -18,7 +18,7 @@ const walk = (dir: string): string[] =>
 const texts = (dir: string): string[] => walk(dir).map((p) => readFileSync(join(root, p), "utf8"));
 
 const R13_SUBJECT = "to be removed: Paco 2026-11-04, spec 'Jev: no off switch, no shadow' (ADR 0034 1.6)";
-const STOP_REASON = "ADR 0018 STOP flag, outside R13 per ADR 0034 1.6 (ruling A5, pending Paco's signature)";
+const STOP_REASON = "ADR 0018 STOP flag, outside R13 per ADR 0034 1.6 (ruling A5, signed by Paco 2026-11-05)";
 
 /** (i) The R13 subjects. */
 const R13_SUBJECTS: Record<string, string> = { HOUGE_JEV_LANES_OFF: R13_SUBJECT, HOUGE_JEV_TRIAGE_ENABLED: `its \`shadow\` mode is ${R13_SUBJECT}` };

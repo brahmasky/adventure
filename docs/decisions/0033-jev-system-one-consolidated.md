@@ -1,6 +1,6 @@
 # ADR 0033: Jev as System One — a typed decision layer in front of the models (consolidated)
 
-- **Status:** proposed 2026-11-04 — awaiting Paco's signature; consolidates and supersedes
+- **Status:** accepted 2026-11-05 (signed by Paco, rulings A1–A5 included); consolidates and supersedes
   [ADR 0029](0029-jev-system-one.md) with no change of meaning
 - **Date:** 2026-11-04
 - **Deciders:** Paco
@@ -243,8 +243,8 @@ judged complexity) is H2 on ADR 0032's roles, and resolving the reader cross-fam
 | 2026-10-17 | Memory lane writes rules and facts on `memory_kind`; any lane may write a fact | [memory-write](../superpowers/specs/2026-10-15-memory-write-thread-anchor-design.md) | asked for 2026-10-17 |
 | 2026-10-23 | Version check built: drift disarms only drifting triage questions; Accept re-anchors (decision 5 edited in place, no dated section) | [version-check](../superpowers/specs/2026-10-22-jev-version-check-design.md) | 2026-10-23 |
 | 2026-11-03 | ADR 0031: `triage_overrides` to the log; outage kinds and `jev_skip_rate` still page; version-check kinds are cards | [chat-is-for-paco](../superpowers/specs/2026-11-03-chat-is-for-paco-design.md) | 2026-11-04 |
-| 2026-11-04 | Consolidated into this ADR, no change of meaning | — | (pending) |
-| 2026-11-04 | Version-drift wording (F3–F4): ADR 0029 decision 5 said a drift "disarms only the drifting triage questions"; ADR 0030 decision 9 said it "disarms the failing questions and their dependents, pages once with Accept, and arms again on Paco's tap". This ADR states 0030's form, with Accept making the new answers the reference | [version-check](../superpowers/specs/2026-10-22-jev-version-check-design.md) | (pending, with this ADR) |
+| 2026-11-04 | Consolidated into this ADR, no change of meaning | — | 2026-11-05 |
+| 2026-11-04 | Version-drift wording (F3–F4): ADR 0029 decision 5 said a drift "disarms only the drifting triage questions"; ADR 0030 decision 9 said it "disarms the failing questions and their dependents, pages once with Accept, and arms again on Paco's tap". This ADR states 0030's form, with Accept making the new answers the reference | [version-check](../superpowers/specs/2026-10-22-jev-version-check-design.md) | 2026-11-05 |
 
 ## Reference map
 

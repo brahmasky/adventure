@@ -1,6 +1,6 @@
 # ADR 0034: Decision ladder (consolidated) — every decision on one list, a ladder of deciders, improved from outcomes
 
-- **Status:** proposed 2026-11-04 — awaiting Paco's signature; consolidates and supersedes
+- **Status:** accepted 2026-11-05 (signed by Paco, rulings A1–A5 included); consolidates and supersedes
   [ADR 0030](0030-decision-ladder.md) with no change of meaning
 - **Date:** 2026-11-04
 - **Deciders:** Paco
@@ -54,8 +54,8 @@ code-owned registry under `src/decisions/`. Everything else stays plain code (me
 - 1.6 **No off switch, no shadow by design (R13).** No env var, no switchable check; a new entry ships armed and stays
   armed. The runner's `shadow` mode exists only so the front door keeps its configured triage shadow mode. (Paco
   2026-11-04: `HOUGE_JEV_LANES_OFF`, the front door's `shadow` mode and lane 5's shadow plan are to be removed; the
-  code change has its own spec (Jev: no off switch, no shadow), and this rule is amended when it ships.) (Ruling A5,
-  proposed 2026-11-05 for Paco's signature: the `/disarm` STOP flags of ADR 0018, `HOUGE_JEV_ENABLED` and
+  code change has its own spec (Jev: no off switch, no shadow), and this rule is amended when it ships.) (Ruling A5, signed by
+  Paco 2026-11-05: the `/disarm` STOP flags of ADR 0018, `HOUGE_JEV_ENABLED` and
   `HOUGE_IMPROVE_ENABLED`, are the operator's brake on a whole capability (`/disarm` forces them off and `/status`
   then shows `disarmed`; the improvement tick's flag also shows in the digest's Watch line), and are outside this
   rule; a flag that lets an entry run unarmed or in shadow while its capability runs is not.) A fundamentally wrong
@@ -499,8 +499,8 @@ write.
 | 2026-11-02 | R5: `context.*`, `turn.clarify_cap`; rows only while live | [R5](../superpowers/specs/2026-11-02-ladder-remainder-r5-context-clarify-design.md) | 2026-11-04 |
 | 2026-11-03 | R6: `lookup.*`, `turn.model`; lane rows at the lane's end | [R6](../superpowers/specs/2026-11-03-ladder-remainder-r6-lookup-model-design.md) | 2026-11-04 |
 | 2026-11-03 | ADR 0031: decision-health kinds to the log, `decision_health` a card, reminder kinds | [chat](../superpowers/specs/2026-11-03-chat-is-for-paco-design.md) | 2026-11-04 |
-| 2026-11-04 | This consolidation, no change of meaning | — | pending |
-| 2026-11-05 | Ruling A5 (proposed): the ADR 0018 `/disarm` STOP flags are outside 1.6; found by the R13 conformance test (`tests/adr/`) | — | pending |
+| 2026-11-04 | This consolidation, no change of meaning | — | 2026-11-05 |
+| 2026-11-05 | Ruling A5: the ADR 0018 `/disarm` STOP flags are outside 1.6; found by the R13 conformance test (`tests/adr/`) | — | 2026-11-05 |
 
 ## Reference map
 
