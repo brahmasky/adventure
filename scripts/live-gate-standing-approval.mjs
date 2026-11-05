@@ -73,7 +73,7 @@ writeFileSync(join(gateRoot, "owner.json"), JSON.stringify({ pid: process.pid, k
 const dataRoot = mkdtempSync("/tmp/hg-4a-");
 for (const k of ["HOUGE_TELEGRAM_BOT_TOKEN", "HOUGE_TELEGRAM_USER_ID"]) delete process.env[k];
 Object.assign(process.env, { HOUGE_DAEMON_TMP_DIR: gateRoot, HOUGE_TELEGRAM_CHAT_ID: CHAT, HOUGE_TOMBSTONE_PATH: join(dataRoot, "houge.kill"),
-  HOUGE_PARK_MARKER_PATH: join(dataRoot, "houge.parked"), HOUGE_DISARM_PATH: join(dataRoot, "houge.disarm"), HOUGE_EPISODIC_ENABLED: "false", HOUGE_WIKI_ENABLED: "false", HOUGE_JEV_TRIAGE_ENABLED: "off" });
+  HOUGE_PARK_MARKER_PATH: join(dataRoot, "houge.parked"), HOUGE_DISARM_PATH: join(dataRoot, "houge.disarm"), HOUGE_EPISODIC_ENABLED: "false", HOUGE_WIKI_ENABLED: "false", HOUGE_JEV_ENABLED: "0", HOUGE_JEV_TRIAGE_ENABLED: "off" });
 const cleanup = () => { if (keep) { console.log(`kept (holds live-DB copies): ${dataRoot} ${gateRoot}`); return; } rmSync(dataRoot, { recursive: true, force: true }); rmSync(gateRoot, { recursive: true, force: true }); };
 process.on("SIGINT", () => { cleanup(); process.exit(130); });
 process.on("SIGTERM", () => { cleanup(); process.exit(143); });

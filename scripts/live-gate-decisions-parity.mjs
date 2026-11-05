@@ -116,7 +116,7 @@ function guardCopy(path, root, live) {
  * file), the answer and lookup lanes on for coverage (both builds see the same env; the live .env is untouched).
  */
 function gateEnv(m, root) {
-  for (const k of ["HOUGE_TELEGRAM_BOT_TOKEN", "HOUGE_TELEGRAM_CHAT_ID", "HOUGE_TELEGRAM_USER_ID", "HOUGE_JEV_CALIBRATION_FILE", "HOUGE_JEV_GATE", "HOUGE_JEV_LANES_OFF"]) delete process.env[k];
+  for (const k of ["HOUGE_TELEGRAM_BOT_TOKEN", "HOUGE_TELEGRAM_CHAT_ID", "HOUGE_TELEGRAM_USER_ID", "HOUGE_JEV_CALIBRATION_FILE", "HOUGE_JEV_GATE"]) delete process.env[k];
   for (const f of m.DISARM_FLAGS) process.env[f] = "false";
   Object.assign(process.env, {
     HOUGE_EPISODIC_ENABLED: "false", HOUGE_WIKI_ENABLED: "false", HOUGE_TOMBSTONE_PATH: join(root, "houge.kill"), HOUGE_PARK_MARKER_PATH: join(root, "houge.parked"),

@@ -1,12 +1,13 @@
 /**
  * Rule: ADR 0034 1.6 (R13) "no off switch, no shadow by design"
- * (docs/decisions/0034-decision-ladder-consolidated.md). The set of switch-like env vars under all of src/, and the modes the front door's flag accepts, equal the explicit lists below. A new switch or mode fails.
+ * (docs/decisions/0034-decision-ladder-consolidated.md). The set of switch-like env vars under all of src/, and the modes the front door can take (the JevTriageMode union), equal the explicit lists below. A new switch or mode fails.
  * Changing this rule changes this test in the same commit.
  */
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { DISARM_FLAGS } from "../../src/config/disarm-posture.js";
+import { RETIRED_JEV_FLAGS } from "../../src/jev/jev-flags.js";
 import { switchEnvNames, triageModes } from "./conformance.js";
 
 const root = join(import.meta.dirname, "..", "..");
@@ -17,11 +18,10 @@ const walk = (dir: string): string[] =>
   });
 const texts = (dir: string): string[] => walk(dir).map((p) => readFileSync(join(root, p), "utf8"));
 
-const R13_SUBJECT = "to be removed: Paco 2026-11-04, spec 'Jev: no off switch, no shadow' (ADR 0034 1.6)";
 const STOP_REASON = "ADR 0018 STOP flag, outside R13 per ADR 0034 1.6 (ruling A5, signed by Paco 2026-11-05)";
 
-/** (i) The R13 subjects. */
-const R13_SUBJECTS: Record<string, string> = { HOUGE_JEV_LANES_OFF: R13_SUBJECT, HOUGE_JEV_TRIAGE_ENABLED: `its \`shadow\` mode is ${R13_SUBJECT}` };
+/** (i) Retired by spec 2026-11-05: no behaviour reads them; the boot warning names them. */
+const RETIRED: Record<string, string> = Object.fromEntries(RETIRED_JEV_FLAGS.map((n) => [n, "retired by spec 2026-11-05 (ADR 0034 1.6); named only by the boot warning"]));
 /** (ii) The /disarm flags, imported (not retyped) from src/config/disarm-posture.ts. */
 const STOP_FLAGS: Record<string, string> = Object.fromEntries(DISARM_FLAGS.map((n) => [n, STOP_REASON]));
 /** (iii) Capability flags that gate a feature, not a ladder entry's decision. */
@@ -43,13 +43,12 @@ const RULED_CAPABILITY_FLAGS: Record<string, string> = {
   HOUGE_TZ_EVIDENCE_ENABLED: "arms timezone-source evidence in time_convert; not a ladder entry",
   HOUGE_DUAL_LLM_ENABLED: "retired (ADR 0032 D3: the wall is unconditional); matched only by a comment in src/core/quarantine.ts, documented retired in configuration.md"
 };
-const KNOWN_SWITCHES: Record<string, string> = { ...R13_SUBJECTS, ...STOP_FLAGS, ...CAPABILITY_FLAGS, ...RULED_CAPABILITY_FLAGS };
+const KNOWN_SWITCHES: Record<string, string> = { ...RETIRED, ...STOP_FLAGS, ...CAPABILITY_FLAGS, ...RULED_CAPABILITY_FLAGS };
 
-/** Accepted modes of HOUGE_JEV_TRIAGE_ENABLED. */
+/** The front door's modes (JevTriageMode). */
 const KNOWN_MODES: Record<string, string> = {
-  off: "Jev asks nothing at the front door",
-  arm: "Jev decides at the front door",
-  shadow: "to be removed: Paco 2026-11-04, spec 'Jev: no off switch, no shadow' (ADR 0034 1.6)"
+  off: "Jev is off (HOUGE_JEV_ENABLED off, /disarm, or a cap)",
+  arm: "Jev decides at the front door"
 };
 
 describe("ADR 0034 1.6 (R13): switch-like env vars across src/ and front-door modes equal the allowlists", () => {
@@ -63,10 +62,14 @@ describe("ADR 0034 1.6 (R13): switch-like env vars across src/ and front-door mo
   it("accepts only the known front-door modes, so a new mode (a second shadow) fails here first", () => {
     expect(triageModes(readFileSync(join(root, "src/jev/jev-flags.ts"), "utf8"))).toEqual(Object.keys(KNOWN_MODES).sort());
   });
+  it("the retired names occur under src/ only in src/jev/jev-flags.ts, so a retired switch cannot come back by name", () => {
+    const hits = walk("src").filter((p) => RETIRED_JEV_FLAGS.some((n) => readFileSync(join(root, p), "utf8").includes(n)));
+    expect(hits).toEqual(["src/jev/jev-flags.ts"]);
+  });
   it("flags planted switches (incl. MODE, ARM, SKIP, ON suffixes) and planted front-door modes", () => {
     const planted = 'env.HOUGE_JEV_NEW_DISABLED; env.HOUGE_X_SHADOW; env.HOUGE_JEV_FOO; // HOUGE_Y_OFF; HOUGE_SETTLE_MODE HOUGE_X_ARM HOUGE_JEV_SKIP HOUGE_Z_ON';
     expect(switchEnvNames([planted])).toEqual(["HOUGE_JEV_NEW_DISABLED", "HOUGE_JEV_SKIP", "HOUGE_SETTLE_MODE", "HOUGE_X_ARM", "HOUGE_X_SHADOW", "HOUGE_Y_OFF", "HOUGE_Z_ON"]);
-    const flags = 'export type JevTriageMode = "off" | "arm" | "dry";\nexport function resolveJevTriageMode() {\n  const raw = x;\n  return raw === "canary" ? 1 : 0;\n}\nexport function other() { return raw === "zzz"; }';
-    expect(triageModes(flags)).toEqual(["arm", "canary", "dry", "off"]);
+    const flags = 'export type JevTriageMode = "off" | "arm" | "dry";\nexport function other() { return raw === "zzz"; }';
+    expect(triageModes(flags)).toEqual(["arm", "dry", "off"]);
   });
 });

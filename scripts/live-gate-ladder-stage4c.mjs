@@ -308,7 +308,7 @@ async function setup() {
   const daemon = join(root, "daemon"); mkdirSync(daemon, { recursive: true, mode: 0o700 });
   for (const k of ["HOUGE_TELEGRAM_BOT_TOKEN", "HOUGE_TELEGRAM_USER_ID"]) delete process.env[k];
   Object.assign(process.env, { HOUGE_DAEMON_TMP_DIR: daemon, HOUGE_TOMBSTONE_PATH: join(root, "houge.kill"), HOUGE_PARK_MARKER_PATH: join(root, "houge.parked"),
-    HOUGE_DISARM_PATH: join(root, "houge.disarm"), HOUGE_OMP_BIN: "/nonexistent/houge-gate/omp", HOUGE_SCHEDULER_ENABLED: "1", HOUGE_JEV_TRIAGE_ENABLED: "off" });
+    HOUGE_DISARM_PATH: join(root, "houge.disarm"), HOUGE_OMP_BIN: "/nonexistent/houge-gate/omp", HOUGE_SCHEDULER_ENABLED: "1", HOUGE_JEV_ENABLED: "0", HOUGE_JEV_TRIAGE_ENABLED: "off" });
   delete process.env.HOUGE_SCHEDULER_MAX_PER_CHAT;
   G.base = join(root, "base.sqlite");
   vacuumInto(liveDb, G.base);
