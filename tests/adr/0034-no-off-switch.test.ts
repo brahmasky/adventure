@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { DISARM_FLAGS } from "../../src/config/disarm-posture.js";
 import { RETIRED_JEV_FLAGS } from "../../src/jev/jev-flags.js";
-import { switchEnvNames, triageModes } from "./conformance.js";
+import { retiredNameFiles, switchEnvNames, triageModes } from "./conformance.js";
 
 const root = join(import.meta.dirname, "..", "..");
 const walk = (dir: string): string[] =>
@@ -63,8 +63,12 @@ describe("ADR 0034 1.6 (R13): switch-like env vars across src/ and front-door mo
     expect(triageModes(readFileSync(join(root, "src/jev/jev-flags.ts"), "utf8"))).toEqual(Object.keys(KNOWN_MODES).sort());
   });
   it("the retired names occur under src/ only in src/jev/jev-flags.ts, so a retired switch cannot come back by name", () => {
-    const hits = walk("src").filter((p) => RETIRED_JEV_FLAGS.some((n) => readFileSync(join(root, p), "utf8").includes(n)));
-    expect(hits).toEqual(["src/jev/jev-flags.ts"]);
+    const files = walk("src").map((path) => ({ path, text: readFileSync(join(root, path), "utf8") }));
+    expect(retiredNameFiles(files, RETIRED_JEV_FLAGS)).toEqual(["src/jev/jev-flags.ts"]);
+  });
+  it("flags a retired name planted outside src/jev/jev-flags.ts", () => {
+    const files = [{ path: "src/jev/jev-flags.ts", text: "HOUGE_JEV_LANES_OFF" }, { path: "src/core/x.ts", text: "env.HOUGE_JEV_TRIAGE_ENABLED" }, { path: "src/core/y.ts", text: "clean" }];
+    expect(retiredNameFiles(files, RETIRED_JEV_FLAGS)).toEqual(["src/core/x.ts", "src/jev/jev-flags.ts"]);
   });
   it("flags planted switches (incl. MODE, ARM, SKIP, ON suffixes) and planted front-door modes", () => {
     const planted = 'env.HOUGE_JEV_NEW_DISABLED; env.HOUGE_X_SHADOW; env.HOUGE_JEV_FOO; // HOUGE_Y_OFF; HOUGE_SETTLE_MODE HOUGE_X_ARM HOUGE_JEV_SKIP HOUGE_Z_ON';

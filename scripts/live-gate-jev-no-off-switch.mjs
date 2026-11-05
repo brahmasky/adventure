@@ -59,9 +59,10 @@ async function probeReportedModel(m) {
   } finally { mem.close(); }
 }
 
-/** No Telegram, markers inside the temp root. DISARM_FLAGS are NOT forced off (HOUGE_JEV_ENABLED is one of them, and check 1 reads it from the real .env). No calibration file and no HOUGE_JEV_GATE: check 1 must say something about the real .env. */
+/** No Telegram, markers inside the temp root. Every DISARM flag but HOUGE_JEV_ENABLED is forced off (check 1 reads that one from the real .env). No calibration file and no HOUGE_JEV_GATE: check 1 must say something about the real .env. */
 function gateEnv(m, root) {
   for (const k of ["HOUGE_TELEGRAM_BOT_TOKEN", "HOUGE_TELEGRAM_CHAT_ID", "HOUGE_TELEGRAM_USER_ID"]) delete process.env[k];
+  for (const f of m.DISARM_FLAGS) if (f !== "HOUGE_JEV_ENABLED") process.env[f] = "false";
   Object.assign(process.env, {
     HOUGE_EPISODIC_ENABLED: "false", HOUGE_TOMBSTONE_PATH: join(root, "houge.kill"), HOUGE_PARK_MARKER_PATH: join(root, "houge.parked"),
     HOUGE_DISARM_PATH: join(root, "houge.disarm"), HOUGE_JEV_DISARM_PATH: join(root, "houge.jev-disarmed")

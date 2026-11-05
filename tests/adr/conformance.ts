@@ -55,3 +55,8 @@ export function triageModes(jevFlagsSrc: string): string[] {
   for (const m of union.matchAll(/"([a-z]+)"/g)) modes.add(m[1] as string);
   return [...modes].sort();
 }
+
+/** ADR 0034 1.6 (R13): the paths of the files whose text contains any retired flag name. Sorted. */
+export function retiredNameFiles(files: readonly { path: string; text: string }[], names: readonly string[]): string[] {
+  return files.filter((f) => names.some((n) => f.text.includes(n))).map((f) => f.path).sort();
+}
