@@ -502,7 +502,7 @@ write.
 | 2026-11-03 | ADR 0031: decision-health kinds to the log, `decision_health` a card, reminder kinds | [chat](../superpowers/specs/2026-11-03-chat-is-for-paco-design.md) | 2026-11-04 |
 | 2026-11-04 | This consolidation, no change of meaning | — | 2026-11-05 |
 | 2026-11-05 | Ruling A5: the ADR 0018 `/disarm` STOP flags are outside 1.6; found by the R13 conformance test (`tests/adr/`) | — | 2026-11-05 |
-| 2026-11-05 | No off switch, no shadow: front-door shadow, HOUGE_JEV_LANES_OFF and HOUGE_JEV_TRIAGE_ENABLED removed; HOUGE_JEV_ENABLED is the front door's STOP flag | [no off switch](../superpowers/specs/2026-11-05-jev-no-off-switch-no-shadow-design.md) | (awaiting Paco's signature) |
+| 2026-11-05 | No off switch, no shadow: front-door shadow, HOUGE_JEV_LANES_OFF and HOUGE_JEV_TRIAGE_ENABLED removed; HOUGE_JEV_ENABLED is the front door's STOP flag | [no off switch](../superpowers/specs/2026-11-05-jev-no-off-switch-no-shadow-design.md) | 2026-11-06 |
 
 ## Reference map
 
