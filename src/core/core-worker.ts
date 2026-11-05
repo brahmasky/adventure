@@ -3729,7 +3729,7 @@ export class CoreWorker {
   private hougeStatusText(chatId: string): string {
     const supervisor = this.supervisors.get(chatId);
     return renderHougeStatus(collectHougeStatus({
-      store: this.runStore, env: process.env, chatId, pid: process.pid, chains: this.roles.chains(), ...(supervisor ? { supervisor } : {})
+      store: this.runStore, env: process.env, dataDir: this.ompDataDir(), chatId, pid: process.pid, chains: this.roles.chains(), ...(supervisor ? { supervisor } : {})
     }));
   }
 
