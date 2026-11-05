@@ -40,7 +40,7 @@ describe("the registry", () => {
   });
 });
 
-describe("entryProblems (R12 and R13 as data)", () => {
+describe("entryProblems (R12 as data: a judged entry over Paco's message must be reversible and announced)", () => {
   it("fails a judged entry over Paco's message whose verdict causes an irreversible or unannounced effect", () => {
     expect(entryProblems(base({ effects: { ...HANDLER.effects, memory: fx("effect", false) } })))
       .toContain("a jev/model rung can choose memory, an effect not reversible or not announced on a card");

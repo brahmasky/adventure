@@ -77,7 +77,7 @@ export interface JevClientConfig {
   apiKey: string | undefined;
   audit: LlmAuditSink;
   meteredBreached: () => boolean;
-  /** 0 = turn-blocking calls (no retry); 3 = replay. Only 429 / 5xx / network errors retry. */
+  /** 0 = no retry (callers that cannot wait: the turn path, improve/version/golden ticks); 3 = replay. Only 429 / 5xx / network errors retry. */
   retries: number;
   timeoutMs: number;
   fetchImpl?: typeof fetch;

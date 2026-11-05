@@ -540,6 +540,19 @@ describe("triageTurn — arming, the disarm marker and outages", () => {
     expect(store.getLedgerEvents().filter((e) => e.event_type === "lesson_saved")).toHaveLength(0);
     store.close();
   });
+  // ADR 0033 G6: a calibration file is gate-only. Set outside a gate (HOUGE_JEV_GATE not "1") it holds the door off, so a
+  // stray env var cannot swap in a hand-made calibration for the live daemon.
+  it("a calibration file outside a gate: the planner, reason disabled, Jev not asked, the skipped disabled row written", async () => {
+    const fetchImpl = treeSays(RULE);
+    const { store, worker, turn } = setup(fetchImpl);
+    vi.stubEnv("HOUGE_JEV_GATE", "");
+    const t = turn("以后回复短一点");
+    expect(await worker.triageTurn(t.input)).toEqual({ kind: "fallthrough" });
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(decisions(store, t.run_id)).toMatchObject([{ status: "skipped", skip_reason: "disabled" }]);
+    expect(verdictOf(store, t.run_id)).toMatchObject({ reason: "jev_skipped", skip_reason: "disabled" });
+    store.close();
+  });
   // The daemon reads no gate file: what arms it is CALIBRATED_ROWS alone (Paco's 2026-10-09 commit). If those rows ever
   // stop naming the live hashes (a criteria edit) or the reported model, every turn silently routes uncalibrated.
   it("armed with no gate file: the committed rows arm the tree on the reported model, so a stated rule takes the memory lane", async () => {

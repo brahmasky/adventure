@@ -1,7 +1,8 @@
 import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
-const src = readFileSync("src/telegram/telegram-daemon.ts", "utf8");
+const src = readFileSync(join(import.meta.dirname, "..", "..", "src", "telegram", "telegram-daemon.ts"), "utf8");
 const bootPlanners = src.slice(src.indexOf("function bootPlanners"));
 
 describe("boot wiring of the retired Jev flags warning", () => {

@@ -31,7 +31,7 @@ function statusText(dataDir: string = dir): string {
 }
 
 describe("/status front-door line", () => {
-  it("flag unset: names HOUGE_JEV_ENABLED, right after the Self-check line", () => {
+  it("flag empty: names HOUGE_JEV_ENABLED, right after the Self-check line", () => {
     vi.stubEnv("HOUGE_JEV_ENABLED", "");
     expect(statusText()).toMatch(/Self-check: .*\nJev front door: off \(HOUGE_JEV_ENABLED is off/);
   });
