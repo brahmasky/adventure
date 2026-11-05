@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { LaneSwitch } from "./tree-policy.js";
+import { disarmPosturePresent } from "../config/disarm-posture.js";
 
 /** Jev System One flags (ADR 0029 §3.8). Master + one tri-state flag per lane; everything defaults OFF. */
 export type JevTriageMode = "off" | "shadow" | "arm";
@@ -51,4 +52,53 @@ export function warnUnknownJevLanesOff(env: NodeJS.ProcessEnv, log: (line: strin
   const unknown = laneNames(env).filter((n) => !LANE_SWITCHES.has(n));
   if (unknown.length > 0) log(`jev: HOUGE_JEV_LANES_OFF names unknown lane(s) ${unknown.join(", ")}; accepted: answer, lookup; ignored`);
   return unknown;
+}
+
+export type FrontDoorCause = "armed" | "disarmed" | "env_off" | "calibration_file" | "disarm_marker";
+export interface FrontDoor { mode: "off" | "arm"; cause: FrontDoorCause }
+
+/**
+ * The front door's arming (ADR 0034 1.6; spec 2026-11-05 §4). First match wins. `disarmed` needs the flag off AND the
+ * posture file: in the daemon /disarm sets both, but a gate's child env can carry the file with the flag on, and then the
+ * flag decides. Both caps fail toward the planner (off), as they failed toward shadow before.
+ */
+export function resolveJevFrontDoor(env: NodeJS.ProcessEnv, dataDir: string): FrontDoor {
+  if (!resolveJevEnabled(env)) return { mode: "off", cause: disarmPosturePresent(env) ? "disarmed" : "env_off" };
+  if (Boolean(env.HOUGE_JEV_CALIBRATION_FILE?.trim()) && env.HOUGE_JEV_GATE !== "1") return { mode: "off", cause: "calibration_file" };
+  if (readJevDisarmMarker(jevDisarmMarkerPath(env, dataDir))) return { mode: "off", cause: "disarm_marker" };
+  return { mode: "arm", cause: "armed" };
+}
+
+const FRONT_DOOR_TEXT: Readonly<Record<FrontDoorCause, string>> = {
+  armed: "Jev front door: armed",
+  disarmed: "Jev front door: off (/disarm; /rearm restores it)",
+  env_off: "Jev front door: off (HOUGE_JEV_ENABLED is off in this process: .env, or /rearm awaiting a restart)",
+  calibration_file: "Jev front door: off (HOUGE_JEV_CALIBRATION_FILE is set outside a gate)",
+  disarm_marker: "Jev front door: off (houge.jev-disarmed marker from an older build; remove it by hand)"
+};
+
+/** The `/status` line (spec §7): names env vars, never values. */
+export function frontDoorLine(env: NodeJS.ProcessEnv, dataDir: string): string {
+  try {
+    return FRONT_DOOR_TEXT[resolveJevFrontDoor(env, dataDir).cause];
+  } catch (e) {
+    console.error(`jev: front-door status check failed: ${e instanceof Error ? e.message : String(e)}`);
+    return "Jev front door: unknown (check failed)";
+  }
+}
+
+/** Retired by spec 2026-11-05 (ADR 0034 1.6): read for no behaviour; named here only for the boot warning. */
+export const RETIRED_JEV_FLAGS = ["HOUGE_JEV_LANES_OFF", "HOUGE_JEV_TRIAGE_ENABLED"] as const;
+
+/** Would this value have changed behaviour on the old build? `TRIAGE=arm` is the live, rollback-safe value: silent. */
+function retiredValueMatters(name: (typeof RETIRED_JEV_FLAGS)[number], v: string | undefined): boolean {
+  if (v === undefined) return false;
+  return name === "HOUGE_JEV_TRIAGE_ENABLED" ? v.trim().toLowerCase() !== "arm" : v.trim().length > 0;
+}
+
+/** Boot only (spec §5): one error line per retired var whose value would have changed behaviour; fail loud, run on. */
+export function warnRetiredJevFlags(env: NodeJS.ProcessEnv, log: (line: string) => void = console.error): string[] {
+  const warned = RETIRED_JEV_FLAGS.filter((n) => retiredValueMatters(n, env[n]));
+  for (const n of warned) log(`jev: ${n} is retired (ADR 0034 1.6) and ignored; remove it from .env`);
+  return warned;
 }
