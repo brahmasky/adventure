@@ -1006,7 +1006,7 @@ Default role.
 | `HOUGE_JEV_DISARM_PATH` | `<dataDir>/houge.jev-disarmed` | Legacy disarm marker. Nothing writes it since stage B (Dig deeper taps log per lane and never disarm). A marker an older build left holds the front door off (Jev not called, Default route) while it exists; **re-arming is Paco deleting the file**. |
 | `HOUGE_JEV_CALIBRATION_FILE` | unset | **Gate only.** A JSON array of calibration rows for the live gate or a labelled DB copy. Outside `HOUGE_JEV_GATE=1` a set file holds the front door off. Never set it in the daemon's `.env`. |
 | `HOUGE_JEV_GATE` | unset | Set to `1` by `scripts/live-gate-jev-tree.mjs` only; lifts the file cap above for that process. Never set in the daemon's `.env`. |
-| `HOUGE_JEV_LANES_OFF` | empty | Retired 2026-11-05 (ADR 0034 1.6): read for no behaviour; a value other than `arm` (or a non-empty lane list) logs one line at boot. Keep `HOUGE_JEV_TRIAGE_ENABLED=arm` in `.env` while an older `dist/` is a rollback target: older builds read it. |
+| `HOUGE_JEV_LANES_OFF` | empty | Retired 2026-11-05 (ADR 0034 1.6): read for no behaviour; any non-empty value logs one line at boot. Remove it from `.env`. |
 
 `HOUGE_JEV_TRIAGE_MIN_CONF`, `_MIN_PURE` and `_MIN_STATUS` are **retired**: nothing reads them. The tree's bars are the
 code constants `TREE_BAR_DEFAULTS` (`src/jev/tree-policy.ts`; choice 0.6, `noul` yes 0.8 / no 0.2, memory 0.85, status 0.8,
