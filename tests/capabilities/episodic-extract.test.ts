@@ -604,7 +604,7 @@ describe("runEpisodicDistillPass — reconcile inside one window (pending facts 
   });
 
   it("a SUPERSEDE of a core pending fact by a non-core one keeps the stored row core (biography is never demoted)", async () => {
-    // both facts pass evidence; a FAILING newer fact is dropped (final-review C1, episodic-evidence.test.ts)
+    // evidence is off in this file; a FAILING newer fact is dropped under enforce (final-review C1, episodic-evidence.test.ts)
     const store = RunStore.openInMemory();
     try {
       store.recordChatTurn({ chat_id: CHAT, run_id: "r1", role: "user", text: "Born in Riverton. Actually Riverton town.", created_at: minutesAgo(90) });
