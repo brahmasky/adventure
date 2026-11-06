@@ -67,6 +67,21 @@ function vacuumInto(from, to) {
     finally { src.close(); }
   }
 }
+/**
+ * The base copy only (a temp file, never the live DB): drop the approval.bind and secret.redact rows the live DB has
+ * gathered since stage 4B shipped, with their outcomes. Lines 5 and 7 count this run's rows of the two entries, so the
+ * copy starts with none, as the live DB did at the merge.
+ */
+function clearEntryRows(path, root) {
+  if (!resolve(path).startsWith(`${resolve(root)}/`)) throw new SetupError("refusing to clear rows outside the temp root");
+  const db = new DatabaseSync(path);
+  try {
+    const ids = "SELECT decision_id FROM decisions WHERE entry_id IN ('approval.bind', 'secret.redact')";
+    const outcomes = db.prepare(`DELETE FROM decision_outcomes WHERE decision_id IN (${ids})`).run().changes;
+    const rows = db.prepare(`DELETE FROM decisions WHERE entry_id IN ('approval.bind', 'secret.redact')`).run().changes;
+    note(`cleared ${rows} approval.bind/secret.redact row(s) and ${outcomes} outcome(s) from the base copy`);
+  } finally { db.close(); }
+}
 /** A store of dist `d` on its own VACUUM copy of the base. kind: "firewall" (fake broker) | "bare". New dist: storeOptionsFor, as cli.ts. */
 function openCopy(d, name, kind) {
   const path = join(mkTemp(`cp-${name}`), "houge.sqlite");
@@ -340,6 +355,7 @@ async function setup() {
     HOUGE_DISARM_PATH: join(root, "houge.disarm"), HOUGE_EPISODIC_ENABLED: "false", HOUGE_WIKI_ENABLED: "false", HOUGE_JEV_ENABLED: "0", HOUGE_JEV_TRIAGE_ENABLED: "off" });
   G.base = join(root, "base.sqlite");
   vacuumInto(liveDb, G.base);
+  clearEntryRows(G.base, root);
   G.dNew = await loadDist(DIST); G.dOld = await loadDist(oldDist);
   for (const k of ["storeOptionsFor", "createBridgeHandler", "OMP_SHELL_META", "toolApprovalWaiters"]) if (!G.dNew[k]) throw new SetupError(`${k} missing from dist: rebuild`);
   await loadBridgeMods();
