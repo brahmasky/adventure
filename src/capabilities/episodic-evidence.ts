@@ -7,11 +7,11 @@ import type { ChatTurnRow } from "../run/run-store.js";
  * whitespace normalisation. A matching quote can still be a question or a hypothetical: that judgment is the
  * extract prompt's in A1 and the A2 cascade's after.
  */
-export type EvidenceMode = "off" | "shadow" | "enforce";
+export type EvidenceMode = "off" | "enforce";
 
+/** `enforce` unless the var is exactly `off` (any case): no shadow mode (Paco 2026-11-06); an unknown value fails toward the check. */
 export function resolveEpisodicEvidenceMode(env: NodeJS.ProcessEnv): EvidenceMode {
-  const raw = env.HOUGE_EPISODIC_EVIDENCE?.trim().toLowerCase();
-  return raw === "off" || raw === "enforce" ? raw : "shadow";
+  return env.HOUGE_EPISODIC_EVIDENCE?.trim().toLowerCase() === "off" ? "off" : "enforce";
 }
 
 export type EvidenceReason = "missing" | "bad_line" | "not_user" | "schedule_born" | "quote_absent";

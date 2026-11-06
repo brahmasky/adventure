@@ -106,7 +106,7 @@ Spec `docs/superpowers/specs/2026-10-02-memory-a1-fixes-design.md` (Rev 3). The 
 - **Biography**: a merged fact is core only when every source is; core never decays and is never cap-pruned;
   `core_overflow` opens above `HOUGE_EPISODIC_CORE_CAP`.
 - **Provenance**: each extracted fact cites a numbered user line and a quote that code checks
-  (`HOUGE_EPISODIC_EVIDENCE`, `shadow` by default); a passing fact points at that one turn, and `core` needs it. An
+  (`HOUGE_EPISODIC_EVIDENCE`, `enforce` by default since 2026-11-06, see below); a passing fact points at that one turn, and `core` needs it. An
   evidence-failing fact never touches a core row. Fact reconcile has its own prompt and embedding neighbours.
 
 ## Amendment — an over-cap merge never loses the instruction (2026-10-06, Paco)
@@ -119,3 +119,11 @@ and the new rule fits on its own, the new rule is saved as its own lesson (ADD, 
 target stays untouched, ledgered `lesson_update_overflow {candidate, target, merged_chars}`. A near-duplicate is the
 accepted cost. A candidate that is itself over a cap is still refused (`lesson_write_capped`).
 
+## Amendment — the evidence check has no shadow mode (2026-11-06, Paco; awaiting Paco's signature)
+
+The evidence check on extracted facts ran in `shadow` by default: a fact whose quote was not on one of Paco's lines
+was kept (never core) and counted. Shadow over a month rejected 1 of 34 facts. Paco 2026-11-06: no shadow, as for
+the ladder (ADR 0034 1.6). `HOUGE_EPISODIC_EVIDENCE` now has two values: `enforce` (the default, and what any value
+other than `off` means, `shadow` included) drops a failing fact and counts the reason (`evidence_rejected`); `off`
+checks nothing. A failing fact never reaches the store, so it never touches a core row. The explicit memory save
+always checks in `enforce`, whatever the variable says.
