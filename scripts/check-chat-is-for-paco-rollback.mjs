@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Rollback check — chat is for Paco (spec 2026-11-03 §10). From the worktree after `npm run build` THERE (never in the main checkout):
-//   HOUGE_ENV_FILE=/Users/xiaochuan/Projects/adventure/.env node scripts/check-chat-is-for-paco-rollback.mjs --old-dist <merge-base dist> [--old-base <full sha>] [--live-db <path>]
-//   e.g. --old-dist /Users/xiaochuan/Projects/adventure/.worktrees/base-c10507c4/dist (a built worktree of the merge base; no stamp needed: its HEAD must be the base).
+//   HOUGE_ENV_FILE=<main checkout>/.env node scripts/check-chat-is-for-paco-rollback.mjs --old-dist <merge-base dist> [--old-base <full sha>] [--live-db <path>]
+//   e.g. --old-dist <main checkout>/.worktrees/base-c10507c4/dist (a built worktree of the merge base; no stamp needed: its HEAD must be the base).
 // What it proves: the pre-slice build boots on a post-slice DB, ignores change_log, sends background notices to chat again, loses no data — and the one residual the
 // spec names: after a tick that retired the card override, the old build's gemini-pro pattern has no member, so judges:2 reopens role_unresolved and the card returns.
 // Two VACUUM copies of the live DB: A (never touched by this build) and F (cut from A, then written by THIS build: change_log rows from a log-kind incident and from
@@ -15,9 +15,9 @@ import { dirname, join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { SetupError, cleanupTemp, initTemp, mkTemp, runClosers } from "./stage4-diff-lib.mjs";
 import { mergeBaseOf, provenanceText, verifyOldDist } from "./old-dist-provenance.mjs";
+import { MAIN_CHECKOUT } from "./main-checkout.mjs";
 
 const DIST = resolve(new URL("../dist", import.meta.url).pathname);
-const MAIN_CHECKOUT = "/Users/xiaochuan/Projects/adventure";
 const FIXTURE = resolve(new URL("../tests/fixtures/omp-catalog-2026-11-02.json", import.meta.url).pathname);
 const argv = process.argv.slice(2);
 const arg = (k) => { const i = argv.indexOf(k); return i >= 0 ? argv[i + 1] : undefined; };

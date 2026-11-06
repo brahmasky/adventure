@@ -2,8 +2,8 @@
 // Live gate — decision ladder stage 1 (spec 2026-10-12 §6.2 P6, §13 row 1).
 //
 //   Run from the feature worktree, after `npm run build` THERE (never in the main checkout: the daemon runs its dist/):
-//   HOUGE_ENV_FILE=/Users/xiaochuan/Projects/adventure/.env node scripts/live-gate-decisions-parity.mjs \
-//     --old-dist /Users/xiaochuan/Projects/adventure/.worktrees/p6-base/dist [--db <path>] [--limit 200] [--keep]
+//   HOUGE_ENV_FILE=<main checkout>/.env node scripts/live-gate-decisions-parity.mjs \
+//     --old-dist <main checkout>/.worktrees/p6-base/dist [--db <path>] [--limit 200] [--keep]
 //
 // P6 dual run: for each of the last Telegram user texts in chat_turns, the same triage input — the text, its stored
 // previous turns (within the context window, minus a 10-minute margin) seeded into a fresh chat at the same offsets, one

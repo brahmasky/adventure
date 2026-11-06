@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // Rollback check — decision ladder Stage 4B, approval.bind + secret.redact (spec 2026-10-29 §8; plan Task 12).
 //   From the worktree after `npm run build` THERE (never in the main checkout: the daemon runs its dist/):
-//   HOUGE_ENV_FILE=/Users/xiaochuan/Projects/adventure/.env node scripts/check-ladder-stage4b-rollback.mjs \
-//     --old-dist /Users/xiaochuan/Projects/adventure/.worktrees/base-1451a66/dist [--live-db <path>]
+//   HOUGE_ENV_FILE=<main checkout>/.env node scripts/check-ladder-stage4b-rollback.mjs \
+//     --old-dist <main checkout>/.worktrees/base-1451a66/dist [--live-db <path>]
 // Two VACUUM copies of the live DB: A (this build writes a seed to it, then 1451a66 opens it, then this build reopens it) and F
 // (only 1451a66 ever opens it; it is VACUUMed from A before A is touched). 1451a66 does the same six things on both: migrations,
 // render /status + digest + /status decisions, resolve an approval, run a resume (no bind row), enqueue a masked report (no redact

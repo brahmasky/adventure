@@ -2,8 +2,8 @@
 // Rollback check — memory write (spec 2026-10-15 §11; plan 2026-10-17 Task 16).
 //
 //   From the feature worktree, after `npm run build` there:
-//   HOUGE_ENV_FILE=/Users/xiaochuan/Projects/adventure/.env node scripts/check-memory-write-rollback.mjs \
-//     --old-dist /Users/xiaochuan/Projects/adventure/.worktrees/memory-write-base/dist [--old-base <sha>] [--db <path>] [--keep]
+//   HOUGE_ENV_FILE=<main checkout>/.env node scripts/check-memory-write-rollback.mjs \
+//     --old-dist <main checkout>/.worktrees/memory-write-base/dist [--old-base <sha>] [--db <path>] [--keep]
 //
 // A VACUUM copy of the live DB is migrated by the new build, which seeds, in a gate-only chat with synthetic text:
 // production-shaped retire and correct rows (as memory_correct writes them), then — in ONE transaction — an explicit

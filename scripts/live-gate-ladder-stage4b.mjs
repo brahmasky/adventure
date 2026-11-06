@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // Live gate — decision ladder Stage 4B, approval.bind + secret.redact (spec 2026-10-29 §7; plan Task 11).
 //   From the worktree after `npm run build` THERE (never in the main checkout: the daemon runs its dist/):
-//   HOUGE_ENV_FILE=/Users/xiaochuan/Projects/adventure/.env node scripts/live-gate-ladder-stage4b.mjs \
-//     --old-dist /Users/xiaochuan/Projects/adventure/.worktrees/base-1451a66/dist [--live-db <path>] [--debug]
+//   HOUGE_ENV_FILE=<main checkout>/.env node scripts/live-gate-ladder-stage4b.mjs \
+//     --old-dist <main checkout>/.worktrees/base-1451a66/dist [--live-db <path>] [--debug]
 // --debug prints error messages and child-gate detail: may print private content; local diagnosis only. Default prints names and codes only.
 // Eight lines on stdout, each `PASS`/`FAIL <n> <name> — <detail>`; exit 0 only when all eight PASS (1 FAIL, 2 setup error).
 // Everything else goes to stderr, prefixed `# `. No --keep: the live DB is read once, by VACUUM INTO a temp copy; every write goes

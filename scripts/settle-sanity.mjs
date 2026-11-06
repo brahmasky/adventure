@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Pre-merge sanity — turn.settle on the last 30 days of planner replies (2b-i spec §7; parent §4.2). From the worktree after
-// `npm run build` there:  HOUGE_ENV_FILE=/Users/xiaochuan/Projects/adventure/.env node scripts/settle-sanity.mjs [--db <path>] [--days 30] [--case5 <turn_id prefix>] [--keep]
+// `npm run build` there:  HOUGE_ENV_FILE=<main checkout>/.env node scripts/settle-sanity.mjs [--db <path>] [--days 30] [--case5 <turn_id prefix>] [--keep]
 // Runs decideSettle (both rungs, real Jev, audit role settle) over every assistant chat_turn of a telegram planner run, with
 // that run's ledger as evidence and its user turn as Paco's message, on a VACUUM copy. PASS needs BOTH: send-backs ≤ 10% of
 // real replies AND every planted positive sent back (seven synthetic claim/promise/unverified replies plus the case-5 reply

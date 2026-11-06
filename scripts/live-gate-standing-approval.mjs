@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Live gate — decision ladder Stage 4A, standing approval (spec 2026-10-28 §10; plan Task 11).
 //   From the worktree after `npm run build` THERE (never in the main checkout: the daemon runs its dist/):
-//   HOUGE_ENV_FILE=/Users/xiaochuan/Projects/adventure/.env node scripts/live-gate-standing-approval.mjs [--db <path>] [--keep] [--only main,deny,…]
+//   HOUGE_ENV_FILE=<main checkout>/.env node scripts/live-gate-standing-approval.mjs [--db <path>] [--keep] [--only main,deny,…]
 // The real bridge (createBridgeHandler), the real shell adapter, wrapper, sandbox-exec and clean room, on VACUUM copies of the
 // live DB (one per case) under /tmp/hg-4a-*; rooms under a gate root <real cache>/gate-sa-* (HOUGE_DAEMON_TMP_DIR, set before
 // any runtime import). Taps through resolveToolApprovalForTest + the waiter; delivery through a real dispatcher with the

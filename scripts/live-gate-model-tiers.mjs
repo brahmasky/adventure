@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Live gate — loud degradation Part A, model tiers (spec 2026-11-02 §9 Part A; plan Task 12).
 //   From the worktree after `npm run build` THERE (never in the main checkout: the daemon runs its dist/):
-//   HOUGE_ENV_FILE=/Users/xiaochuan/Projects/adventure/.env node scripts/live-gate-model-tiers.mjs [--live-db <path>] [--only <n>[,<n>]] [--dist <path>] [--debug]
+//   HOUGE_ENV_FILE=<main checkout>/.env node scripts/live-gate-model-tiers.mjs [--live-db <path>] [--only <n>[,<n>]] [--dist <path>] [--debug]
 // Six lines on stdout, each `PASS`/`FAIL <n> <name> — <detail>`; exit 0 only when all six PASS (1 FAIL, 2 setup error). A catalogued
 // non-planted model that answers model_missing prints `INFO model_missing <selector>` (the code working, spec §3), never a FAIL.
 // Everything else goes to stderr, prefixed `# `. Only fixed codes, counts, booleans, closed labels and catalog selectors are printed:
@@ -25,12 +25,12 @@ import { existsSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { SetupError, canon, cleanupTemp, initTemp, redactForPrint } from "./stage4-diff-lib.mjs";
+import { MAIN_CHECKOUT } from "./main-checkout.mjs";
 
 const argv = process.argv.slice(2);
 const arg = (k) => { const i = argv.indexOf(k); return i >= 0 ? argv[i + 1] : undefined; };
 const DIST = resolve(arg("--dist") ?? new URL("../dist", import.meta.url).pathname);
 if (!DIST.includes("/.worktrees/")) throw new Error(`run from the worktree (this dist is ${DIST}); never build in the main checkout`);
-const MAIN_CHECKOUT = "/Users/xiaochuan/Projects/adventure";
 const DEBUG = argv.includes("--debug");
 const ONLY = arg("--only") ? new Set(arg("--only").split(",").map(Number)) : null;
 const want = (n) => ONLY === null || ONLY.has(n);

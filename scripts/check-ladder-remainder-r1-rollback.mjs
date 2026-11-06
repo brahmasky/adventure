@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // Rollback check — decision ladder remainder R1, the three intake entries (spec 2026-10-30 R1 §7; plan Task 7).
 //   From the worktree after `npm run build` THERE (never in the main checkout: the daemon runs its dist/):
-//   HOUGE_ENV_FILE=/Users/xiaochuan/Projects/adventure/.env node scripts/check-ladder-remainder-r1-rollback.mjs \
-//     --old-dist /Users/xiaochuan/Projects/adventure/.worktrees/base-aec1d4f/dist [--old-base-r1 <full sha>] [--live-db <path>]
+//   HOUGE_ENV_FILE=<main checkout>/.env node scripts/check-ladder-remainder-r1-rollback.mjs \
+//     --old-dist <main checkout>/.worktrees/base-aec1d4f/dist [--old-base-r1 <full sha>] [--live-db <path>]
 // --old-base-r1 <full sha>: the base the old build must be pinned to; required once the branch is merged (merge-base of HEAD and main is then HEAD itself).
 // R1 adds record-only `intake.*` decision rows (no migration, no table), all with run_id and tool_call_id null. ONE VACUUM copy of the live DB:
 // this build writes one row of each new id through its own Gateway.intake (as scripts/live-gate-ladder-remainder-r1.mjs does); then the merge
@@ -32,9 +32,9 @@ import { DatabaseSync } from "node:sqlite";
 import { SetupError, cleanupTemp, initTemp, loadDist, mkTemp, runClosers } from "./stage4-diff-lib.mjs";
 import { mergeBaseOf, provenanceText, verifyStampedDist } from "./old-dist-provenance.mjs";
 import { intakeEvent, saturateWindow, seedAsk } from "./stage4-intake-fixture.mjs";
+import { MAIN_CHECKOUT } from "./main-checkout.mjs";
 
 const DIST = resolve(new URL("../dist", import.meta.url).pathname);
-const MAIN_CHECKOUT = "/Users/xiaochuan/Projects/adventure";
 const argv = process.argv.slice(2);
 const arg = (k) => { const i = argv.indexOf(k); return i >= 0 ? argv[i + 1] : undefined; };
 let phase = "setup";

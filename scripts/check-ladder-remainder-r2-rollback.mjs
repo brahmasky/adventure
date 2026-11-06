@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // Rollback check — decision ladder remainder R2, intake.sender + turn.contract (spec 2026-11-01 R2 §7; plan Task 10).
 //   From the worktree after `npm run build` THERE (never in the main checkout: the daemon runs its dist/):
-//   HOUGE_ENV_FILE=/Users/xiaochuan/Projects/adventure/.env node scripts/check-ladder-remainder-r2-rollback.mjs \
-//     --old-dist /Users/xiaochuan/Projects/adventure/.worktrees/base-ef4d0d1/dist [--old-base-r2 <full sha>] [--live-db <path>]
+//   HOUGE_ENV_FILE=<main checkout>/.env node scripts/check-ladder-remainder-r2-rollback.mjs \
+//     --old-dist <main checkout>/.worktrees/base-ef4d0d1/dist [--old-base-r2 <full sha>] [--live-db <path>]
 // --old-base-r2 <full sha>: the base the old build is pinned to (ef4d0d10fbcbe3077e10a28979891f0abd256b2f). Optional only while the merge base of HEAD and
 // main IS that commit; on the branch (cut from the plan commit) and after the merge it is required. Provenance file: gateway/gateway.js.
 // R2 adds record-only decision rows (no migration, no table): `intake.sender` (stage intake, run_id null) and `turn.contract` (stage pre_model):
@@ -25,9 +25,9 @@ import { SetupError, cleanupTemp, initTemp, loadDist, mkTemp, runClosers } from 
 import { mergeBaseOf, provenanceText, verifyStampedDist } from "./old-dist-provenance.mjs";
 import { intakeEvent } from "./stage4-intake-fixture.mjs";
 import { CHAT, PACO, STRANGER, senderUpdate } from "./stage4-sender-fixture.mjs";
+import { MAIN_CHECKOUT } from "./main-checkout.mjs";
 
 const DIST = resolve(new URL("../dist", import.meta.url).pathname);
-const MAIN_CHECKOUT = "/Users/xiaochuan/Projects/adventure";
 const argv = process.argv.slice(2);
 const arg = (k) => { const i = argv.indexOf(k); return i >= 0 ? argv[i + 1] : undefined; };
 let phase = "setup";

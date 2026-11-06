@@ -2,7 +2,7 @@
 // Live gate — decision ladder stage 2b-ii, improve.route (spec 2026-10-21 §9.2; plan Task 16). Ten cases end to end on a VACUUM copy of the live DB
 // (the live DB is only read) with the real Jev client (role `improve`), the real tick seats (improve_pick / distill / classify / compose / verify on the
 // ticks chain), the real embedder and a gate-controlled clock. Run from the worktree after `npm run build` THERE:
-//   HOUGE_ENV_FILE=/Users/xiaochuan/Projects/adventure/.env node scripts/live-gate-improve-route.mjs [--db <path>] [--keep] [--skip-memory-gate]
+//   HOUGE_ENV_FILE=<main checkout>/.env node scripts/live-gate-improve-route.mjs [--db <path>] [--keep] [--skip-memory-gate]
 // Clock: the gate's "now" is a 22:00 local instant 20 days AHEAD of the wall clock, so none of the copy's real turns, schedules, approvals or signals fall in a
 // recurrence, abandonment, hint or Watch window, and the copy's old inbox rows and outcome history are marked consumed/read first (a real stale backlog must not
 // crowd the planted groups out of the 40-group cap). Every fixture is synthetic text. Skills go to a temp SkillStore passed to the tick; HOUGE_DAEMON_TMP_DIR is the

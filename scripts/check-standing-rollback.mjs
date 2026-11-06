@@ -2,7 +2,7 @@
 // Rollback check — decision ladder Stage 4A, standing approval (spec 2026-10-28 §5; plan Task 10).
 //
 //   From the feature worktree, after `npm run build` there:
-//   HOUGE_ENV_FILE=/Users/xiaochuan/Projects/adventure/.env node scripts/check-standing-rollback.mjs \
+//   HOUGE_ENV_FILE=<main checkout>/.env node scripts/check-standing-rollback.mjs \
 //     --old-dist <a worktree at the merge base>/dist [--old-base <sha>] [--db <path>] \
 //     [--session-dir <kept gate run>/case-<tag>-<n>/data/omp/sessions/chat--4200] [--keep]
 //
