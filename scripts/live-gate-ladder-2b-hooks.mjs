@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Live gate — decision ladder stage 2b-i: the read hook, the settle hook, turn.settle (spec 2026-10-19 §7; plan Task 13).
 //   Run from the worktree after `npm run build` THERE (never in the main checkout: the daemon runs its dist/):
-//   HOUGE_ENV_FILE=/Users/xiaochuan/Projects/adventure/.env node scripts/live-gate-ladder-2b-hooks.mjs [--db <path>] [--keep] [--only 1,2a,…]
+//   HOUGE_ENV_FILE=<main checkout>/.env node scripts/live-gate-ladder-2b-hooks.mjs [--db <path>] [--keep] [--only 1,2a,…]
 // Every case runs on its own VACUUM copy of the live DB under the gate's temp root, with its own data dir, its own omp child
 // (the real `houge` profile), real Jev, Telegram tokens deleted, triage off (no lane answers a gate prompt: the planner
 // always answers, so session_stop always fires). Egress: gate-written files and prompts, and the planner's replies to them.

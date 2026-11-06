@@ -2,8 +2,8 @@
 // Rollback check — decision ladder stage 2b-i (spec 2026-10-19 §7; plan Task 13).
 //
 //   From the feature worktree, after `npm run build` there:
-//   HOUGE_ENV_FILE=/Users/xiaochuan/Projects/adventure/.env node scripts/check-ladder-2b-hooks-rollback.mjs \
-//     --old-dist /Users/xiaochuan/Projects/adventure/.worktrees/ladder-2b-base/dist [--old-base <sha>] [--db <path>] \
+//   HOUGE_ENV_FILE=<main checkout>/.env node scripts/check-ladder-2b-hooks-rollback.mjs \
+//     --old-dist <main checkout>/.worktrees/ladder-2b-base/dist [--old-base <sha>] [--db <path>] \
 //     [--session-dir <kept gate run>/case-<6|3>-<n>/data/omp/sessions/chat--4200] [--keep]   (run once per kind: todo calls, a continuation leg)
 //
 // No migration ships in 2b-i; the new rows are what a rollback must survive. A VACUUM copy of the live DB is opened by the

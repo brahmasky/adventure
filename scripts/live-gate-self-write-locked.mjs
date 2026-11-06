@@ -2,7 +2,7 @@
 // Live gate — self-write locked-path retry (plan 2026-10-13-self-write-locked-retry, Task 3).
 //
 //   Run from the feature worktree, after `npm run build` THERE (never in the main checkout: the daemon runs its dist/):
-//   HOUGE_ENV_FILE=/Users/xiaochuan/Projects/adventure/.env node scripts/live-gate-self-write-locked.mjs [--keep]
+//   HOUGE_ENV_FILE=<main checkout>/.env node scripts/live-gate-self-write-locked.mjs [--keep]
 //
 // Drives CoreWorker.runSelfWrite with the REAL codex writer (HOUGE_SELFWRITE_WRITER / HOUGE_CODEX_*) and the REAL
 // protected-path guard, against a throwaway `git clone --local` of this worktree's HEAD under the gate's temp root

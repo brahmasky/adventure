@@ -2,7 +2,7 @@
 // Live gate — loud degradation Parts B and C (spec 2026-11-02 §9; plan Task 13): boot resolve, daily reminder, the transcript carry
 // and its /fresh exit on a copy of the live DB, and a REAL omp /fresh across a restart.
 //   From the worktree after `npm run build` THERE (never in the main checkout: the daemon runs its dist/):
-//   HOUGE_ENV_FILE=/Users/xiaochuan/Projects/adventure/.env node scripts/live-gate-loud-degradation.mjs [--live-db <path>] [--only <n>[,<n>]] [--dist <path>] [--debug]
+//   HOUGE_ENV_FILE=<main checkout>/.env node scripts/live-gate-loud-degradation.mjs [--live-db <path>] [--only <n>[,<n>]] [--dist <path>] [--debug]
 // Seven lines on stdout, each `PASS`/`FAIL <n> <name> — <detail>`, then one `PASS|FAIL gate — <p>/<n> checks`; exit 0 only when all PASS (1 FAIL, 2 setup error).
 // Everything else goes to stderr, prefixed `# `. Only fixed codes, counts, booleans and closed labels are printed: never message text, a model reply,
 // an error text, e.message, a stack (--debug adds a class name from a closed allowlist to stderr), or any id of the live DB.
@@ -18,12 +18,12 @@ import { dirname, join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { SetupError, canon, cleanupTemp, initTemp, loadDist, redactForPrint } from "./stage4-diff-lib.mjs";
 import { cleanup, fakeSession, mkSupervisor, req } from "./stage4-supervisor-fixture.mjs";
+import { MAIN_CHECKOUT } from "./main-checkout.mjs";
 
 const argv = process.argv.slice(2);
 const arg = (k) => { const i = argv.indexOf(k); return i >= 0 ? argv[i + 1] : undefined; };
 const DIST = resolve(arg("--dist") ?? new URL("../dist", import.meta.url).pathname);
 if (!DIST.includes("/.worktrees/") || !new URL(import.meta.url).pathname.includes("/.worktrees/")) throw new Error(`run from the worktree (this dist is ${DIST}); never build in the main checkout`);
-const MAIN_CHECKOUT = "/Users/xiaochuan/Projects/adventure";
 const DEBUG = argv.includes("--debug");
 const ONLY = arg("--only") ? new Set(arg("--only").split(",").map(Number)) : null;
 const want = (n) => ONLY === null || ONLY.has(n);

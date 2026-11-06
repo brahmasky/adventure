@@ -5,7 +5,7 @@
 // tree mode reads a VACUUM INTO copy in a temp root, deleted on every exit (including SIGINT).
 //
 //   Run from the worktree after `npm run build` THERE:
-//   HOUGE_ENV_FILE=/Users/xiaochuan/Projects/adventure/.env node scripts/measure-jev-noise.mjs --injection [--k 5]
+//   HOUGE_ENV_FILE=<main checkout>/.env node scripts/measure-jev-noise.mjs --injection [--k 5]
 //   HOUGE_ENV_FILE=… node scripts/measure-jev-noise.mjs --tree --approved "<Paco's words and date>" [--limit 40] [--k 5]
 //
 // --injection re-sends the planted corpus (src/decisions/injection-corpus.ts, Task 18) masked then split, in batches of 16.

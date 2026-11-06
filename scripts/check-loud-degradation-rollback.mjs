@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Rollback check — loud degradation (spec 2026-11-02 §10; plan Task 14). From the worktree after `npm run build` THERE (never in the main checkout):
-//   HOUGE_ENV_FILE=/Users/xiaochuan/Projects/adventure/.env node scripts/check-loud-degradation-rollback.mjs --old-base <full merge-base sha> [--old-dist <dist>] [--live-db <path>]
+//   HOUGE_ENV_FILE=<main checkout>/.env node scripts/check-loud-degradation-rollback.mjs --old-base <full merge-base sha> [--old-dist <dist>] [--live-db <path>]
 // --old-dist defaults to <main checkout>/.worktrees/base-<first 12 of --old-base>/dist (built and stamped with scripts/stamp-dist.mjs). Without --old-base the merge base is discovered.
 // Provenance file: omp/model-roles-tick.js (the compiled module this slice changed; the stamped old build must differ from this one there).
 // Two VACUUM copies: A (never touched by this build) and F (cut from A, then written by THIS build: the tier table seeded by its migration, the two planner_session_state
@@ -16,9 +16,9 @@ import { DatabaseSync } from "node:sqlite";
 import { SetupError, cleanupTemp, initTemp, loadDist, mkTemp, runClosers } from "./stage4-diff-lib.mjs";
 import { mergeBaseOf, provenanceText, verifyStampedDist } from "./old-dist-provenance.mjs";
 import * as fx from "./stage4-supervisor-fixture.mjs";
+import { MAIN_CHECKOUT } from "./main-checkout.mjs";
 
 const DIST = resolve(new URL("../dist", import.meta.url).pathname);
-const MAIN_CHECKOUT = "/Users/xiaochuan/Projects/adventure";
 const FIXTURE = resolve(new URL("../tests/fixtures/omp-catalog-2026-11-02.json", import.meta.url).pathname);
 const argv = process.argv.slice(2);
 const arg = (k) => { const i = argv.indexOf(k); return i >= 0 ? argv[i + 1] : undefined; };

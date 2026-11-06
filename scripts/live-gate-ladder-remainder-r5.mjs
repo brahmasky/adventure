@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Live gate — decision ladder remainder R5, context.recall + context.catch_up + context.lessons + turn.clarify_cap (spec 2026-11-02 R5 §7; plan Task 6).
 //   From the worktree after `npm run build` THERE (never in the main checkout: the daemon runs its dist/):
-//   HOUGE_ENV_FILE=/Users/xiaochuan/Projects/adventure/.env node scripts/live-gate-ladder-remainder-r5.mjs [--live-db <path>] [--base-dist <merge-base dist>]
+//   HOUGE_ENV_FILE=<main checkout>/.env node scripts/live-gate-ladder-remainder-r5.mjs [--live-db <path>] [--base-dist <merge-base dist>]
 // --base-dist: the merge-base build line 1 compares the child's prompt (byte-equal) and the loop_started payload's values against, the run id and
 //   timestamps scrubbed (default .worktrees/base-9c23f084be37/dist).
 // Eight lines on stdout, each `PASS`/`FAIL <n> <name> — <detail>`; exit 0 only when all eight PASS (1 FAIL, 2 setup error).
@@ -23,9 +23,9 @@ import { DatabaseSync } from "node:sqlite";
 import { SetupError, canon, cleanupTemp, initTemp, loadDist, redactForPrint } from "./stage4-diff-lib.mjs";
 import { countingRecorder } from "./stage4-sender-fixture.mjs";
 import { cleanup, cleanupSettled, mkSupervisor, removeDataDirsSync, req, seedLaneRows, seedLessons } from "./stage4-supervisor-fixture.mjs";
+import { MAIN_CHECKOUT } from "./main-checkout.mjs";
 
 const DIST = resolve(new URL("../dist", import.meta.url).pathname);
-const MAIN_CHECKOUT = "/Users/xiaochuan/Projects/adventure";
 const FAKE_OMP = resolve(new URL("../tests/fixtures/fake-omp.mjs", import.meta.url).pathname);
 const argv = process.argv.slice(2);
 const arg = (k) => { const i = argv.indexOf(k); return i >= 0 ? argv[i + 1] : undefined; };

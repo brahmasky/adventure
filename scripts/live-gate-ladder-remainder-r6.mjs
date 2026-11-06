@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Live gate — decision ladder remainder R6, lookup.rewrite + lookup.thin + turn.model (spec 2026-11-03 R6 §7; plan Task 6).
 //   From the worktree after `npm run build` THERE (never in the main checkout: the daemon runs its dist/):
-//   HOUGE_ENV_FILE=/Users/xiaochuan/Projects/adventure/.env node scripts/live-gate-ladder-remainder-r6.mjs [--live-db <path>]
+//   HOUGE_ENV_FILE=<main checkout>/.env node scripts/live-gate-ladder-remainder-r6.mjs [--live-db <path>]
 // Seven lines on stdout, each `PASS`/`FAIL <n> <name> — <detail>`; exit 0 only when all seven PASS (1 FAIL, 2 setup error).
 // Everything else goes to stderr, prefixed `# `. Only counts, booleans, codes and run labels are printed, never message text or any id of the live DB.
 // The live DB is opened read-only, once, by VACUUM INTO a temp copy under /tmp/hg-s4d-*, removed on every exit path (finally, SIGINT, SIGTERM, SIGHUP,
@@ -18,9 +18,9 @@ import { dirname, join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { SetupError, canon, cleanupTemp, initTemp, loadDist, redactForPrint } from "./stage4-diff-lib.mjs";
 import { cleanup, cleanupSettled, fakeSession, mkSupervisor, modelRefusal, removeDataDirsSync, req } from "./stage4-supervisor-fixture.mjs";
+import { MAIN_CHECKOUT } from "./main-checkout.mjs";
 
 const DIST = resolve(new URL("../dist", import.meta.url).pathname);
-const MAIN_CHECKOUT = "/Users/xiaochuan/Projects/adventure";
 const FAKE_OMP = resolve(new URL("../tests/fixtures/fake-omp.mjs", import.meta.url).pathname);
 const CATALOG_FIXTURE = resolve(new URL("../tests/fixtures/omp-models.json", import.meta.url).pathname);
 const argv = process.argv.slice(2);

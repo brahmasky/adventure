@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // Rollback check — decision ladder Stage 4C, memory.lesson_admit + schedule.admit + memory.correct_preflight (spec 2026-10-30 §7; plan Task 9).
 //   From the worktree after `npm run build` THERE (never in the main checkout: the daemon runs its dist/):
-//   HOUGE_ENV_FILE=/Users/xiaochuan/Projects/adventure/.env node scripts/check-ladder-stage4c-rollback.mjs \
-//     --old-dist /Users/xiaochuan/Projects/adventure/.worktrees/base-c558413/dist [--old-base <full sha>] [--live-db <path>]
+//   HOUGE_ENV_FILE=<main checkout>/.env node scripts/check-ladder-stage4c-rollback.mjs \
+//     --old-dist <main checkout>/.worktrees/base-c558413/dist [--old-base <full sha>] [--live-db <path>]
 // --old-base <full sha>: the base the old build must be pinned to; required once the branch is merged (merge-base of HEAD and main is then HEAD itself).
 // 4C adds record-only decision rows (no migration, no table). Two VACUUM copies of the live DB: A (this build writes one row of each new id
 // through its own call sites, as scripts/live-gate-ladder-stage4c.mjs does; then the merge base c558413 opens it; then this build reopens it)

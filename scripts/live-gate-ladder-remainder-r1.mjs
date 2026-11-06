@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Live gate — decision ladder remainder R1, the three intake entries (spec 2026-10-30 R1 §7; plan Task 6).
 //   From the worktree after `npm run build` THERE (never in the main checkout: the daemon runs its dist/):
-//   HOUGE_ENV_FILE=/Users/xiaochuan/Projects/adventure/.env node scripts/live-gate-ladder-remainder-r1.mjs [--live-db <path>]
+//   HOUGE_ENV_FILE=<main checkout>/.env node scripts/live-gate-ladder-remainder-r1.mjs [--live-db <path>]
 // Eight lines on stdout, each `PASS`/`FAIL <n> <name> — <detail>`; exit 0 only when all eight PASS (1 FAIL, 2 setup error).
 // Everything else goes to stderr, prefixed `# `. Only counts, booleans and codes are printed, never message text.
 // The live DB is opened read-only, once, by VACUUM INTO a temp copy under /tmp/hg-s4d-*, removed on every exit path (finally,
@@ -16,9 +16,9 @@ import { dirname, join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { SetupError, cleanupTemp, initTemp, loadDist, mkTemp, redactForPrint } from "./stage4-diff-lib.mjs";
 import { intakeEvent, saturateWindow, seedAsk } from "./stage4-intake-fixture.mjs";
+import { MAIN_CHECKOUT } from "./main-checkout.mjs";
 
 const DIST = resolve(new URL("../dist", import.meta.url).pathname);
-const MAIN_CHECKOUT = "/Users/xiaochuan/Projects/adventure";
 const argv = process.argv.slice(2);
 const arg = (k) => { const i = argv.indexOf(k); return i >= 0 ? argv[i + 1] : undefined; };
 if (!DIST.includes("/.worktrees/")) throw new Error(`run from the worktree (this dist is ${DIST}); never build in the main checkout`);

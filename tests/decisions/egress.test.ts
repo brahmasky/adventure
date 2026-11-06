@@ -331,7 +331,7 @@ describe("redactForJudge — the judge sees every sentence the planner sees", ()
       "https://developer.apple.com/documentation/Foundation/NSURLSession/dataTask"]) expect(redactForJudge(u)).toBe(u);
   });
   it("keeps ordinary file paths; masks a random letters-only token", () => {
-    const line = "/Users/xiaochuan/Projects/adventure/src/decisions/egress.ts: line 12";
+    const line = "/Users/operator/Projects/adventure/src/decisions/egress.ts: line 12";
     expect(redactForJudge(line)).toBe(line);
     expect(redactForJudge("token NfTRRfioYlLaExsaALpOFUkRXmHUKFeSPuPM end")).toBe(`token ${SECRET_MASK} end`);
   });

@@ -2,8 +2,8 @@
 // R13 rollback check — decision ladder stage 1 (spec 2026-10-12 §5.4; plan Task 13).
 //
 //   From the feature worktree, after `npm run build` there (never in the main checkout):
-//   HOUGE_ENV_FILE=/Users/xiaochuan/Projects/adventure/.env node scripts/check-decisions-rollback.mjs \
-//     --old-dist /Users/xiaochuan/Projects/adventure/.worktrees/p6-base/dist [--db <path>] [--keep]
+//   HOUGE_ENV_FILE=<main checkout>/.env node scripts/check-decisions-rollback.mjs \
+//     --old-dist <main checkout>/.worktrees/p6-base/dist [--db <path>] [--keep]
 //
 // Rollback is "revert, rebuild, kickstart" only while every migration is additive. This proves it on real data: a VACUUM
 // copy of the live DB is migrated by the new build; then the previous build (3bff437) opens it — its migrations run, a

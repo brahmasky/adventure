@@ -2937,7 +2937,7 @@ export class CoreWorker {
     return async () => {
       if (i.signal.aborted) return { failed: "threw" };
       try {
-        const now = Date.now();
+        const now = (this.ompOptions.jevNow ?? (() => new Date()))().getTime(); // the tree's clock: one turn, one `now`
         return await askMemoryKind({ run_id: i.claim.run_id, lang, client: this.memoryKindClient(i.claim.run_id), store: this.runStore,
           ...(this.broker ? { redact: (s: string) => this.broker!.redact(s) } : {}),
           state: { userText: i.userText, recentTurns: state.turnCtx.recentTurns, turnChars: state.turnCtx.turnChars, modality: i.modality,

@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // Rollback check — decision ladder remainder R4, planner.crash_guard + turn.retry (spec 2026-11-01 R4 §7; plan Task 6).
 //   From the worktree after `npm run build` THERE (never in the main checkout: the daemon runs its dist/):
-//   HOUGE_ENV_FILE=/Users/xiaochuan/Projects/adventure/.env node scripts/check-ladder-remainder-r4-rollback.mjs \
-//     --old-dist /Users/xiaochuan/Projects/adventure/.worktrees/base-<12-char sha>/dist [--old-base-r4 <full sha>] [--live-db <path>]
+//   HOUGE_ENV_FILE=<main checkout>/.env node scripts/check-ladder-remainder-r4-rollback.mjs \
+//     --old-dist <main checkout>/.worktrees/base-<12-char sha>/dist [--old-base-r4 <full sha>] [--live-db <path>]
 // --old-base-r4 <full sha>: only after the merge (the merge base is then this build's own HEAD); on the branch the merge base is discovered (P1).
 // Provenance file: omp/planner-supervisor.js.
 // R4 adds record-only decision rows (no migration, no table): planner.crash_guard halt (limit_reached, latched) and turn.retry retry/final, each with the consulting run's id.
@@ -22,9 +22,9 @@ import { DatabaseSync } from "node:sqlite";
 import { SetupError, cleanupTemp, initTemp, loadDist, mkTemp, runClosers } from "./stage4-diff-lib.mjs";
 import { mergeBaseOf, provenanceText, verifyStampedDist } from "./old-dist-provenance.mjs";
 import * as fx from "./stage4-supervisor-fixture.mjs";
+import { MAIN_CHECKOUT } from "./main-checkout.mjs";
 
 const DIST = resolve(new URL("../dist", import.meta.url).pathname);
-const MAIN_CHECKOUT = "/Users/xiaochuan/Projects/adventure";
 const argv = process.argv.slice(2);
 const arg = (k) => { const i = argv.indexOf(k); return i >= 0 ? argv[i + 1] : undefined; };
 let phase = "setup";

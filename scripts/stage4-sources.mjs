@@ -2,9 +2,10 @@
 // `it.each` tables, and the tool calls in the live omp transcripts. Read-only; transcript values live in memory only and are never printed.
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { MAIN_CHECKOUT } from "./main-checkout.mjs";
 import { SetupError } from "./stage4-diff-lib.mjs";
 
-export const DEFAULT_TRANSCRIPTS = "/Users/xiaochuan/Projects/adventure/omp/sessions/chat-8744196214";
+const SESSIONS = join(MAIN_CHECKOUT, "omp", "sessions");
 export const REPO_ROOT = resolve(new URL("..", import.meta.url).pathname);
 
 /** The runtime value of one string literal's source text: JSON.parse for "…", a restricted unescape for '…' and `…` (no ${). */
@@ -62,9 +63,16 @@ function walk(o, f) {
   else if (o && typeof o === "object") { f(o); Object.values(o).forEach((x) => walk(x, f)); }
 }
 
+/** The live chat's transcripts: the one `chat-*` directory under the main checkout's omp sessions (more than one → pass the flag). */
+function defaultTranscripts() {
+  const chats = existsSync(SESSIONS) ? readdirSync(SESSIONS).filter((n) => n.startsWith("chat-")) : [];
+  if (chats.length !== 1) throw new SetupError(`${chats.length} chat transcript directories under omp/sessions (pass --transcripts-dir)`);
+  return join(SESSIONS, chats[0]);
+}
+
 /** Every toolCall object named in `names`, across the *.jsonl files of the transcripts directory (a missing directory is a setup error). */
 export function transcriptCalls(dir, names) {
-  const root = resolve(dir ?? DEFAULT_TRANSCRIPTS);
+  const root = resolve(dir ?? defaultTranscripts());
   if (!existsSync(root)) throw new SetupError("transcripts directory not found (pass --transcripts-dir)");
   const calls = [];
   for (const f of readdirSync(root).filter((n) => n.endsWith(".jsonl")).sort()) {

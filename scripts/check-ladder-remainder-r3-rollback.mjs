@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // Rollback check — decision ladder remainder R3, intake.bare_ack + intake.steer_or_queue (spec 2026-11-01 R3 §7; plan Task 6).
 //   From the worktree after `npm run build` THERE (never in the main checkout: the daemon runs its dist/):
-//   HOUGE_ENV_FILE=/Users/xiaochuan/Projects/adventure/.env node scripts/check-ladder-remainder-r3-rollback.mjs \
-//     --old-dist /Users/xiaochuan/Projects/adventure/.worktrees/base-6c75b03/dist --old-base-r3 6c75b03bbbbb602a9cc4cc42f0bba54d6bfea255 [--live-db <path>]
+//   HOUGE_ENV_FILE=<main checkout>/.env node scripts/check-ladder-remainder-r3-rollback.mjs \
+//     --old-dist <main checkout>/.worktrees/base-6c75b03/dist --old-base-r3 6c75b03bbbbb602a9cc4cc42f0bba54d6bfea255 [--live-db <path>]
 // --old-base-r3 <full sha>: the base the old build is pinned to (6c75b03...; ruling P1: the branch's merge base is a docs-only commit, so it is always passed).
 // Provenance file: omp/planner-supervisor.js.
 // R3 adds record-only decision rows (no migration, no table): `intake.bare_ack` nudge and `intake.steer_or_queue` steer and wait, each with the incoming run's id.
@@ -23,9 +23,9 @@ import { DatabaseSync } from "node:sqlite";
 import { SetupError, cleanupTemp, initTemp, loadDist, mkTemp, runClosers } from "./stage4-diff-lib.mjs";
 import { mergeBaseOf, provenanceText, verifyStampedDist } from "./old-dist-provenance.mjs";
 import * as fx from "./stage4-supervisor-fixture.mjs";
+import { MAIN_CHECKOUT } from "./main-checkout.mjs";
 
 const DIST = resolve(new URL("../dist", import.meta.url).pathname);
-const MAIN_CHECKOUT = "/Users/xiaochuan/Projects/adventure";
 const argv = process.argv.slice(2);
 const arg = (k) => { const i = argv.indexOf(k); return i >= 0 ? argv[i + 1] : undefined; };
 let phase = "setup";

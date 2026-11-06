@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Live gate — decision ladder stage 2a (spec 2026-10-12 §13 row 2a; plan 2026-10-13 Task 19). Cases C1–C9 in the plan's table.
 //   Run from the worktree after `npm run build` THERE (never in the main checkout: the daemon runs its dist/):
-//   HOUGE_ENV_FILE=/Users/xiaochuan/Projects/adventure/.env node scripts/live-gate-decisions-2a.mjs [--db <path>] [--keep]
+//   HOUGE_ENV_FILE=<main checkout>/.env node scripts/live-gate-decisions-2a.mjs [--db <path>] [--keep]
 // Egress: C1, C2, C7 send the planted corpus and real read-only tool output (web, shell, Paco's public repo docs) through the
 // judge redactor (R11's approved classes). C4, C5 run the real planner on gate-written prompts. No Telegram text of Paco's
 // is sent. Never opens the live DB for writing. Exit: 0 PASS · 1 FAIL · 2 setup error · 3 INCONCLUSIVE.

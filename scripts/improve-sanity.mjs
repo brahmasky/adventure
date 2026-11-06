@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Pre-merge sanity — improve.route on 30 days of rebuilt signal groups plus ten planted groups (2b-ii spec §9.3). From the worktree after
-// `npm run build` there:  HOUGE_ENV_FILE=/Users/xiaochuan/Projects/adventure/.env node scripts/improve-sanity.mjs [--db <path>] [--days 30] [--keep]
+// `npm run build` there:  HOUGE_ENV_FILE=<main checkout>/.env node scripts/improve-sanity.mjs [--db <path>] [--days 30] [--keep]
 // On a VACUUM copy of the live DB: backfill the inbox from the window's run_failed events, denied/expired approvals and decision outcomes,
 // compute recurrence (14-day windows stepped back over the span) and abandonment (daily) with the real embedder, group, build each group's
 // ImproveState, and ask decideImprove (rule, real Jev role `improve`, the Tiny pick on the ticks chain) with a capturing recorder (no decision rows).

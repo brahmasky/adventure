@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Live gate — chat is for Paco (spec 2026-11-03 §10, eight lines): background notices go to the change log, pages and cards stay in chat.
 //   From the worktree after `npm run build` THERE (never in the main checkout: the daemon runs its dist/):
-//   HOUGE_ENV_FILE=/Users/xiaochuan/Projects/adventure/.env node scripts/live-gate-chat-is-for-paco.mjs [--live-db <path>] [--dist <path>] [--debug]
+//   HOUGE_ENV_FILE=<main checkout>/.env node scripts/live-gate-chat-is-for-paco.mjs [--live-db <path>] [--dist <path>] [--debug]
 // Stdout: `PASS n` or `FAIL n: <code>[,<code>]` per line (closed codes and counts only), then `PASS|FAIL gate — <p>/8`. Exit 0 all PASS · 1 any FAIL · 2 setup error.
 // Never printed: an id, a message text, an error message. Everything else goes to stderr prefixed `# `.
 // The live DB is read once by VACUUM INTO a pristine copy under the temp root (/tmp/hg-s4d-*); each scenario runs on its own VACUUM copy of that copy; the whole
@@ -14,12 +14,12 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { SetupError, cleanupTemp, initTemp } from "./stage4-diff-lib.mjs";
+import { MAIN_CHECKOUT } from "./main-checkout.mjs";
 
 const argv = process.argv.slice(2);
 const arg = (k) => { const i = argv.indexOf(k); return i >= 0 ? argv[i + 1] : undefined; };
 const DIST = resolve(arg("--dist") ?? new URL("../dist", import.meta.url).pathname);
 if (!DIST.includes("/.worktrees/")) throw new Error(`run from the worktree (this dist is ${DIST}); never build in the main checkout`);
-const MAIN_CHECKOUT = "/Users/xiaochuan/Projects/adventure";
 const DEBUG = argv.includes("--debug");
 const STUB_CHAT = "-1003"; // numeric, not a real chat
 const ARGON = "gemini-4-argon";
