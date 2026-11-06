@@ -341,10 +341,11 @@ function coverage(g, runs) {
   const rows = runs.flatMap((r) => g.newSide.store.listDecisionsForRun(r).filter((d) => d.entry_id === "turn.handler"));
   const tally = {};
   for (const d of rows) tally[`${d.rung}:${d.reason_code}`] = (tally[`${d.rung}:${d.reason_code}`] ?? 0) + 1;
-  const calibrated = new Set(g.newMods.CALIBRATED_ROWS.map((r) => r.model));
+  // ADR 0033 F2: the committed rows approve questions, not a model; a reported model arms by its version-check state.
+  const arms = (m) => g.newMods.armingOf(g.newSide.store.getJevModel(m)).questions.size > 0;
   const reported = [...new Set(runs.flatMap((r) => g.newSide.store.listJevDecisions(r).filter((x) => x.status === "answered").map((x) => x.model_reported)))];
   return {
-    tally, reported, uncalibrated: reported.filter((m) => !calibrated.has(m)),
+    tally, reported, uncalibrated: reported.filter((m) => !arms(m)),
     armed: rows.filter((d) => (d.rung === "system_one" || d.rung === "model") && d.reason_code !== "uncalibrated").length,
     model: rows.filter((d) => d.rung === "model" || d.fallback_rung === "model").length
   };
@@ -352,7 +353,7 @@ function coverage(g, runs) {
 
 function reportCoverage(c) {
   console.log(`  turn.handler rows by rung:reason — ${Object.entries(c.tally).map(([k, n]) => `${k} ${n}`).join(" · ")}`);
-  check("coverage: every answered Jev row reports a model the committed rows arm", c.reported.length > 0 && c.uncalibrated.length === 0, `reported ${c.reported.join(", ") || "none"}`);
+  check("coverage: every answered Jev row reports a model its version check arms", c.reported.length > 0 && c.uncalibrated.length === 0, `reported ${c.reported.join(", ") || "none"}`);
   check(`coverage: at least ${MIN_ARMED} turn.handler verdicts from an armed tree`, c.armed >= MIN_ARMED, `${c.armed}`);
   if (c.model === 0) cannotRun("coverage: the cascade (model) rung ran", "no text fell below the choice bar");
   else check("coverage: the cascade (model) rung ran", true, `${c.model}`);
@@ -481,7 +482,7 @@ function checkTap(g, shown) {
 
 async function setup(args) {
   const newMods = await loadBuild(NEW_DIST, ["config/load-env.js", "config/disarm-posture.js", "decisions/digest.js", "decisions/registry.js", "decisions/status-view.js", "run/schedule-spec.js", "triggers/telegram-trigger-adapter.js",
-    "jev/calibration.js", "notifications/telegram-notification-adapter.js"]);
+    "decisions/jev-version-check.js", "notifications/telegram-notification-adapter.js"]);
   newMods.loadHougeEnv();
   if (!process.env.TYPESAFE_API_KEY) throw new Error("TYPESAFE_API_KEY is not set (HOUGE_ENV_FILE?)");
   const repo = dirname(resolve(process.env.HOUGE_ENV_FILE ?? join(process.cwd(), ".env")));
