@@ -125,8 +125,6 @@ export interface ExtractedFact {
   evidence: { line: number; quote: string } | null;
   /** The cited user turn, set only when the evidence passed. */
   source_turn_id?: string;
-  /** Set only when the evidence check ran and failed (shadow keeps the fact): it may never write or keep a core row. */
-  evidence_failed?: true;
 }
 
 export interface EpisodicExtractResult {
@@ -315,8 +313,7 @@ export async function runEpisodicDistillPass(input: DistillPassInput): Promise<E
 
 /**
  * Memory A1 §4: each fact's evidence is checked in code. Passing → its provenance is that one user turn. Failing →
- * `shadow` keeps the fact but never as core (window-wide provenance, as before); `enforce` drops it. Either way
- * the reason is counted at commit. `off` checks nothing.
+ * dropped, and the reason is counted at commit. `off` checks nothing.
  */
 function judgeEvidence(
   facts: ExtractedFact[], lines: TranscriptLine[], store: Pick<RunStore, "runSource">, mode: EvidenceMode
@@ -331,7 +328,6 @@ function judgeEvidence(
       continue;
     }
     rejections.push(verdict.reason);
-    if (mode === "shadow") kept.push({ ...fact, core: false, evidence_failed: true });
   }
   return { kept, rejections };
 }
@@ -444,15 +440,12 @@ function applyVerdict(planned: PlannedFact[], fact: ExtractedFact, v: ReconcileV
     planned.push({ fact, text, verdict, embedding, embeddedText: fact.fact });
     return;
   }
-  // C1: a fact whose evidence failed carries unverified text, so the fold is never core (its own core is already false)
   if (v.verdict === "UPDATE") {
     target.text = v.text ?? fact.fact;
-    target.fact = fact.evidence_failed
-      ? { ...target.fact, core: false, evidence_failed: true }
-      : { ...target.fact, core: target.fact.core || fact.core };
+    target.fact = { ...target.fact, core: target.fact.core || fact.core };
   } else {
-    // never demote biography (the store's supersede rule) — unless the newer fact's evidence failed
-    target.fact = { ...fact, core: fact.evidence_failed ? false : fact.core || target.fact.core };
+    // never demote biography (the store's supersede rule)
+    target.fact = { ...fact, core: fact.core || target.fact.core };
     target.text = fact.fact;
     target.embedding = embedding;
     target.embeddedText = fact.fact;
@@ -493,17 +486,13 @@ function writeWindow(input: DistillPassInput, env: NodeJS.ProcessEnv, window: Ch
 }
 
 /**
- * One planned fact to the store. With evidence on, core only on an ADD (the evidence check already cleared core on a
- * failing fact); with evidence `off`, today's behaviour (the extractor's core flag as is). C1: a failing fact whose
- * verdict targets a CORE row is downgraded to a non-core ADD — the store's supersede would otherwise make its
- * unverified text core; the core row stays active and untouched.
+ * One planned fact to the store. With evidence on, core only on an ADD (a failing fact never got here); with evidence
+ * `off`, the extractor's core flag as is.
  */
 function savePlanned(
   input: DistillPassInput, env: NodeJS.ProcessEnv, p: NonNullable<PlannedFact>, windowTurnIds: string[], mode: EvidenceMode
 ): EpisodicFactSaveResult {
-  const { fact, embedding } = p;
-  const ontoCore = p.verdict.verdict !== "ADD" && input.store.getEpisodicFact(p.verdict.id)?.is_core === 1;
-  const verdict: StoreVerdict = mode !== "off" && fact.evidence_failed && ontoCore ? { verdict: "ADD" } : p.verdict;
+  const { fact, embedding, verdict } = p;
   return input.store.saveReconciledFact(
     {
       chat_id: input.chatId,

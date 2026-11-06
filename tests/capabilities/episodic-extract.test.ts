@@ -31,7 +31,8 @@ const EPISODIC_ENV_VARS = [
   "HOUGE_EMBED_URL",
   "HOUGE_EMBED_MODEL",
   "HOUGE_EMBED_TIMEOUT_MS",
-  "HOUGE_SESSION_LULL_MINUTES"
+  "HOUGE_SESSION_LULL_MINUTES",
+  "HOUGE_EPISODIC_EVIDENCE"
 ] as const;
 let savedEnv: Record<string, string | undefined> = {};
 beforeEach(() => {
@@ -40,6 +41,9 @@ beforeEach(() => {
     savedEnv[key] = process.env[key];
     delete process.env[key];
   }
+  // These tests drive the pass's pipeline with facts that cite no line; the evidence check (default enforce) has its
+  // own file, episodic-evidence.test.ts, so it is off here (as in fact-reconcile.test.ts).
+  process.env.HOUGE_EPISODIC_EVIDENCE = "off";
 });
 afterEach(() => {
   for (const key of EPISODIC_ENV_VARS) {
@@ -600,7 +604,7 @@ describe("runEpisodicDistillPass — reconcile inside one window (pending facts 
   });
 
   it("a SUPERSEDE of a core pending fact by a non-core one keeps the stored row core (biography is never demoted)", async () => {
-    // both facts pass evidence; a FAILING newer fact is never core (final-review C1, episodic-evidence.test.ts)
+    // both facts pass evidence; a FAILING newer fact is dropped (final-review C1, episodic-evidence.test.ts)
     const store = RunStore.openInMemory();
     try {
       store.recordChatTurn({ chat_id: CHAT, run_id: "r1", role: "user", text: "Born in Riverton. Actually Riverton town.", created_at: minutesAgo(90) });

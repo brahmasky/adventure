@@ -74,11 +74,12 @@ describe("numbered, flattened transcript lines (spec §4)", () => {
     expect(q).not.toContain("[1] ");
   });
 
-  it("the mode flag defaults to shadow; off and enforce are explicit", () => {
-    expect(resolveEpisodicEvidenceMode({})).toBe("shadow");
+  it("the mode flag defaults to enforce; only an explicit off turns the check off, and shadow is gone", () => {
+    expect(resolveEpisodicEvidenceMode({})).toBe("enforce");
     expect(resolveEpisodicEvidenceMode({ HOUGE_EPISODIC_EVIDENCE: "enforce" })).toBe("enforce");
     expect(resolveEpisodicEvidenceMode({ HOUGE_EPISODIC_EVIDENCE: "OFF" })).toBe("off");
-    expect(resolveEpisodicEvidenceMode({ HOUGE_EPISODIC_EVIDENCE: "garbage" })).toBe("shadow");
+    expect(resolveEpisodicEvidenceMode({ HOUGE_EPISODIC_EVIDENCE: "shadow" })).toBe("enforce"); // retired 2026-11-06: no shadow
+    expect(resolveEpisodicEvidenceMode({ HOUGE_EPISODIC_EVIDENCE: "garbage" })).toBe("enforce");
   });
 });
 
@@ -112,12 +113,10 @@ describe("the distill pass under each evidence mode (spec §4)", () => {
     expect(rejections()).toEqual([]);
   });
 
-  it("shadow (default): failing evidence keeps the fact, stores it non-core, and counts the reason", async () => {
+  it("default (enforce): a fact citing an assistant line is dropped, not kept, and the reason is counted", async () => {
     seedWindow();
     await pass(extractOnly([{ fact: "The user keeps two bicycles", core: true, evidence: { line: 2, quote: "two bicycles" } }]));
-    const [row] = store.getActiveEpisodicFacts(CHAT);
-    expect(row!.is_core).toBe(0);
-    expect(JSON.parse(row!.source_turn_ids)).toHaveLength(2); // today's window-wide provenance
+    expect(store.getActiveEpisodicFacts(CHAT)).toEqual([]);
     expect(rejections()).toEqual([{ reason: "not_user", chat_id: CHAT }]);
   });
 
@@ -166,17 +165,16 @@ describe("the distill pass under each evidence mode (spec §4)", () => {
   });
 });
 
-describe("a fact whose evidence failed never reaches the core band (final-review C1)", () => {
+describe("a fact whose evidence failed never touches a core row (final-review C1, now: it is dropped)", () => {
   const core = () => store.addEpisodicFact({ chat_id: CHAT, fact: "The user lives in Melbourne", is_core: true, created_at: minutesAgo(5000) });
   for (const verdict of ["SUPERSEDE", "UPDATE"] as const) {
-    it(`an assistant-line fact that ${verdict}s a core row is saved as a non-core ADD; the core row stays active and untouched`, async () => {
+    it(`an assistant-line fact that would ${verdict} a core row is dropped; the core row stays active and untouched`, async () => {
       const target = core();
       seedWindow();
       const answer = verdict === "SUPERSEDE" ? `{"verdict":"SUPERSEDE","id":${target}}` : `{"verdict":"UPDATE","id":${target},"text":"The user lives in Sydney"}`;
       await pass(extractOnly([{ fact: "The user lives in Sydney", core: false, evidence: { line: 2, quote: "two bicycles" } }], answer));
       expect(store.getEpisodicFact(target)).toMatchObject({ status: "active", is_core: 1, fact: "The user lives in Melbourne", superseded_by: null });
-      const added = store.getActiveEpisodicFacts(CHAT).find((f) => f.id !== target)!;
-      expect(added).toMatchObject({ fact: "The user lives in Sydney", is_core: 0, supersedes: null });
+      expect(store.getActiveEpisodicFacts(CHAT).map((f) => f.id)).toEqual([target]);
       expect(rejections()).toEqual([{ reason: "not_user", chat_id: CHAT }]);
     });
   }
@@ -190,7 +188,7 @@ describe("a fact whose evidence failed never reaches the core band (final-review
   });
 
   for (const verdict of ["SUPERSEDE", "UPDATE"] as const) {
-    it(`in-window: a failing fact that ${verdict}s a passing core fact of the same window is stored non-core`, async () => {
+    it(`in-window: a failing fact that would ${verdict} a passing core fact of the same window is dropped; the passing fact stays core`, async () => {
       seedWindow();
       const answer = (q: string) => (q.includes("#-1:")
         ? (verdict === "SUPERSEDE" ? '{"verdict":"SUPERSEDE","id":-1}' : '{"verdict":"UPDATE","id":-1,"text":"The user keeps two red bicycles"}')
@@ -205,7 +203,7 @@ describe("a fact whose evidence failed never reaches the core band (final-review
           : answer(input.question)
       });
       await pass(llm);
-      expect(store.getActiveEpisodicFacts(CHAT).map((f) => [f.fact, f.is_core])).toEqual([["The user keeps two red bicycles", 0]]);
+      expect(store.getActiveEpisodicFacts(CHAT).map((f) => [f.fact, f.is_core])).toEqual([["The user keeps two bicycles", 1]]);
     });
   }
 });
