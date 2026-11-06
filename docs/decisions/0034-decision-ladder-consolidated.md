@@ -189,11 +189,11 @@ write.
   it when Paco commits one.
 - 6.2 **Golden sets.** Provisional bars are covered by golden sets that run as daily ticks (`tool.injection`,
   `memory.kind`, `turn.settle`) and in the Jev version check (those three and `improve.route`), never in the invariant
-  sweep (the sweep is synchronous and switchable; R13 forbids a switchable check). Drift opens `decision_golden_drift:<entry>` and never
-  disarms.
+  sweep (the sweep is synchronous and switchable; R13 forbids a switchable check). A daily tick's drift opens
+  `decision_golden_drift:<entry>`; the version check reports drift in its outcome message. Neither disarms.
 - 6.3 **Model moves.** A model or wording change no longer opens `decision_bar_stale`; the Jev version check (ADR 0033
-  F3–F4) judges it. `decision_bar_stale` is retired (the tick still resolves incidents older builds opened); a
-  provisional bar stays until Paco commits a calibrated row. The front door's calibrated tree rows keep their disarm on
+  F3–F4) judges it. `decision_bar_stale` is retired (the tick still resolves incidents older builds opened) and the
+  digest flags the entry until Paco commits a calibrated row. The front door's calibrated tree rows keep their disarm on
   a model move.
 - 6.4 **Noise band.** A reviewed per-question band, keyed like a calibration row: a value within the band of a bar asks
   Jev exactly once more; the front door decides on the mean, a judge over tool input on the more cautious call. A failed
@@ -503,7 +503,7 @@ write.
 | 2026-11-04 | This consolidation, no change of meaning | — | 2026-11-05 |
 | 2026-11-05 | Ruling A5: the ADR 0018 `/disarm` STOP flags are outside 1.6; found by the R13 conformance test (`tests/adr/`) | — | 2026-11-05 |
 | 2026-11-05 | No off switch, no shadow: front-door shadow, HOUGE_JEV_LANES_OFF and HOUGE_JEV_TRIAGE_ENABLED removed; HOUGE_JEV_ENABLED is the front door's STOP flag | [no off switch](../superpowers/specs/2026-11-05-jev-no-off-switch-no-shadow-design.md) | 2026-11-06 |
-| 2026-11-06 | Drift rewording, no change of meaning: golden sets are daily ticks and version-check sets (6.2); no digest flag for a provisional bar (6.3); the five unmarked `alwaysRecord` entries marked in rule 4, pinned by `tests/adr/` | — | awaiting Paco's signature |
+| 2026-11-06 | Drift rewording, no change of meaning: golden sets are daily ticks and version-check sets, and where each reports drift (6.2); the five unmarked `alwaysRecord` entries marked in rule 4, pinned by `tests/adr/` | — | awaiting Paco's signature |
 
 ## Reference map
 

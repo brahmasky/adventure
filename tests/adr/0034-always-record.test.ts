@@ -15,6 +15,8 @@ const adr = readFileSync(join(import.meta.dirname, "..", "..", "docs", "decision
 function adrAlwaysRecord(text: string): string[] {
   const section = text.slice(text.indexOf("### 4. The entries"));
   const table = section.slice(0, section.indexOf("\n### ", 1));
+  // The parser reads the 4th cell as "rows written"; a reshaped table must change this test, not pass it silently.
+  if (!table.includes("\n| Id | Stage · input | Locked | Rows written, and when | From |\n")) throw new Error("ADR 0034 rule 4 table header changed");
   return table.split("\n")
     .map((line) => /^\| `([a-z_.]+)` \|(?:[^|]*\|){2}([^|]*)\|/.exec(line))
     .filter((m): m is RegExpExecArray => m !== null && m[2]!.includes("`alwaysRecord`"))
