@@ -65,10 +65,10 @@ Paco directly.
 | D4 | Conversation memory | **omp session owns the transcript**; Houge owns knowledge | stateless recomposition |
 | D5 | Planner autonomy | **yolo under `$HOME`**: file read/write/edit and shell commands run without a prompt, **except external writes and destructive deletes** (matcher, §5.2). The tap-free local writes are conditional on the turn's trust level (`turn.trust`, ADR 0034) | workspace jail; approve-every-bash |
 | D6 | Floors | (A) secret/protected paths denied at the OS level + policy hook (§5.1); (B) external effects wait for `/approve`: for `bash` a **best-effort, code-owned command matcher** (D12), for bridge tools the registry's `external_write` level | — |
-| D7 | Models | subscription OAuth only; Claude via Anthropic Max OAuth **inside omp**, the model named by the code-owned roles resolved against omp's catalog (§7) (terms risk accepted; fallback is one env line) | `claude -p`; metered API |
+| D7 | Models | subscription OAuth only; Claude via Anthropic Max OAuth **inside omp**, the model named by the code-owned roles resolved against omp's catalog (§7) (terms risk accepted; the fallback is each role's next code-owned leg, §7; `HOUGE_MODEL_ROLES=static` rolls back the model lists, it is not a way off Claude) | `claude -p`; metered API |
 | D8 | Tool set | port 12 as bridge tools; delete `llm_answer` + the money track (5 tools) | port all 18 |
 | D9 | Gmail | port with an `account` key designed in | rewrite later |
-| D10 | Family collapse (planner and reader on one family after fallback) | **accept the degradation, audited** (Paco, 2026-09-30): the read proceeds; every such read writes a `wall_collapse` ledger event and opens/keeps an incident. In resolved mode the reader's candidates are ordered cross-family first (a stable partition), so collapse is avoided before the read, not discovered after it; a fourth reader string on the GPT family makes collapse rare | fail closed |
+| D10 | Family collapse (planner and reader on one family after fallback) | **accept the degradation, audited** (Paco, 2026-09-30): the read proceeds; every such read writes a `wall_collapse` ledger event and opens/keeps an incident. In resolved mode the reader's candidates are ordered cross-family first (a stable partition), so collapse is avoided before the read, not discovered after it; the Reader role's GPT-family leg (`codex-sol`), after its Gemini and Kimi legs, makes collapse rare | fail closed |
 | D11 | Floor A residual | **accepted** (Paco, 2026-09-30): the planner must read its own OAuth store (`~/.omp/profiles/houge`), so the OS sandbox cannot deny it to that process; the policy hook denies omp's `read` of it, and with D12 no shell runs inside that process. Revisited in SP3 (separate macOS user) | block yolo until SP3 |
 | D12 | Shell = bridge tool, **Claude Code posture** (Paco, 2026-09-30) | omp's built-in `bash` is replaced by a bridge tool **registered under the same name** (an extension tool named `bash` supersedes the built-in). Commands run daemon-side under `sandbox-exec` with the floor-A file denies and the signal/launchctl denies, **network allowed**, output returned **raw** (capped at 32 KiB). Its network output is judged by `tool.injection` (ADR 0034). A steered planner can fetch hostile bytes through `bash` around the reader wall; ADR 0014 exempts shell output. Floor B for `bash` = the matcher (`git push`, `gh … create`, `curl\|wget\|http` with `-X POST\|PUT\|PATCH\|DELETE\|--data`, `mail\|sendmail`, `ssh\|scp\|rsync`, `npm publish`, `sudo`, `launchctl`, `crontab`, destructive deletes) → `/approve`; misses run — accepted residual | the Codex posture (network off by default, `network:true` = one tap, output quarantined) — rejected by Paco as too restrictive |
 
@@ -228,7 +228,7 @@ restart); judges are overridden one seat at a time. An override is card-written 
 `via: "set"`. When the tier's head is that model or newer, the tick writes a reset row (actor `houge:tier`) and a log
 line before resolving roles. A `/models set` override is never retired.
 7.6 **An empty tier asks Paco.** The tick opens the alerted incident `role_unresolved` (pages) when a role has no
-candidate. The daily tick sends one tap card per empty tier, proposing up to three same-provider, same-family
+candidate. The daily tick sends one tap card per empty tier whose provider the catalog still lists and whose roles have no other head, proposing up to three same-provider, same-family
 (`claude-`, `gemini-`, `gpt-`, `k`+digit) ids that match no tier (previews and `-lite` excluded; `gpt-oss-120b` is never
 offered for a Gemini seat), highest output price first. A tap probes first and writes the override only on a pass, in
 the probe's transaction. Silence leaves `role_unresolved` open and the daily reminder repeats it (ADR 0034). Outside the
@@ -278,7 +278,7 @@ plus embedding rows with cosine ≥ 0.55 and within 0.10 of the best) ungated. R
 separate `memory_correct_write` capability in the gated `destructive` class: every write waits for Paco's Approve tap on
 a card showing each id's current text and the full new text. Before any card, code refuses a write that is not on
 Paco's own Telegram turn, follows any step other than `memory_correct`, `houge_status` or `to_local_time` in the same
-run, names an id this turn's search did not offer, or passes 5 ids per call or 10 rows per turn (recorded by
+run, names an id this turn's search did not offer, or passes more than 5 ids per call or would take the turn past 10 changed rows (recorded by
 `memory.correct_preflight`, ADR 0034). A correction is one normal (never core) fact of at most 200 characters. Each
 change is a `memory_changes` row with an Undo button; Undo restores only what is still as the change left it, says
 exactly that, and refuses a correct that consolidation has moved on. The ledger (`memory_corrected`) holds ids and
@@ -366,6 +366,7 @@ progress, or Paco's instructions about how its code, checks, memory or lessons s
 | 2026-11-02 | Tiers replace version lists; probe before adoption; judge fallback between runs; empty-tier card; static re-pinned (`gpt-5.5` → `gpt-6.1-sol`, judge seat 2 empty), `static_list_stale` | [loud degradation](../superpowers/specs/2026-11-02-loud-degradation-design.md) | 2026-11-04 |
 | 2026-11-03 | ADR 0031: gemini-pro reads renames; in-family card proposals; `model_change` log rows; card-tap overrides retire; omp drift kinds to log, 7-day reminder (changed "drift pages") | [chat is for Paco](../superpowers/specs/2026-11-03-chat-is-for-paco-design.md) | 2026-11-04 |
 | 2026-11-04 | Consolidated into this ADR, no change of meaning | — | 2026-11-05 |
+| 2026-11-06 | Drift rewording, no change of meaning: D7 fallback, D10 reader legs, memory-correct limits, empty-tier card conditions | — | awaiting Paco's signature |
 
 ## Reference map
 

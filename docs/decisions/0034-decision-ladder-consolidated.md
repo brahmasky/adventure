@@ -122,15 +122,15 @@ write.
 
 | Id | Stage · input | Locked | Rows written, and when | From |
 |---|---|---|---|---|
-| `turn.handler` | — · `paco` | no | when: — (rule 3.1 as written). Ladder: ack rule → Jev tree → Tiny cascade, `fail` = the planner; detail in `jev_verdicts` | 0030 |
+| `turn.handler` | — · `paco` | no | `alwaysRecord`. Ladder: ack rule → Jev tree → Tiny cascade, `fail` = the planner; detail in `jev_verdicts` | 0030 |
 | `turn.gear` | — | no | when: — (rule 3.1 as written). A separate entry on the same Jev call | 0030 |
-| `tool.injection` | — · `tool` | no | when: — (rule 3.1 as written). Verdicts: pass < frame < withhold (rule 7.1) | 2a |
+| `tool.injection` | — · `tool` | no | `alwaysRecord`. Verdicts: pass < frame < withhold (rule 7.1) | 2a |
 | `tool.shell_netread` | — · `tool` | no | when: — (rule 3.1 as written). It decides only the trust level (rule 7.3) | 2a |
 | `turn.trust` | — | yes | when: — (rule 3.1 as written). Locked code (rule 8) | 2a |
-| `memory.kind` | `pre_model` · `paco` | no | when: — (rule 3.1 as written; its row stays inside the save transaction, rule 3.2). Verdicts: `other` (escape and `fail`), `fix`, `rule`, `fact`, `both` (rule 6.5) | 10-17 |
+| `memory.kind` | `pre_model` · `paco` | no | `alwaysRecord` (its row stays inside the save transaction, rule 3.2). Verdicts: `other` (escape and `fail`), `fix`, `rule`, `fact`, `both` (rule 6.5) | 10-17 |
 | `turn.settle` | — · `mixed` | no | code rung always recorded (`alwaysRecord`); outcomes `settle_sent_back`, `settle_unverified`, `settle_discarded` | 2b-i |
-| `improve.route` | `after_turn` · `mixed` | no | one decision row per group, one outcome row per inbox row (rule 10.2) | 2b-ii |
-| `tool.policy` | — | no | when: — (rule 3.1 as written). The standing case lives in its rule: v3 reasons `standing`, `standing_mismatch` (rule 11); it also keeps `denied_on_revalidation` | decision 7, 4A |
+| `improve.route` | `after_turn` · `mixed` | no | `alwaysRecord`: one decision row per group, one outcome row per inbox row (rule 10.2) | 2b-ii |
+| `tool.policy` | — | no | `alwaysRecord`. The standing case lives in its rule: v3 reasons `standing`, `standing_mismatch` (rule 11); it also keeps `denied_on_revalidation` | decision 7, 4A |
 | `approval.bind` | — | yes | `alwaysRecord`, every omp-sink consume of an approved row (`CapabilityRunner.bindApproval`): `bound`; `unbound` with the sink's seven refusal codes or `no_sink`. Not: a first call that asks, `denied_on_revalidation` (stays `tool.policy`), a standing use (stays `tool.policy` v3 + the sink CAS), the resolve side, the run-level eval-fixture sink; a throwing sink propagates and writes no row | 4B |
 | `secret.redact` | — | yes | `masked`, one per masking attempt in the final-report, failure-notice and evolution-report wrappers (reasons `final_report`/`failure_report`/`evolution_report`), only while the secrets firewall is armed; duplicate, conflicting, failed enqueues count (a row is an attempt); never text; `clean` default, no row. Not counted: ledger payloads, approval cards, the judge redactor, core-worker cards, Jev egress | 4B |
 | `memory.lesson_admit` | — · `mixed` | no | refusals: `scheduled_run`, `already_saved`, `code_owned` (pre seam, in today's order); one per refused side `lesson_backstop`, `fact_backstop`, `fact_no_evidence`; `lesson_write` and the lane save-first only (Gate A lesson saves and accepted improvement proposals are not admits); a live-turn backstop row survives a later `racedBy` | 4C |
@@ -187,13 +187,13 @@ write.
   every effect is reversible and announced (`none` or `proposal` qualifies); a judge that can only propose
   (`noDirectEffect`) may carry one on a fail-open entry. The registry test fails any other. A calibrated row may replace
   it when Paco commits one.
-- 6.2 **Golden sets.** Provisional bars are covered by golden-set items in the invariant sweep (decision 9;
-  `memory.kind`'s join the sweep); `tool.injection`'s golden set is a daily tick, not the sweep (the sweep is
-  synchronous and switchable; R13 forbids a switchable check). Drift opens `decision_golden_drift:<entry>` and never
+- 6.2 **Golden sets.** Provisional bars are covered by golden sets that run as daily ticks (`tool.injection`,
+  `memory.kind`, `turn.settle`) and in the Jev version check (those three and `improve.route`), never in the invariant
+  sweep (the sweep is synchronous and switchable; R13 forbids a switchable check). Drift opens `decision_golden_drift:<entry>` and never
   disarms.
 - 6.3 **Model moves.** A model or wording change no longer opens `decision_bar_stale`; the Jev version check (ADR 0033
-  F3–F4) judges it. `decision_bar_stale` is retired (the tick still resolves incidents older builds opened) and the
-  digest flags the entry until Paco commits a calibrated row. The front door's calibrated tree rows keep their disarm on
+  F3–F4) judges it. `decision_bar_stale` is retired (the tick still resolves incidents older builds opened); a
+  provisional bar stays until Paco commits a calibrated row. The front door's calibrated tree rows keep their disarm on
   a model move.
 - 6.4 **Noise band.** A reviewed per-question band, keyed like a calibration row: a value within the band of a bar asks
   Jev exactly once more; the front door decides on the mean, a judge over tool input on the more cautious call. A failed
@@ -503,6 +503,7 @@ write.
 | 2026-11-04 | This consolidation, no change of meaning | — | 2026-11-05 |
 | 2026-11-05 | Ruling A5: the ADR 0018 `/disarm` STOP flags are outside 1.6; found by the R13 conformance test (`tests/adr/`) | — | 2026-11-05 |
 | 2026-11-05 | No off switch, no shadow: front-door shadow, HOUGE_JEV_LANES_OFF and HOUGE_JEV_TRIAGE_ENABLED removed; HOUGE_JEV_ENABLED is the front door's STOP flag | [no off switch](../superpowers/specs/2026-11-05-jev-no-off-switch-no-shadow-design.md) | 2026-11-06 |
+| 2026-11-06 | Drift rewording, no change of meaning: golden sets are daily ticks and version-check sets (6.2); no digest flag for a provisional bar (6.3); the five unmarked `alwaysRecord` entries marked in rule 4, pinned by `tests/adr/` | — | awaiting Paco's signature |
 
 ## Reference map
 
