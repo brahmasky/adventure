@@ -253,7 +253,7 @@ async function caseMemory(g) {
   check("1 memory: lane_reply, saved, act", v.handler_outcome === "lane_reply" && v.save_outcome === "saved" && v.route_outcome === "act");
   check("1 memory: zero planner requests", g.h.attempts(run_id, "compose").length === 0);
   const legs = [...g.h.attempts(run_id, "distill"), ...g.h.attempts(run_id, "consolidate")];
-  // Rev 4: Tiny is k3 then gemini-3.8-flash, so a leg that fell through to the second candidate is still the memory lane's
+  // Tiny's candidates come from the model tiers (any of them), so a leg that fell through to the second candidate is still the memory lane's
   const tiny = new Set(g.roles.candidates("tiny").map((c) => key(c.provider, c.model)));
   const off = legs.filter((e) => !tiny.has(key(e.payload.provider, e.payload.model)));
   check("1 memory: distill + reconcile ran, all on the Tiny role's candidates", legs.some((e) => e.payload.role === "distill") && off.length === 0,
@@ -268,7 +268,7 @@ async function caseStatus(g) {
   check("2 status: lane_reply, act, zero planner requests", v.handler_outcome === "lane_reply" && v.route_outcome === "act" && g.h.attempts(run_id, "compose").length === 0);
 }
 
-/** 3: thanks after a plain answer is settled in code (spec §2.1): no Jev call, Fast. Deterministic: a miss is a FAIL. */
+/** 3: thanks after a plain answer is settled in code (spec §2.1): no triage Jev call, Fast. Deterministic: a miss is a FAIL. */
 async function caseAck(g) {
   const { run_id, v } = await turn(g, "3 ack", seedChat(g.store, MSG.plainAnswer), MSG.thanks);
   check("3 ack: reason ack_rule, category answer, role fast, lane planner", v?.reason === "ack_rule" && v.category === "answer" && v.role === "fast" && v.lane === "planner");
