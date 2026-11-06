@@ -20,16 +20,16 @@
 // Cases (each asserts ledger rows):
 //   1  memory rule → lane memory, lane_reply, save_outcome saved, zero planner requests, distill/consolidate on the Tiny role
 //   2  status question → lane status, lane_reply, zero planner requests
-//   3  bare thanks after a plain answer → ack rule (no Jev call), category answer, Fast; planner answers on the Fast head
+//   3  bare thanks after a plain answer → ack rule (no triage Jev call), category answer, Fast; planner answers on the Fast head
 //   4  bare "好" after a proposal → the ack rule does NOT fire, Jev is asked
 //   5  "好" quoting an older delivered Houge reply (real outbox id in the copy) → quoted_turn_id on the verdict and the
 //      user chat turn; never the ack rule
 //   6  a lookup that carries a rule (sets_rule) → saved first, then the planner answers
-//   7  a correction of a stored rule → planner, nothing saved by the lane
+//   7  a correction of a stored rule → memory_kind fix → planner, nothing saved by the lane
 //   8  a request beyond a lookup lane's limits (broad research) → planner on the routed role (Thinking for research)
 //   9  roles against the real `omp --profile houge models --json`: every role's head = its list's first CATALOGUED
-//      selector on an allowed provider (never openai-codex on a chat role); uncatalogued entries are INFO; Tiny =
-//      kimi-code/k3, allow-list before matching, effort clamp, the daily tick
+//      selector on an allowed provider (never openai-codex on a chat role); uncatalogued entries are INFO;
+//      allow-list before matching, effort clamp, the daily tick
 //   10 state parity: a dry-run replay over the copy rebuilds the live `state_hash` of each answered gate turn
 //   11 Jev transport down × N → skipped{transport}, one verdict row per turn (category null, fallback, Default), the
 //      sweep reports jev_skip_rate
@@ -222,9 +222,12 @@ async function turn(g, label, chat, text, replyTo) {
 }
 
 const laneSaves = (g, run_id) => g.h.events(run_id, "lesson_saved").filter((e) => e.payload.source === "lane").length;
-// A request reached Jev = a provider "jev" llm_attempt in the run. Not jev_decisions: the ack rule records its own
-// skipped{ack_rule} row there (one decision row per turn, no request sent).
-const jevAsked = (g, run_id) => g.h.attempts(run_id).some((e) => e.payload.provider === "jev");
+// A triage request reached Jev = a provider "jev" llm_attempt with role "triage" in the run. Not jev_decisions: the ack
+// rule records its own skipped{ack_rule} row there (one decision row per turn, no request sent). The in-loop judges
+// (settle, injection, memory_kind: stage 2b-i on) ask Jev under their own roles during the planner's turn; the ack rule
+// does not speak for them.
+const jevRoles = (g, run_id) => g.h.attempts(run_id).filter((e) => e.payload.provider === "jev").map((e) => e.payload.role);
+const jevAsked = (g, run_id) => jevRoles(g, run_id).includes("triage");
 const decisionsOf = (g, run_id) => g.store.listJevDecisions(run_id).map((r) => `${r.status}${r.skip_reason ? `{${r.skip_reason}}` : ""}`).join(",") || "none";
 
 /**
@@ -250,7 +253,7 @@ async function caseMemory(g) {
   check("1 memory: lane_reply, saved, act", v.handler_outcome === "lane_reply" && v.save_outcome === "saved" && v.route_outcome === "act");
   check("1 memory: zero planner requests", g.h.attempts(run_id, "compose").length === 0);
   const legs = [...g.h.attempts(run_id, "distill"), ...g.h.attempts(run_id, "consolidate")];
-  // Rev 4: Tiny is k3 then gemini-3.8-flash, so a leg that fell through to the second candidate is still the memory lane's
+  // Tiny's candidates come from the model tiers (any of them), so a leg that fell through to the second candidate is still the memory lane's
   const tiny = new Set(g.roles.candidates("tiny").map((c) => key(c.provider, c.model)));
   const off = legs.filter((e) => !tiny.has(key(e.payload.provider, e.payload.model)));
   check("1 memory: distill + reconcile ran, all on the Tiny role's candidates", legs.some((e) => e.payload.role === "distill") && off.length === 0,
@@ -265,12 +268,13 @@ async function caseStatus(g) {
   check("2 status: lane_reply, act, zero planner requests", v.handler_outcome === "lane_reply" && v.route_outcome === "act" && g.h.attempts(run_id, "compose").length === 0);
 }
 
-/** 3: thanks after a plain answer is settled in code (spec §2.1): no Jev call, Fast. Deterministic: a miss is a FAIL. */
+/** 3: thanks after a plain answer is settled in code (spec §2.1): no triage Jev call, Fast. Deterministic: a miss is a FAIL. */
 async function caseAck(g) {
   const { run_id, v } = await turn(g, "3 ack", seedChat(g.store, MSG.plainAnswer), MSG.thanks);
   check("3 ack: reason ack_rule, category answer, role fast, lane planner", v?.reason === "ack_rule" && v.category === "answer" && v.role === "fast" && v.lane === "planner");
-  check("3 ack: no Jev call (no jev llm_attempt; decisions only skipped{ack_rule})", !jevAsked(g, run_id)
-    && g.store.listJevDecisions(run_id).every((r) => r.status === "skipped" && r.skip_reason === "ack_rule"), `jev_decisions=${decisionsOf(g, run_id)}`);
+  check("3 ack: no triage Jev call (no jev llm_attempt with role triage; decisions only skipped{ack_rule})", !jevAsked(g, run_id)
+    && g.store.listJevDecisions(run_id).every((r) => r.status === "skipped" && r.skip_reason === "ack_rule"),
+    `jev_decisions=${decisionsOf(g, run_id)} jev roles=[${jevRoles(g, run_id).join(",")}]`);
 }
 
 /** 4: "好" after a proposal is never the ack rule; Jev classifies it. Deterministic gate on the code path. */
@@ -332,11 +336,16 @@ async function caseRuleOnLookup(g) {
   } else otherPath(g, "6 rule+lookup", run_id, v);
 }
 
-/** 7: a correction is not a rule: memory with sets_rule below yes goes to the planner and the lane saves nothing. */
+/**
+ * 7: a correction is a fix, not a save (memory-write spec 2026-10-15 §4): memory with memory_kind `fix` goes to the
+ * planner (reason fix) and the lane saves nothing. Any other route (a fact, two_request on Jev's actions score) is Jev's
+ * call: INCONCLUSIVE, and that path is checked instead.
+ */
 async function caseCorrection(g) {
   const { run_id, v } = await turn(g, "7 correction", g.chat, MSG.correction);
-  if (v?.category === "memory" && (v.sets_rule ?? 0) < 0.8) {
-    check("7 correction: memory without a rule → planner, nothing saved by the lane", v.lane === "planner" && v.save_outcome === "none" && laneSaves(g, run_id) === 0);
+  if (v?.category === "memory" && v.reason === "fix") {
+    check("7 correction: memory_kind fix → planner, nothing saved by the lane", v.lane === "planner" && v.save_outcome === "none" && laneSaves(g, run_id) === 0,
+      `lane=${v.lane} save=${v.save_outcome} saves=${laneSaves(g, run_id)}`);
   } else otherPath(g, "7 correction", run_id, v);
 }
 
@@ -512,8 +521,8 @@ function caseRoleHeads(g, catalog) {
     check(`9 roles: ${r.key} head on an allowed provider${chat ? ", not openai-codex" : ""}`,
       g.m.ALLOWED_PROVIDERS.includes(provider) && !(chat && provider === "openai-codex"), `provider=${provider || "(none)"}`);
   }
-  const tiny = g.roles.resolveAll().find((r) => r.key === "tiny");
-  check("9 roles: tiny resolves to kimi-code/k3 (memory lane unchanged)", noEffort(tiny?.head) === "kimi-code/k3", String(tiny?.head));
+  // No model literal here: the tiny head (the memory lane's model) moves with the model tiers (2026-11); the head-of-list
+  // and provider checks above hold it to the catalog.
 }
 
 /** 9b: allow-list before matching, seat eligibility and the effort clamp, on the real catalog. */

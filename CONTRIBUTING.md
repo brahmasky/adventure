@@ -63,6 +63,10 @@ non-executable path, so no test can reach a real binary or spend subscription qu
    `node scripts/live-gate-omp.mjs --smoke`: the omp single-extension load, model rejection
    at spawn and Seatbelt answers cannot be reproduced under vitest. A refused safety probe
    is INCONCLUSIVE, never PASS.
+   A rollback check (`scripts/check-*-rollback.mjs`) is evidence for its own slice's merge: "this build" is that slice
+   and the live DB has not yet gathered its rows or migrations. On a later `main` it may FAIL by design (a later slice
+   writes more rows, the live DB already holds the new schema); that is not a regression. A live gate is different: it
+   should keep passing, and one that assumes a fresh live DB clears the rows it counts from its own copy first.
 
 This rule exists because it has already paid off: a real Gateway↔poll-runner wiring bug
 survived 225 green unit tests and was caught only by the live run (see
