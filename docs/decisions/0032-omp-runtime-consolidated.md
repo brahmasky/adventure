@@ -366,7 +366,7 @@ progress, or Paco's instructions about how its code, checks, memory or lessons s
 | 2026-11-02 | Tiers replace version lists; probe before adoption; judge fallback between runs; empty-tier card; static re-pinned (`gpt-5.5` → `gpt-6.1-sol`, judge seat 2 empty), `static_list_stale` | [loud degradation](../superpowers/specs/2026-11-02-loud-degradation-design.md) | 2026-11-04 |
 | 2026-11-03 | ADR 0031: gemini-pro reads renames; in-family card proposals; `model_change` log rows; card-tap overrides retire; omp drift kinds to log, 7-day reminder (changed "drift pages") | [chat is for Paco](../superpowers/specs/2026-11-03-chat-is-for-paco-design.md) | 2026-11-04 |
 | 2026-11-04 | Consolidated into this ADR, no change of meaning | — | 2026-11-05 |
-| 2026-11-06 | Drift rewording, no change of meaning: D7 fallback, D10 reader legs, memory-correct limits, empty-tier card conditions | — | awaiting Paco's signature |
+| 2026-11-06 | Drift rewording, no change of meaning: D7 fallback, D10 reader legs, memory-correct limits, empty-tier card conditions | — | 2026-11-06 |
 
 ## Reference map
 

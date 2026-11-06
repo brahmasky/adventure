@@ -119,7 +119,7 @@ and the new rule fits on its own, the new rule is saved as its own lesson (ADD, 
 target stays untouched, ledgered `lesson_update_overflow {candidate, target, merged_chars}`. A near-duplicate is the
 accepted cost. A candidate that is itself over a cap is still refused (`lesson_write_capped`).
 
-## Amendment — the evidence check has no shadow mode (2026-11-06, Paco; awaiting Paco's signature)
+## Amendment — the evidence check has no shadow mode (2026-11-06, Paco; signed by Paco 2026-11-06)
 
 The evidence check on extracted facts ran in `shadow` by default: a fact whose quote was not on one of Paco's lines
 was kept (never core) and counted. Shadow over a month rejected 1 of 34 facts. Paco 2026-11-06: no shadow, as for

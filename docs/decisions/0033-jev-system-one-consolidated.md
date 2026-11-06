@@ -243,7 +243,7 @@ judged complexity) is H2 on ADR 0032's roles, and resolving the reader cross-fam
 | 2026-11-04 | Consolidated into this ADR, no change of meaning | — | 2026-11-05 |
 | 2026-11-04 | Version-drift wording (F3–F4): ADR 0029 decision 5 said a drift "disarms only the drifting triage questions"; ADR 0030 decision 9 said it "disarms the failing questions and their dependents, pages once with Accept, and arms again on Paco's tap". This ADR states 0030's form, with Accept making the new answers the reference | [version-check](../superpowers/specs/2026-10-22-jev-version-check-design.md) | 2026-11-05 |
 | 2026-11-05 | No off switch, no shadow: front-door shadow, HOUGE_JEV_LANES_OFF and HOUGE_JEV_TRIAGE_ENABLED removed; HOUGE_JEV_ENABLED is the front door's STOP flag; F7's live-shadow-stats clause named a reader no code had | [no off switch](../superpowers/specs/2026-11-05-jev-no-off-switch-no-shadow-design.md) | 2026-11-06 |
-| 2026-11-06 | Drift rewording, no change of meaning: golden sets run as ticks, not in the sweep (A3); `TREE_THRESHOLD_VERSION` no longer pinned to a stage-B value (I8) | — | awaiting Paco's signature |
+| 2026-11-06 | Drift rewording, no change of meaning: golden sets run as ticks, not in the sweep (A3); `TREE_THRESHOLD_VERSION` no longer pinned to a stage-B value (I8) | — | 2026-11-06 |
 
 ## Reference map
 

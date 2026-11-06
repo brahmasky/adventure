@@ -502,8 +502,8 @@ write.
 | 2026-11-04 | This consolidation, no change of meaning | — | 2026-11-05 |
 | 2026-11-05 | Ruling A5: the ADR 0018 `/disarm` STOP flags are outside 1.6; found by the R13 conformance test (`tests/adr/`) | — | 2026-11-05 |
 | 2026-11-05 | No off switch, no shadow: front-door shadow, HOUGE_JEV_LANES_OFF and HOUGE_JEV_TRIAGE_ENABLED removed; HOUGE_JEV_ENABLED is the front door's STOP flag | [no off switch](../superpowers/specs/2026-11-05-jev-no-off-switch-no-shadow-design.md) | 2026-11-06 |
-| 2026-11-06 | Drift rewording, no change of meaning: golden sets are daily ticks and version-check sets, and where each reports drift (6.2); the five unmarked `alwaysRecord` entries marked in rule 4, pinned by `tests/adr/` | — | awaiting Paco's signature |
-| 2026-11-06 | 6.3: the promise that the digest flags an entry until Paco commits a calibrated row is retired (nothing built it; Paco's decision 2026-11-06) | — | awaiting Paco's signature |
+| 2026-11-06 | Drift rewording, no change of meaning: golden sets are daily ticks and version-check sets, and where each reports drift (6.2); the five unmarked `alwaysRecord` entries marked in rule 4, pinned by `tests/adr/` | — | 2026-11-06 |
+| 2026-11-06 | 6.3: the promise that the digest flags an entry until Paco commits a calibrated row is retired (nothing built it; Paco's decision 2026-11-06) | — | 2026-11-06 |
 
 ## Reference map
 
