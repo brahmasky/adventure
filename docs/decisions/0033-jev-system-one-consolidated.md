@@ -32,7 +32,7 @@ fall-through; **System Two (omp seats)** composes inside the lane code picked. J
   not use. **A2.** Questions come from a frozen library, each with a `criteria_hash`; thresholds are keyed by
   `(question, criteria_hash, language)`.
 - **A3.** Every answer writes a `jev_decisions` row: ids, probabilities, thresholds, outcome — never text. A generic
-  replay harness and a golden set in the invariant sweep come with the library. State parity: answered rows record
+  replay harness comes with the library; golden sets run as daily ticks and in the version check (ADR 0034 6.2). State parity: answered rows record
   `thread_cut_at` (the claim, when live read the thread) and `state_built_at` (when it computed
   `last_houge_turn.age_s`); the replay rebuilds from both, reading the thread through the cut's own millisecond, and its
   report blocks on any state mismatch. Rows written before that migration fall back to their write time.
@@ -169,7 +169,7 @@ fall-through; **System Two (omp seats)** composes inside the lane code picked. J
 - **I8.** Records: there is no `lane_failed` reason. A fall-through is the verdict's `lane` + `reason` +
   `route_outcome = fallback` + `handler_outcome = fallthrough:<why>`; the status and memory lanes do not re-label
   `jev_skipped`. `LlmCallRole` has `lane`; `triage_override` carries `lane`. The tree reads the threshold set named by
-  `TREE_THRESHOLD_VERSION` (stage B set `2026-10-10.1`).
+  `TREE_THRESHOLD_VERSION` (`src/jev/tree-policy.ts`), bumped when a bar or a routing rule changes.
 
 ### J. The memory lane and saves (old decision 7 lane 1; amendment 2026-10-17)
 - **J1.** A memory instruction on the memory lane is saved on the ticks seat and answered with an undoable
@@ -243,6 +243,7 @@ judged complexity) is H2 on ADR 0032's roles, and resolving the reader cross-fam
 | 2026-11-04 | Consolidated into this ADR, no change of meaning | — | 2026-11-05 |
 | 2026-11-04 | Version-drift wording (F3–F4): ADR 0029 decision 5 said a drift "disarms only the drifting triage questions"; ADR 0030 decision 9 said it "disarms the failing questions and their dependents, pages once with Accept, and arms again on Paco's tap". This ADR states 0030's form, with Accept making the new answers the reference | [version-check](../superpowers/specs/2026-10-22-jev-version-check-design.md) | 2026-11-05 |
 | 2026-11-05 | No off switch, no shadow: front-door shadow, HOUGE_JEV_LANES_OFF and HOUGE_JEV_TRIAGE_ENABLED removed; HOUGE_JEV_ENABLED is the front door's STOP flag; F7's live-shadow-stats clause named a reader no code had | [no off switch](../superpowers/specs/2026-11-05-jev-no-off-switch-no-shadow-design.md) | 2026-11-06 |
+| 2026-11-06 | Drift rewording, no change of meaning: golden sets run as ticks, not in the sweep (A3); `TREE_THRESHOLD_VERSION` no longer pinned to a stage-B value (I8) | — | awaiting Paco's signature |
 
 ## Reference map
 
