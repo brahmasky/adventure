@@ -341,8 +341,10 @@ function coverage(g, runs) {
   const rows = runs.flatMap((r) => g.newSide.store.listDecisionsForRun(r).filter((d) => d.entry_id === "turn.handler"));
   const tally = {};
   for (const d of rows) tally[`${d.rung}:${d.reason_code}`] = (tally[`${d.rung}:${d.reason_code}`] ?? 0) + 1;
-  // ADR 0033 F2: the committed rows approve questions, not a model; a reported model arms by its version-check state.
-  const arms = (m) => g.newMods.armingOf(g.newSide.store.getJevModel(m)).questions.size > 0;
+  // ADR 0033 F2: the committed rows approve questions, not a model; a reported model arms by its version-check state. Each
+  // model must arm the tree's root (`category`): a partly drifted model with the root failed falls back on every turn, and
+  // the verdict floor below is counted across models, so it alone would not catch that model.
+  const arms = (m) => g.newMods.armingOf(g.newSide.store.getJevModel(m)).questions.has("category");
   const reported = [...new Set(runs.flatMap((r) => g.newSide.store.listJevDecisions(r).filter((x) => x.status === "answered").map((x) => x.model_reported)))];
   return {
     tally, reported, uncalibrated: reported.filter((m) => !arms(m)),
