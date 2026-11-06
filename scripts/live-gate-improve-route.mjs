@@ -104,6 +104,7 @@ function isolate(g) {
   const last = g.q.get(`SELECT created_at, rowid AS rid FROM decision_outcomes ORDER BY created_at DESC, rowid DESC LIMIT 1`);
   if (last) g.store.setImproveCursorForTest({ outcome_created_at: last.created_at, outcome_rowid: last.rid });
   g.baseSignalId = g.q.get(`SELECT COALESCE(MAX(signal_id), 0) AS n FROM improve_signals`).n;
+  g.baseRouteIds = new Set(g.q.all(`SELECT decision_id FROM decisions WHERE entry_id = 'improve.route'`).map((r) => r.decision_id));
 }
 
 /** A telegram turn born through the real intake (closed afterwards: the intake caps would otherwise refuse the planted volume; tests-only raw SQL as the tick tests do). */
@@ -170,7 +171,8 @@ async function runTick(g, now) {
   return runs;
 }
 
-const routeRows = (g) => g.store.listDecisionsBetween(g.c.at(g.c.addDays(g.c.d1, -30), "00:00"), g.c.at(g.c.addDays(g.c.d1, 30), "00:00")).filter((d) => d.entry_id === "improve.route");
+/** The gate's own improve.route rows: the window reaches back into the copy's real history (d1 is 20 days ahead), so the live daemon's rows are excluded by id. */
+const routeRows = (g) => g.store.listDecisionsBetween(g.c.at(g.c.addDays(g.c.d1, -30), "00:00"), g.c.at(g.c.addDays(g.c.d1, 30), "00:00")).filter((d) => d.entry_id === "improve.route" && !g.baseRouteIds.has(d.decision_id));
 const jobsOf = (g) => g.q.all(`SELECT * FROM improvement_jobs ORDER BY created_at ASC, rowid ASC`);
 const outboxText = (g, key) => { const r = g.q.get(`SELECT payload_json FROM notification_outbox WHERE idempotency_key = ?`, key); return r ? JSON.parse(r.payload_json) : null; };
 const excerpt = (g, t) => Array.from(g.redact(String(t)).replace(/\s+/g, " ")).slice(0, 80).join("");
