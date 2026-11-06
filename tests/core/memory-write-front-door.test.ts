@@ -110,3 +110,23 @@ describe("memory lane: its own memory_kind call decides", () => {
     h.store.close();
   });
 });
+
+// The parity gate's old flake (since bba828f7): the tree read the injected clock, memory_kind read the wall clock, so the
+// same turn sent Jev two different `last_houge_turn.age_s`. One turn, one clock: the replay and the gate pin `jevNow`.
+describe("memory_kind reads the turn's clock", () => {
+  it("memory_kind's last_houge_turn.age_s matches the tree request's under a pinned jevNow", async () => {
+    const pinned = new Date(Date.now() + 3_600_000);
+    const fetch = treeSays({ category: cat({ memory: 0.97 }), sets_rule: 0.05, memory_kind: kind({ fact: 0.95 }) });
+    const h = triageHarness(fetch, { jevNow: () => pinned, llm: scriptedLlm({ distill: async () => ({ ok: true, output: { answer: FACT } }) }) });
+    const earlier = createQueuedTurnRun(h.store, OPINION);
+    h.store.recordChatTurn({ chat_id: "555", run_id: earlier, role: "user", text: OPINION, created_at: new Date(Date.now() - 60_000).toISOString() });
+    h.store.recordChatTurn({ chat_id: "555", run_id: earlier, role: "assistant", text: "noted", created_at: new Date(Date.now() - 30_000).toISOString() });
+    const t = h.turn("记下来吧");
+    await h.worker.triageTurn(t.input);
+    const ages = fetch.mock.calls.map((c) => /"last_houge_turn":\{[^}]*"age_s":(\d+)/.exec(String((c[1] as RequestInit).body))?.[1]);
+    expect(ages).toHaveLength(2);
+    expect(ages[0]).toBeDefined();
+    expect(ages[1]).toBe(ages[0]);
+    h.store.close();
+  });
+});
