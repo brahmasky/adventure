@@ -430,8 +430,8 @@ describe("HOUGE_IMPROVE_ENABLED", () => {
     s.beginImproveTick("2026-10-20", "2026-10-20T11:00:00.000Z"); s.finishImproveTick("2026-10-20", "failed", {}, "2026-10-20T11:00:00.000Z");
     expect(evaluateImproveDegraded({ store: s, now: "2026-10-20T11:00:00.000Z", env: { HOUGE_TELEGRAM_CHAT_ID: "555" }, chatId: null }, "2026-10-20")).toBe("opened");
     const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
-    try { expect(await runImproveTick(deps(s, { env: { ...ENV, HOUGE_IMPROVE_ENABLED: "false", HOUGE_TELEGRAM_CHAT_ID: "555" } }))).toEqual({ ran: false }); } finally { log.mockRestore(); }
-    expect(s.getImproveTick("2026-10-21")).toBeUndefined();
+    try { expect(await runImproveTick(deps(s, { now: "2026-10-23T12:00:00.000Z", env: { ...ENV, HOUGE_IMPROVE_ENABLED: "false", HOUGE_TELEGRAM_CHAT_ID: "555" } }))).toEqual({ ran: false }); } finally { log.mockRestore(); }
+    expect(s.getImproveTick("2026-10-23")).toBeUndefined(); // a date the file's other off test never ticked, so the once-per-date log latch cannot be what passes this
     expect(s.listOpenIncidents().filter((i) => i.kind === IMPROVE_DEGRADED_KIND)).toHaveLength(1); // still open: an off tick judges nothing
   });
 });

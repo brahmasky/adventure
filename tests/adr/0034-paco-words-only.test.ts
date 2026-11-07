@@ -38,6 +38,7 @@ describe("ADR 0034 rule 10.5: autoApplies", () => {
   it("an empty group, a non-correction signal, and the lesson-did-not-hold rewrite are cards", () => {
     expect(autoApplies({ rows: [] }, s, "lesson")).toBe(false);
     expect(autoApplies({ rows: [fix] }, { signal: "dig_deeper", lastImprovement: null }, "lesson")).toBe(false);
+    expect(LESSON_REWRITE_DAYS).toBe(30);
     const rewrite = { signal: "correction" as const, lastImprovement: { target: "lesson", ageDays: LESSON_REWRITE_DAYS } };
     expect(lessonRewrite(rewrite)).toBe(true);
     expect(autoApplies({ rows: [fix] }, rewrite, "lesson")).toBe(false);
