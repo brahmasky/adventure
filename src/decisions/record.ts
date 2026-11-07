@@ -12,6 +12,15 @@ import { enqueueUrgentCard } from "./urgent.js";
 export const DECISION_FALLBACK_LIMIT = 3;
 export const DECISION_FALLBACK_WINDOW_MS = 60 * 60 * 1000;
 /**
+ * Paco 2026-11-07: a tick entry (stage `after_turn`, alwaysRecord, with a judge rung) whose last this-many runs ended
+ * only in counted fallbacks pages decision_fallback_streak:<entry>, however far apart. The hourly rule needs three rows in
+ * an hour, which a once-a-day tick with one or two groups never makes. A run is one `created_at` (a tick stamps its groups
+ * alike). Per-turn entries keep the hourly log; rule-only entries are left out, since no answer of theirs could clear it.
+ */
+export const DECISION_FALLBACK_STREAK = 3;
+/** Rows read for the streak: the tick decides at most 40 groups a run, so three runs fit. */
+const STREAK_ROWS = 3 * 40 + 1;
+/**
  * Plan ruling 9: entries whose Jev-rung failures already page through the Jev incidents (openJevIncident and the triage
  * jev_skip_rate). Their Jev failures do not count toward decision_fallback: one call, one page. tool.injection joins them
  * (Paco 2026-10-14, "no alert, just log"): its plain timeouts and outages are logged and counted in the digest only; the
@@ -21,6 +30,7 @@ export const DECISION_FALLBACK_WINDOW_MS = 60 * 60 * 1000;
  */
 const JEV_PAGED_ELSEWHERE: ReadonlySet<string> = new Set([...FRONT_DOOR_ENTRIES, TOOL_INJECTION_ID, TURN_SETTLE_ID]);
 const RECORD_FAILED: ReadonlySet<string> = new Set(["decision_record_failed"]);
+const FALLBACK_KINDS = ["decision_fallback", "decision_fallback_streak"] as const;
 const RUNNER_CODES: ReadonlySet<string> = new Set(RUNNER_REASON_CODES);
 
 /** Spec §5.2: a row when the verdict is not the default, a rung past the first rule decided, a verdict that arrived late, Paco took part, or the entry always records. */
@@ -54,7 +64,7 @@ export function storeRecorder(store: RunStore, o: RecorderOptions = {}): Decisio
         recordFailed(store, entry.id, e, o, now);
         return null;
       }
-      afterRecord(store, entry.id, r, now);
+      afterRecord(store, entry, r, now, o.env);
       return id;
     }
   };
@@ -87,15 +97,34 @@ function clears(entry_id: string, r: AnyDecideResult): boolean {
 }
 
 /** A named failure that counts toward decision_fallback (ruling 9): not budget, and not a Jev failure another incident pages. */
-function countsAsFallback(entry_id: string, r: AnyDecideResult): boolean {
+function countsAsFallback(entry_id: string, r: { rung: string; fallbackReason: string | null; fallbackRung: string | null }): boolean {
   if (r.rung !== "fail" || r.fallbackReason === null || r.fallbackReason === "budget") return false;
   return !(JEV_PAGED_ELSEWHERE.has(entry_id) && r.fallbackRung === "system_one");
 }
 
-function afterRecord(store: RunStore, entry_id: string, r: AnyDecideResult, now: string): void {
+/** A tick entry the streak watches: records every decision, runs off the turn path, and has a judge rung whose answer clears it. */
+function streakWatched(entry: AnyEntry): boolean {
+  return entry.alwaysRecord === true && entry.stage === "after_turn" && entry.ladder.some((r) => r.kind === "system_one" || r.kind === "model");
+}
+
+/** Paco 2026-11-07: the last DECISION_FALLBACK_STREAK runs of a watched entry ended only in counted fallbacks: page once, to chat. */
+function pageStreak(store: RunStore, entry: AnyEntry, now: string, env: NodeJS.ProcessEnv | undefined): void {
+  if (!streakWatched(entry)) return;
+  const runs = new Set<string>();
+  for (const x of store.latestDecisionRungs(entry.id, STREAK_ROWS)) {
+    if (!countsAsFallback(entry.id, { rung: x.rung, fallbackReason: x.fallback_reason, fallbackRung: x.fallback_rung })) break;
+    runs.add(x.created_at);
+  }
+  if (runs.size < DECISION_FALLBACK_STREAK) return;
+  openAlertedIncident(store, { kind: "decision_fallback_streak", subject: entry.id, detail: { entry: entry.id, streak: DECISION_FALLBACK_STREAK }, now, ...(env ? { env } : {}) });
+}
+
+function afterRecord(store: RunStore, entry: AnyEntry, r: AnyDecideResult, now: string, env: NodeJS.ProcessEnv | undefined): void {
+  const entry_id = entry.id;
   try {
     resolveOpenIncidents(store, RECORD_FAILED, entry_id, now);
     if (!countsAsFallback(entry_id, r)) return;
+    pageStreak(store, entry, now, env);
     const since = new Date(Date.parse(now) - DECISION_FALLBACK_WINDOW_MS).toISOString();
     const n = store.countDecisionFallbacks(entry_id, since, JEV_PAGED_ELSEWHERE.has(entry_id));
     if (n >= DECISION_FALLBACK_LIMIT) pageFallback(store, entry_id, n, now);
@@ -116,11 +145,13 @@ function pageFallback(store: RunStore, entry_id: string, n: number, now: string)
   if (incident) enqueueUrgentCard(store, { key: `decision_fallback:${incident.incident_id}`, text: fallbackCardText(entry_id, n) }, "decision_internal");
 }
 
-/** Resolves an open decision_fallback on a counting rung's answer, recorded or not (spec §8.2 "the next answered call"). */
+/** Resolves an open decision_fallback (and decision_fallback_streak) on a counting rung's answer, recorded or not (spec §8.2 "the next answered call"). */
 function clearFallback(store: RunStore, entry_id: string, now: string): void {
   try {
-    const open = store.findOpenIncident(store.incidentFingerprint("decision_fallback", entry_id));
-    if (open) store.resolveIncident(open.incident_id, now);
+    for (const kind of FALLBACK_KINDS) {
+      const open = store.findOpenIncident(store.incidentFingerprint(kind, entry_id));
+      if (open) store.resolveIncident(open.incident_id, now);
+    }
   } catch (e) {
     console.error(`decisions: ${entry_id} fallback resolve failed: ${message(e)}`);
   }

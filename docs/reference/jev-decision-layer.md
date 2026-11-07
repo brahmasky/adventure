@@ -284,8 +284,10 @@ tick, not in a turn. Signals (corrections, ratings, denials and expiries, planne
   outside it records `nothing` / `inapplicable_top` after the answer. Provisional bar 0.6. It reads only Paco's redacted words
   (`redactForImprove`), never tool text.
 - **Tiny pick** (audit role `improve_pick`) chooses among Jev's two best applicable options when the top is applicable but
-  under the bar. Its answer records `tiny_pick`; a failed pick, or a word outside the two, is an abstention, so the row
-  records `nothing` on the `fail` rung with no reason code (abstentions set none; `improve-sanity.mjs` counts these).
+  under the bar, within 30 s (`IMPROVE_TINY_MS`; 8 s until 2026-11-07, shorter than every live pick). Its answer records
+  `tiny_pick`; a word outside the two is an abstention, so the row records `nothing` on the `fail` rung with no reason code
+  (abstentions set none; `improve-sanity.mjs` counts these). A pick still running at the bound records `nothing` on `fail`
+  with fallback `timeout` on the model rung, consumes the group, and counts toward `decision_fallback_streak`.
 - **Effects.** The only automatic one is the `_pending` skill draft. Everything else is a proposal: a tap on the digest,
   nothing applied before Accept. A lesson or fact draft first passes the memory lane's backstops (a lifted rule, an
   unsupported quote or a refused AVOID is dropped or the draft is `nothing` / `no_text`); the digest line of a lesson shows
@@ -365,7 +367,7 @@ read with `/changes`. The kinds named here:
 
 | Kind | Route |
 |---|---|
-| `jev_auth`, `jev_rate_limited`, `jev_overloaded`, `jev_question_invalid`, `jev_no_key`, `jev_skip_rate`, `lane_fallthrough_rate`, `role_unresolved` | page |
+| `jev_auth`, `jev_rate_limited`, `jev_overloaded`, `jev_question_invalid`, `jev_no_key`, `jev_skip_rate`, `lane_fallthrough_rate`, `role_unresolved`, `decision_fallback_streak` | page |
 | `jev_model_drifted`, `jev_model_check_stalled` | card |
 | `decision_fallback`, `decision_record_failed`, `decision_golden_drift`, `triage_overrides`, `model_catalog_unavailable` | log |
 
@@ -376,6 +378,9 @@ read with `/changes`. The kinds named here:
   `planner_done` / `planner_failed`. A killed turn (`fallthrough:aborted`) counts in neither number.
 - `decision_fallback` (subject `turn.handler`): three cascade failures in one hour (a Jev outage pages through the Jev
   incidents instead); a change-log line, no urgent card; the next cascade answer clears it.
+- `decision_fallback_streak`: a tick entry (stage `after_turn`, `alwaysRecord`, a judge rung; today only `improve.route`) whose
+  last three runs, however far apart, ended only in counted fallbacks (one or two groups a day seldom make three in an hour); one page;
+  the next answer from a counting rung clears it.
 - `decision_record_failed`: a `decisions` write failed; the routing stood (the verdict row then has `decision_id` null).
 - `role_unresolved` and `model_catalog_unavailable` (the model-role side, [configuration.md](configuration.md#model-roles)).
 

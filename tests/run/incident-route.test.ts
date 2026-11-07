@@ -23,6 +23,10 @@ describe("routes", () => {
   it("every Jev outage class and jev_skip_rate page (ADR 0029: an outage reaches Paco)", () => {
     for (const k of [...JEV_ANSWERED_RESOLVES, "jev_skip_rate"]) expect(routeOf(k)).toBe("page");
   });
+  it("decision_fallback_streak pages (Paco 2026-11-07: a daily decider that keeps failing reaches him); the hourly decision_fallback stays a log", () => {
+    expect(routeOf("decision_fallback_streak")).toBe("page");
+    expect(routeOf("decision_fallback")).toBe("log");
+  });
   it("wall_collapsed and lane_fallthrough_rate stay pages (spec 5.4)", () => {
     expect(routeOf("wall_collapsed")).toBe("page");
     expect(routeOf("lane_fallthrough_rate")).toBe("page");
@@ -36,10 +40,10 @@ describe("routes", () => {
   });
   it("every other table row pages, and the table size is pinned (a flipped, added or removed row fails)", () => {
     const keys = Object.keys(INCIDENT_ROUTE);
-    expect(keys).toHaveLength(54);
+    expect(keys).toHaveLength(55);
     const notPage = new Set([...CARD_KINDS, ...LOG_KINDS]);
     const pages = keys.filter((k) => !notPage.has(k));
-    expect(pages).toHaveLength(31);
+    expect(pages).toHaveLength(32);
     for (const k of pages) { expect(routeOf(k)).toBe("page"); expect(incidentNotice(k, "x")?.topic).toBe("incident_page"); }
   });
   it("the unknown-kind stderr line prints once per kind per process", () => {

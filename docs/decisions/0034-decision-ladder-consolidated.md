@@ -413,7 +413,10 @@ write.
 - 13.2 **Kinds (ADR 0031).** `decision_record_failed`, `decision_golden_drift` and `decision_fallback` (slice R5: a rule
   that throws writes a `fail`-rung row, and three in an hour open `decision_fallback`) route to the log (topic
   `decision_internal`), counted in `/status`, listed by `/changes`. `decision_health` is a card kind: its urgent card is
-  the page.
+  the page. `decision_fallback_streak` pages: a tick entry (stage `after_turn`, `alwaysRecord`, with a judge rung; today
+  `improve.route`) whose last three runs, however far apart, ended only in counted fallbacks opens it once; the next answer
+  from a counting rung resolves it (one or two groups a day seldom make three in an hour; per-turn entries keep the hourly
+  log).
 - 13.3 **Daily reminder.** A tick-loop step, independent of `HOUGE_MODEL_ROLES` and catalog outages, before the model
   ticks: one message a day (`incident_remind:<Sydney date>`) listing open `REMIND_KINDS` incidents older than 24 h, with
   ages and a code-owned action line — `role_unresolved`, `planner_session_reset_failed`, `omp_contract_drift` (at 7
@@ -504,6 +507,7 @@ write.
 | 2026-11-05 | No off switch, no shadow: front-door shadow, HOUGE_JEV_LANES_OFF and HOUGE_JEV_TRIAGE_ENABLED removed; HOUGE_JEV_ENABLED is the front door's STOP flag | [no off switch](../superpowers/specs/2026-11-05-jev-no-off-switch-no-shadow-design.md) | 2026-11-06 |
 | 2026-11-06 | Drift rewording, no change of meaning: golden sets are daily ticks and version-check sets, and where each reports drift (6.2); the five unmarked `alwaysRecord` entries marked in rule 4, pinned by `tests/adr/` | — | 2026-11-06 |
 | 2026-11-06 | 6.3: the promise that the digest flags an entry until Paco commits a calibrated row is retired (nothing built it; Paco's decision 2026-11-06) | — | 2026-11-06 |
+| 2026-11-07 | 13.2: `decision_fallback_streak` pages three failed runs in a row of a tick entry (`improve.route` failed every day unseen); `improve.route`'s Tiny bound 8 s → 30 s | — | awaiting Paco's signature |
 
 ## Reference map
 

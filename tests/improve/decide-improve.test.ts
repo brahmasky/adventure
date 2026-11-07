@@ -65,3 +65,13 @@ describe("decideImprove", () => {
     expect(client).not.toHaveBeenCalled();
   });
 });
+
+describe("the Tiny rung's bound (Paco 2026-11-07)", () => {
+  it("waits longer than the slowest live pick seen (21.2 s), and the rung uses it", async () => {
+    const { IMPROVE_ROUTE, IMPROVE_TINY_MS } = await import("../../src/decisions/entries/improve-route.js");
+    // an 8 s bound failed every live row: the live picks took 10.4–21.2 s
+    expect(IMPROVE_TINY_MS).toBeGreaterThan(21_200);
+    const tiny = IMPROVE_ROUTE.ladder.find((r) => r.kind === "model");
+    expect(tiny && "timeoutMs" in tiny ? tiny.timeoutMs : undefined).toBe(IMPROVE_TINY_MS);
+  });
+});
