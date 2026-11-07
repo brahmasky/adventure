@@ -5593,10 +5593,15 @@ export class RunStore {
   listOpenProposals(): ImprovementProposalRow[] {
     return this.db.prepare(`SELECT * FROM improvement_proposals WHERE state = 'open' ORDER BY created_at ASC, rowid ASC`).all<ImprovementProposalRow>();
   }
-  /** Final fix D3: an open proposal on (target, scope), or one Paco dismissed or that expired after `sinceIso`, blocks a new one (Dismiss sticks). */
+  /** Final fix D3 + spec 2026-11-07 §3.4: an open proposal on (target, scope), or one dismissed, expired, accepted or reverted after `sinceIso`, blocks a new one (Dismiss sticks; an applied or undone one does not pile up). */
   proposalBlocks(target: ProposalTarget, scope: string, sinceIso: string): boolean {
-    return this.db.prepare(`SELECT 1 AS hit FROM improvement_proposals WHERE target = ? AND scope = ? AND (state = 'open' OR (state IN ('dismissed', 'expired') AND resolved_at > ?)) LIMIT 1`)
+    return this.db.prepare(`SELECT 1 AS hit FROM improvement_proposals WHERE target = ? AND scope = ? AND (state = 'open' OR (state IN ('dismissed', 'expired', 'accepted', 'reverted') AND resolved_at > ?)) LIMIT 1`)
       .get<{ hit: number }>(target, scope, sinceIso) !== undefined;
+  }
+  /** Spec 2026-11-07 §6: the accepted proposal whose save made this lesson or fact (its result_json names the id), for /forget and /forget_memory. */
+  proposalBySaved(kind: "lesson" | "fact", id: number): ImprovementProposalRow | undefined {
+    return this.db.prepare(`SELECT * FROM improvement_proposals WHERE state = 'accepted' AND target = ? AND json_extract(result_json, ?) = ? LIMIT 1`)
+      .get<ImprovementProposalRow>(kind, kind === "lesson" ? "$.lesson_id" : "$.fact_id", id);
   }
   /** Final fix D4: the improvement proposal whose Accept made this lesson/memory change (its result_json names the change), if any. */
   proposalByChange(change_id: string): ImprovementProposalRow | undefined {
