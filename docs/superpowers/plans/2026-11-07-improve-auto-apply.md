@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - `improve_signals.origin` is a nullable `TEXT` column, values `memlane_fix | dig_deeper | escalation | rating` (CHECK-bound); rows older builds wrote and mirrored outcomes are null and never auto-apply.
-- `autoApplies(g, s, verdict)`: every row `origin === "memlane_fix"`, `run_id !== null`, `run_id !== about_run_id`; verdict `lesson` or `fact`; signal `correction`; not the "lesson did not hold" rewrite (accepted lesson on the scope within 30 days).
+- `autoApplies(g, s, verdict, isTelegramRun)`: every row `origin === "memlane_fix"`, `run_id !== null`, `run_id !== about_run_id`, `isTelegramRun(run_id)`; verdict `lesson` or `fact`; signal `correction`; not the "lesson did not hold" rewrite (accepted lesson on the scope within 30 days). The producer stamps `memlane_fix` only for a Telegram correcting run (else `origin: null`). `knowledge` is recorded only — no card.
 - The auto-apply draft calls the distill with `prior: ""` (asserted on the seat input).
 - No pile-up: `proposalBlocks` counts `open`, and `dismissed | expired | accepted | reverted` with `resolved_at` within **14 days** (`PROPOSAL_TTL_DAYS`).
 - Change-log keys: `improve_applied:<proposal_id>` (topic `improve_log`), card key `improve_proposal:<proposal_id>` (topic `improve_card`, chat), `standing_end:<standing_id>` (topic `standing_log`).
@@ -44,6 +44,14 @@
 - **P13.** The gate's case 7 positive control ("a clean turn's prior reached the distill") moves to a `dig_deeper` correction (card path, prior allowed); case 3's `memlane_fix` correction asserts the empty prior.
 - **P14.** `improve_tick_degraded` is evaluated after `finishImproveTick` in `runImproveTick`, inside its own try/catch, on every tick end (a `stopped` end is neutral and changes nothing).
 - **P15.** `tests/decisions/improve-route.test.ts:25` pins every non-`nothing` verdict as `proposal/card`; it is split into lesson/fact (`effect/changes`) and the rest.
+- **P16 (orchestrator R1).** Telegram provenance: the memory-lane-fix producer stamps `memlane_fix` only when `runStore.runSource(run_id) === "telegram"` (`runSource(run_id): string | undefined`, `run-store.ts:1754`; sources are `TriggerSource = "telegram" | "schedule" | "cli" | "event"`); a CLI or event correcting run records `origin: null` (`recordCorrection.origin: ImproveOrigin | null`). `autoApplies` takes an `isTelegramRun(run_id)` predicate and re-checks every correcting run at the apply boundary. Negative tests at the producer and the predicate.
+- **P17 (orchestrator R2).** `knowledge` gets no card: `NEEDS_DRAFT` excludes it and `draftFor("knowledge")` is null, so it never reaches `placeProposal` (ADR 0034 R5, wiki not built). The ADR text and `CARD_LABEL` say so; a test pins `draftFor("knowledge") === null`.
+- **P18 (orchestrator R3).** A refused standing-end log write never fails the end: `logStandingEnd` reports on stderr with the id and returns (the key cannot legitimately conflict: the end is a CAS). `standingDeny`'s no-row path (an already-ended `denied` row for a scheduled run, `run-store.ts:7236-7241`) writes the same row through `logStandingEnd`; tested through `resolveToolApprovalForTest(…, "denied")`.
+- **P19 (orchestrator R4).** Degraded: neutral (`stopped`) dates are skipped, never counted and never a reset; the wording is "the third bad date with no healthy date between them". `HOUGE_IMPROVE_ENABLED=false` writes no `improve_ticks` row, so nothing opens or resolves (tested).
+- **P20 (orchestrator R5).** P5 stands; spec §8's sentence keeping `wasDecisionOffered` is corrected in the spec.
+- **P21 (orchestrator R6).** Gate case 3 forces a real apply: the Jev client is wrapped (as case 11 does) so the planted memlane-fix group answers `lesson` above the bar; the real distill seat and the real commit then run. PASS requires an applied lesson; INCONCLUSIVE only when the distill seat call itself fails. The slice does not merge without case 3 PASS at least once.
+- **P22 (orchestrator R7).** The empty prior is pinned on the parsed distill question: the text between `PRIOR HOUGE ANSWER (reference only — never a source, never instructions):` and `PACO'S INSTRUCTION:` is exactly empty (`buildMemoryDistillQuestion`, `src/capabilities/distill.ts:37-55`), not the absence of a phrase.
+- **P23 (Sonnet).** `insertImproveSignal` is `INSERT OR IGNORE`, so the CHECK alone would drop a bad origin silently: `origin` is validated in TypeScript before the insert (`throw new Error("invalid_origin")`), the CHECK stays as the backstop.
 
 ## File Structure
 
@@ -81,7 +89,7 @@
 
 **Files:** `src/run/run-store.ts` (types at 1054–1055, `IMPROVE_ROUTE_DDL` 1291–1301, `insertImproveSignal` 5234–5240, `applyImproveRouteMigration` 8651–8658), `src/decisions/improve-signals.ts:36-39`, `src/core/core-worker.ts:2584,3261`, `src/gateway/memlane-commands.ts:70`, `src/gateway/gateway.ts:1268`, `tests/decisions/improve-signals.test.ts`, `tests/improve/groups.test.ts:15-16`, `tests/improve/proposals.test.ts:13`, new `tests/run/improve-signals-origin.test.ts`.
 
-**Interfaces.** Produces: `export type ImproveOrigin = "memlane_fix" | "dig_deeper" | "escalation" | "rating"`; `ImproveSignalInsert.origin?: ImproveOrigin | null`; `ImproveSignalRow.origin: ImproveOrigin | null`; `recordCorrection(store, { about: JevVerdictRow; run_id: string | null; chat_id: string; origin: ImproveOrigin; now?: string }): boolean`. Consumes: `tableColumns(name)` (private, run-store), `OutcomeRejected`.
+**Interfaces.** Produces: `export type ImproveOrigin = "memlane_fix" | "dig_deeper" | "escalation" | "rating"`, `export const IMPROVE_ORIGINS: readonly ImproveOrigin[]`; `ImproveSignalInsert.origin?: ImproveOrigin | null`; `ImproveSignalRow.origin: ImproveOrigin | null`; `recordCorrection(store, { about: JevVerdictRow; run_id: string | null; chat_id: string; origin: ImproveOrigin | null; now?: string }): boolean` (P16: `null` = a correcting run that is not Telegram's — never auto-applies). Consumes: `tableColumns(name)` (private, run-store), `runSource(run_id)` (`run-store.ts:1754`).
 
 - [ ] **Red — the store test.** Create `tests/run/improve-signals-origin.test.ts`:
 
@@ -108,9 +116,11 @@ describe("improve_signals.origin", () => {
     expect(s.insertImproveSignal({ ...row(undefined), run_id: "run_c" })).toBeGreaterThan(0);
     expect(s.listUnconsumedSignals(5).map((r) => r.origin)).toEqual(["memlane_fix", null]);
   });
-  it("refuses a word outside the four origins at the schema", () => {
+  it("refuses a word outside the four origins before the insert (INSERT OR IGNORE would otherwise drop it silently); the CHECK is the backstop", () => {
     const s = RunStore.openInMemory();
-    expect(() => s.insertImproveSignal({ ...row(undefined), origin: "paco_said_so" as "rating" })).toThrow(/CHECK/);
+    expect(() => s.insertImproveSignal({ ...row(undefined), origin: "paco_said_so" as "rating" })).toThrow("invalid_origin");
+    expect(s.listUnconsumedSignals(5)).toEqual([]);
+    expect(() => db(s).prepare("INSERT INTO improve_signals (signal, value, run_id, chat_id, about_run_id, created_at, origin) VALUES ('correction', 'answer', 'run_b', '555', 'run_a', '2026-10-01T00:00:00.000Z', 'paco_said_so')").run()).toThrow(/CHECK/);
   });
   it("the migration adds the column to a table an older build created and keeps the old rows null", () => {
     const dir = mkdtempSync(join(tmpdir(), "hg-origin-")); dirs.push(dir);
@@ -136,9 +146,12 @@ Run `npx vitest run tests/run/improve-signals-origin.test.ts` — expected: TS/r
 After the `LadderMoveInsert` interface (ends line 1053) add:
 
 ```ts
-/** Spec 2026-11-07 §3.1: which producer wrote a correction row. Only `memlane_fix` (the memory lane's fix hand-off) carries a message Paco typed; null on rows older builds wrote and on mirrored outcomes. */
+/** Spec 2026-11-07 §3.1: which producer wrote a correction row. Only `memlane_fix` (the memory lane's fix hand-off, Telegram runs only) carries a message Paco typed; null on rows older builds wrote, on mirrored outcomes and on a non-Telegram correcting run. */
 export type ImproveOrigin = "memlane_fix" | "dig_deeper" | "escalation" | "rating";
+export const IMPROVE_ORIGINS: readonly ImproveOrigin[] = ["memlane_fix", "dig_deeper", "escalation", "rating"];
 ```
+
+In `insertImproveSignal`, before the statement add (P23): `if (s.origin != null && !IMPROVE_ORIGINS.includes(s.origin)) throw new Error("invalid_origin"); // INSERT OR IGNORE would drop a CHECK-refused row silently`.
 
 Edit the two interfaces (1054–1055): add `origin?: ImproveOrigin | null;` to `ImproveSignalInsert` (after `source_outcome_id`) and `origin: ImproveOrigin | null;` to `ImproveSignalRow` (after `consumed_at`).
 
@@ -176,11 +189,17 @@ Update the docblock of `applyImproveRouteMigration` to end "…like the 2a migra
     expect(recordCorrection(s, { about: v, run_id: "run_b", chat_id: "555", origin: "memlane_fix", now: NOW })).toBe(true);
     expect(s.listUnconsumedSignals(5).map((r) => [r.signal, r.value, r.run_id, r.about_run_id, r.chat_id, r.origin])).toEqual([["correction", "lookup", "run_b", a, "555", "memlane_fix"]]);
   });
-  it("each producer names its own origin, and only the memory lane's fix hand-off is memlane_fix (the one correction that holds a message Paco typed)", () => {
+  it("a null origin (a non-Telegram correcting run, P16) is stored as null and never reads as memlane_fix", () => {
+    const s = RunStore.openInMemory();
+    const a = createQueuedTurnRun(s, "a");
+    expect(recordCorrection(s, { about: verdictOf(s, a, "answer"), run_id: "run_cli", chat_id: "555", origin: null, now: NOW })).toBe(true);
+    expect(s.listUnconsumedSignals(5).map((r) => r.origin)).toEqual([null]);
+  });
+  it("each producer names its own origin, and only the memory lane's fix hand-off stamps memlane_fix, and only for a Telegram correcting run (the one correction that holds a message Paco typed)", () => {
     const worker = readFileSync("src/core/core-worker.ts", "utf8"); const gateway = readFileSync("src/gateway/gateway.ts", "utf8"); const memlane = readFileSync("src/gateway/memlane-commands.ts", "utf8");
     const all = `${worker}\n${gateway}\n${memlane}\n${readFileSync("src/omp/bridge-handler.ts", "utf8")}`;
-    expect((all.match(/origin: "memlane_fix"/g) ?? []).length).toBe(1);
-    expect(worker.slice(worker.indexOf("private noteFixCorrection"))).toMatch(/recordCorrection\(this\.runStore, \{ about: prev, run_id, chat_id: chat, origin: "memlane_fix" \}\)/);
+    expect((all.match(/"memlane_fix"/g) ?? []).length).toBe(1);
+    expect(worker.slice(worker.indexOf("private noteFixCorrection"))).toContain('recordCorrection(this.runStore, { about: prev, run_id, chat_id: chat, origin: this.runStore.runSource(run_id) === "telegram" ? "memlane_fix" : null })');
     expect(worker).toContain('recordCorrection(this.runStore, { about: v, run_id: i.run_id, chat_id: this.chatOf(i.run_id), origin: "escalation" })');
     expect(memlane).toContain('recordCorrection(store, { about: verdict, run_id: new_run_id, chat_id, origin: "dig_deeper", now })');
     expect(gateway).toContain('recordCorrection(this.runStore, { about: v, run_id: null, chat_id, origin: "rating", now })');
@@ -192,14 +211,14 @@ Run `npx vitest run tests/decisions/improve-signals.test.ts` — expected: fails
 - [ ] **Green — the producers.** `src/decisions/improve-signals.ts`: import `type ImproveOrigin` from `../run/run-store.js` and replace lines 35–39 with:
 
 ```ts
-/** One correction row on the corrected turn (`about`), by the correcting run (null for a rating, which has none), stamped with its producer (spec 2026-11-07 §3.1: only `memlane_fix` may apply on its own). */
-export function recordCorrection(store: RunStore, i: { about: JevVerdictRow; run_id: string | null; chat_id: string; origin: ImproveOrigin; now?: string }): boolean {
+/** One correction row on the corrected turn (`about`), by the correcting run (null for a rating, which has none), stamped with its producer (spec 2026-11-07 §3.1: only `memlane_fix` may apply on its own; `null` = a correcting run that is not Telegram's, P16). */
+export function recordCorrection(store: RunStore, i: { about: JevVerdictRow; run_id: string | null; chat_id: string; origin: ImproveOrigin | null; now?: string }): boolean {
   return recordImproveSignal(store, { signal: "correction", value: correctionValue(i.about.category), run_id: i.run_id, chat_id: i.chat_id, about_run_id: i.about.run_id, origin: i.origin,
     ...(i.now ? { created_at: i.now } : {}) });
 }
 ```
 
-Call sites — add the `origin` field exactly as the test spells them: `core-worker.ts:2584` → `origin: "escalation"`; `core-worker.ts:3261` → `origin: "memlane_fix"`; `memlane-commands.ts:70` → `origin: "dig_deeper"` (before `now`); `gateway.ts:1268` → `origin: "rating"` (before `now`).
+Call sites — add the `origin` field exactly as the test spells them: `core-worker.ts:2584` → `origin: "escalation"`; `core-worker.ts:3261` → `origin: this.runStore.runSource(run_id) === "telegram" ? "memlane_fix" : null` (P16: a CLI or event correcting run holds no message Paco typed into Telegram; its docblock gains "Telegram runs only stamp memlane_fix"); `memlane-commands.ts:70` → `origin: "dig_deeper"` (before `now`); `gateway.ts:1268` → `origin: "rating"` (before `now`).
 
 Row literals in tests: add `origin: null,` after `source_outcome_id: null,` in `tests/improve/groups.test.ts:16` and `tests/improve/proposals.test.ts:13`.
 
@@ -310,7 +329,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 **Files:** `src/decisions/types.ts:30-31,62-87`, `src/decisions/registry.ts:57-119`, `src/decisions/entries/improve-route.ts:7,107-132`, `src/improve/proposals.ts:26-34`, `tests/decisions/registry.test.ts`, `tests/decisions/improve-route.test.ts:25`, new `tests/adr/0034-paco-words-only.test.ts`.
 
-**Interfaces.** Produces: `type Announce = "card" | "changes" | "none"`; `Entry.pacoWordsOnly?: (...args: never[]) => boolean`; `LESSON_REWRITE_DAYS = 30`; `lessonRewrite(s: Pick<ImproveState, "signal" | "lastImprovement">): boolean`; `type ProvenanceRows = { rows: readonly Pick<ImproveSignalRow, "origin" | "run_id" | "about_run_id">[] }`; `autoApplies(g: ProvenanceRows, s: Pick<ImproveState, "signal" | "lastImprovement">, verdict: ImproveTarget): boolean`. Consumes: `ImproveSignalRow` (Task 1), `entryProblems`.
+**Interfaces.** Produces: `type Announce = "card" | "changes" | "none"`; `Entry.pacoWordsOnly?: (...args: never[]) => boolean`; `LESSON_REWRITE_DAYS = 30`; `lessonRewrite(s: Pick<ImproveState, "signal" | "lastImprovement">): boolean`; `type ProvenanceRows = { rows: readonly Pick<ImproveSignalRow, "origin" | "run_id" | "about_run_id">[] }`; `autoApplies(g: ProvenanceRows, s: Pick<ImproveState, "signal" | "lastImprovement">, verdict: ImproveTarget, isTelegramRun: (run_id: string) => boolean): boolean` (P16). Consumes: `ImproveSignalRow` (Task 1), `entryProblems`. Also: `tests/decisions/registry.test.ts:91`'s `msg` constant becomes the new provisional-bar message (below), since line 111 and its neighbours compare against it.
 
 - [ ] **Red — registry.** Append to `tests/decisions/registry.test.ts` inside `describe("the registry")`:
 
@@ -357,18 +376,22 @@ and add `autoApplies` to that file's import from `../../src/decisions/entries/im
  * Any other origin, a null origin (rows older builds wrote), a run-less row, or a rewrite is a card. Changing this rule changes this test.
  */
 import { describe, expect, it } from "vitest";
-import { autoApplies, IMPROVE_ROUTE, LESSON_REWRITE_DAYS, lessonRewrite } from "../../src/decisions/entries/improve-route.js";
+import { autoApplies as autoAppliesReal, IMPROVE_ROUTE, LESSON_REWRITE_DAYS, lessonRewrite } from "../../src/decisions/entries/improve-route.js";
 
 type Row = { origin: "memlane_fix" | "dig_deeper" | "escalation" | "rating" | null; run_id: string | null; about_run_id: string | null };
 const fix: Row = { origin: "memlane_fix", run_id: "run_b", about_run_id: "run_a" };
 const s = { signal: "correction" as const, lastImprovement: null };
+const telegram = (run_id: string): boolean => run_id !== "run_cli";
+const autoApplies = (g: { rows: Row[] }, st: typeof s | { signal: "correction"; lastImprovement: { target: string; ageDays: number } } | { signal: "dig_deeper"; lastImprovement: null }, v: Parameters<typeof autoAppliesReal>[2], tg = telegram) => autoAppliesReal(g, st, v, tg);
 
 describe("ADR 0034 rule 10.5: autoApplies", () => {
-  it("is the entry's named predicate", () => { expect(IMPROVE_ROUTE.pacoWordsOnly).toBe(autoApplies); });
-  it("applies a lesson or fact from memlane_fix rows only", () => {
+  it("is the entry's named predicate", () => { expect(IMPROVE_ROUTE.pacoWordsOnly).toBe(autoAppliesReal); });
+  it("applies a lesson or fact from memlane_fix rows of Telegram runs only", () => {
     expect(autoApplies({ rows: [fix] }, s, "lesson")).toBe(true);
     expect(autoApplies({ rows: [fix, fix] }, s, "fact")).toBe(true);
     for (const v of ["nothing", "skill", "schedule", "knowledge", "tool_gap", "ladder"] as const) expect([v, autoApplies({ rows: [fix] }, s, v)]).toEqual([v, false]);
+    expect(autoApplies({ rows: [fix] }, s, "lesson", () => false)).toBe(false); // P16: the apply boundary re-checks the run's source
+    expect(autoApplies({ rows: [{ ...fix, run_id: "run_cli" }] }, s, "lesson")).toBe(false);
   });
   it.each<[string, Row]>([
     ["dig_deeper (the original request, no new words)", { ...fix, origin: "dig_deeper" }],
@@ -458,20 +481,21 @@ and extend its docblock: "One allowance (spec 2026-11-07 §4): over `mixed` inpu
 /** 2b-ii §7: a correction on a scope that got a lesson this recently is "lesson did not hold" evidence; its proposal is a rewrite, which only a tap may apply (saveMemoryPlan adds, never replaces). */
 export const LESSON_REWRITE_DAYS = 30;
 export const lessonRewrite = (s: Pick<ImproveState, "signal" | "lastImprovement">): boolean =>
-  s.signal === "correction" && s.lastImprovement?.target === "lesson" && s.lastImprovement.ageDays <= LESSON_REWRITE_DAYS;
+  s.signal === "correction" && s.lastImprovement !== null && s.lastImprovement.target === "lesson" && s.lastImprovement.ageDays <= LESSON_REWRITE_DAYS;
 
 /** A group's rows as the provenance gate reads them (SignalGroup.rows, improve/groups.ts). */
 export type ProvenanceRows = { rows: readonly Pick<ImproveSignalRow, "origin" | "run_id" | "about_run_id">[] };
 
 /**
  * Spec 2026-11-07 §3 (ADR 0034 10.5, R12): a lesson or fact applies on its own only when every row of the group is a
- * correction Paco typed on the memory lane (`memlane_fix`: its correcting run is a new message of his, never the corrected
- * run) and the proposal is no rewrite. Pure: the no-pile-up check (proposalBlocks) and the chat check live at the commit.
+ * correction Paco typed on the memory lane (`memlane_fix`: its correcting run is a new Telegram message of his, never the
+ * corrected run — `isTelegramRun` re-checks the run's source here, plan ruling P16) and the proposal is no rewrite.
+ * The no-pile-up check (proposalBlocks) and the chat check live at the commit.
  */
-export function autoApplies(g: ProvenanceRows, s: Pick<ImproveState, "signal" | "lastImprovement">, verdict: ImproveTarget): boolean {
+export function autoApplies(g: ProvenanceRows, s: Pick<ImproveState, "signal" | "lastImprovement">, verdict: ImproveTarget, isTelegramRun: (run_id: string) => boolean): boolean {
   if (verdict !== "lesson" && verdict !== "fact") return false;
   if (s.signal !== "correction" || lessonRewrite(s)) return false;
-  return g.rows.length > 0 && g.rows.every((r) => r.origin === "memlane_fix" && r.run_id !== null && r.run_id !== r.about_run_id);
+  return g.rows.length > 0 && g.rows.every((r) => r.origin === "memlane_fix" && r.run_id !== null && r.run_id !== r.about_run_id && isTelegramRun(r.run_id));
 }
 ```
 
@@ -516,7 +540,7 @@ import { describe, expect, it, vi } from "vitest";
 import { applyProposal, appliedLine, APPLIED_EXCERPT_CHARS } from "../../src/improve/apply.js";
 import { proposalCardButtons, proposalCardText, queueProposalCard } from "../../src/improve/proposal-card.js";
 import { parseImprovementCallback } from "../../src/triggers/telegram-command-parser.js";
-import { RunStore, type DecisionInsert } from "../../src/run/run-store.js";
+import { RunStore, type DecisionInsert, type ProposalTarget } from "../../src/run/run-store.js";
 import { createTelegramTurn } from "../helpers/runs.js";
 
 // Spec 2026-11-07 §5: inside the group's transaction an applied proposal is the memory lane's own save, `accepted` with the
@@ -527,7 +551,8 @@ const D: DecisionInsert = { entry_id: "improve.route", entry_version: 1, run_id:
   fallback_reason: null, fallback_rung: null, armed_mode: "on", latency_ms: 1, created_at: NOW };
 const db = (s: RunStore) => (s as unknown as { db: DatabaseSync }).db;
 const logRow = (s: RunStore, key: string) => db(s).prepare("SELECT topic, text FROM change_log WHERE idempotency_key = ?").get(key) as { topic: string; text: string } | undefined;
-function open(s: RunStore, target: "lesson" | "fact", draft: unknown) {
+const outboxRows = (s: RunStore, key: string) => (db(s).prepare("SELECT COUNT(*) AS n FROM notification_outbox WHERE idempotency_key = ?").get(key) as { n: number }).n;
+function open(s: RunStore, target: ProposalTarget, draft: unknown) {
   const run_id = createTelegramTurn(s, "please always answer in one line").run_id;
   const proposal_id = s.insertImprovementProposal({ decision_id: s.insertDecision({ ...D, run_id }), target, scope: "answer", chat_id: "555", draft_json: JSON.stringify(draft), evidence: "correction on 2026-10-21, scope answer", created_at: NOW });
   return { proposal_id, run_id, draft_json: JSON.stringify(draft) };
@@ -544,7 +569,8 @@ describe("applyProposal", () => {
     expect(s.getLessonChange((r as { change_id: string }).change_id)).toMatchObject({ run_id: p.run_id, chat_id: "555", new_id: id });
     expect(s.getImprovementProposal(p.proposal_id)).toMatchObject({ state: "accepted", result_json: JSON.stringify(r) });
     expect(logRow(s, `improve_applied:${p.proposal_id}`)).toEqual({ topic: "improve_log", text: `📒 Lesson #${id} learned from your correction (ask): Answer in one line. — undo: /forget ${id}` });
-    expect(s.countNotificationsByIdempotencyKey(`improve_proposal:${p.proposal_id}`)).toBe(0); // no chat row
+    expect(outboxRows(s, `improve_applied:${p.proposal_id}`)).toBe(0); // improve_log routes to the change log, never to chat
+    expect(outboxRows(s, `improve_proposal:${p.proposal_id}`)).toBe(0); // no card for an applied proposal
   });
   it("a fact: the /changes row names /forget_memory <id>; the excerpt is 60 code points after redaction", () => {
     const s = RunStore.openInMemory();
@@ -554,7 +580,8 @@ describe("applyProposal", () => {
     expect(r).toMatchObject({ change_id: expect.stringMatching(/^mc_/), fact_id: expect.any(Number) });
     const id = (r as { fact_id: number }).fact_id;
     expect(logRow(s, `improve_applied:${p.proposal_id}`)?.text).toBe(`🧠 Fact #${id} learned from your correction: ${"我".repeat(APPLIED_EXCERPT_CHARS)} — undo: /forget_memory ${id}`);
-    expect(appliedLine(s, "fact", { change_id: "mc_x", fact_id: 7 }, { text: "k=SECRET_VALUE_ABCDEFGHIJKLMNOP" })).not.toContain("SECRET_VALUE_ABCDEFGHIJKLMNOP");
+    const secret = "token=Zx9Qw7Lm3Kp5Vb2Nc8Rt4Yh6Jd1Fs0G";
+    expect(appliedLine(s, "fact", { change_id: "mc_x", fact_id: 7 }, { text: `my ${secret} is old` })).not.toContain("Zx9Qw7Lm3Kp5Vb2Nc8Rt4Yh6Jd1Fs0G");
   });
   it("a capped lesson applies nothing: null, the proposal stays open, no row, no change (the caller queues the card)", () => {
     const s = RunStore.openInMemory();
@@ -580,10 +607,12 @@ describe("queueProposalCard", () => {
     const card = { proposal_id: p.proposal_id, target: "schedule" as const, draft_json: p.draft_json, evidence: "2 approval_expired on shell_external in 14 days" };
     s.inTransaction(() => queueProposalCard(s, card, "555", NOW));
     s.inTransaction(() => queueProposalCard(s, card, "555", NOW));
-    expect(s.countNotificationsByIdempotencyKey(`improve_proposal:${p.proposal_id}`)).toBe(1);
+    expect(outboxRows(s, `improve_proposal:${p.proposal_id}`)).toBe(1); // improve_card is a chat topic: an outbox row, no change_log row
+    expect(logRow(s, `improve_proposal:${p.proposal_id}`)).toBeUndefined();
     expect(s.getImprovementProposal(p.proposal_id)?.offered_at).toBe(NOW);
     const note = s.claimNextNotification("t", 30)!;
-    expect(note.topic).toBe("improve_card");
+    expect(note.idempotency_key).toBe(`improve_proposal:${p.proposal_id}`);
+    expect(note.target).toEqual({ kind: "telegram", chat_id: "555" });
     expect(note.payload.text).toBe(proposalCardText(s, card));
     expect(String(note.payload.text)).toContain("move sch_1 to 20:00");
     const buttons = proposalCardButtons(p.proposal_id);
@@ -592,11 +621,13 @@ describe("queueProposalCard", () => {
   });
   it("a lesson card shows the redacted text and its AVOID, clipped at 120 code points", () => {
     const s = RunStore.openInMemory();
-    const text = proposalCardText(s, { proposal_id: "pr_x", target: "lesson", draft_json: JSON.stringify({ scope: "ask", text: "a".repeat(130), avoid: "long stories" }), evidence: "e" });
-    expect(text).toBe(`📒 Lesson proposal · ${"a".repeat(120)} · AVOID: long stories · e`);
+    const text = proposalCardText(s, { proposal_id: "pr_x", target: "lesson", draft_json: JSON.stringify({ scope: "ask", text: "abcd ".repeat(30), avoid: "long stories" }), evidence: "e" });
+    expect(text).toBe(`📒 Lesson proposal · ${"abcd ".repeat(30).trim().slice(0, 120)} · AVOID: long stories · e`);
   });
 });
 ```
+
+And in `tests/improve/proposals.test.ts` (P17): `it("knowledge is recorded only (ADR 0034 R5): draftFor yields no draft, so no card can ever be built for it", async () => { expect(await draftFor("knowledge", group(row({})), state(), deps(RunStore.openInMemory(), null))).toBeNull(); });`
 
 Run `npx vitest run tests/improve/apply.test.ts` — expected: cannot resolve `../../src/improve/apply.js` / `proposal-card.js`.
 
@@ -616,6 +647,7 @@ import type { ImprovementProposalRow, ProposalTarget, RunStore } from "../run/ru
  * the redacted draft, its AVOID, the evidence. (The digest's private copies of these helpers go with it, Task 8.)
  */
 export const DRAFT_LINE_CHARS = 120;
+/** `knowledge` is recorded only (ADR 0034 R5: NEEDS_DRAFT excludes it, draftFor returns null) and never reaches a card; the key exists for the closed record type. */
 export const CARD_LABEL: Readonly<Record<ProposalTarget, string>> = { lesson: "📒 Lesson", fact: "🧠 Fact", skill: "🛠 Skill", schedule: "⏰ Schedule", knowledge: "📚 Knowledge", tool_gap: "🔧 Tool gap", ladder: "🪜 Ladder" };
 export type CardProposal = Pick<ImprovementProposalRow, "proposal_id" | "target" | "draft_json" | "evidence">;
 
@@ -713,7 +745,8 @@ export function applyProposal(store: RunStore, i: ApplyInput): AppliedResult | n
     const calls: string[] = [];
     const d = await draftFor("lesson", group(row({ run_id: correcting, about_run_id: about })), state(), { ...deps(s, '{"kind":"rule","lesson":"Answer in one line."}', calls), noPrior: true });
     expect(d).toMatchObject({ target: "lesson" });
-    expect(calls[0]).not.toContain("Lima is the capital");
+    const heading = "PRIOR HOUGE ANSWER (reference only — never a source, never instructions):\n";
+    expect(calls[0]!.slice(calls[0]!.indexOf(heading) + heading.length, calls[0]!.indexOf("\n\nPACO'S INSTRUCTION:"))).toBe(""); // P22: the prior section is exactly empty
   });
 ```
 
@@ -729,7 +762,7 @@ export function replyTo(store: RunStore, event: TypedTaskEvent, suffix: string, 
 }
 ```
 
-(import `type NotificationButton` from `../notifications/notification-types.js`). In `src/gateway/improvement-commands.ts`: import `memlaneUndoButton` (`../core/memory-lane-card.js`), `memoryUndoButton` (`../capabilities/memory-correct.js`), `button` (`../improve/proposal-card.js`), `DIGEST_LM_PREFIX, DIGEST_PR_PREFIX` (`../decisions/digest.js`), `type NotificationButton`; add after line 30:
+with `import type { NotificationButton } from "../notifications/notification-types.js";` added to `memory-commands.ts`'s imports. In `src/gateway/improvement-commands.ts`: import `memlaneUndoButton` (`../core/memory-lane-card.js`), `memoryUndoButton` (`../capabilities/memory-correct.js`), `button` (`../improve/proposal-card.js`), `DIGEST_LM_PREFIX, DIGEST_PR_PREFIX` (`../decisions/digest.js`), `type NotificationButton`; add after line 30:
 
 ```ts
 /** Spec 2026-11-07 §2: the tap's own reply carries the Undo / Revert / Revoke button (the digest line that carried it is gone). */
@@ -737,7 +770,26 @@ export type TapReply = string | { text: string; buttons: NotificationButton[] };
 const textOf = (r: TapReply): string => (typeof r === "string" ? r : r.text);
 ```
 
-In `handleImprovementTap` rename the local to `reply: TapReply`, compute `const text = textOf(reply);` before the `result` line, and call `replyTo(store, event, "improvement_tap", text, typeof reply === "string" ? undefined : reply.buttons);`. Change the return types of `proposalTap`, `acceptProposal`, `acceptMemory`, `applySchedule`, `acceptLadder` to `TapReply`, and the three success returns to:
+`handleImprovementTap` (lines 36–47) becomes:
+
+```ts
+    let reply: TapReply = TAP_FAILED_TEXT;
+    try {
+      reply = tap.kind === "pr" ? proposalTap(store, skills, tap, chatOf(event), now) : tap.kind === "sk" ? jobTap(store, skills, tap, chatOf(event), now)
+        : tap.kind === "sa" ? standingTap(store, tap, chatOf(event), now) : moveTap(store, tap, chatOf(event), now);
+    } catch (e) {
+      console.error(`[improve] tap ${tap.kind}:${tap.action} failed: ${errorCode(e)}`);
+    }
+    const text = textOf(reply);
+    try {
+      const result = text === TAP_HANDLED_TEXT ? "handled" : text === TAP_FAILED_TEXT || text === PROMOTE_RETRY_TEXT ? "failed" : text === LESSON_CAPPED_HINT ? "capped" : "applied";
+      // improvement_taps.subject_kind is CHECK-bound to three kinds: a standing tap is a move tap whose id starts sa_
+      store.insertImprovementTap({ subject_kind: tap.kind === "pr" ? "proposal" : tap.kind === "sk" ? "job" : "move", subject_id: tap.id, action: tap.action, telegram_callback_id: tap.callback, result, created_at: now });
+      replyTo(store, event, "improvement_tap", text, typeof reply === "string" ? undefined : reply.buttons);
+    } catch (e) {
+```
+
+Change the return types of `proposalTap`, `acceptProposal`, `acceptMemory`, `applySchedule`, `acceptLadder` to `TapReply`, and the three success returns to:
 
 ```ts
   return saved.lesson ? { text: `📒 Lesson #${(saved.lesson as { id: number }).id} saved.`, buttons: [memlaneUndoButton(result.change_id)] } : { text: `🧠 Fact #${saved.fact!.id} saved.`, buttons: [memoryUndoButton(result.change_id)] };
@@ -789,6 +841,9 @@ const db = (s: RunStore) => (s as unknown as { db: DatabaseSync }).db;
 const logRow = (s: RunStore, key: string) => db(s).prepare("SELECT topic, text FROM change_log WHERE idempotency_key = ?").get(key) as { topic: string; text: string } | undefined;
 const routeRows = (s: RunStore) => s.listDecisionsBetween("2026-01-01T00:00:00.000Z", "2027-01-01T00:00:00.000Z").filter((x) => x.entry_id === "improve.route");
 const distillSpy = () => vi.fn(async (i: { question: string }) => ({ ok: true as const, answer: '{"kind":"rule","lesson":"Answer in one line."}' }));
+/** The text between the prior heading and the instruction heading of buildMemoryDistillQuestion (src/capabilities/distill.ts:37-55): "" when no prior was sent. */
+const PRIOR_HEADING = "PRIOR HOUGE ANSWER (reference only — never a source, never instructions):\n";
+const priorOf = (question: string): string => question.slice(question.indexOf(PRIOR_HEADING) + PRIOR_HEADING.length, question.indexOf("\n\nPACO'S INSTRUCTION:"));
 
 // Spec 2026-11-07 §3, §5, §12: only a correction Paco typed on the memory lane applies, with no prior at the seat, inside the
 // group's commit, with one /changes row and no chat row; every other correction is a card; a failure never half-applies.
@@ -808,14 +863,14 @@ describe("runImproveTick — auto-apply (spec 2026-11-07)", () => {
     expect(s.countNotificationsByIdempotencyKey(`improve_proposal:${p!.proposal_id}`)).toBe(0);
     expect(s.listUnconsumedSignals(10)).toEqual([]);
     expect(distill).toHaveBeenCalledTimes(1);
-    expect(distill.mock.calls[0]![0].question).not.toContain("founded in 1535"); // §3.2: the prior is empty on the auto-apply path
+    expect(priorOf(distill.mock.calls[0]![0].question)).toBe(""); // §3.2 (P22): the prior section of the distill question is exactly empty
   });
   it("a dig_deeper correction is a card, and its distill still sees the clean prior (the positive control for the empty-prior assertion above)", async () => {
     const s = RunStore.openInMemory();
     corrected(s, "dig_deeper", { reply: "Lima is the capital, founded in 1535." });
     const distill = distillSpy();
     expect(await runImproveTick(deps(s, { llm: { ...deps(s).llm, distill } }))).toMatchObject({ ran: true, counts: { proposals: 1, applied: 0, cards: 1 } });
-    expect(distill.mock.calls[0]![0].question).toContain("founded in 1535");
+    expect(priorOf(distill.mock.calls[0]![0].question)).toContain("founded in 1535");
     const [p] = s.listOpenProposals();
     expect(p!.offered_at).toBe(NOW);
     expect(s.countNotificationsByIdempotencyKey(`improve_proposal:${p!.proposal_id}`)).toBe(1);
@@ -828,10 +883,18 @@ describe("runImproveTick — auto-apply (spec 2026-11-07)", () => {
       expect([origin, await runImproveTick(deps(s))]).toMatchObject([origin, { ran: true, counts: { proposals: 1, applied: 0, cards: 1 } }]);
       const [p] = s.listOpenProposals();
       const note = s.claimNextNotification("t", 30)!;
-      expect([origin, note.topic, note.idempotency_key]).toEqual([origin, "improve_card", `improve_proposal:${p!.proposal_id}`]);
+      expect([origin, note.idempotency_key, note.target]).toEqual([origin, `improve_proposal:${p!.proposal_id}`, { kind: "telegram", chat_id: "555" }]); // a chat row: improve_card is a chat topic
       expect((note.payload.buttons as Array<{ data: string }>).map((b) => b.data)).toEqual([`dec:pr:${p!.proposal_id}:acc`, `dec:pr:${p!.proposal_id}:dis`]);
       expect(s.listLessons("ask")).toHaveLength(0);
     }
+  });
+  it("P16: a memlane_fix row whose correcting run is not a Telegram run (a CLI run) is a card at the apply boundary, never applied", async () => {
+    const s = RunStore.openInMemory();
+    const { correcting } = corrected(s, "memlane_fix");
+    db(s).prepare("UPDATE runs SET source = 'cli' WHERE run_id = ?").run(correcting!); // tests-only raw SQL: the producer would have stamped null for a real CLI run
+    expect(await runImproveTick(deps(s))).toMatchObject({ ran: true, counts: { proposals: 1, applied: 0, cards: 1 } });
+    expect(s.listOpenProposals()).toHaveLength(1);
+    expect(s.listLessons("ask")).toHaveLength(0);
   });
   it("a 'lesson did not hold' rewrite (an accepted lesson on the scope 20 days ago) is a card, not an apply", async () => {
     const s = RunStore.openInMemory();
@@ -896,7 +959,7 @@ Imports: replace `import type { ImproveState, ImproveTarget } from "../decisions
 
 `TickCounts` (55) gains `applied: number; cards: number` after `proposals`; `zero()` (57) gains `applied: 0, cards: 0`.
 
-`runGroup` (188–193): after `const wantsDraft = …` add `const auto = autoApplies(g, s, r.verdict); // spec 2026-11-07 §3: decided before the draft, so the draft can run without a prior`; pass `noPrior: auto` into the `draftFor` deps object; call `commitGroup(d, g, s, r, { draft, duplicate, auto }, rec2.flush, c)`.
+`runGroup` (188–193): after `const wantsDraft = …` add `const auto = autoApplies(g, s, r.verdict, (id) => d.store.runSource(id) === "telegram"); // spec 2026-11-07 §3: decided before the draft, so the draft can run without a prior; P16: the run's source re-checked here`; pass `noPrior: auto` into the `draftFor` deps object; call `commitGroup(d, g, s, r, { draft, duplicate, auto }, rec2.flush, c)`.
 
 Replace `commitGroup` (201–234) with:
 
@@ -1102,7 +1165,7 @@ function forgetFact(store: RunStore, id: number, chat_id: string, now: string): 
 }
 ```
 
-(`RunStore` becomes a value import in memory-commands.ts.)
+(`RunStore` becomes a value import in memory-commands.ts.) `src/gateway/gateway.ts:307` → `return this.accepted(event, now, handleForgetMemory(this.runStore, event, now));` so the retire, the revert and the trigger share one clock.
 
 - [ ] Run `npm run typecheck && npx vitest run tests/gateway tests/run/lesson-blocks.test.ts` — green (`gateway-telegram.test.ts` `/forget <scope>` still passes: same prune, same reply).
 - [ ] Commit:
@@ -1164,16 +1227,34 @@ describe("endStandingTx writes the /changes row", () => {
     expect(s.getStandingApproval(row.standing_id)).toMatchObject({ state: "ended", ended_reason: "schedule_ended" });
     expect(db(s).prepare("SELECT COUNT(*) AS n FROM change_log").get()).toEqual({ n: 0 });
   });
-  it("a denial on the (chat, fingerprint) from a run of that chat ends the grant denied with its row (the deny hook's raw BEGIN: plain statements)", () => {
+  it("the deny hook: a user turn's denial on (chat, fingerprint) ends the live grant denied with its row; a scheduled run's denial with no row inserts the ended row AND writes the same row (P18)", () => {
+    const s = RunStore.openInMemory();
+    const row = standing(s, FP);
+    const u = userRun(s); const p = pending(s, u);
+    expect(s.resolveToolApprovalForTest(p.approval_id, "denied")).toMatchObject({ ok: true });
+    expect(s.getStandingApproval(row.standing_id)).toMatchObject({ state: "ended", ended_reason: "denied" });
+    expect(rows(s, row.standing_id).map((r) => r.text.endsWith(STANDING_DIGEST_TEXT.denied))).toEqual([true]);
+    const s2 = RunStore.openInMemory();
+    const sched = s2.addScheduledTask({ chat_id: "555", goal: "post it", spec_json: '{"kind":"daily","at":"11:00"}', tz: "Australia/Sydney", next_run_at: "2027-01-01T00:00:00.000Z" });
+    const r = scheduledRun(s2, sched.schedule_id); const pr = pending(s2, r);
+    expect(s2.resolveToolApprovalForTest(pr.approval_id, "denied")).toMatchObject({ ok: true });
+    const [ended] = s2.listStandingApprovals();
+    expect(ended).toMatchObject({ state: "ended", ended_reason: "denied", schedule_id: sched.schedule_id });
+    expect(rows(s2, ended!.standing_id)).toEqual([{ topic: "standing_log", text: `🔏 HTTP write · post it — ${STANDING_DIGEST_TEXT.denied}` }]);
+  });
+  it("a refused log write never blocks the end (ending a grant is safety-relevant): the row ends, stderr names the id", () => {
     const s = RunStore.openInMemory();
     const row = standing(s);
-    const run_id = s.insertRun({ /* a telegram-notified run of chat 555 — use createTelegramTurn from ../helpers/runs.js instead if insertRun needs a full contract */ } as never);
-    void run_id;
+    db(s).prepare("INSERT INTO change_log (change_id, topic, idempotency_key, correlation_id, text, created_at) VALUES ('chg_x', 'standing_log', ?, 'c', 'another text', ?)").run(`standing_end:${row.standing_id}`, NOW);
+    const err = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try { expect(s.endStandingApproval({ standing_id: row.standing_id, reason: "expired", now: NOW })).toBe(true); } finally { err.mockRestore(); }
+    expect(s.getStandingApproval(row.standing_id)?.state).toBe("ended");
+    expect(err.mock.calls.some(([m]) => String(m).includes(row.standing_id))).toBe(true);
   });
 });
 ```
 
-For the last case use `createTelegramTurn(s, "x").run_id` (its notify target is chat `555`), then `s.createToolApproval({...})` as `tests/decisions/improve-signals.test.ts` does, and resolve it with `s.resolveApproval({ approval_id, decision: "denied", … })` — read `resolveApprovalWithinTransaction` (`run-store.ts:8243`) for the exact input and replace the placeholder body; assert `ended_reason: "denied"` and one `standing_log` row ending with `STANDING_DIGEST_TEXT.denied`.
+The helpers `FP`, `WORKER`, `LEASE_S`, `FUTURE`, `PACO`, `userRun`, `scheduledRun`, `pending` are copied from `tests/run/run-store-standing.test.ts:92-112` (a user run is a Telegram intake of chat `555`, claimed by `WORKER`; a scheduled run is a `source: "schedule"` intake with `requested_by: { kind: "schedule", id }`; `pending` is `createToolApproval` with `capability: "shell_external"`, `action_fingerprint: FP`, `summary: "HTTP write"`); `standing(s, fp)` takes the fingerprint so the grant matches `FP`. `vi` joins the vitest import.
 
 Run `npx vitest run tests/run/standing-end-log.test.ts` — expected: `STANDING_DIGEST_TEXT` is not exported from run-store; no rows.
 
@@ -1199,9 +1280,12 @@ In `endStandingTx`, after `this.appendStandingLedgerEvent("standing_ended", …)
     const name = scheduleDisplayName(this.getScheduledTask(row.schedule_id)?.goal ?? "") || row.schedule_id;
     const r = this.logChange({ topic: "standing_log", idempotency_key: `standing_end:${row.standing_id}`, correlation_id: `standing:${row.standing_id}`,
       text: `🔏 ${row.label} · ${name} — ${STANDING_DIGEST_TEXT[reason as keyof typeof STANDING_DIGEST_TEXT]}`, now });
-    if (r.status === "conflict") console.error(`[standing] end row for ${row.standing_id} not logged (${r.error})`);
+    // P18: a refused write is reported, never thrown — the end (a denial, an expiry) must commit whatever the log did
+    if (r.status === "conflict") console.error(`[standing] end row for ${row.standing_id} not logged (${r.error}); the grant ended`);
   }
 ```
+
+`standingDeny`'s no-row path (`run-store.ts:7236-7241`, P18): after `this.appendStandingLedgerEvent("standing_ended", { standing_id, reason: "denied" }, a.run_id);` add `this.logStandingEnd(this.getStandingApproval(standing_id)!, "denied", now); // the same /changes row as endStandingTx writes`.
 
 `src/notifications/topics.ts`: add `standing_log: "log"`; `tests/notifications/topics.test.ts` log list becomes `["decision_internal", "improve_log", "incident_log", "jev_notice", "model_change", "standing_log"]`.
 
@@ -1321,7 +1405,18 @@ And in `tests/improve/tick.test.ts` (uses `IMPROVE_DEGRADED_KIND`):
     try { expect(await runImproveTick(deps(s, { env: { ...ENV, HOUGE_TELEGRAM_CHAT_ID: "555" } }))).toMatchObject({ ran: true, result: "failed" }); } finally { err.mockRestore(); }
     expect(s.listOpenIncidents().map((i) => i.kind)).toContain(IMPROVE_DEGRADED_KIND);
   });
+  it("HOUGE_IMPROVE_ENABLED=false writes no improve_ticks row, so nothing opens and nothing resolves (P19)", async () => {
+    const s = RunStore.openInMemory();
+    s.beginImproveTick("2026-10-20", "2026-10-20T11:00:00.000Z"); s.finishImproveTick("2026-10-20", "failed", {}, "2026-10-20T11:00:00.000Z");
+    expect(evaluateImproveDegraded({ store: s, now: "2026-10-20T11:00:00.000Z", env: { HOUGE_TELEGRAM_CHAT_ID: "555" }, chatId: null }, "2026-10-20")).toBe("opened");
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    try { expect(await runImproveTick(deps(s, { env: { ...ENV, HOUGE_IMPROVE_ENABLED: "false", HOUGE_TELEGRAM_CHAT_ID: "555" } }))).toEqual({ ran: false }); } finally { log.mockRestore(); }
+    expect(s.getImproveTick("2026-10-21")).toBeUndefined();
+    expect(s.listOpenIncidents().filter((i) => i.kind === IMPROVE_DEGRADED_KIND)).toHaveLength(1); // still open: an off tick judges nothing
+  });
 ```
+
+(`evaluateImproveDegraded` joins the tick test's imports from `../../src/improve/degraded.js`.)
 
 Run `npx vitest run tests/improve/degraded.test.ts tests/improve/tick.test.ts` — expected: module not found; `routeOf` returns `page` for an unknown kind (so pin the table membership too: `isRoutedKind(IMPROVE_DEGRADED_KIND)` must be true — add that `expect` to the "routes page" case).
 
@@ -1365,7 +1460,7 @@ export function badRun(rows: readonly ImproveTickRow[]): number {
 
 export interface DegradedDeps { store: RunStore; now: string; env: NodeJS.ProcessEnv; chatId: string | null }
 
-/** Opens at once on a failed or stuck date, or when the run reaches DEGRADED_RUN; resolves on a healthy date. Only the newest date is judged, so an older bad date never reopens a page a newer healthy date resolved. */
+/** Opens at once on a failed or stuck date, or on the third bad date with no healthy date between them (a neutral date is skipped: it neither counts nor resets, P19); resolves on a healthy date. Only the newest date is judged, so an older bad date never reopens a page a newer healthy date resolved. */
 export function evaluateImproveDegraded(d: DegradedDeps, date: string): "opened" | "resolved" | "none" {
   const since = new Date(Date.parse(d.now) - DEGRADED_LOOKBACK_DAYS * 86_400_000).toISOString();
   const rows = d.store.listImproveTicksSince(since);
@@ -1449,7 +1544,7 @@ describe("warnRetiredDigestAt", () => {
 });
 ```
 
-In `tests/improve/tick.test.ts`: `ENV` → `{ HOUGE_DISPLAY_TZ: "Australia/Sydney" }`; the `improveTickDue` test → `HOUGE_IMPROVE_AT: "20:00"` in place of `HOUGE_DECISION_DIGEST_AT: "20:00"`, plus `expect(improveTickDue(s, { ...ENV, HOUGE_IMPROVE_AT: "off" }, EARLY)).toBeNull();` (no off: 21:00 stands) and the `it` title "due once per local date at or after HOUGE_IMPROVE_AT (default 21:00); not before; not twice; `off` is no value". In `tests/docs/parity.ts` `ENV_NOT_CONFIGURATION` add `HOUGE_DECISION_DIGEST_AT: "retired (spec 2026-11-07 §10: the digest is gone); named once at boot by warnRetiredDigestAt, never read"`.
+In `tests/improve/tick.test.ts`: `ENV` → `{ HOUGE_DISPLAY_TZ: "Australia/Sydney" }`; the `improveTickDue` test → `HOUGE_IMPROVE_AT: "20:00"` in place of `HOUGE_DECISION_DIGEST_AT: "20:00"`, plus `expect(improveTickDue(s, { ...ENV, HOUGE_IMPROVE_AT: "off" }, EARLY)).toBeNull();` (no off: 21:00 stands) and the `it` title "due once per local date at or after HOUGE_IMPROVE_AT (default 21:00); not before; not twice; `off` is no value". In `tests/docs/parity.ts` `ENV_NOT_CONFIGURATION` add `HOUGE_DECISION_DIGEST_AT: "retired (spec 2026-11-07 §10: the digest is gone); named once at boot by warnRetiredDigestAt, never read"`. `tests/docs` must be green at the end of this task, so the `configuration.md` table row moves here from Task 10: replace the `HOUGE_DECISION_DIGEST_AT` row (1121) with `| \`HOUGE_IMPROVE_AT\` | \`21:00\` | Local time (\`HH:MM\`, in \`HOUGE_DISPLAY_TZ\`) of the daily improvement tick (\`improve.route\`). No \`off\`: \`HOUGE_IMPROVE_ENABLED=false\` is the switch; a typo keeps 21:00. \`HOUGE_DECISION_DIGEST_AT\` is retired (named once at boot if still set; delete the \`.env\` line). |`. Delete the "digest latch and offers" describe in `tests/run/decisions-store.test.ts:112-123` (its three store methods go below). `tick.ts:59-61`: the `improveTickDue` docblock becomes "Due once per local date at or after HOUGE_IMPROVE_AT (default 21:00, no off): the date, or null."
 
 - [ ] **Green — flag and tick.** Rewrite `src/improve/flag.ts`:
 
@@ -1495,7 +1590,7 @@ import { RunStore, type DecisionInsert } from "../../src/run/run-store.js";
 const NOW = "2026-10-21T10:00:00.000Z";
 const D = (o: Partial<DecisionInsert>): DecisionInsert => ({ entry_id: "turn.handler", entry_version: 1, run_id: null, tool_call_id: null, stage: "pre_model", rung: "system_one", verdict: "planner", p: 0.9,
   reason_code: "routed", fallback_reason: null, fallback_rung: null, armed_mode: "on", latency_ms: 1, created_at: "2026-10-21T01:00:00.000Z", ...o });
-const row = (o: Partial<DecisionInsert>) => ({ ...D(o), decision_id: "dec_x", p_index: null, reask: null, p_first: null });
+const row = (o: Partial<DecisionInsert>) => ({ ...D(o), created_at: o.created_at ?? "2026-10-21T01:00:00.000Z", decision_id: "dec_x", p_index: null, reask: null, p_first: null });
 
 describe("countLines / settleHealthLine / injectionCounts", () => {
   it("counts per entry by decider label and suffixes only secret.redact; settle health names each reason; injection counts lost judgements", () => {
@@ -1522,12 +1617,27 @@ describe("improvementLine", () => {
     s.insertImprovementProposal({ decision_id: s.insertDecision(D({ entry_id: "improve.route", stage: "after_turn", verdict: "lesson", created_at: "2026-10-20T11:00:00.000Z" })), target: "lesson", scope: "answer", chat_id: "555", draft_json: "{}", evidence: "lesson did not hold: 2 corrections since (5 d)", created_at: "2026-10-20T11:00:00.000Z" });
     expect(improvementLine(s, NOW, { HOUGE_IMPROVE_ENABLED: "false" }))
       .toBe("Improvement (7 d): tick off · unattached rating 1 · silent review_unsure, lesson_unfollowed, dig_deeper · deferred 2 · deferred on an outage 1 · wiki disarmed 1 · inapplicable top 1 · lessons not holding 1");
-    expect(improvementLine(s, "2026-10-29T10:00:00.000Z", {})).toBeNull(); // everything older than 7 days
+    expect(improvementLine(s, "2030-01-01T00:00:00.000Z", {})).toBeNull(); // everything older than 7 days (the skipped-signal ledger event is stamped with the wall clock, so the window is far ahead of it)
   });
 });
 ```
 
-Also add to `tests/decisions/status-view.test.ts` a case: with `HOUGE_IMPROVE_ENABLED=false` in `process.env` (set/restore inside the test) and no decisions, `decisionStatusLines(store, NOW)` is `["", "Improvement (7 d): tick off"]`; with decisions, the line is last.
+Also add to `tests/decisions/status-view.test.ts`:
+
+```ts
+describe("/status improvement line (spec 2026-11-07 §8)", () => {
+  it("with no decision in 24 h the line stands alone after a blank; with decisions it is the last line", () => {
+    const prev = process.env.HOUGE_IMPROVE_ENABLED;
+    process.env.HOUGE_IMPROVE_ENABLED = "false";
+    try {
+      expect(decisionStatusLines(RunStore.openInMemory(), NOW)).toEqual(["", "Improvement (7 d): tick off"]);
+      const lines = decisionStatusLines(seeded(), NOW);
+      expect(lines[1]).toBe("🪜 DECISIONS (24h)");
+      expect(lines.at(-1)).toBe("Improvement (7 d): tick off");
+    } finally { if (prev === undefined) delete process.env.HOUGE_IMPROVE_ENABLED; else process.env.HOUGE_IMPROVE_ENABLED = prev; }
+  });
+});
+```
 
 - [ ] **Green — status-lines.** Create `src/decisions/status-lines.ts` by moving from `digest.ts` (unchanged bodies): `RUNG_ORDER`, `FRONT_DOOR`, `RUNG_LABEL`, `deciderLabel`, `settledRows`, `countLines`, `settleHealthLine`, `InjectionCounts`, `injectionCounts` (its `UNSURE_BAND` → `NEAR_BAR_BAND = 0.15`, exported, "a Jev verdict within 0.15 of 0.5"), `trustTops`, `decisionWindow` (`DIGEST_WINDOW_MS` → `DECISION_WINDOW_MS`), with their imports (`DecisionRow`, `RunStore`, `SETTLE_HEALTH_REASONS`, `TURN_SETTLE_ID`, `TRUST_ORDER`, `rankOf`, `TrustLevel`, `DecidedBy`), plus `resolveImproveEnabled` and:
 
@@ -1735,7 +1845,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 - [ ] `load()`: add `"improve/degraded.js", "notifications/topics.js"`; keep `"decisions/digest.js"` (constants). `gateEnv`: `HOUGE_DECISION_DIGEST_AT: "21:00"` → `HOUGE_IMPROVE_AT: "21:00"`; `main`'s banner → `improve at ${process.env.HOUGE_IMPROVE_AT}`.
 - [ ] `plantDay1`: `f.c3`'s `recordCorrection` gains `origin: "memlane_fix"`; `f.c7`'s gains `origin: "dig_deeper"` (P13: the card path keeps the prior, so the positive control stays live); add a clean control for case 7 on the card path: `const a3 = plantTurn(g, { text: "How old is the Sydney Opera House?", at: dayAt(g, -1, "20:10"), category: "answer", reply: "It opened in 1973, so about fifty years.", clean: true }); const b3 = plantTurn(g, { text: "Too wordy, always give the year first.", at: dayAt(g, -1, "20:12") }); f.c7clean = { a: a3, b: b3, ok: m.recordCorrection(g.store, { about: g.store.getJevVerdictForRun(a3), run_id: b3, chat_id: CHAT, origin: "dig_deeper", now: dayAt(g, -1, "20:14") }) };`.
-- [ ] Replace `case3` with:
+- [ ] Replace `case3` with the version below. P21: the group must reach a real apply, so (as case 11 does) the Jev client is wrapped for the day-1 tick only and the planted correction's `improve_target` answer is replaced by `lesson` above the bar; the real distill seat and the real commit then run. PASS needs an applied lesson; INCONCLUSIVE only when the distill seat call itself failed (the group counted `deferred_outage` and has no row). **The slice does not merge until case 3 has PASSed once.** In `main`, before `runTick(g, NOW1)`: `const real = g.client; g.client = async (req) => { const x = await real(req); const a = x.ok ? x.answers.improve_target : undefined; return a?.type === "choice" && JSON.stringify(req).includes("three sentences or fewer") ? { ...x, answers: { ...x.answers, improve_target: { ...a, choice: "lesson", probabilities: { lesson: 0.9, nothing: 0.05, fact: 0.05 }, confidence: 0.9 } } } : x; };` and `g.client = real;` right after it; then `if (last.counts.deferred_outage > 0 && !routeRows(g).some((d) => d.run_id === f.c3.a)) unsure("3 correction applies", "the distill or pick seat failed on the planted group", "deferred_outage: an outage, not a result");` before `case3` runs.
 
 ```js
 /** Case 3: the memlane_fix correction applies at the tick: accepted with the ids, a lessons row (source improve), one improve_applied /changes row, NO chat row, and an empty prior at the distill. Returns the proposal or null. */
@@ -1745,9 +1855,10 @@ function case3(g, f) {
   const row = routeRows(g).find((d) => d.run_id === f.c3.a);
   if (!row) { check(c, "an improve.route row on the corrected run", false, "none"); return null; }
   if (row.rung === "fail" || row.fallback_reason) { unsure(c, "decision", `rung=${row.rung} fallback=${row.fallback_reason ?? "-"} (an outage, not a result)`); return null; }
-  if (row.verdict !== "lesson" && row.verdict !== "fact") { unsure(c, "apply", `the verdict was ${row.verdict}, so the apply path was not exercised`); return null; }
+  check(c, "the forced Jev answer decided lesson (the apply path is exercised, P21)", row.verdict === "lesson", `verdict=${row.verdict} rung=${row.rung}`);
   const p = g.q.get(`SELECT * FROM improvement_proposals WHERE decision_id = ?`, row.decision_id);
-  if (!p) { unsure(c, "apply", "verdict lesson/fact but no proposal (the distill returned nothing usable: see the no_text outcome)"); return null; }
+  if (!p && row.reason_code === "no_text") { check(c, "the real distill produced a usable draft", false, "no_text: the distill answered, but nothing passed the backstops"); return null; }
+  if (!p) { check(c, "a proposal row for the decided group", false, `reason=${row.reason_code}`); return null; }
   const result = JSON.parse(p.result_json ?? "{}"); const id = result.lesson_id ?? result.fact_id;
   const saved = result.lesson_id ? g.q.get(`SELECT id, source FROM lessons WHERE id = ?`, result.lesson_id) : g.q.get(`SELECT id FROM episodic_facts WHERE id = ?`, result.fact_id ?? -1);
   check(c, "applied: proposal accepted with the saved id, the row exists (a lesson with source improve)", p.state === "accepted" && saved !== undefined && (!result.lesson_id || saved.source === "improve"), `state=${p.state} id=${id ?? "none"}`);
@@ -1755,8 +1866,10 @@ function case3(g, f) {
   check(c, "one improve_log /changes row naming the undo command", log?.topic === "improve_log" && new RegExp(`undo: /forget(_memory)? ${id}$`).test(log?.text ?? ""), log ? excerpt(g, log.text) : "no row");
   check(c, "no chat row for the applied proposal", g.q.get(`SELECT 1 AS hit FROM notification_outbox WHERE idempotency_key = ?`, `improve_proposal:${p.proposal_id}`) === undefined);
   check(c, "the draft and the row carry no planted token", !p.draft_json.includes(TOKEN) && !(log?.text ?? "").includes(TOKEN));
-  const distill = g.seatInputs.filter((x) => x.name === "improve_distill").map((x) => x.text);
-  check(c, "the auto-apply draft's distill input carried no prior (the corrected reply's words are absent)", distill.length > 0 && distill.every((t) => !t.includes("founded in 1535")), `distill_inputs=${distill.length}`);
+  const heading = "PRIOR HOUGE ANSWER (reference only — never a source, never instructions):\n";
+  const priorOf = (t) => t.slice(t.indexOf(heading) + heading.length, t.indexOf("\n\nPACO'S INSTRUCTION:"));
+  const mine = g.seatInputs.filter((x) => x.name === "improve_distill" && x.text.includes("three sentences or fewer")).map((x) => priorOf(x.text));
+  check(c, "the auto-apply draft's distill question carried an exactly empty prior section (P22)", mine.length === 1 && mine[0] === "", `distill_inputs=${mine.length} prior_chars=${mine[0]?.length ?? "n/a"}`);
   say(`  excerpt 3 applied ${result.lesson_id ? "lesson" : "fact"} (redacted): ${excerpt(g, log?.text ?? "")}`);
   return { ...p, saved_id: id, kind: result.lesson_id ? "lesson" : "fact" };
 }
@@ -1874,16 +1987,16 @@ Run `npx vitest run tests/adr/0034-paco-words-only.test.ts` — expected: fails 
   - **2.5** append: "One allowance (spec 2026-11-07 §4): over `mixed` input a judged verdict may be a reversible, announced `effect` when the entry names a code-owned provenance predicate (`pacoWordsOnly`; today `improve.route`'s `autoApplies`) that holds by construction — the state the stored text comes from is Paco's own message plus code-built fields. The provisional-bar rule (6.1) extends to that gated case. Every other mixed-input effect still fails `entryProblems`."
   - **6.6** → "**Taps are evidence.** Dig deeper, Undo and 认真想 write `decision_outcomes`; the digest's ✅/❌ are gone (spec 2026-11-07 §9: no `review_ok`/`review_bad` labels, so `review_bad` → ladder proposals stop arising, and a button on an old digest answers 'This review has closed.'). Calibration labels come from taps on cards only; conflicting taps give no label. No row is committed and no bar moves automatically. `lesson_undone` carries the lane the save came from."
   - **10.2** "at the digest's time (also while the digest is `off`), before it" → "at `HOUGE_IMPROVE_AT` (default 21:00; no `off`, R13: `HOUGE_IMPROVE_ENABLED=false` is the switch)".
-  - **10.5** → "**Proposals** (lesson, fact, schedule, tool gap, ladder): one open per (target, scope), expiring at 14 days; one dismissed, expired, **accepted or reverted** within 14 days blocks the same pair (`already_proposed`), checked before the draft. **A lesson or fact applies on its own** (spec 2026-11-07 §3) only through `autoApplies` (`improve-route.ts`, pinned by `tests/adr/0034-paco-words-only.test.ts`): every row of the group a correction Paco typed on the memory lane (`improve_signals.origin = memlane_fix`, a new run of his, never the corrected run), verdict lesson or fact, not a 'lesson did not hold' rewrite; its draft is distilled with an empty prior (`prior: ""`: Houge's reply never reaches the seat), passes the memory lane's backstops, and is saved inside the group's commit through `saveMemoryPlan` under the corrected run, `accepted` with the ids, with one `/changes` row (`improve_applied:<proposal_id>`, topic `improve_log`) naming `/forget <id>` or `/forget_memory <id>`; no chat → it stays open. A capped lesson, a save with no change id, and every other proposal (Dig-deeper, escalation and rating corrections, rewrites, schedule, tool gap, ladder, skill) is **one card** at the tick (topic `improve_card`, key `improve_proposal:<proposal_id>`, Accept / Dismiss, `offered_at` set); Accept writes through the memory lane's writers and the reply carries Undo / Revert / Revoke. `/forget <id>`, `/forget <scope>` and `/forget_memory <id>` move the proposal `accepted → reverted` in the removal's transaction; Undo is no `turn.handler` label. Schedule Accept applies only while the row equals `before`; Revert restores; both recompute `next_run_at`. A skill Accept whose job exists dismisses. A ladder Accept records a `ladder_moves` row and changes nothing; a tool gap replies the `self_write_propose` text. Residual (accepted): with no prior and Paco's line as both numbered evidence lines a fact can over-generalise his words; it is his words' reading, never another source's, and one `/forget_memory` away."
+  - **10.5** → "**Proposals** (lesson, fact, schedule, tool gap, ladder): one open per (target, scope), expiring at 14 days; one dismissed, expired, **accepted or reverted** within 14 days blocks the same pair (`already_proposed`), checked before the draft. **A lesson or fact applies on its own** (spec 2026-11-07 §3) only through `autoApplies` (`improve-route.ts`, pinned by `tests/adr/0034-paco-words-only.test.ts`): every row of the group a correction Paco typed on the memory lane (`improve_signals.origin = memlane_fix`, stamped only for a Telegram correcting run and re-checked at the apply boundary; a new run of his, never the corrected run), verdict lesson or fact, not a 'lesson did not hold' rewrite; its draft is distilled with an empty prior (`prior: ""`: Houge's reply never reaches the seat), passes the memory lane's backstops, and is saved inside the group's commit through `saveMemoryPlan` under the corrected run, `accepted` with the ids, with one `/changes` row (`improve_applied:<proposal_id>`, topic `improve_log`) naming `/forget <id>` or `/forget_memory <id>`; no chat → it stays open. A capped lesson, a save with no change id, and every other proposal (Dig-deeper, escalation and rating corrections, rewrites, schedule, tool gap, ladder, skill) is **one card** at the tick (`knowledge` stays recorded only, R5: no card) (topic `improve_card`, key `improve_proposal:<proposal_id>`, Accept / Dismiss, `offered_at` set); Accept writes through the memory lane's writers and the reply carries Undo / Revert / Revoke. `/forget <id>`, `/forget <scope>` and `/forget_memory <id>` move the proposal `accepted → reverted` in the removal's transaction; Undo is no `turn.handler` label. Schedule Accept applies only while the row equals `before`; Revert restores; both recompute `next_run_at`. A skill Accept whose job exists dismisses. A ladder Accept records a `ladder_moves` row and changes nothing; a tool gap replies the `self_write_propose` text. Residual (accepted): with no prior and Paco's line as both numbered evidence lines a fact can over-generalise his words; it is his words' reading, never another source's, and one `/forget_memory` away."
   - **11.3** "no digest line" → "no `/changes` row"; "Digest standing lines cover `[previous cutoff, now)`" → "Every other end writes one `/changes` row (`standing_end:<standing_id>`, topic `standing_log`) in `endStandingTx`".
   - **13.1** → "**No digest** (spec 2026-11-07; Paco 2026-10-14 and 2026-11-07). `/status` holds the counts, the `turn.settle` health line, per-entry Jev-skip counts (24 h), the 30-day proposal counts and the 'Improvement (7 d)' line (tick off, unattached, silent families, deferrals, wiki disarmed, inapplicable tops, lessons not holding); `/changes` lists applied improvements and ended standing grants. Urgent cards and proposal cards go out at once."
-  - **13.2** append: "`improve_tick_degraded` pages (subject `improve`): judged on each date's `improve_ticks` row at its end — `failed` or a previous date still `running` opens at once, three consecutive dates that decided nothing while `deferred_outage`, `record_failed` or `embed_unavailable` was above 0 open once, `stopped` is neutral, a `done` date that decided something (or had no group) with the embedder up resolves."
+  - **13.2** append: "`improve_tick_degraded` pages (subject `improve`): judged on each date's `improve_ticks` row at its end — `failed` or a previous date still `running` opens at once, the third bad date (nothing decided while `deferred_outage`, `record_failed` or `embed_unavailable` was above 0) with no healthy date between them opens once, `stopped` is neutral (neither counted nor a reset), a `done` date that decided something (or had no group) with the embedder up resolves."
   - **Revisit when** (line ~480): "14 days of `improve.route` rows are in for its bar" → add "(outcomes only: no review labels)".
   - History row: `| 2026-11-07 | Improvement proposals auto-apply, the digest goes: 2.2, 2.5 (gated allowance), 6.6 (no digest taps), 10.2 (HOUGE_IMPROVE_AT), 10.5 (autoApplies, origin, no prior, cards, reverted blocks), 11.3 and 13.1 (/changes rows, no digest), 13.2 (improve_tick_degraded) | [auto-apply](../superpowers/specs/2026-11-07-improve-auto-apply-design.md) | awaiting Paco's signature |`.
 - [ ] **ADR 0031** Consequences, first bullet: "…memory cards, rating asks, ~~the digest,~~ idea panel, standing cards, **improvement proposal cards** (`improve_card`), self-write notices…" and append to "What else changed in code": "2026-11-07 (spec improve-auto-apply, awaiting Paco's signature): the digest leaves the chat list; applied improvements (`improve_log`) and standing-grant ends (`standing_log`) are change-log rows; `improve_tick_degraded` pages." Index row 45: append "amended 2026-11-07 (the digest leaves chat; improvement cards and two log topics join — awaiting Paco's signature)"; row 48 likewise for 0034.
 - [ ] **configuration.md**: table row `HOUGE_DECISION_DIGEST_AT` → `HOUGE_IMPROVE_AT` | `21:00` | "Local time (`HH:MM`, in `HOUGE_DISPLAY_TZ`) of the daily improvement tick. No `off`: `HOUGE_IMPROVE_ENABLED=false` is the switch. A typo keeps 21:00. `HOUGE_DECISION_DIGEST_AT` is retired (named once at boot if still set; delete the `.env` line)."; the `HOUGE_IMPROVE_ENABLED` row drops its digest clauses; §"The digest" (1135–1143) → "**No digest.** A lesson or fact from a correction Paco typed on the memory lane applies at the tick (one `/changes` line: `📒 Lesson #N learned from your correction (scope): … — undo: /forget N`); every other proposal is one card (Accept / Dismiss); ended standing grants are `/changes` rows; a failing tick pages `improve_tick_degraded`; `/status` carries the counts and the Improvement (7 d) line."; 1145–1146 "at `HOUGE_IMPROVE_AT`" (drop "before the digest and also when the digest is off"); 1131–1132 (rollback sentence about a digest in the outbox) → "a card still in the outbox is sent without its buttons; an old ✅/❌ answers 'closed'"; topics paragraph (704–706): "the digest" → "improvement cards"; log list gains `improve_log`, `standing_log`; the incident-route paragraph names `improve_tick_degraded` as a page kind.
 - [ ] **jev-decision-layer.md**: 77–80 → "There is no daily digest (spec 2026-11-07): improvements the tick applies and standing-grant ends are `/changes` rows, proposals that need a tap are cards, a failing tick pages `improve_tick_degraded`, and `/status` holds the counts."; 100 drop "The decision digest counts re-asks…"; 102 "Digest ✅/❌, 🔍 Dig deeper" → "🔍 Dig deeper"; 260 drop "which sets the digest's unsure band"; 268 "the digest's Health line" → "`/status`"; 291–293 → "**Effects.** Automatic: the `_pending` skill draft, and a lesson or fact from a correction Paco typed (`autoApplies`: memlane_fix rows, no prior, backstops, one `/changes` line with its undo). Everything else is a card…; the card of a lesson shows its AVOID."
-- [ ] **decision-map.md**: 18 "digest ✅/❌" → "Accept on a card"; 29 "The decision digest, approval cards and Undo cards are chat topics" → "Improvement cards, approval cards and Undo cards are chat topics; applied improvements and standing-grant ends are change-log rows"; 62 "digest to chat" → "cards to chat"; 127 → "mixed (`pacoWordsOnly: autoApplies`) | code: the skill-authoring job into `_pending`, and a lesson/fact from a correction Paco typed, applied with a `/changes` line; Jev/Tiny: proposals as cards (schedule, knowledge, tool gap, ladder; lesson/fact from any other correction)".
+- [ ] **decision-map.md**: 18 "digest ✅/❌" → "Accept on a card"; 29 "The decision digest, approval cards and Undo cards are chat topics" → "Improvement cards, approval cards and Undo cards are chat topics; applied improvements and standing-grant ends are change-log rows"; 62 "digest to chat" → "cards to chat"; 127 → "mixed (`pacoWordsOnly: autoApplies`) | code: the skill-authoring job into `_pending`, and a lesson/fact from a correction Paco typed, applied with a `/changes` line; Jev/Tiny: proposals as cards (schedule, tool gap, ladder; lesson/fact from any other correction); knowledge recorded only (R5)".
 - [ ] **README.md**: 204 add "the Improvement (7 d) line"; 208 (the five-section digest) → "Improvements learned from your own corrections apply on their own and show in `/changes` with their undo command; anything else arrives as one card with Accept / Dismiss; `/forget <id>` and `/forget_memory <id>` undo an applied one."; 336 "The daily digest, standing approvals" → "Proposal cards, standing approvals". **CONTEXT.md**: 79 "offers as a tap on the daily digest" → "applies on its own (from a correction Paco typed) with a `/changes` line, or offers as one card"; 97 the **Digest** entry → "**Proposal card**: The one Telegram card a proposal that needs a tap arrives on (Accept / Dismiss); the digest it replaced is gone (spec 2026-11-07)." **ROADMAP.md**: one delta paragraph after the 2b-ii entry: "**Improvement auto-apply (2026-11-07):** lessons and facts from Paco's own memory-lane corrections apply at the tick with `/changes` lines and undo commands; every other proposal is a card; the 21:00 digest and its ✅/❌ are gone (`HOUGE_DECISION_DIGEST_AT` → `HOUGE_IMPROVE_AT`); standing ends are `/changes` rows; `improve_tick_degraded` pages. Known gap carried: no review surface produces `review_bad`." and strike the stale "digest on" claims at 304–308 with a one-line note.
 - [ ] **State files**: `tasks/todo.md` — a new "CURRENT SYSTEM STATE — 2026-11-07" block (what exists: the file list above; evidence: typecheck, suite count with none skipped, the gate's verdict lines; reviews; Paco's actions owed: sign the ADR 0034/0031 amendments, delete `HOUGE_DECISION_DIGEST_AT=ON` from `.env`); mark the "(b) Improvement proposals auto-apply" item shipped once merged. `tasks/lessons.md` — one lesson: "a spec's file citation (`src/core/standing-approval.ts`) was checked against the tree before the plan; the plan cites the real file and the real transaction". `sessions.md` — one arc entry, newest last. Docs parity: `npx vitest run tests/docs tests/adr` green (commands unchanged; env var documented; ADR index rows; decision-map ids).
 - [ ] Run `npm run typecheck && npm test && npm run build` — green, none skipped. Grep `README.md CONTEXT.md docs/reference docs/ROADMAP.md deploy/launchd/README.md` for `digest`, `HOUGE_DECISION_DIGEST_AT`, `Unsure`, `tonight` and confirm every hit is a reader digest or a historical entry.

@@ -21,7 +21,7 @@ fix, 2026-11-07); `improve_signals` holds 6 rows; `decision_digests` 19. The tap
 | Today | After |
 |---|---|
 | **Lesson / fact proposal** from a correction Paco typed (§3) | **Applied at the tick** inside the group's commit; one `/changes` line with the id and the undo command; no chat. |
-| Any other proposal: lesson/fact from a rating or escalation, a "lesson did not hold" rewrite, schedule, tool gap, ladder, skill, a capped lesson | **Still a tap**, as **one card per proposal at the tick**, topic `improve_card` (chat). |
+| Any other proposal: lesson/fact from a rating or escalation, a "lesson did not hold" rewrite, schedule, tool gap, ladder, skill, a capped lesson | **Still a tap**, as **one card per proposal at the tick**, topic `improve_card` (chat). `knowledge`: recorded only, as today (R5; no card). |
 | Improvements today: accepted lines with Undo / Revert / Revoke buttons | Auto-applied: `/changes` lines. Tap-accepted: the tap's reply carries the Undo / Revert / Revoke button (moved from the digest line). Job endings: their own cards already (`skill-job.ts:54-64`). |
 | Standing approvals lines (digest-only today) | A change-log row **written at the grant's end** (§7). |
 | Unsure ✅/❌ | **Dropped** (§9 consequences). |
@@ -45,7 +45,10 @@ A group's proposal **applies** only when all hold (code, one predicate `autoAppl
    row of the group, `run_id !== null` and `run_id !== about_run_id`. Left out: the Dig-deeper override
    (`memlane-commands.ts:46,70` copies the *original request* into a new run — a tap, no new words, codex re-review),
    the escalation correction (`core-worker.ts:2572-2584`, run = about) and the low-rating correction
-   (`gateway.ts:1268`, `run_id` null); for those the text is the original request, so they become cards.
+   (`gateway.ts:1268`, `run_id` null); for those the text is the original request, so they become cards. The producer
+   stamps `memlane_fix` only when the correcting run's source is Telegram (`store.runSource(run_id) === "telegram"`; a CLI
+   or event run records `origin: null`), and `autoApplies` re-checks at the apply boundary that every correcting run is a
+   Telegram run (plan ruling P16).
 2. **Distilled with no prior.** The auto-apply draft calls the distill with `prior: ""` (`proposals.ts` `distillDraft`):
    Houge's reply, and through it any tool text, never reaches the seat. Then the state the stored text comes from is
    Paco's message plus code-built fields (`toolSummaryOf` is tool names and counts, `groups.ts:50`). The backstops run as
@@ -105,7 +108,8 @@ events (a resumed date emits several). Evaluated once per tick date, at its end,
   `embed_unavailable` was above 0. It is **healthy** if it ended `done` and either decided something or had no group to
   decide **and** `embed_unavailable === 0` (an embedder outage that kept recurrence groups from forming is not healthy,
   `recurrence.ts:80`). Anything else (`stopped`) is neither and changes nothing.
-- **Opens** on a `failed` or stuck date at once, or when the current run of consecutive bad dates reaches three.
+- **Opens** on a `failed` or stuck date at once, or on the third bad date with no healthy date between them (a `stopped`
+  date in between neither counts nor resets).
 - **Resolves** on a healthy date, which also resets the run to zero. Only the newest date is judged, so an older bad
   date never reopens a page a newer healthy date resolved.
 - `stopped` (the 120 s budget, resumed) pages nothing. `HOUGE_IMPROVE_ENABLED=false` writes no row: nothing opens or
@@ -118,14 +122,17 @@ events (a resumed date emits several). Evaluated once per tick date, at its end,
   (`run-store.ts:5735`), after its CAS succeeds and in its transaction, so every path — `standing-approval.ts`, schedule
   cancellation (`run-store.ts:6020`), fingerprint mismatch (`:7153`), denial (`:7231`) — writes it exactly once. Key
   `standing_end:<standing_id>`, text from `STANDING_DIGEST_TEXT` (same reason filter); no cursor. It uses plain
-  statements, as `endStandingTx` must inside `processApprovalTrigger`'s raw BEGIN.
+  statements, as `endStandingTx` must inside `processApprovalTrigger`'s raw BEGIN. Once per end; a refused log write is
+  reported on stderr and never blocks the end (ending a grant is safety-relevant). The deny hook's no-row path
+  (`standingDeny`, an already-ended `denied` row for a scheduled run) writes the same row.
 - **`/status`:** keeps its lines. The helpers it imports from `digest.ts` (`countLines`, `decisionWindow`,
   `deciderLabel`, `injectionCounts`, `settleHealthLine`, `trustTops`) move to `src/decisions/status-lines.ts`. The
   Watch lines that are diagnostics, not alarms (unattached signals, silent families, deferrals, wiki disarmed,
   inapplicable targets, lessons not holding), become one `/status` "Improvement (7 d)" line.
 - **Kept constants:** `REVIEW_PREFIX` (an old ✅/❌ button answers "this review has closed"), `DIGEST_PR_PREFIX` and
   `DIGEST_LM_PREFIX` (card buttons and old buttons keep working), `STANDING_DIGEST_TEXT`. `decision_digests` stays
-  (additive); `wasDecisionOffered` keeps reading it for old taps.
+  (additive); an old ✅/❌ answers "This review has closed." and writes nothing, so `wasDecisionOffered` and the digest
+  latch methods go with the digest (plan ruling P5).
 - **Removed:** `runDecisionDigestTick`, `enqueueDigest`, `buildDecisionDigest`, `unsureSection`, the `digest` topic.
   Scripts calling them (`check-ladder-stage4b-rollback.mjs`, `check-ladder-stage4c-rollback.mjs`,
   `live-gate-decisions-parity.mjs:434-438`, `live-gate-decisions-2a.mjs:524`) are updated or their digest checks
