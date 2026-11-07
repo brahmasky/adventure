@@ -203,9 +203,9 @@ function case1(g, f, tickRuns, now) {
 
 /** Case 3: the memlane_fix correction applies at the tick: accepted with the ids, a lessons row (source improve), one improve_applied /changes row, NO chat row, and an empty prior at the distill. Returns the proposal or null. */
 function case3(g, f) {
-  const c = "3 correction applies"; const sig = g.q.get(`SELECT * FROM improve_signals WHERE signal = 'correction' AND run_id = ?`, f.c3.b);
+  const c = "3 correction applies"; if (g.c3Outage) return null; // the outage guard in main already recorded INCONCLUSIVE (an outage never consumes the row)
+  const sig = g.q.get(`SELECT * FROM improve_signals WHERE signal = 'correction' AND run_id = ?`, f.c3.b);
   check(c, "the correction inbox row exists (origin memlane_fix) and was consumed", f.c3.ok && sig?.origin === "memlane_fix" && sig?.consumed_at != null);
-  if (g.c3Outage) return null; // the outage guard in main already recorded INCONCLUSIVE
   const row = routeRows(g).find((d) => d.run_id === f.c3.a);
   if (!row) { check(c, "an improve.route row on the corrected run", false, "none"); return null; }
   if (row.rung === "fail" || row.fallback_reason) { unsure(c, "decision", `rung=${row.rung} fallback=${row.fallback_reason ?? "-"} (an outage, not a result)`); return null; }
@@ -435,7 +435,7 @@ async function main() {
   const NOW1 = g.c.at(g.c.d1, "22:00"); say(`improve.route live gate — copy of the live DB, gate clock ${g.c.d1} 22:00 ${g.c.tz} (wall clock + 20 d), improve at ${process.env.HOUGE_IMPROVE_AT}`);
   writeFileSync(join(process.env.HOUGE_DAEMON_TMP_DIR, "injected-note.txt"), `${INJ}\n`);
   const f = plantDay1(g); progress("day-1 fixtures planted; running the tick (real Jev and seats)");
-  const real = g.client; g.client = async (req) => { const x = await real(req); const a = x.ok ? x.answers.improve_target : undefined; return a?.type === "choice" && JSON.stringify(req).includes("three sentences or fewer") ? { ...x, answers: { ...x.answers, improve_target: { ...a, choice: "lesson", probabilities: { lesson: 0.9, nothing: 0.05, fact: 0.05 }, confidence: 0.9 } } } : x; };
+  const real = g.client; g.client = async (req) => { const x = await real(req); const a = x.ok ? x.answers.improve_target : undefined; return a?.type === "choice" && (JSON.stringify(req).includes("three sentences or fewer") || JSON.stringify(req).includes("give the year first")) ? { ...x, answers: { ...x.answers, improve_target: { ...a, choice: "lesson", probabilities: { lesson: 0.9, nothing: 0.05, fact: 0.05 }, confidence: 0.9 } } } : x; };
   const runs = await runTick(g, NOW1); g.client = real; const last = runs.at(-1);
   say(`tick ${g.c.d1}: ${runs.map((r) => r.result).join(" -> ") || "did not run"}; counts ${JSON.stringify(last?.counts ?? {})}`);
   if (!last) throw coded("TICK_DID_NOT_RUN");
