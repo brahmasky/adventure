@@ -5744,10 +5744,14 @@ export class RunStore {
   private logStandingEnd(row: StandingApprovalRow, reason: StandingEndReason, now: string): void {
     if (!Object.hasOwn(STANDING_DIGEST_TEXT, reason)) return;
     const name = scheduleDisplayName(this.getScheduledTask(row.schedule_id)?.goal ?? "") || row.schedule_id;
-    const r = this.logChange({ topic: "standing_log", idempotency_key: `standing_end:${row.standing_id}`, correlation_id: `standing:${row.standing_id}`,
-      text: `🔏 ${row.label} · ${name} — ${STANDING_DIGEST_TEXT[reason as keyof typeof STANDING_DIGEST_TEXT]}`, now });
-    // P18: a refused write is reported, never thrown — the end (a denial, an expiry) must commit whatever the log did
-    if (r.status === "conflict") console.error(`[standing] end row for ${row.standing_id} not logged (${r.error}); the grant ended`);
+    // P18 / spec §8 R3: a refused or failed write is reported, never thrown — the end (a denial, an expiry) must commit whatever the log did
+    try {
+      const r = this.logChange({ topic: "standing_log", idempotency_key: `standing_end:${row.standing_id}`, correlation_id: `standing:${row.standing_id}`,
+        text: `🔏 ${row.label} · ${name} — ${STANDING_DIGEST_TEXT[reason as keyof typeof STANDING_DIGEST_TEXT]}`, now });
+      if (r.status === "conflict") console.error(`[standing] end row for ${row.standing_id} not logged (${r.error}); the grant ended`);
+    } catch (err) {
+      console.error(`[standing] end row for ${row.standing_id} not logged (${err instanceof Error ? err.message : String(err)}); the grant ended`);
+    }
   }
   /** Run-bound when a run owns the transition (the run's ledger shows it); run-less for a sweep or a tap. */
   appendStandingLedgerEvent(event_type: LedgerEventType, payload: Record<string, unknown>, run_id?: string): void {

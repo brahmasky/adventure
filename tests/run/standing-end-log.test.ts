@@ -85,4 +85,22 @@ describe("endStandingTx writes the /changes row", () => {
     expect(s.getStandingApproval(row.standing_id)?.state).toBe("ended");
     expect(logged.some((m) => m.includes(row.standing_id))).toBe(true);
   });
+  it("a THROWN log insert never blocks the end either (spec §8 R3): endStandingTx path and the deny path both commit, stderr names the id", () => {
+    const s = RunStore.openInMemory();
+    const row = standing(s);
+    const boom = vi.spyOn(s as unknown as { logChange: () => never }, "logChange").mockImplementation(() => { throw new Error("disk I/O error"); });
+    const err = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    let logged: string[] = [];
+    try {
+      expect(s.endStandingApproval({ standing_id: row.standing_id, reason: "expired", now: NOW })).toBe(true);
+      const row2 = standing(s, FP);
+      const u = userRun(s); const p = pending(s, u);
+      expect(s.resolveToolApprovalForTest(p.approval_id, "denied")).toMatchObject({ ok: true });
+      expect(s.getStandingApproval(row2.standing_id)).toMatchObject({ state: "ended", ended_reason: "denied" });
+      logged = err.mock.calls.map(([m]) => String(m));
+      expect(logged.some((m) => m.includes(row2.standing_id))).toBe(true);
+    } finally { err.mockRestore(); boom.mockRestore(); }
+    expect(s.getStandingApproval(row.standing_id)?.state).toBe("ended");
+    expect(logged.some((m) => m.includes(row.standing_id))).toBe(true);
+  });
 });
