@@ -6,7 +6,7 @@ import type { ImprovementProposalRow, ProposalTarget, RunStore } from "../run/ru
 /**
  * Spec 2026-11-07 §2, §5: a proposal that does not apply on its own is one card at the tick (topic improve_card, chat),
  * Accept / Dismiss, offered as the digest once offered it (offered_at starts the 14-day tap window). Code-built lines:
- * the redacted draft, its AVOID, the evidence. (The digest's private copies of these helpers go with it, Task 8.)
+ * the redacted draft, its AVOID, the evidence.
  */
 export const DRAFT_LINE_CHARS = 120;
 /** `knowledge` is recorded only (ADR 0034 R5: NEEDS_DRAFT excludes it, draftFor returns null) and never reaches a card; the key exists for the closed record type. */

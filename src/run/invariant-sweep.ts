@@ -228,7 +228,7 @@ function jevViolations(store: RunStore, now: string): InvariantViolation[] {
 /**
  * Spec §5.2: `jev_skip_rate` per entry, from `decisions` rows that failed on the Jev rung (every entry with a Jev rung). Sticky like the
  * triage check: open until that entry's Jev or model rung answers after the incident opened. The front-door entries (turn.handler,
- * turn.gear) are measured (the digest shows them) but keep the jev_decisions-based page above in stage 1: one call, one page.
+ * turn.gear) are measured (/status shows them) but keep the jev_decisions-based page above in stage 1: one call, one page.
  */
 export const DECISION_SKIP_RATE_EXCLUDED: ReadonlySet<string> = FRONT_DOOR_ENTRIES;
 

@@ -6,7 +6,7 @@ import type { ImproveOrigin, ImproveSignalInsert, JevVerdictRow, RunStore } from
 /**
  * The improvement producers (2b-ii §2). A producer writes an inbox row, never a decision_outcomes row (a failed run or a
  * pre-ladder turn may have no decision). It never throws into its caller (recordTapOutcome's contract): what cannot be
- * inserted becomes an `improve_signal_skipped {signal, code}` event, counted per family by the digest's Watch line.
+ * inserted becomes an `improve_signal_skipped {signal, code}` event, counted per family in /status.
  */
 export type SkipCode = "no_run" | "no_capability" | "refused" | "store_error";
 

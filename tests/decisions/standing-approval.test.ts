@@ -1,9 +1,9 @@
+import type { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
 import { buildTypedTaskEvent, type Identity } from "../../src/domain/types.js";
 import { Gateway } from "../../src/gateway/gateway.js";
 import { CLEANROOM_REASONS } from "../../src/omp/bridge-handler.js";
 import { PRE_SPAWN_REASONS, revokeButton, runStandingSweep, SA_PREFIX, SEALING_TTL_MS, sealVerdict, settleDeliveredReport, settleSealing, settleStandingUses, type SealInput } from "../../src/decisions/standing-approval.js";
-import { standingLines } from "../../src/decisions/digest.js";
 import { parseImprovementCallback } from "../../src/triggers/telegram-command-parser.js";
 import { RunStore } from "../../src/run/run-store.js";
 
@@ -22,6 +22,8 @@ const FIN = { tool_call_id: "tc4", status: "succeeded", executor: "cleanroom", c
 const OK: SealInput = { fin: FIN, run_state: "completed", outbox: "delivered", decision_id: "dec_1", started_at: NOW, now: NOW };
 const withFacts = (over: Record<string, unknown>): SealInput => ({ ...OK, fin: { ...FIN, cleanroom: { ...FACTS, ...over } } });
 const at = (ms: number) => new Date(Date.parse(NOW) + ms).toISOString();
+
+const db = (s: RunStore) => (s as unknown as { db: DatabaseSync }).db;
 
 describe("sealVerdict (the seal conjunction, §7)", () => {
   it("all ten facts true → seal; each tool fact flipped alone → end (a test that passes with one conjunct removed fails here)", () => {
@@ -301,7 +303,7 @@ describe("settleStandingUses (a broken seal on a standing use ends the grant)", 
     expect(settleStandingUses(s3, bad.run_id, NOW)).toBe(0);
     expect(events(s3, "standing_ended")).toHaveLength(1);
   });
-  it("a use whose run ended with no clean-room facts, or malformed ones, ends the grant unverified_use with its move, sends Paco an urgent card, and adds no digest line", () => {
+  it("a use whose run ended with no clean-room facts, or malformed ones, ends the grant unverified_use with its move, sends Paco an urgent card, and adds no /changes row", () => {
     // a crash between the use CAS and tool_finished, or a fact the ledger cannot read: nothing proves the seal held, so the grant must not outlive the run
     const finish = (s: RunStore, run_id: string, next: "completed" | "failed") => next === "completed"
       ? s.finishRun({ run_id, expected_worker_id: WORKER, next, report_ref: "r.md", duration_ms: 1, tool_calls: 1 })
@@ -321,7 +323,7 @@ describe("settleStandingUses (a broken seal on a standing use ends the grant)", 
       expect([name, s.getStandingApproval(row.standing_id)]).toMatchObject([name, { state: "ended", ended_reason: "unverified_use" }]);
       expect([name, s.getLadderMove(move_id)?.state]).toEqual([name, "ended"]);
       expect([name, s.countNotificationsByIdempotencyKey(`urgent:standing_unverified:${row.standing_id}`)]).toEqual([name, 1]);
-      expect([name, standingLines(s, "2000-01-01T00:00:00.000Z", "2100-01-01T00:00:00.000Z")]).toEqual([name, []]); // the urgent card already told him
+      expect([name, (db(s).prepare("SELECT COUNT(*) AS n FROM change_log WHERE idempotency_key = ?").get(`standing_end:${row.standing_id}`) as { n: number }).n]).toEqual([name, 0]); // the urgent card already told him
     }
   });
   it("a use with no facts yet whose run is still running waits, and the sweep keeps waiting until the run ends", () => {

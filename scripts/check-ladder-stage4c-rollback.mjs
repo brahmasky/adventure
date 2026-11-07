@@ -7,7 +7,7 @@
 // 4C adds record-only decision rows (no migration, no table). Two VACUUM copies of the live DB: A (this build writes one row of each new id
 // through its own call sites, as scripts/live-gate-ladder-stage4c.mjs does; then the merge base c558413 opens it; then this build reopens it)
 // and F (only c558413 ever opens it; VACUUMed from A before A is touched). c558413 does the same things on both: open (the schema must be
-// byte-identical before and after: no migration), render /status + digest + /status decisions, and refuse review_ok outcomes naming each
+// byte-identical before and after: no migration), render /status + /status decisions, and refuse review_ok outcomes naming each
 // new id (outcomes.ts validates against its own ENTRY_IDS). insertLadderMove is NOT id-validated (plan P2) and is not probed.
 // PASS = nothing throws, no row count drops, the seeded rows are byte-identical after the old build, and A and F differ only in the stated
 // way: A's /status carries a count line per new id (F's lines for them, if any, equal F's own SQL counts) and every other count line equals F's plus the seed's own per-entry delta.
@@ -200,8 +200,7 @@ const noDrop = (name, before, after) => {
 const norm = (l) => l.replace(/\b\d\d-\d\d \d\d:\d\d\b/g, "<ts>").replace(/\b[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\b/g, "<id>").replace(/\b(run|tool|op|dec)_[0-9A-Za-z-]+/g, "<id>").replace(/ run [0-9a-f]{8}\b/g, " run <id>")
   .replace(/\d{4}-\d\d-\d\d(?:T[\d:.]+Z?)?/g, "<ts>").replace(/\b\d\d:\d\d\b/g, "<ts>");
 function render(m, store, now) {
-  const dg = m.buildDecisionDigest(store, now, { ...process.env, HOUGE_IMPROVE_ENABLED: "false" });
-  return { status: m.decisionStatusLines(store, now), digest: dg && dg.text ? dg.text.split("\n") : null, list: m.decisionListText(store, process.env).split("\n") };
+  return { status: m.decisionStatusLines(store, now), list: m.decisionListText(store, process.env).split("\n") };
 }
 const RUNGS = ["rule", "system_one", "model", "paco", "fail"];
 function fmtCount(id, m, label) {
@@ -242,10 +241,6 @@ function cmpStatus(a, f, rungs, label, fSql) {
   if (!same(got.map((l) => COUNT_RE.exec(l)[1]), want.map((l) => COUNT_RE.exec(l)[1]))) bad.push("count line order differs");
   return bad;
 }
-const cmpDigest = (a, f) => {
-  if (!a || !f || a.length === 0 || f.length === 0) return [`digest did not render (A ${a ? a.length : "null"}, F ${f ? f.length : "null"})`];
-  return same(a.map(norm), f.map(norm)) ? [] : [`digest lines differ (A ${a.length}, F ${f.length})`];
-};
 const listLine = (r, label) => `<ts> · ${r.entry_id} · ${label(r.rung)} → ${r.verdict} · p ${r.p === null ? "–" : r.p.toFixed(2)} · run ${r.run_id ? "<id>" : "–"}`;
 /** The newest-10 list, whole: the old build's own rows (newest), then the seed's rows, then F's older rows, cut at 10. */
 function cmpList(a, f, seedRows, oldRows, label) {
@@ -268,10 +263,10 @@ function newIdCounts(path, now) {
   });
 }
 function cmpRenders(tag, ra, rf, seed, oldRows, label, fPath, now) {
-  const bad = [...cmpStatus(ra.status, rf.status, seed.rungs, label, newIdCounts(fPath, now)), ...cmpDigest(ra.digest, rf.digest), ...cmpList(ra.list, rf.list, seed.seedRows, oldRows, label)];
+  const bad = [...cmpStatus(ra.status, rf.status, seed.rungs, label, newIdCounts(fPath, now)), ...cmpList(ra.list, rf.list, seed.seedRows, oldRows, label)];
   const seen = NEW_IDS.map((id) => `${id} ${countMap(ra.status).get(id) ?? 0}`).join(" · ");
-  check(`A vs F at ${tag}: full /status count lines = F + seed delta per decider, digest equal, recent list = expected newest 10`, bad.length === 0,
-    bad.length ? bad.join("; ") : `A carries [${seen}], F carries ${NEW_IDS.map((id) => `${id} ${countMap(rf.status).get(id) ?? 0}`).join(" · ")} (= its SQL counts); ${countLinesOf(ra.status).length} count lines compared whole; digest ${ra.digest?.length ?? 0} lines equal; list ${ra.list.length - 1} rows`);
+  check(`A vs F at ${tag}: full /status count lines = F + seed delta per decider, recent list = expected newest 10`, bad.length === 0,
+    bad.length ? bad.join("; ") : `A carries [${seen}], F carries ${NEW_IDS.map((id) => `${id} ${countMap(rf.status).get(id) ?? 0}`).join(" · ")} (= its SQL counts); ${countLinesOf(ra.status).length} count lines compared whole; list ${ra.list.length - 1} rows`);
 }
 
 // ---- step 2: the merge base on one copy ----

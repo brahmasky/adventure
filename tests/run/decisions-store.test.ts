@@ -109,19 +109,6 @@ describe("ladder_moves (spec §4.3)", () => {
   });
 });
 
-describe("the digest latch and offers", () => {
-  it("one row per local date; offered ids are found within the window only", () => {
-    const store = RunStore.openInMemory();
-    expect(store.recordDecisionDigest({ local_date: "2026-10-12", sent: true, offered: ["dec_a", "dec_b"], created_at: "2026-10-12T10:00:00.000Z" })).toBe(true);
-    expect(store.recordDecisionDigest({ local_date: "2026-10-12", sent: false, offered: [], created_at: "2026-10-12T11:00:00.000Z" })).toBe(false);
-    expect(store.getDecisionDigest("2026-10-12")).toMatchObject({ local_date: "2026-10-12", sent: 1, offered: ["dec_a", "dec_b"] });
-    expect(store.wasDecisionOffered("dec_b", "2026-10-11T00:00:00.000Z")).toBe(true);
-    expect(store.wasDecisionOffered("dec_b", "2026-10-12T10:00:00.000Z")).toBe(false);
-    expect(store.wasDecisionOffered("dec_z", "2026-10-11T00:00:00.000Z")).toBe(false);
-    store.close();
-  });
-});
-
 describe("the link columns and the migration", () => {
   it("jev_decisions.ladder_decision_id and jev_verdicts.decision_id are written and indexed", () => {
     const store = RunStore.openInMemory();

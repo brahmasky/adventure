@@ -11,7 +11,7 @@ import type { TickLlm } from "./decide-improve.js";
 import { PACO_TEXT_CAP, type SignalGroup } from "./groups.js";
 import { scheduleDraft, type ScheduleHint } from "./schedule-shift.js";
 
-/** 2b-ii §5.1: proposals are drafted at proposal time, code-built or distilled from Paco's words; the digest shows the draft beside its evidence. */
+/** 2b-ii §5.1: proposals are drafted at proposal time, code-built or distilled from Paco's words; the card shows the draft beside its evidence. */
 export const PROPOSAL_TTL_DAYS = 14;
 export interface Draft { target: ProposalTarget; draft_json: string; evidence: string }
 /** Final fix D1: the distill seat call itself failed (an outage), as opposed to a parsed answer with nothing usable (null). */

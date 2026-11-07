@@ -1099,7 +1099,6 @@ interface MirrorOutcomeRow { outcome_id: string; rid: number; signal: DecisionSi
 export class LadderMoveRefused extends Error {
   constructor(readonly code: "locked_entry" | "auto_not_standing" | "paco_needs_callback") { super(`ladder move refused: ${code}`); }
 }
-export interface DecisionDigestRow { local_date: string; sent: number; offered: string[]; created_at: string }
 /** A decision row value outside its code-owned set (ruling 15). The message names the column, never the value. */
 export class DecisionRejected extends Error {
   constructor(readonly column: "stage" | "fallback_reason" | "reask") { super(`decision rejected: ${column} not allowed`); }
@@ -5092,7 +5091,7 @@ export class RunStore {
     return this.db.prepare(`SELECT * FROM decisions WHERE run_id = ? ORDER BY created_at ASC, rowid ASC`).all<DecisionRow>(run_id);
   }
 
-  /** Rows created in (since, until], oldest first: the digest's day. */
+  /** Rows created in (since, until], oldest first: one local day. */
   listDecisionsBetween(since: string, until: string): DecisionRow[] {
     return this.db.prepare(`SELECT * FROM decisions WHERE created_at > ? AND created_at <= ? ORDER BY created_at ASC, rowid ASC`).all<DecisionRow>(since, until);
   }
@@ -5189,29 +5188,6 @@ export class RunStore {
     `).run(move_id, m.entry_id, m.scope, m.from_rung, m.to_rung, JSON.stringify(m.evidence), m.granted_by, m.granted_via, m.paco_callback_id,
       m.revocable ? 1 : 0, m.created_at ?? new Date().toISOString());
     return move_id;
-  }
-
-  /** The digest latch (spec §8.1): one row per local date, whether or not a message went out. False when the date already has one. */
-  recordDecisionDigest(d: { local_date: string; sent: boolean; offered: string[]; created_at?: string }): boolean {
-    const r = this.db.prepare(`INSERT OR IGNORE INTO decision_digests (local_date, sent, offered_json, created_at) VALUES (?, ?, ?, ?)`)
-      .run(d.local_date, d.sent ? 1 : 0, JSON.stringify(d.offered), d.created_at ?? new Date().toISOString());
-    return Number(r.changes) === 1;
-  }
-
-  getDecisionDigest(local_date: string): DecisionDigestRow | undefined {
-    const r = this.db.prepare(`SELECT * FROM decision_digests WHERE local_date = ?`).get<Omit<DecisionDigestRow, "offered"> & { offered_json: string }>(local_date);
-    return r ? { local_date: r.local_date, sent: r.sent, offered: JSON.parse(r.offered_json) as string[], created_at: r.created_at } : undefined;
-  }
-
-  /** The persisted digest cutoff: the newest digest that went out. Its created_at commits with its enqueue, so it advances atomically with the message. */
-  lastSentDecisionDigestAt(): string | undefined {
-    return this.db.prepare(`SELECT MAX(created_at) AS at FROM decision_digests WHERE sent = 1`).get<{ at: string | null }>()?.at ?? undefined;
-  }
-
-  /** A review tap counts only for a decision a digest offered after `sinceIso` (spec §8.1: unknown or stale ids write nothing). */
-  wasDecisionOffered(decision_id: string, sinceIso: string): boolean {
-    return this.db.prepare(`SELECT 1 AS hit FROM decision_digests d, json_each(d.offered_json) j WHERE j.value = ? AND d.created_at > ? LIMIT 1`)
-      .get<{ hit: number }>(decision_id, sinceIso) !== undefined;
   }
 
   /** Spec §7.2's tap budget: one row per local date, +1 per trust ask; returns the date's count after this one. */
@@ -5618,13 +5594,13 @@ export class RunStore {
   proposalByChange(change_id: string): ImprovementProposalRow | undefined {
     return this.db.prepare(`SELECT * FROM improvement_proposals WHERE state IN ('accepted', 'reverted') AND json_extract(result_json, '$.change_id') = ? LIMIT 1`).get<ImprovementProposalRow>(change_id);
   }
-  /** Fenced on the from states (§5.1: a tap acts only on the state named for it); the result (ids the digest shows) is kept with the state. */
+  /** Fenced on the from states (§5.1: a tap acts only on the state named for it); the result (ids the card and /changes show) is kept with the state. */
   transitionProposal(i: { proposal_id: string; from: readonly ProposalState[]; to: ProposalState; now: string; result_json?: string }): boolean {
     const r = this.db.prepare(`UPDATE improvement_proposals SET state = ?, resolved_at = ?, result_json = COALESCE(?, result_json) WHERE proposal_id = ? AND state IN (${i.from.map(() => "?").join(", ")})`)
       .run(i.to, i.now, i.result_json ?? null, i.proposal_id, ...i.from);
     return Number(r.changes) === 1;
   }
-  /** §5.1 / §6.1: the first offer wins; a later digest carrying the same proposal keeps the first timestamp. */
+  /** §5.1 / §6.1: the first offer wins; a later card carrying the same proposal keeps the first timestamp. */
   markProposalsOffered(ids: readonly string[], now: string): void {
     if (ids.length === 0) return;
     this.db.prepare(`UPDATE improvement_proposals SET offered_at = ? WHERE offered_at IS NULL AND proposal_id IN (${ids.map(() => "?").join(", ")})`).run(now, ...ids);
@@ -8858,7 +8834,7 @@ export class RunStore {
   }
 
   /**
-   * Decision ladder (ADR 0030): the ledger, outcomes, ladder moves and the digest latch, plus the two link columns. The
+   * Decision ladder (ADR 0030): the ledger, outcomes, ladder moves and the (now unused) digest latch table, plus the two link columns. The
    * columns are checked on every open, not only once: it runs after the jev_verdicts rebuild above, so a table rebuilt by an
    * older migration gets its column back. FKs are declared for readers; the store never enables PRAGMA foreign_keys.
    */
