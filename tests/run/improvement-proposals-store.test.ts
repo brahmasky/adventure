@@ -33,6 +33,21 @@ describe("proposalBlocks", () => {
   });
 });
 
+describe("proposalBlocks — already_known", () => {
+  const dismissOpen = (s: RunStore, result_json?: string): void => {
+    const id = s.insertImprovementProposal({ decision_id: s.insertDecision(D), target: "fact", scope: "answer", chat_id: "555", draft_json: "{}", evidence: "e", created_at: "2026-10-20T00:00:00.000Z" });
+    s.transitionProposal({ proposal_id: id, from: ["open"], to: "dismissed", now: "2026-10-20T01:00:00.000Z", ...(result_json ? { result_json } : {}) });
+  };
+  it("an already_known dismissal does not block its pair (a repeated known fact must not stop new facts for 14 days); a Paco-dismissed one still does", () => {
+    const s = RunStore.openInMemory();
+    dismissOpen(s, JSON.stringify({ reason: "already_known" }));
+    expect(s.proposalBlocks("fact", "answer", SINCE)).toBe(false);
+    const s2 = RunStore.openInMemory();
+    dismissOpen(s2);
+    expect(s2.proposalBlocks("fact", "answer", SINCE)).toBe(true);
+  });
+});
+
 describe("proposalBySaved", () => {
   it("finds the accepted proposal by the lesson or fact id it saved; a reverted one, another id or the change id finds nothing", () => {
     const s = RunStore.openInMemory();

@@ -5595,7 +5595,7 @@ export class RunStore {
   }
   /** Final fix D3 + spec 2026-11-07 §3.4: an open proposal on (target, scope), or one dismissed, expired, accepted or reverted after `sinceIso`, blocks a new one (Dismiss sticks; an applied or undone one does not pile up). */
   proposalBlocks(target: ProposalTarget, scope: string, sinceIso: string): boolean {
-    return this.db.prepare(`SELECT 1 AS hit FROM improvement_proposals WHERE target = ? AND scope = ? AND (state = 'open' OR (state IN ('dismissed', 'expired', 'accepted', 'reverted') AND resolved_at > ?)) LIMIT 1`)
+    return this.db.prepare(`SELECT 1 AS hit FROM improvement_proposals WHERE target = ? AND scope = ? AND (state = 'open' OR (state IN ('dismissed', 'expired', 'accepted', 'reverted') AND resolved_at > ? AND COALESCE(json_extract(result_json, '$.reason'), '') <> 'already_known')) LIMIT 1`)
       .get<{ hit: number }>(target, scope, sinceIso) !== undefined;
   }
   /** Spec 2026-11-07 §6: the accepted proposal whose save made this lesson or fact (its result_json names the id), for /forget and /forget_memory. */

@@ -254,7 +254,11 @@ function placeProposal(d: ImproveTickDeps, g: SignalGroup, s: ImproveState, draf
   const about = g.newest.about_run_id;
   if (auto && about !== null && (draft.target === "lesson" || draft.target === "fact")) {
     const applied = applyProposal(d.store, { proposal_id, target: draft.target, draft_json: draft.draft_json, run_id: about, chat_id, now: d.now });
-    if (applied === null) { d.store.transitionProposal({ proposal_id, from: ["open"], to: "dismissed", now: d.now, result_json: JSON.stringify({ reason: "already_known" }) }); return; } // a card for an already-known fact could never be accepted (accept_lost)
+    if (applied === null) { // a card for an already-known fact could never be accepted (accept_lost)
+      if (!d.store.transitionProposal({ proposal_id, from: ["open"], to: "dismissed", now: d.now, result_json: JSON.stringify({ reason: "already_known" }) })) throw new Error("dismiss_lost");
+      console.error(`[improve] proposal ${proposal_id} (${draft.target}) is already known: dismissed`);
+      return;
+    }
     if (!("capped" in applied)) { bumps.applied += 1; return; }
   }
   queueProposalCard(d.store, { proposal_id, target: draft.target, draft_json: draft.draft_json, evidence: draft.evidence }, chat_id, d.now);

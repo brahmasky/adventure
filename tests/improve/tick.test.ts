@@ -516,6 +516,17 @@ describe("runImproveTick — auto-apply (spec 2026-11-07)", () => {
     expect(p).toMatchObject({ state: "dismissed", target: "fact", result_json: '{"reason":"already_known"}' });
     expect(s.countNotificationsByIdempotencyKey(`improve_proposal:${p!.proposal_id}`)).toBe(0);
     expect(logRow(s, `improve_applied:${p!.proposal_id}`)).toBeUndefined();
+    expect(s.listUnconsumedSignals(10)).toEqual([]);
+  });
+  it("a throw AFTER the save (the /changes row refused) rolls the lesson and the accepted transition back: unconsumed, record_failed", async () => {
+    const s = RunStore.openInMemory();
+    corrected(s, "memlane_fix");
+    vi.spyOn(s, "enqueueNotification").mockReturnValue({ status: "duplicate" } as never);
+    const err = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try { expect(await runImproveTick(deps(s))).toMatchObject({ ran: true, counts: { decided: 0, proposals: 0, applied: 0, record_failed: 1 } }); } finally { err.mockRestore(); }
+    expect(s.listLessons("ask")).toHaveLength(0);
+    expect(s.listOpenProposals()).toHaveLength(0);
+    expect(s.listUnconsumedSignals(10)).toHaveLength(1);
   });
   it("no chat (row and tick both chat-less): the proposal stays open, no save, no card, no row — logged", async () => {
     const s = RunStore.openInMemory();
