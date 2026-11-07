@@ -14,3 +14,9 @@ export function revertImproveSave(store: RunStore, change_id: string, now: strin
   try { store.transitionProposal({ proposal_id: p.proposal_id, from: ["accepted"], to: "reverted", now }); } catch (e) { console.error(`[improve] undo revert failed: ${errorCode(e)}`); }
   return true;
 }
+
+/** Spec 2026-11-07 §6: /forget <id>, /forget <scope> and /forget_memory <id> undo an applied proposal — found by the saved id, moved accepted → reverted in the caller's transaction (it then blocks its (target, scope) for 14 days). */
+export function revertSavedProposal(store: RunStore, kind: "lesson" | "fact", id: number, now: string): boolean {
+  const p = store.proposalBySaved(kind, id);
+  return p !== undefined && store.transitionProposal({ proposal_id: p.proposal_id, from: ["accepted"], to: "reverted", now });
+}

@@ -1930,9 +1930,11 @@ export class RunStore {
     `).run(id).changes === 1;
   }
 
-  /** Prune a scope's active lessons (the `/forget <scope>` control command) — reversible. */
-  forgetScope(scope: string): void {
-    this.db.prepare(`UPDATE lessons SET status = 'pruned' WHERE scope = ? AND status = 'active'`).run(scope);
+  /** Prune a scope's active lessons (the `/forget <scope>` control command) — reversible; returns the pruned ids (spec 2026-11-07 §6: each reverts its proposal). */
+  forgetScope(scope: string): number[] {
+    const ids = this.db.prepare(`SELECT id FROM lessons WHERE scope = ? AND status = 'active' ORDER BY id ASC`).all<{ id: number }>(scope).map((r) => r.id);
+    if (ids.length > 0) this.db.prepare(`UPDATE lessons SET status = 'pruned' WHERE id IN (${ids.map(() => "?").join(", ")}) AND status = 'active'`).run(...ids);
+    return ids;
   }
 
   /**
@@ -4802,8 +4804,8 @@ export class RunStore {
   /** >0 while an `inTransaction` callback runs: `insertRun` then joins it instead of opening its own (a nested BEGIN throws). */
   private outerTxDepth = 0;
 
-  /** Thrown inside a memory transaction when an id is not an active row of this chat: rolls the whole change back. */
-  private static readonly MEMORY_REFUSED = new Error("memory_change_refused");
+  /** Thrown inside a memory transaction when an id is not an active row of this chat: rolls the whole change back. Thrown by the *Tx memory writers on a refused row; a caller that wraps one in its own transaction maps it to null (memory-commands.ts). */
+  static readonly MEMORY_REFUSED = new Error("memory_change_refused");
 
   /** Flip one active row (a fact only when it is this chat's) to `next`; refuse the change otherwise. */
   private flipActiveMemoryRow(kind: MemoryKind, id: number, chat_id: string, next: "pruned"): void {

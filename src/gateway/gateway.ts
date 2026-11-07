@@ -64,6 +64,7 @@ import { decisionListText, decisionStatusLines } from "../decisions/status-view.
 import { recordApprovalDenied, recordCorrection, recordImproveSignal, skipImproveSignal } from "../decisions/improve-signals.js";
 import type { NotificationButton, NotificationPayload } from "../notifications/notification-types.js";
 import { standingScheduleSection } from "../decisions/standing-approval.js";
+import { revertSavedProposal } from "./improve-undo.js";
 import { handleForgetMemory, handleMemories, handleMemoryUndo } from "./memory-commands.js";
 import { handleModels, modelsUnavailable, type ModelsRoles } from "./models-commands.js";
 import { handleFresh } from "./fresh-command.js";
@@ -304,7 +305,7 @@ export class Gateway {
     }
 
     if (event.type === "forget_memory") {
-      return this.accepted(event, now, handleForgetMemory(this.runStore, event));
+      return this.accepted(event, now, handleForgetMemory(this.runStore, event, now));
     }
 
     if (event.type === "models") {
@@ -608,10 +609,12 @@ export class Gateway {
 
     let text: string;
     if (/^\d+$/.test(arg)) {
-      const pruned = this.runStore.forgetLesson(Number(arg));
+      const id = Number(arg);
+      // spec 2026-11-07 §6: the prune and its proposal's revert commit together
+      const pruned = this.runStore.inTransaction(() => { const ok = this.runStore.forgetLesson(id); if (ok) revertSavedProposal(this.runStore, "lesson", id, now); return ok; });
       text = pruned ? `Forgotten ✓ — pruned lesson #${arg}` : `No active lesson #${arg} to forget.`;
     } else {
-      this.runStore.forgetScope(arg);
+      this.runStore.inTransaction(() => { for (const id of this.runStore.forgetScope(arg)) revertSavedProposal(this.runStore, "lesson", id, now); });
       text = `Forgotten ✓ — cleared lessons for "${arg}"`;
     }
 
