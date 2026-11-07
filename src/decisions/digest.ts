@@ -5,12 +5,14 @@ import { STANDING_DIGEST_TEXT, type DecisionRow, type ImprovementJobRow, type Im
 import { formatInstantInZone, resolveDisplayZone, scheduleDisplayName } from "../run/schedule-spec.js";
 import { skillButtons } from "../skills/promote.js";
 import { resolveImproveEnabled } from "../improve/flag.js";
+import { decisionWindow, injectionCounts, trustTops } from "./status-lines.js";
 import { redactForImprove } from "./egress.js";
 import { REGISTRY } from "./registry.js";
-import { SETTLE_HEALTH_REASONS, TURN_SETTLE_ID } from "./entries/turn-settle.js";
-import { TRUST_ORDER, rankOf, type TrustLevel } from "./entries/turn-trust.js";
+import type { TrustLevel } from "./entries/turn-trust.js";
 import { TRUST_TAP_BUDGET } from "./trust-ask.js";
-import type { AnyEntry, DecidedBy } from "./types.js";
+import type { AnyEntry } from "./types.js";
+// the moved counting code: re-exported only until Task 8b trims the digest tests that still import it from here
+export { countLines, settleHealthLine } from "./status-lines.js";
 export { STANDING_DIGEST_TEXT };
 
 /**
@@ -26,9 +28,6 @@ export const UNSURE_BAND = 0.15;
 export const UNSURE_MAX = 8;
 /** The review tap's callback prefix (`dec:rv:<decision_id>:<ok|bad>`); the callback parser imports it, never a second literal. */
 export const REVIEW_PREFIX = "dec:rv:";
-const RUNG_ORDER: readonly DecidedBy[] = ["rule", "system_one", "model", "paco", "fail"];
-/** Entries whose rows settleTriage writes with the turn's verdict (plan ruling 14). */
-const FRONT_DOOR: ReadonlySet<string> = new Set(["turn.handler", "turn.gear"]);
 /**
  * Ruling R1: the routes a System One row carries when the tree judged at p >= the bar. An allowlist, so a new route reason
  * (or a fallback like `uncalibrated` / `below_bar` / `cascade`, whose p is arbitrary or sub-bar) is never offered by default.
@@ -38,11 +37,6 @@ const JUDGEMENT_REASONS: ReadonlySet<string> = new Set(["routed", "bare_ack_guar
   // [0.6, 0.75) for every settle row whatever its question. Accepted: claims_done (bar 0.6) gets the true near-bar band; for promise and
   // asks_permission (0.7) only [0.7, 0.75) is offered, and an unverified send-back (bar 0.8) is never offered.
   "jev_claims_done", "jev_unverified", "jev_promise", "jev_asks_permission"]);
-/** What Paco reads for each rung in the counts line: display words, never the ledger tags. */
-const RUNG_LABEL: Readonly<Record<DecidedBy, string>> = { rule: "code", system_one: "Jev", model: "model", paco: "you", fail: "fallback" };
-/** A row's decider as Paco reads it; a rung outside the known set shows as its own tag, never hidden. */
-export const deciderLabel = (rung: string): string => (Object.hasOwn(RUNG_LABEL, rung) ? RUNG_LABEL[rung as DecidedBy] : rung);
-
 /** `HOUGE_DECISION_DIGEST_AT=off`, any case: no digest. Only the exact word: a typo keeps the 21:00 default, never silence. */
 export function digestOff(env: NodeJS.ProcessEnv): boolean {
   return env.HOUGE_DECISION_DIGEST_AT?.trim().toLowerCase() === "off";
@@ -76,68 +70,10 @@ export function reviewButtons(decision_id: string, n: number): NotificationButto
   return [{ text: `✅ ${n}`, data: ok }, { text: `❌ ${n}`, data: bad }];
 }
 
-/**
- * Plan ruling 14: a front-door row counts only when its run's verdict links it. Stage 1 writes the two atomically, so this
- * only guards a future path that leaves a row behind (a lost or killed turn must never be offered for review).
- */
-function settledRows(store: RunStore, rows: readonly DecisionRow[]): DecisionRow[] {
-  return rows.filter((r) => {
-    if (!FRONT_DOOR.has(r.entry_id)) return true;
-    const linked = r.run_id ? store.getJevVerdictForRun(r.run_id)?.decision_id ?? null : null;
-    return linked !== null && (r.entry_id !== "turn.handler" || linked === r.decision_id);
-  });
-}
-
-/** Per entry, counts by decider under the display labels; the digest and `/status` both print these lines. */
-export function countLines(rows: readonly DecisionRow[]): string[] {
-  const by = new Map<string, Map<string, number>>();
-  for (const r of rows) {
-    const m = by.get(r.entry_id) ?? new Map<string, number>();
-    m.set(r.rung, (m.get(r.rung) ?? 0) + 1);
-    by.set(r.entry_id, m);
-  }
-  return [...by.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([id, m]) => {
-    const total = [...m.values()].reduce((a, b) => a + b, 0);
-    const known = RUNG_ORDER.filter((k) => m.has(k)).map((k) => `${RUNG_LABEL[k]} ${m.get(k)}`);
-    const other = [...m.keys()].filter((k) => !(RUNG_ORDER as readonly string[]).includes(k)).sort().map((k) => `${k} ${m.get(k)}`);
-    return `· ${id} ${total} — ${[...known, ...other].join(" · ")}${id === "secret.redact" ? " (final, failure and evolution reports only)" : ""}`;
-  });
-}
-
-/** R0': turn.settle's unfinished settles per health reason over the window; null when there are none. */
-export function settleHealthLine(rows: readonly DecisionRow[]): string | null {
-  const counts = SETTLE_HEALTH_REASONS.map((r) => [r, rows.filter((x) => x.entry_id === TURN_SETTLE_ID && x.reason_code === r).length] as const);
-  if (counts.every(([, n]) => n === 0)) return null;
-  return `· ${TURN_SETTLE_ID} unfinished: ${counts.map(([r, n]) => `${r} ${n}`).join(" · ")}`;
-}
-
-export interface InjectionCounts { results: number; withheld: number; withheldByJev: number; framed: number; near: number; lost: number }
-
-/** tool.injection, counted (Ruling 19: never offered for a blind tap). "Near the bar": a Jev verdict within UNSURE_BAND of 0.5. */
-export function injectionCounts(rows: readonly DecisionRow[]): InjectionCounts {
-  const inj = rows.filter((r) => r.entry_id === "tool.injection");
-  const held = inj.filter((r) => r.verdict === "withhold");
-  return { results: inj.length, withheld: held.length, withheldByJev: held.filter((r) => r.rung === "system_one").length,
-    framed: inj.filter((r) => r.verdict === "frame").length,
-    near: inj.filter((r) => r.rung === "system_one" && r.p !== null && Math.abs(r.p - 0.5) < UNSURE_BAND).length,
-    lost: inj.filter((r) => r.fallback_rung === "system_one").length };
-}
-
 function injectionLine(rows: readonly DecisionRow[]): string | null {
   const c = injectionCounts(rows);
   if (c.results === 0) return null;
   return `· tool.injection: ${c.results} tool results · withheld ${c.withheld} (code ${c.withheld - c.withheldByJev} · Jev ${c.withheldByJev}) · framed ${c.framed} (kept local) · near the bar ${c.near} · judgement lost ${c.lost}`;
-}
-
-/** Each turn's highest trust level over its turn.trust rows (merged and nudge runs share the parent's trust, so one turn counts once). */
-export function trustTops(rows: readonly DecisionRow[]): Map<string, TrustLevel> {
-  const top = new Map<string, TrustLevel>();
-  for (const r of rows) {
-    const level = r.verdict as TrustLevel;
-    if (r.entry_id !== "turn.trust" || !TRUST_ORDER.includes(level) || !r.run_id) continue;
-    if (rankOf(level) > rankOf(top.get(r.run_id) ?? "clean")) top.set(r.run_id, level);
-  }
-  return top;
 }
 
 /**
@@ -166,13 +102,6 @@ export function reaskLines(rows: readonly DecisionRow[]): string[] {
     by.set(r.entry_id, c);
   }
   return [...by].sort(([a], [b]) => a.localeCompare(b)).map(([id, c]) => `· ${id}: re-asked ${c.mean + c.max + c.failed} (mean ${c.mean} · max ${c.max} · failed ${c.failed})`);
-}
-
-/** The 24 h before `now`: every row (health reads orphans too) and the settled rows the counts read. */
-export function decisionWindow(store: RunStore, now: string): { since: string; all: DecisionRow[]; rows: DecisionRow[] } {
-  const since = new Date(Date.parse(now) - DIGEST_WINDOW_MS).toISOString();
-  const all = store.listDecisionsBetween(since, now);
-  return { since, all, rows: settledRows(store, all) };
 }
 
 

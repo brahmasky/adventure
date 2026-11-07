@@ -12,12 +12,12 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-// Spec 2b-ii §3.1, §3.5 (codex D3, round 2 N1): once per local date at the digest's time (also when the digest is off), the
+// Spec 2b-ii §3.1, §3.5 (codex D3, round 2 N1): once per local date at HOUGE_IMPROVE_AT, the
 // inbox is the only input; model calls outside transactions; one transaction per group (decision row, one outcome row per
 // inbox row, proposal or queued job, consumed_at); deferred groups stay unconsumed; a crash resumes; a stop signal stops
 // between model calls; improve_tick start/end events bracket every run.
-const ENV = { HOUGE_DISPLAY_TZ: "Australia/Sydney", HOUGE_DECISION_DIGEST_AT: "off" };
-const NOW = "2026-10-21T11:00:00.000Z"; // 22:00 AEDT: past the 21:00 default even with the digest off
+const ENV = { HOUGE_DISPLAY_TZ: "Australia/Sydney" };
+const NOW = "2026-10-21T11:00:00.000Z"; // 22:00 AEDT: past the 21:00 default
 const EARLY = "2026-10-21T09:00:00.000Z"; // 20:00 AEDT
 const jev = (probabilities: Record<string, number>) => async (req: JevRequest): Promise<JevResult> => ({ ok: true, model: "jev-1.13.0", input_tokens: 1, latency_ms: 1,
   answers: Object.fromEntries(Object.keys(req.questions).map((id) => [id, { type: "choice" as const, choice: "x", probabilities, confidence: 0.5 }])) });
@@ -50,11 +50,12 @@ function correction(store: RunStore, text = "please always answer in one line", 
 const events = (s: RunStore) => s.listLedgerEventsByTypeSince("improve_tick", "2026-01-01T00:00:00.000Z").map((e) => e.payload.phase);
 
 describe("improveTickDue", () => {
-  it("due once per local date at or after the digest time, also when the digest is off (21:00 then); not before; not twice", () => {
+  it("due once per local date at or after HOUGE_IMPROVE_AT (default 21:00); not before; not twice; `off` is no value", () => {
     const s = RunStore.openInMemory();
     expect(improveTickDue(s, ENV, EARLY)).toBeNull();
     expect(improveTickDue(s, ENV, NOW)).toBe("2026-10-21");
-    expect(improveTickDue(s, { ...ENV, HOUGE_DECISION_DIGEST_AT: "20:00" }, EARLY)).toBe("2026-10-21");
+    expect(improveTickDue(s, { ...ENV, HOUGE_IMPROVE_AT: "20:00" }, EARLY)).toBe("2026-10-21");
+    expect(improveTickDue(s, { ...ENV, HOUGE_IMPROVE_AT: "off" }, EARLY)).toBeNull(); // no off: 21:00 stands
     s.beginImproveTick("2026-10-21", NOW); s.finishImproveTick("2026-10-21", "done", {}, NOW);
     expect(improveTickDue(s, ENV, NOW)).toBeNull();
   });

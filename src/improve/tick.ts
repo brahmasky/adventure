@@ -5,7 +5,6 @@ import { autoApplies, type ImproveState, type ImproveTarget } from "../decisions
 import { evaluateImproveDegraded } from "./degraded.js";
 import { applyProposal } from "./apply.js";
 import { queueProposalCard } from "./proposal-card.js";
-import { resolveDigestAt } from "../decisions/digest.js";
 import { OutcomeRejected, outcomeValueOf } from "../decisions/outcomes.js";
 import { storeRecorder } from "../decisions/record.js";
 import type { DecideResult } from "../decisions/types.js";
@@ -13,7 +12,7 @@ import type { JevRequest, JevResult } from "../jev/jev-client.js";
 import type { ProposalTarget, RunStore } from "../run/run-store.js";
 import { formatInstantInZone, resolveDisplayZone } from "../run/schedule-spec.js";
 import { resolveSkillsEnabled, type SkillStore } from "../skills/skill-store.js";
-import { resolveImproveEnabled } from "./flag.js";
+import { resolveImproveAt, resolveImproveEnabled } from "./flag.js";
 import { computeAbandonment } from "./abandonment.js";
 import { decideImprove, deferredRecorder, isJevOutage, type RecordPatch, type TickLlm } from "./decide-improve.js";
 import { buildImproveState, groupSignals, RECURRENCE_WINDOW_DAYS, type SignalGroup } from "./groups.js";
@@ -22,7 +21,7 @@ import { computeRecurrence, recordRecurrenceSignals, resolveRecurrenceGate, type
 import { scheduleHints } from "./schedule-shift.js";
 
 /**
- * The daily improvement tick (2b-ii §3). Once per local date at the digest's time (also when the digest is off): mirror the
+ * The daily improvement tick (2b-ii §3). Once per local date at HOUGE_IMPROVE_AT: mirror the
  * day's outcomes into the inbox, compute recurrence and abandonment, group the unconsumed rows, decide each group with model
  * calls OUTSIDE any transaction, then commit one transaction per group — a lesson or fact from a correction Paco typed applies inside it with a /changes row, the rest become cards (spec 2026-11-07 §5). Deferred groups stay unconsumed (durable retry); a
  * crash resumes from the `running` latch; the stop signal is checked between model calls; `improve_tick` events bracket it.
@@ -59,10 +58,10 @@ export interface TickCounts { mirrored: number; recurrence: number; abandoned: n
 export type ImproveTickResult = { ran: false } | { ran: true; result: "done" | "stopped" | "failed"; counts: TickCounts };
 const zero = (): TickCounts => ({ mirrored: 0, recurrence: 0, abandoned: 0, groups: 0, decided: 0, proposals: 0, applied: 0, cards: 0, jobs_queued: 0, jobs_started: 0, deferred: 0, deferred_outage: 0, stale: 0, already_proposed: 0, no_draft: 0, record_failed: 0, embed_unavailable: 0 });
 
-/** Due once per local date at or after HOUGE_DECISION_DIGEST_AT (the default 21:00 when it is `off`): the date, or null. */
+/** Due once per local date at or after HOUGE_IMPROVE_AT (default 21:00, no off): the date, or null. */
 export function improveTickDue(store: RunStore, env: NodeJS.ProcessEnv, now: string): string | null {
   const [date, time] = formatInstantInZone(now, resolveDisplayZone(env)).split(" ") as [string, string];
-  if (time < resolveDigestAt(env)) return null;
+  if (time < resolveImproveAt(env)) return null;
   const t = store.getImproveTick(date);
   return t === undefined || t.result === "running" || t.result === "stopped" ? date : null;
 }

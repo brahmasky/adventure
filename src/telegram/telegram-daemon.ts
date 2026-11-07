@@ -35,6 +35,7 @@ import type { TelegramAllowlist } from "../domain/types.js";
 import { Gateway } from "../gateway/gateway.js";
 import { ANCHOR_DIR, bootJevAnchor } from "../decisions/jev-anchor-import.js";
 import { warnRetiredJevFlags } from "../jev/jev-flags.js";
+import { warnRetiredDigestAt } from "../improve/flag.js";
 import { embedText, resolveEmbedConfig } from "../llm/embeddings.js";
 import { storeRecorder } from "../decisions/record.js";
 import { resolveMediaIngestEnabled } from "../media/media-config.js";
@@ -453,6 +454,7 @@ function leaseRecoveryIntervalMs(): number {
 function bootPlanners(worker: CoreWorker, options: RunTelegramDaemonOptions, now: () => string): ReturnType<typeof setInterval> {
   warnRetiredOmpChainVars(process.env);
   warnRetiredJevFlags(process.env);
+  warnRetiredDigestAt(process.env);
   bootJevAnchor(options.store, join(options.projectRoot, ANCHOR_DIR)); // Jev version check §2.2: import the reference when the anchor is empty; a failure is logged, boot continues
   try { resolveLegacyGoldenModelIncidents(options.store, now()); } catch (e) { console.error(`[telegram-daemon] golden incident cleanup failed: ${errorCode(e)}`); } // final fix D2
   worker.validateOmpConfig();

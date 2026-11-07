@@ -247,7 +247,7 @@ export class Gateway {
       event = prep.turnEvent;
     }
     if (event.type === "memlane_undo") return this.accepted(event, now, handleMemLaneUndo(this.runStore, event));
-    if (event.type === "decision_review") return this.accepted(event, now, handleDecisionReview(this.runStore, event, now));
+    if (event.type === "decision_review") return this.accepted(event, now, handleDecisionReview(this.runStore, event));
     if (event.type === "improvement_tap") return this.accepted(event, now, handleImprovementTap(this.runStore, this.skillStore, event, now));
     if (event.type === "jev_accept_tap") return this.accepted(event, now, handleJevAcceptTap(this.runStore, event, now));
     if (event.type === "model_tier_tap") return this.accepted(event, now, handleModelTierTap(this.runStore, this.tierTapDeps(), event, now));
