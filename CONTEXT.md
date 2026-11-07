@@ -76,7 +76,7 @@ This file defines domain language for Houge architecture reviews and implementat
 
 **Ladder move**: A recorded change of who decides an entry (`ladder_moves`), such as a standing approval moving a fingerprint from Paco's tap to a code rule. Only code may make one on its own (standing approvals, skill authoring after recurrence, stated-rule lessons); every loosening is a proposal for Paco's tap; locked entries never move.
 
-**Proposal**: A change Houge drafts from an improvement signal and offers as a tap on the daily digest (lesson, fact, schedule, tool gap or ladder move). One open per (target, scope); it expires after 14 days, and a dismissed or expired one blocks the same (target, scope) for 14 days; nothing is applied until Paco's Accept, and a lesson, fact or schedule Accept can be undone (an Undo moves the proposal to `reverted`).
+**Proposal**: A change Houge drafts from an improvement signal and applies on its own (from a correction Paco typed) with a `/changes` line, or offers as one card (lesson, fact, schedule, tool gap or ladder move). One open per (target, scope); it expires after 14 days, and a dismissed, expired, accepted or reverted one blocks the same (target, scope) for 14 days (a dismissal as `already_known` never does); a lesson or fact from a correction Paco typed applies on its own, and nothing else is applied until Paco's Accept. An applied lesson, fact or schedule can be undone (`/forget`, `/forget_memory`, or Undo; an undo moves the proposal to `reverted`).
 
 **Improvement job**: The one automatic effect of `improve.route`: a skill-authoring job queued after a recurrence (the same kind of request three times in 14 days). It runs on the evolution lane, never as a run, and writes a draft to `_pending` for Paco to promote. A job ends `promoted`, `dismissed`, `failed` or `expired` (an offer Paco left untapped for 14 days); `/disarm` holds queued jobs.
 
@@ -94,7 +94,7 @@ This file defines domain language for Houge architecture reviews and implementat
 
 **Settle**: The last decision of a planner turn (`turn.settle`, ADR 0034 § 9): when omp's `session_stop` hook fires, Houge decides whether the reply stands or goes back once. A code rule checks claims against the run's ledger and open todo items; a Jev rung asks four typed questions at per-question provisional bars. The reply Paco receives (the delivered text, not the last pass alone) is audited again at the terminal `agent_end`. An errored pass 0 is never sent back (`pass_errored`).
 
-**Digest**: The one daily summary of what the ladder did (`HOUGE_DECISION_DIGEST_AT`): improvements, standing approvals, proposals waiting for a tap, unsure judgements with review taps, and a watch line (ADR 0034 § 10). Counts and health stay in `/status`.
+**Proposal card**: The one Telegram card a proposal that needs a tap arrives on (Accept / Dismiss); the digest it replaced is gone (spec 2026-11-07).
 
 **Golden set**: A fixed list of labelled items a provisional bar is checked against. Drift opens a `decision_golden_drift:<entry>` incident and never disarms the entry (ADR 0034 § 6.2).
 

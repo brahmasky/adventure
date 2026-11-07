@@ -74,10 +74,7 @@ run (`scripts/live-gate-decisions-parity.mjs`) compare every persisted column wi
 
 When a handler falls back after the ladder decided (a lane that falls through to the planner, a card that fails to render), the `decisions` row keeps the ladder's verdict: it records what the ladder decided, not what the handler then did. The `jev_verdicts` row (`handler`, e.g. `fallthrough:<why>`) carries the handler's outcome.
 
-The daily decision digest (`HOUGE_DECISION_DIGEST_AT`, default 21:00) arrives in the operator chat: improvements today,
-standing approvals, proposals waiting for a tap, an Unsure section (System One judgements within 0.15 of their bar, newest first, at most 8, in
-the digest's chat, one code-built line each with ✅ / ❌ review taps that write `review_ok` / `review_bad`, which the
-improvement tick turns into ladder proposals) and a watch line
+There is no daily digest (spec 2026-11-07): improvements the tick applies and standing-grant ends are `/changes` rows, proposals that need a tap are cards, a failing tick pages `improve_tick_degraded`, and `/status` holds the counts
 ([configuration.md](configuration.md#decision-ladder-adr-0034)). Routine Jev notices (a model move that agreed with the anchor,
 for example) are not sent to chat: they are `jev_notice` rows in the change log, read with `/changes`
 (ADR 0031, [configuration.md](configuration.md#notification-routing-adr-0031)).
@@ -97,10 +94,10 @@ automatically. `NOISE_BANDS` is empty until he commits rows: with no row there i
 `scripts/measure-jev-noise.mjs` produces the candidates: `--injection` re-sends the planted corpus and may run freely;
 `--tree` re-sends Paco's real Telegram texts and refuses to run without `--approved "<his words and date>"` (the standing
 approval named one replay, not a repeated one). Candidate bands measured 2026-10-13, 95th-percentile spread: injection
-0.11; tree category 0.13, confidence 0.14, gap 0.20. The decision digest counts re-asks per entry under "Noise band (24 h)".
+0.11; tree category 0.13, confidence 0.14, gap 0.20.
 
-**Tap labels.** Digest ✅/❌, 🔍 Dig deeper, ↩️ Undo and 认真想 write `decision_outcomes` rows (signals `review_ok`,
-`review_bad`, `dig_deeper`, `lesson_undone`, `think_harder`). `houge jev report triage` prints them in a TAP LABELS block
+**Tap labels.** 🔍 Dig deeper, ↩️ Undo and 认真想 write `decision_outcomes` rows (signals `review_ok`,
+`review_bad`, `dig_deeper`, `lesson_undone`, `think_harder`; since 2026-11-07 nothing writes `review_ok` / `review_bad`, because the digest that carried those taps is gone). `houge jev report triage` prints them in a TAP LABELS block
 (only when there are taps): a ✅ on a front-door lane route is a category label; every other tap is evidence, and
 conflicting taps on one turn give no label. `houge jev label triage` lists the turns with flagged taps first. Paco's sitting
 labels win on the same turn, and nothing is committed or recalibrated automatically (SP4). The mapping of each tap to its
@@ -257,16 +254,14 @@ meeting at most 10 % sent back with all planted positives sent back. Calibration
 first wording 85.7 % (114/133) in the sanity run; wording set B with these bars 5.3 % (7/133, probe), then **6/133 = 4.5 %**,
 planted 9/9, in the sanity run on the shipped build, then **6/135 = 4.4 %** (9/9, no fallbacks; the window is now 135
 replies) after the final-review fixes. `scripts/settle-sanity.mjs` needs `--db` from a worktree. The `unverified` bar is fragile (it sits just above a 0.7–0.8 cluster);
-the revisit is more than 10 % sent back over 14 days. The recorded `p` is the lowest bar (0.6), which sets the digest's unsure
-band; an `unverified` send-back is never offered for a tap.
+the revisit is more than 10 % sent back over 14 days. The recorded `p` is the lowest bar (0.6). An `unverified` send-back is never offered for a tap.
 
 A daily golden tick (`runSettleGoldenTick`, `src/decisions/golden.ts`) asks the same request on eight synthetic items (four
 claims or promises that must send back, four clean replies that must settle) and fires on any question over its bar; a miss
 opens `decision_golden_drift:turn.settle` (a change-log line, read with `/changes`), a moved model runs the golden sets on the new id and a drift opens `decision_golden_drift` (also a log line) (the old `decision_bar_stale` is retired); neither disarms. Reading a row:
 `decisions` where `entry = 'turn.settle'`; reasons, outcomes (`settle_sent_back`, `settle_unverified`, `settle_discarded`)
 and the settle detail are in [ADR 0034](../decisions/0034-decision-ladder-consolidated.md) § 9. Reason `pass_errored` (an
-errored pass 0 is never sent back) joins `budget` and `todo_unavailable` in the settle health count and the digest's Health
-line. The reply is redacted through the one redactor, including the turn's code-extracted codes and links, before Jev sees
+errored pass 0 is never sent back) joins `budget` and `todo_unavailable` in the settle health count and `/status`. The reply is redacted through the one redactor, including the turn's code-extracted codes and links, before Jev sees
 it; the after-delivery audit judges the text Paco received, not the last pass alone.
 
 ## The improvement point (`improve.route`)
@@ -288,10 +283,7 @@ tick, not in a turn. Signals (corrections, ratings, denials and expiries, planne
   `tiny_pick`; a word outside the two is an abstention, so the row records `nothing` on the `fail` rung with no reason code
   (abstentions set none; `improve-sanity.mjs` counts these). A pick still running at the bound records `nothing` on `fail`
   with fallback `timeout` on the model rung, consumes the group, and counts toward `decision_fallback_streak`.
-- **Effects.** The only automatic one is the `_pending` skill draft. Everything else is a proposal: a tap on the digest,
-  nothing applied before Accept. A lesson or fact draft first passes the memory lane's backstops (a lifted rule, an
-  unsupported quote or a refused AVOID is dropped or the draft is `nothing` / `no_text`); the digest line of a lesson shows
-  its AVOID.
+- **Effects.** Automatic: the `_pending` skill draft, and a lesson or fact from a correction Paco typed (`autoApplies`: `memlane_fix` rows, no prior, the memory lane's backstops, one `/changes` line with its undo). Everything else is a card (Accept / Dismiss), nothing applied before Accept. A lesson or fact draft first passes the memory lane's backstops (a lifted rule, an unsupported quote or a refused AVOID is dropped or the draft is `nothing` / `no_text`); the card of a lesson shows its AVOID.
 - **Outages defer.** A Jev failure that is an outage (timeout, or `no_key`, `fused`, `auth`, `rate_limited`, `overloaded`,
   `transport`, `error`), a failed Tiny pick or a failed distill call leaves the group unconsumed with no decision row; the tick
   counts it `deferred_outage` and Watch shows it. The first outage of a segment latches: the remaining groups run the rule
