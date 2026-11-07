@@ -27,6 +27,9 @@ describe("proposalBlocks", () => {
     const s3 = RunStore.openInMemory();
     proposal(s3, "accepted", "2026-10-01T00:00:00.000Z"); proposal(s3, "reverted", "2026-10-02T00:00:00.000Z");
     expect(s3.proposalBlocks("lesson", "answer", SINCE)).toBe(false);
+    const s4 = RunStore.openInMemory();
+    proposal(s4, "accepted", SINCE); // resolved exactly at the cut: strict >, so it no longer blocks
+    expect(s4.proposalBlocks("lesson", "answer", SINCE)).toBe(false);
   });
 });
 
