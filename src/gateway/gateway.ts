@@ -156,7 +156,7 @@ const boundedEcho = (text: string): string => (text.length > CONTRACT_REFUSAL_EC
 /** Spec §6: a session rated at or below this is a correction on the chat's latest routed turn. */
 const LOW_RATING_MAX = 1;
 
-/** ADR 0018 + decision ladder plan ruling 16: commands the per-chat rate limit never delays (kill; digest review taps). */
+/** ADR 0018 + decision ladder plan ruling 16: commands the per-chat rate limit never delays (kill; old digest review taps). */
 export const RATE_LIMIT_EXEMPT: ReadonlySet<string> = new Set(["kill", "decision_review", "improvement_tap", "jev_accept_tap", "model_tier_tap"]); // + empty-tier card taps (spec 2026-11-02 §4.4)
 
 /** ⓪·3 S2c: the rating signal at a glance — an open ask, or the last capture (local time). */
@@ -209,7 +209,7 @@ export class Gateway {
   intake(inbound: TypedTaskEvent, now: string = new Date().toISOString()): GatewayIntakeResult {
     // ADR 0018: the kill switch is the operator's emergency stop — the per-chat command
     // rate limit (5 accepted/min) must never delay it. Auth (allowlist, no forwards) was
-    // already enforced upstream in the trigger adapter; nothing here weakens it. Same for a digest
+    // already enforced upstream in the trigger adapter; nothing here weakens it. Same for an old digest
     // review tap: allowlisted, one-shot, one closed-enum label; a dropped tap would look labelled.
     let event = inbound;
     if (event.source === "telegram" && !RATE_LIMIT_EXEMPT.has(event.type)) {

@@ -3,7 +3,7 @@ import { message } from "./decide.js";
 import type { DecisionSignal } from "./types.js";
 
 /**
- * Paco's taps as outcome rows (Addition A): Dig deeper, Undo, 认真想 beside the digest's ✅/❌. A tap never fails on this:
+ * Paco's taps as outcome rows (Addition A): Dig deeper, Undo, 认真想 beside the old digest ✅/❌ taps (now answered closed). A tap never fails on this:
  * a refused value or a decision the run never recorded (pre-ladder turns) is logged with the signal only, and the tap's
  * own effect (the Undo, the re-run) has already happened.
  */

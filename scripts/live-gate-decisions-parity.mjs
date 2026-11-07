@@ -358,6 +358,12 @@ function reportCoverage(c) {
   else check("coverage: the cascade (model) rung ran", true, `${c.model}`);
 }
 
+/** /status's decision counts (decisionStatusLines) show turn.handler. */
+function checkStatus(g) {
+  const status = g.newMods.decisionStatusLines(g.newSide.store, new Date().toISOString());
+  check("/status decisions: the counts show turn.handler", status.some((l) => l.startsWith("· turn.handler ")), status.slice(0, 3).join(" | "));
+}
+
 /** Spec 2026-11-07 §8: the digest is gone. The new build must export no digest tick, route no `digest` topic, and queue no digest row after a cycle. */
 async function checkNoDigest(g) {
   const d = await import(join(NEW_DIST, "decisions/digest.js")); // its own import: g.newMods merges many modules whose exports legitimately say "digest"
@@ -409,6 +415,7 @@ async function main() {
     const t = await dualRun(g, items, args.limit);
     reportDualRun(t, g.retries);
     reportCoverage(coverage(g, t.newRuns));
+    checkStatus(g);
     await checkNoDigest(g);
   } finally { g.oldSide.store.close(); g.newSide.store.close(); }
   return verdict();

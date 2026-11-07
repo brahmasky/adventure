@@ -36,9 +36,8 @@ function parseArgs(argv) {
 async function load() {
   const paths = ["config/load-env.js", "run/run-store.js", "gateway/gateway.js", "gateway/memlane-commands.js", "core/core-worker.js", "domain/types.js",
     "jev/jev-client.js", "jev/decide.js", "jev/tap-labels.js", "decisions/injection-judge.js", "decisions/entries/tool-injection.js", "decisions/egress.js",
-    "decisions/injection-corpus.js", "decisions/trust.js", "decisions/digest.js", "decisions/status-view.js", "omp/bridge-handler.js", "omp/tool-approval-sink.js", "omp/tool-decls.js",
-    "omp/omp-config.js", "omp/seatbelt.js", "omp/protected-paths.js", "omp/planner-supervisor.js", "tools/tool-registry.js", "budget/budget-ledger.js", "jev/questions/types.js",
-    "notifications/telegram-notification-adapter.js"];
+    "decisions/injection-corpus.js", "decisions/trust.js", "decisions/status-view.js", "omp/bridge-handler.js", "omp/tool-approval-sink.js", "omp/tool-decls.js",
+    "omp/omp-config.js", "omp/seatbelt.js", "omp/protected-paths.js", "omp/planner-supervisor.js", "tools/tool-registry.js", "budget/budget-ledger.js", "jev/questions/types.js"];
   const mods = await Promise.all(paths.map((p) => import(join(DIST, p))));
   const m = Object.assign({}, ...mods);
   m.decideJev = mods[paths.indexOf("jev/decide.js")].decide; // `decide` also names the ladder runner elsewhere: take the Jev one by module
