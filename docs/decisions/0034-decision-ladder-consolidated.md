@@ -2,7 +2,7 @@
 
 - **Status:** accepted 2026-11-05 (signed by Paco, rulings A1–A5 included); consolidates and supersedes
   [ADR 0030](0030-decision-ladder.md) with no change of meaning; amended 2026-11-07 (improvement proposals
-  auto-apply, the digest goes — **awaiting Paco's signature**)
+  auto-apply, the digest goes — signed by Paco 2026-11-08)
 - **Date:** 2026-11-04
 - **Deciders:** Paco
 - **Supersedes:** [0030](0030-decision-ladder.md) (17 amendment sections) and
@@ -535,7 +535,7 @@ write.
 | 2026-11-05 | No off switch, no shadow: front-door shadow, HOUGE_JEV_LANES_OFF and HOUGE_JEV_TRIAGE_ENABLED removed; HOUGE_JEV_ENABLED is the front door's STOP flag | [no off switch](../superpowers/specs/2026-11-05-jev-no-off-switch-no-shadow-design.md) | 2026-11-06 |
 | 2026-11-06 | Drift rewording, no change of meaning: golden sets are daily ticks and version-check sets, and where each reports drift (6.2); the five unmarked `alwaysRecord` entries marked in rule 4, pinned by `tests/adr/` | — | 2026-11-06 |
 | 2026-11-06 | 6.3: the promise that the digest flags an entry until Paco commits a calibrated row is retired (nothing built it; Paco's decision 2026-11-06) | — | 2026-11-06 |
-| 2026-11-07 | Improvement proposals auto-apply, the digest goes: 2.2, 2.5 (gated allowance), 6.6 (no digest taps), 10.2 (HOUGE_IMPROVE_AT), 10.5 (autoApplies, origin, no prior, cards, reverted blocks), 11.3 and 13.1 (/changes rows, no digest), 13.2 (improve_tick_degraded) | [auto-apply](../superpowers/specs/2026-11-07-improve-auto-apply-design.md) | awaiting Paco's signature |
+| 2026-11-07 | Improvement proposals auto-apply, the digest goes: 2.2, 2.5 (gated allowance), 6.6 (no digest taps), 10.2 (HOUGE_IMPROVE_AT), 10.5 (autoApplies, origin, no prior, cards, reverted blocks), 11.3 and 13.1 (/changes rows, no digest), 13.2 (improve_tick_degraded) | [auto-apply](../superpowers/specs/2026-11-07-improve-auto-apply-design.md) | 2026-11-08 |
 | 2026-11-07 | 13.2: `decision_fallback_streak` pages three failed runs in a row of a tick entry (`improve.route` failed every day unseen); `improve.route`'s Tiny bound 8 s → 30 s | — | 2026-11-07 |
 
 ## Reference map
