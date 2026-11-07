@@ -3,6 +3,7 @@ import { IMPROVE_TARGET } from "../../jev/questions/improve.js";
 import { criteriaHash } from "../../jev/questions/types.js";
 import type { Category } from "../../jev/questions/tree.js";
 import type { Lane } from "../../jev/tree-policy.js";
+import type { ImproveSignalRow } from "../../run/run-store.js";
 import { LOCKED_ENTRY_IDS } from "../entry-ids.js";
 import { DECISION_SIGNALS, type DecisionSignal, type Entry, type ProvisionalBar, type RungAbstain, type RungAnswer, type VerdictEffect } from "../types.js";
 
@@ -10,7 +11,7 @@ import { DECISION_SIGNALS, type DecisionSignal, type Entry, type ProvisionalBar,
  * `improve.route` (2b-ii spec §4; parent §7.4; ADR 0030 decision 8): once a day, over the inbox's grouped signals, what
  * should Houge change? Rule rungs cause the only automatic effect (a recurrence → the skill-authoring job, started by the
  * tick on a rule-rung `skill`/`recurrence` row; plan ruling 1); Jev (one fixed choice question, bar 0.67) and the Tiny pick
- * only propose. Fail-open on `nothing`; every signal is one of its outcomes (§4.4). Always recorded; the row's run is the
+ * propose, except a lesson or fact behind `autoApplies` (spec 2026-11-07 §3), which applies with a /changes line. Fail-open on `nothing`; every signal is one of its outcomes (§4.4). Always recorded; the row's run is the
  * group's newest run.
  */
 export const IMPROVE_ROUTE_ID = "improve.route";
@@ -104,8 +105,29 @@ export function jevVerdictOf(a: JevChoiceAnswer, s: ImproveState): Rule {
   return { abstain: true, reason: "below_bar", detail: { ...detail, top2: [best[0]!, best[1] ?? best[0]!] } };
 }
 
+/** 2b-ii §7: a correction on a scope that got a lesson this recently is "lesson did not hold" evidence; its proposal is a rewrite, which only a tap may apply (saveMemoryPlan adds, never replaces). */
+export const LESSON_REWRITE_DAYS = 30;
+export const lessonRewrite = (s: Pick<ImproveState, "signal" | "lastImprovement">): boolean =>
+  s.signal === "correction" && s.lastImprovement !== null && s.lastImprovement.target === "lesson" && s.lastImprovement.ageDays <= LESSON_REWRITE_DAYS;
+
+/** A group's rows as the provenance gate reads them (SignalGroup.rows, improve/groups.ts). */
+export type ProvenanceRows = { rows: readonly Pick<ImproveSignalRow, "origin" | "run_id" | "about_run_id">[] };
+
+/**
+ * Spec 2026-11-07 §3 (ADR 0034 10.5, R12): a lesson or fact applies on its own only when every row of the group is a
+ * correction Paco typed on the memory lane (`memlane_fix`: its correcting run is a new Telegram message of his, never the
+ * corrected run — `isTelegramRun` re-checks the run's source here, plan ruling P16) and the proposal is no rewrite.
+ * The no-pile-up check (proposalBlocks) and the chat check live at the commit.
+ */
+export function autoApplies(g: ProvenanceRows, s: Pick<ImproveState, "signal" | "lastImprovement">, verdict: ImproveTarget, isTelegramRun: (run_id: string) => boolean): boolean {
+  if (verdict !== "lesson" && verdict !== "fact") return false;
+  if (s.signal !== "correction" || lessonRewrite(s)) return false;
+  return g.rows.length > 0 && g.rows.every((r) => r.origin === "memlane_fix" && r.run_id !== null && r.run_id !== r.about_run_id && isTelegramRun(r.run_id));
+}
+
 const NONE: VerdictEffect = { kind: "none", reversible: true, announced: "none", what: "recorded; the group's outcome rows attach to this decision" };
 const proposal = (what: string): VerdictEffect => ({ kind: "proposal", reversible: true, announced: "card", what });
+const applied = (what: string): VerdictEffect => ({ kind: "effect", reversible: true, announced: "changes", what });
 export const IMPROVE_ROUTE: Entry<ImproveState, ImproveTarget, ImproveDetail> = {
   id: IMPROVE_ROUTE_ID, version: 1, stage: "after_turn", input: "mixed",
   question: "What, if anything, should Houge change so this signal does not recur?",
@@ -118,10 +140,11 @@ export const IMPROVE_ROUTE: Entry<ImproveState, ImproveTarget, ImproveDetail> = 
   ],
   fail: "nothing", defaultVerdict: "nothing", alwaysRecord: true, outcomes: DECISION_SIGNALS,
   armed: { rule: "on", system_one: "on", model: "on" },
+  pacoWordsOnly: autoApplies,
   effects: {
     nothing: NONE,
-    lesson: proposal("a lesson draft on a card; Accept saves it with ↩️ Undo"),
-    fact: proposal("a fact draft on a card; Accept saves it with ↩️ Undo"),
+    lesson: applied("from a correction Paco typed (autoApplies): saved at the tick, one /changes line with /forget <id>; otherwise a card whose Accept saves it with ↩️ Undo"),
+    fact: applied("from a correction Paco typed (autoApplies): saved at the tick, one /changes line with /forget_memory <id>; otherwise a card whose Accept saves it with ↩️ Undo"),
     skill: proposal("a proposal whose Accept queues the authoring job; a rule-rung recurrence row is queued by the tick itself (code-made; the job's cards announce it)"),
     schedule: proposal("a time shift on a card; Accept applies it, Revert restores the row"),
     knowledge: proposal("recorded only while the wiki is disarmed (R5); a later slice adds the handler"),

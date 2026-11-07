@@ -4,7 +4,7 @@ import { checkFactSide, checkLessonSide } from "../capabilities/memory-backstops
 import { PENDING_TURN_PREFIX } from "../capabilities/memory-sources.js";
 import { LOCKED_ENTRY_IDS } from "../decisions/entry-ids.js";
 import { turnTrustFinal } from "../decisions/trust.js";
-import type { ImproveState, ImproveTarget } from "../decisions/entries/improve-route.js";
+import { lessonRewrite, type ImproveState, type ImproveTarget } from "../decisions/entries/improve-route.js";
 import type { ProposalTarget, RunStore } from "../run/run-store.js";
 import { formatInstantInZone } from "../run/schedule-spec.js";
 import type { TickLlm } from "./decide-improve.js";
@@ -26,7 +26,7 @@ export const lessonScopeFor = (category: string | null): "ask" | "research" => (
 export function evidenceOf(g: SignalGroup, s: ImproveState, tz: string): string {
   const date = formatInstantInZone(g.newest.created_at, tz).slice(0, 10);
   // spec §7: a correction on a scope that got a lesson within 30 days is "lesson did not hold" evidence (the proposal is then a rewrite)
-  if (s.signal === "correction" && s.lastImprovement?.target === "lesson" && s.lastImprovement.ageDays <= 30) return `lesson did not hold: ${s.count14d} corrections since (${s.lastImprovement.ageDays} d)`;
+  if (lessonRewrite(s)) return `lesson did not hold: ${s.count14d} corrections since (${s.lastImprovement?.ageDays} d)`;
   if (s.signal === "correction") return `correction on ${date}, scope ${s.category ?? "other"}`;
   if (s.signal === "recurrence" && s.recurrence) return `${s.recurrence.turnIds.length} requests over ${s.recurrence.spanDays} days`;
   if (s.signal === "review_bad") return `${s.count14d} ❌ on ${s.scope} in 14 days`;

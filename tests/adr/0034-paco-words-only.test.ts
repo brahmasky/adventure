@@ -1,0 +1,45 @@
+/**
+ * Rule: ADR 0034 rule 10.5 (spec 2026-11-07 §3): a lesson or fact proposal applies on its own only through the code-owned
+ * provenance predicate `autoApplies`, which `improve.route` names as `pacoWordsOnly`: every row of the group a correction
+ * Paco typed on the memory lane (`memlane_fix`, a new run of his, never the corrected run), verdict lesson or fact, no rewrite.
+ * Any other origin, a null origin (rows older builds wrote), a run-less row, or a rewrite is a card. Changing this rule changes this test.
+ */
+import { describe, expect, it } from "vitest";
+import { autoApplies as autoAppliesReal, IMPROVE_ROUTE, LESSON_REWRITE_DAYS, lessonRewrite } from "../../src/decisions/entries/improve-route.js";
+
+type Row = { origin: "memlane_fix" | "dig_deeper" | "escalation" | "rating" | null; run_id: string | null; about_run_id: string | null };
+const fix: Row = { origin: "memlane_fix", run_id: "run_b", about_run_id: "run_a" };
+const s = { signal: "correction" as const, lastImprovement: null };
+const telegram = (run_id: string): boolean => run_id !== "run_cli";
+const autoApplies = (g: { rows: Row[] }, st: typeof s | { signal: "correction"; lastImprovement: { target: string; ageDays: number } } | { signal: "dig_deeper"; lastImprovement: null }, v: Parameters<typeof autoAppliesReal>[2], tg = telegram) => autoAppliesReal(g, st, v, tg);
+
+describe("ADR 0034 rule 10.5: autoApplies", () => {
+  it("is the entry's named predicate", () => { expect(IMPROVE_ROUTE.pacoWordsOnly).toBe(autoAppliesReal); });
+  it("applies a lesson or fact from memlane_fix rows of Telegram runs only", () => {
+    expect(autoApplies({ rows: [fix] }, s, "lesson")).toBe(true);
+    expect(autoApplies({ rows: [fix, fix] }, s, "fact")).toBe(true);
+    for (const v of ["nothing", "skill", "schedule", "knowledge", "tool_gap", "ladder"] as const) expect([v, autoApplies({ rows: [fix] }, s, v)]).toEqual([v, false]);
+    expect(autoApplies({ rows: [fix] }, s, "lesson", () => false)).toBe(false); // P16: the apply boundary re-checks the run's source
+    expect(autoApplies({ rows: [{ ...fix, run_id: "run_cli" }] }, s, "lesson")).toBe(false);
+  });
+  it.each<[string, Row]>([
+    ["dig_deeper (the original request, no new words)", { ...fix, origin: "dig_deeper" }],
+    ["escalation (run = about)", { origin: "escalation", run_id: "run_a", about_run_id: "run_a" }],
+    ["rating (no run)", { origin: "rating", run_id: null, about_run_id: "run_a" }],
+    ["null origin (an older build's row)", { ...fix, origin: null }],
+    ["memlane_fix whose run is the corrected run", { ...fix, run_id: "run_a" }],
+    ["memlane_fix with no run", { ...fix, run_id: null }]
+  ])("%s is a card", (_name, row) => {
+    expect(autoApplies({ rows: [row] }, s, "lesson")).toBe(false);
+    expect(autoApplies({ rows: [fix, row] }, s, "lesson")).toBe(false); // one foreign row taints the group
+  });
+  it("an empty group, a non-correction signal, and the lesson-did-not-hold rewrite are cards", () => {
+    expect(autoApplies({ rows: [] }, s, "lesson")).toBe(false);
+    expect(autoApplies({ rows: [fix] }, { signal: "dig_deeper", lastImprovement: null }, "lesson")).toBe(false);
+    const rewrite = { signal: "correction" as const, lastImprovement: { target: "lesson", ageDays: LESSON_REWRITE_DAYS } };
+    expect(lessonRewrite(rewrite)).toBe(true);
+    expect(autoApplies({ rows: [fix] }, rewrite, "lesson")).toBe(false);
+    expect(autoApplies({ rows: [fix] }, { signal: "correction", lastImprovement: { target: "lesson", ageDays: LESSON_REWRITE_DAYS + 1 } }, "lesson")).toBe(true);
+    expect(autoApplies({ rows: [fix] }, { signal: "correction", lastImprovement: { target: "fact", ageDays: 1 } }, "lesson")).toBe(true);
+  });
+});
