@@ -98,7 +98,7 @@ approval named one replay, not a repeated one). Candidate bands measured 2026-10
 
 **Tap labels.** 🔍 Dig deeper, ↩️ Undo and 认真想 write `decision_outcomes` rows (signals `review_ok`,
 `review_bad`, `dig_deeper`, `lesson_undone`, `think_harder`; since 2026-11-07 nothing writes `review_ok` / `review_bad`, because the digest that carried those taps is gone). `houge jev report triage` prints them in a TAP LABELS block
-(only when there are taps): a ✅ on a front-door lane route is a category label; every other tap is evidence, and
+(only when there are taps): a ✅ on a front-door lane route is a category label (older rows only); every other tap is evidence, and
 conflicting taps on one turn give no label. `houge jev label triage` lists the turns with flagged taps first. Paco's sitting
 labels win on the same turn, and nothing is committed or recalibrated automatically (SP4). The mapping of each tap to its
 label or evidence is the table in the stage 2a plan
@@ -286,7 +286,7 @@ tick, not in a turn. Signals (corrections, ratings, denials and expiries, planne
 - **Effects.** Automatic: the `_pending` skill draft, and a lesson or fact from a correction Paco typed (`autoApplies`: `memlane_fix` rows, no prior, the memory lane's backstops, one `/changes` line with its undo). Everything else is a card (Accept / Dismiss), nothing applied before Accept. A lesson or fact draft first passes the memory lane's backstops (a lifted rule, an unsupported quote or a refused AVOID is dropped or the draft is `nothing` / `no_text`); the card of a lesson shows its AVOID.
 - **Outages defer.** A Jev failure that is an outage (timeout, or `no_key`, `fused`, `auth`, `rate_limited`, `overloaded`,
   `transport`, `error`), a failed Tiny pick or a failed distill call leaves the group unconsumed with no decision row; the tick
-  counts it `deferred_outage` and Watch shows it. The first outage of a segment latches: the remaining groups run the rule
+  counts it `deferred_outage` and the `/status` Improvement line shows it. The first outage of a segment latches: the remaining groups run the rule
   rung only (Jev answers `latched`, Tiny abstains, no call), and the segment still ends `done`. A Jev parse,
   `state_too_large` or a throwing rule records as before. The 30-day stale rule bounds the wait.
 - **Bounds.** Each seat call has `IMPROVE_SEAT_DEADLINE_MS = 60 000`. The embedder takes at most `EMBED_PER_TICK_MAX = 50`

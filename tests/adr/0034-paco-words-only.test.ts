@@ -47,13 +47,14 @@ describe("ADR 0034 rule 10.5: autoApplies", () => {
 });
 
 const adr = readFileSync(join(import.meta.dirname, "..", "..", "docs", "decisions", "0034-decision-ladder-consolidated.md"), "utf8");
-const rule = (id: string): string => { const at = adr.indexOf(`- ${id} `); return adr.slice(at, adr.indexOf("\n- ", at + 1)); };
+const rule = (id: string): string => { const at = adr.indexOf(`- ${id} `); expect(at).toBeGreaterThan(-1); return adr.slice(at, adr.indexOf("\n- ", at + 1)); };
 describe("ADR 0034 names the rule the code pins", () => {
   it("10.5 names autoApplies, memlane_fix, the empty prior, the 14-day accepted/reverted block and the card for the rest; 2.5 names pacoWordsOnly; 13.1 says no digest; 13.2 names improve_tick_degraded; 6.6 no longer names digest ✅/❌", () => {
     expect(rule("10.5")).toMatch(/autoApplies/); expect(rule("10.5")).toMatch(/memlane_fix/); expect(rule("10.5")).toMatch(/prior: ""|empty prior|no prior/); expect(rule("10.5")).toMatch(/reverted/);
     expect(rule("2.5")).toMatch(/pacoWordsOnly/);
     expect(rule("13.1")).toMatch(/No digest/); expect(rule("13.2")).toMatch(/improve_tick_degraded/);
-    expect(rule("6.6")).not.toMatch(/Digest ✅\/❌/);
+    expect(rule("6.6")).not.toMatch(/Digest ✅\/❌/); expect(rule("6.6")).toMatch(/No tap produces a category label now/);
+    expect(rule("11.3")).toMatch(/revoked.*schedule_ended.*tampered_use/s);
     expect(rule("10.2")).toMatch(/HOUGE_IMPROVE_AT/);
   });
 });

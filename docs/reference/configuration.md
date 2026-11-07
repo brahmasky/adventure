@@ -1119,7 +1119,7 @@ decided by a ladder of deciders (code rule → Jev → model → Paco) and recor
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `HOUGE_IMPROVE_AT` | `21:00` | Local time (`HH:MM`, in `HOUGE_DISPLAY_TZ`) of the daily improvement tick (`improve.route`). No `off`: `HOUGE_IMPROVE_ENABLED=false` is the switch; a typo keeps 21:00. `HOUGE_DECISION_DIGEST_AT` is retired (named once at boot if still set; delete the `.env` line). |
-| `HOUGE_IMPROVE_ENABLED` | on | Switch for the daily improvement tick (`improve.route`). Only the exact word `false` (any case) turns it off; unset, empty, `0`, `off` and any typo keep it on, so a typo never silences the loop. Read live at every tick, and in `DISARM_FLAGS`: `/disarm` forces it to `false` in the running process. Off = the tick does nothing at all (no inbox mirror, no seat or Jev call, no proposal, no job, no latch row, no ledger event), logs one line per local date, and `/status` Improvement (7 d) says `improvement tick off`. Cards already sent, Undo and the ledger are unaffected. |
+| `HOUGE_IMPROVE_ENABLED` | on | Switch for the daily improvement tick (`improve.route`). Only the exact word `false` (any case) turns it off; unset, empty, `0`, `off` and any typo keep it on, so a typo never silences the loop. Read live at every tick, and in `DISARM_FLAGS`: `/disarm` forces it to `false` in the running process. Off = the tick does nothing at all (no inbox mirror, no seat or Jev call, no proposal, no job, no latch row, no ledger event), logs one line per local date, and `/status` says `Improvement (7 d): … tick off`. Cards already sent, Undo and the ledger are unaffected. |
 | `HOUGE_RECURRENCE_COSINE_GATE` | `0.6` | Cosine similarity at or above which two of Paco's turns in one category count as the same request, for the recurrence that queues a skill-authoring job (3 turns, 14 days, category not `other` / `status` / `memory`, text of 20+ characters). Deliberately above the episodic gate 0.42: on the last 14 days (P2) 0.42 clustered 15 short `other` turns, 0.5 gave four clusters, 0.6 one. A float from 0 to 1; anything else uses the default. Read per tick. |
 | `HOUGE_TRUST_ASK_TTL_MS` | `300000` (5 min) | How long a trust card (an approval asked only because the turn read outside content, spec §7.2) waits for Paco, and the most a turn's trust cards together may pause its deadline and frame watchdog. A positive integer up to 1 800 000; anything else uses the default. Read per call; no restart needed. |
 
@@ -1142,7 +1142,7 @@ row). A tap on a proposal or job card arrives as the `improvement_tap` task even
 `improve_cursor`, `turn_embeddings`, `improvement_proposals`, `improvement_jobs`, `improvement_taps`. The bar for
 `improve_target` is code (`IMPROVE_BAR_P`, 0.67, set by Paco 2026-10-22 from the sanity run's suggestion); there is no env override. One env var, `HOUGE_IMPROVE_ENABLED` (table above); the
 bounds are code constants: `IMPROVE_SEAT_DEADLINE_MS = 60 000` per seat call, `EMBED_PER_TICK_MAX = 50` embeds per call,
-`IMPROVE_GROUPS_PER_TICK = 40` per local date, a proposal blocks its (target, scope) for 14 days after a dismissal or expiry.
+`IMPROVE_GROUPS_PER_TICK = 40` per local date, a proposal blocks its (target, scope) while it is open and for 14 days after it is dismissed, expired, accepted or reverted (an `already_known` dismissal never blocks).
 An outage (Jev or a seat call) leaves a group unconsumed and counts `deferred_outage`. **`/disarm`** (`HOUGE_SKILLS_ENABLED`
 off) holds skill jobs: queued jobs stay queued and a recurrence group that would start one waits. An unreviewed skill offer
 expires after 14 days.
@@ -1166,8 +1166,7 @@ for other entries the next Jev or model answer resolves it; a rule answer never 
 per-entry rate from Jev-rung failures; `turn.handler` and `turn.gear` keep the triage-wide `jev_skip_rate` above in stage 1).
 
 **Live gate:** from the feature worktree, `HOUGE_ENV_FILE=/abs/.env node scripts/live-gate-decisions-parity.mjs --old-dist <pre-stage-1 dist>`
-(P6: the last 200 Telegram texts through the old and new triage on two copies of the DB; coverage floor; the digest
-(retired 2026-11-07) rendered through the Telegram adapter; a ❌ tap). Exit 3 = INCONCLUSIVE, never a pass. The rollback check,
+(P6: the last 200 Telegram texts through the old and new triage on two copies of the DB; coverage floor; no digest export, topic or row — the gate checks the digest is gone; an old ✅/❌ tap answers 'closed'). Exit 3 = INCONCLUSIVE, never a pass. The rollback check,
 `HOUGE_ENV_FILE=/abs/.env node scripts/check-decisions-rollback.mjs --old-dist <pre-stage-1 dist>`, boots the previous
 build on a copy of the live DB that the new build migrated (it must settle a triage turn and run its sweep).
 

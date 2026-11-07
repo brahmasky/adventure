@@ -59,7 +59,7 @@ code-owned registry under `src/decisions/`. Everything else stays plain code (me
   shadow or off mode. (Ruling A5, signed by
   Paco 2026-11-05: the `/disarm` STOP flags of ADR 0018, `HOUGE_JEV_ENABLED` and
   `HOUGE_IMPROVE_ENABLED`, are the operator's brake on a whole capability (`/disarm` forces them off and `/status`
-  then shows `disarmed`; the improvement tick's flag also shows in the digest's Watch line), and are outside this
+  then shows `disarmed`; the improvement tick's flag also shows as `tick off` in the `/status` Improvement (7 d) line), and are outside this
   rule; a flag that lets an entry run unarmed or in shadow while its capability runs is not.) A fundamentally wrong
   build is reverted, `dist/` rebuilt, the daemon kickstarted. Migrations are additive (new tables, nullable link
   columns), so the previous build runs on the migrated DB; every stage plan proves it on a migrated DB copy.
@@ -119,8 +119,7 @@ code-owned registry under `src/decisions/`. Everything else stays plain code (me
 - 3.4 **Faults and visibility.** A failed decision write opens `decision_record_failed` (one per entry; routed per ADR
   0031); the result stands; a recorder that throws past itself is logged; nothing reaches a denied sender's chat.
   `/status` shows a count line per entry id once rows exist (`secret.redact`'s says "final, failure and evolution
-  reports only"). The digest has no per-entry counts, reviews only System One rows, never offers a `run_id`-null row.
-  `review_ok` may name any id in `ENTRY_IDS`.
+  reports only"). `review_ok` may name any id in `ENTRY_IDS` (the digest that wrote it is retired).
 
 ### 4. The entries
 
@@ -164,7 +163,7 @@ write.
 - 4.1 **Shared predicates and limits.** Code and rule share one predicate where named: `mayRetryOf`, `clarifyCapOf`,
   `rewriteFilterOf`/`queryCheckOf`/`thinOf` (`core/lanes/lookup-predicates.ts`), `isBareAck` (nothing is approved by an
   ack), `CRASH_LIMIT`/`CRASH_WINDOW_MS` exported from the entry, one clock read for input and guard.
-  `intake.rate_limit`'s exemption (`kill` and the three digest taps) is code in front of the entry, so no later rung can
+  `intake.rate_limit`'s exemption (`kill` and the three decision-tap prefixes) is code in front of the entry, so no later rung can
   delay `kill`. A crash-guard consult reached after its turn finished writes no row, even when it is the consult that
   latches; the guard still latches and opens its incident (routed per ADR 0031), and the next turn records `latched`.
   `turn.retry` is not consulted on an abort end, an async-work-only end or a settle continuation's error.
@@ -216,8 +215,9 @@ write.
   rung is not asked: the distill decides; ADR 0033 J3).
 - 6.6 **Taps are evidence.** Dig deeper, Undo and 认真想 write `decision_outcomes`; the digest's ✅/❌ are gone (spec
   2026-11-07 §9: no `review_ok`/`review_bad` labels, so `review_bad` → ladder proposals stop arising, and a button on an
-  old digest answers 'This review has closed.'). Calibration labels come from taps on cards only; conflicting taps give
-  no label. No row is committed and no bar moves automatically. `lesson_undone` carries the lane the save came from.
+  old digest answers 'This review has closed.'). No tap produces a category label now (only the retired ✅ on a
+  front-door lane route did, and older rows still count); Dig deeper, Undo and 认真想 are evidence that puts the turn on
+  the next sitting's list; conflicting taps give no label. No row is committed and no bar moves automatically. `lesson_undone` carries the lane the save came from.
 
 ### 7. Judged tool input and egress
 
@@ -324,7 +324,7 @@ write.
 
 ### 10. `improve.route`: improvement as a decision
 
-- 10.1 Corrections, review taps and failures go through one entry that routes each to what it points at (fact, lesson,
+- 10.1 Corrections and failures go through one entry that routes each to what it points at (fact, lesson,
   skill, ladder move, schedule, wiki page, tool gap) and is measured by whether its signal recurs. A pattern is needed
   before behaviour changes, except an explicit stated rule. The 2b-ii spec's rulings R1–R11 and plan rulings 1–16 stand.
 - 10.2 **Inbox and tick.** Producers write `improve_signals` (memory-lane fix, Dig deeper, escalation and low rating
@@ -377,8 +377,8 @@ write.
   `overloaded`, `timeout`, `transport`, `error`) or a failed seat call writes no row and counts `deferred_outage`; the
   first outage latches the segment: later groups run the rule rung only (Jev answers `latched`, Tiny abstains), a group
   the rule cannot decide or that needs the distill is deferred, and the segment still ends `done`. On a day the embedder
-  is down a waiting recurrence row stays unconsumed; with no Jev key every undecided group waits until stale, and Watch
-  says so; the 30-day stale rule bounds deferral. Seat calls run under `IMPROVE_SEAT_DEADLINE_MS` (60 s); the embedder
+  is down a waiting recurrence row stays unconsumed; with no Jev key every undecided group waits until stale, and the `/status`
+  Improvement line says so; the 30-day stale rule bounds deferral. Seat calls run under `IMPROVE_SEAT_DEADLINE_MS` (60 s); the embedder
   takes ≤ `EMBED_PER_TICK_MAX` (50) turns per call and stops at its first failure; a capped segment ends `stopped`. A
   Jev parse, `state_too_large`, a throwing rule or the disarm posture records as usual. **Not built:** the wiki handler,
   model-route proposals, `lesson_unfollowed`, `trust_source` moves.
@@ -411,8 +411,10 @@ write.
   days; a trial unsealed or reported after 24 h; `tampered_use`; `unverified_use` (no readable facts: grant and move
   end, urgent card `standing_unverified:<id>`, no `/changes` row; "ran unknown" is never trusted). `ran:false` before spawn
   voids the trial. A scheduled run's approval is answered only from its notify chat (`APPROVAL_CHAT_MISMATCH` sends no
-  reply; it and `STANDING_HOOK_FAILED` are handled denials). Every other end writes one `/changes` row
-  (`standing_end:<standing_id>`, topic `standing_log`) in `endStandingTx`; `standing_settle_failed` is keyed per row.
+  reply; it and `STANDING_HOOK_FAILED` are handled denials). Five reasons write one `/changes` row
+  (`sealed_trial_failed`, `denied`, `expired`, `stale`, `mismatch`; key `standing_end:<standing_id>`, topic
+  `standing_log`) when the grant ends (`endStandingTx`, and the deny hook); `revoked`, `schedule_ended` and `tampered_use`
+  write none; `standing_settle_failed` is keyed per row.
 
 ### 12. Effects on other ADRs
 
@@ -452,7 +454,7 @@ write.
 ## Consequences
 
 - Easier: a judgment call is an entry plus a rung; one record, failure direction and outcome trail per decision; one
-  daily review. Harder: characterisation tests and a differential before any call site moves; every rung or bar change
+  record, no daily review (`/status` and `/changes`). Harder: characterisation tests and a differential before any call site moves; every rung or bar change
   is Paco's merge; with no off switch each stage's live gate carries more weight.
 - Accepted: an unrecognisable secret in output the planner read can reach TypeSafe (R11), including a seed phrase with
   capitals, digits or punctuation, a one-time token of ≤ 14 pronounceable lowercase letters, an opaque segment in a
