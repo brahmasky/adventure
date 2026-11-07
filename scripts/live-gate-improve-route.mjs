@@ -269,11 +269,11 @@ function case2(g, job, now) {
 }
 
 /** Case 4 (part 1): /forget (or /forget_memory) through the real intake reverts the applied proposal in the same transaction. */
-function case4Undo(g, p) {
+function case4Undo(g, p, now) {
   const c = "4 undo then already_proposed"; if (!p) { unsure(c, "undo", "case 3 applied nothing"); return; }
   const m = g.m; g.seq += 1;
   const r = g.gateway.intake(m.buildTypedTaskEvent({ source: "telegram", type: p.kind === "lesson" ? "forget" : "forget_memory", program: String(p.saved_id), requested_by: { kind: "user", id: "gate" }, notify: { kind: "telegram", chat_id: CHAT },
-    idempotency_key: `gate-improve:undo:${g.seq}`, source_reference: `gate-improve:undo:${g.seq}` }));
+    idempotency_key: `gate-improve:undo:${g.seq}`, source_reference: `gate-improve:undo:${g.seq}` }), now); // the gate clock: resolved_at must sit inside the 14-day block window of the later tick
   const after = g.store.getImprovementProposal(p.proposal_id);
   const gone = p.kind === "lesson" ? g.q.get(`SELECT status FROM lessons WHERE id = ?`, p.saved_id)?.status : g.q.get(`SELECT status FROM episodic_facts WHERE id = ?`, p.saved_id)?.status;
   check(c, `${p.kind === "lesson" ? "/forget" : "/forget_memory"} <id>: the row is pruned and the proposal is reverted`, r.ok && gone === "pruned" && after?.state === "reverted", `ok=${r.ok} status=${gone} state=${after?.state}`);
@@ -331,12 +331,14 @@ async function case8(g, f, now1) {
     ["Write a regular expression that extracts invoice numbers from these log lines", "Give me a regex to pull the invoice numbers out of these log lines", "I need a regular expression that extracts invoice numbers from log lines"]];
   topics.forEach((texts, i) => texts.forEach((text, k) => plantTurn(g, { text, at: dayAt(g, 1, `20:${String(i * 10 + k * 3).padStart(2, "0")}`), category: "answer" })));
   const now2 = g.c.at(g.c.addDays(g.c.d1, 2), "22:00"); const runs = await runTick(g, now2); const r = runs.at(-1);
-  if (!r || r.counts.embed_unavailable > 0) { unsure(c, "fresh-date tick", `no tick or embedder unavailable (${r?.counts.embed_unavailable ?? "n/a"})`); return { now2, deferred: [] }; }
-  if (r.counts.groups !== 4) { unsure(c, "four clusters", `the real embedder formed ${r.counts.groups} group(s) from the four planted topics`); return { now2, deferred: [] }; }
-  const made = jobsOf(g).filter((j) => j.created_at === now2); const open = g.q.all(`SELECT * FROM improve_signals WHERE signal = 'recurrence' AND consumed_at IS NULL AND signal_id > ?`, g.baseSignalId);
+  // computed before any early return: case 9 must list the legitimately deferred recurrence rows on every path, INCONCLUSIVE ones too
+  const open = g.q.all(`SELECT * FROM improve_signals WHERE signal = 'recurrence' AND consumed_at IS NULL AND signal_id > ?`, g.baseSignalId); const deferred = open.map((s) => s.signal_id);
+  if (!r || r.counts.embed_unavailable > 0) { unsure(c, "fresh-date tick", `no tick or embedder unavailable (${r?.counts.embed_unavailable ?? "n/a"})`); return { now2, deferred }; }
+  if (r.counts.groups !== 4) { unsure(c, "four clusters", `the real embedder formed ${r.counts.groups} group(s) from the four planted topics`); return { now2, deferred }; }
+  const made = jobsOf(g).filter((j) => j.created_at === now2);
   check(c, "exactly 3 jobs created, deferred >= 1, the 4th cluster's row unconsumed", made.length === 3 && r.counts.deferred >= 1 && open.length === 1, `jobs=${made.length} deferred=${r.counts.deferred} unconsumed=${open.length} queued=${r.counts.jobs_queued} started=${r.counts.jobs_started}`);
   check(c, "at most one job started while the lane was busy", made.filter((j) => j.started_at !== null).length <= 1, `started=${made.filter((j) => j.started_at !== null).length}`);
-  return { now2, deferred: open.map((s) => s.signal_id) };
+  return { now2, deferred };
 }
 
 /** Case 9: silent degradation: nothing consumed without an outcome, every job transition has its event, ticks bracketed, no fallback, nothing unattached. */
@@ -443,7 +445,7 @@ async function main() {
   const job = case1(g, f, runs, NOW1); progress("case 1 done");
   if (last.counts.deferred_outage > 0 && !routeRows(g).some((d) => d.run_id === f.c3.a)) { g.c3Outage = true; unsure("3 correction applies", "the distill or pick seat failed on the planted group", "deferred_outage: an outage, not a result"); }
   const applied = case3(g, f); const schedProposal = case5Propose(g, f); progress("cases 3 and 5 (propose) done");
-  case6(g); case2(g, job, addMin(NOW1, 10)); case4Undo(g, applied); case5Taps(g, schedProposal, f, addMin(NOW1, 20)); progress("taps done");
+  case6(g); case2(g, job, addMin(NOW1, 10)); case4Undo(g, applied, addMin(NOW1, 15)); case5Taps(g, schedProposal, f, addMin(NOW1, 20)); progress("taps done");
   const eight = await case8(g, f, NOW1); case4Block(g); progress("case 8 done");
   case7(g, f, job); case9(g, eight.deferred); case10(g, args);
   await case11(g); progress("case 11 done");
