@@ -161,8 +161,8 @@ events (a resumed date emits several). Evaluated once per tick date, at its end,
 
 ## 12. Tests and gate
 
-- `tests/improve/`: a memlane-fix and a Dig-deeper correction apply (rows, `accepted`, `result_json`, one change-log row,
-  no chat outbox row); an escalation correction and a rating correction become cards; the distill question for an
+- `tests/improve/`: a memlane-fix correction applies (rows, `accepted`, `result_json`, one change-log row, no chat
+  outbox row); a Dig-deeper, an escalation and a rating correction become cards; the distill question for an
   auto-apply draft has an empty prior (asserted on the seat input); a "did not hold" rewrite is a card; a second
   correction on the same scope within 14 days is `already_proposed`; a capped lesson is a card; no chat → stays open;
   a throw inside the save leaves the group unconsumed and the counts unchanged.
