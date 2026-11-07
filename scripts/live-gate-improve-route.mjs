@@ -347,7 +347,34 @@ function case10(g, args) {
   g.memoryExit = code;
 }
 
-const TITLES = ["1 recurrence", "2 promote", "3 correction", "4 accept lesson", "5 schedule", "6 digest", "7 injection", "8 idempotency and rate", "9 silent degradation", "10 memory lane unchanged"];
+const TITLES = ["1 recurrence", "2 promote", "3 correction", "4 accept lesson", "5 schedule", "6 digest", "7 injection", "8 idempotency and rate", "9 silent degradation", "10 memory lane unchanged", "11 tiny rung"];
+
+/**
+ * Case 11 (Paco 2026-11-07): the Tiny rung, live. Every live improve.route row failed for two weeks because the pick
+ * (10–21 s) outran its 8 s bound, and no other case reaches that rung (their groups end on the rule or Jev rung). Jev is
+ * called for real; its answer is replaced by a below-bar split so the real improve_pick seat must decide one correction.
+ * A row that fell back (the bound expired) FAILS; a pick call that failed defers the group (an outage): INCONCLUSIVE.
+ */
+const BELOW_BAR = { lesson: 0.45, fact: 0.35, nothing: 0.2 };
+async function case11(g) {
+  const c = "11 tiny rung"; const real = g.client; const seen = new Set(routeRows(g).map((d) => d.decision_id));
+  g.client = async (req) => {
+    const x = await real(req); const a = x.ok ? x.answers.improve_target : undefined;
+    return a?.type === "choice" ? { ...x, answers: { ...x.answers, improve_target: { ...a, choice: "lesson", probabilities: BELOW_BAR, confidence: 0.45 } } } : x;
+  };
+  try {
+    const a = plantTurn(g, { text: "Which planets have rings?", at: dayAt(g, 2, "20:00"), category: "answer", reply: "Saturn, Jupiter, Uranus and Neptune all have rings.", clean: true });
+    const b = plantTurn(g, { text: "Always name the brightest one first when you list planets.", at: dayAt(g, 2, "20:30") });
+    const ok = g.m.recordCorrection(g.store, { about: g.store.getJevVerdictForRun(a), run_id: b, chat_id: CHAT, now: dayAt(g, 2, "20:35") });
+    if (!ok) { unsure(c, "the correction was planted", "recordCorrection refused it"); return; }
+    const runs = await runTick(g, g.c.at(g.c.addDays(g.c.d1, 3), "22:00")); const counts = runs.at(-1)?.counts ?? {};
+    const rows = routeRows(g).filter((d) => !seen.has(d.decision_id));
+    if (rows.length === 0 && counts.deferred_outage > 0) { unsure(c, "the pick decided", "the pick seat failed: the group was deferred as an outage"); return; }
+    const row = rows.find((d) => d.rung !== "rule");
+    check(c, "the group reached the Tiny rung and it answered within its bound (rung model, no fallback)", row?.rung === "model" && row.fallback_reason === null,
+      `rows=${rows.length} rung=${row?.rung ?? "none"} reason=${row?.reason_code ?? "none"} fallback=${row?.fallback_reason ?? "none"} latency_ms=${row?.latency_ms ?? "n/a"} bound_ms=${g.m.IMPROVE_TINY_MS}`);
+  } finally { g.client = real; }
+}
 
 async function main() {
   const args = parseArgs(process.argv.slice(2)); temp.keep = args.keep;
@@ -365,6 +392,7 @@ async function main() {
   case2(g, job, addMin(NOW1, 10)); case4(g, lessonProposal, addMin(NOW1, 15)); case5Taps(g, schedProposal, f, addMin(NOW1, 20)); progress("taps done");
   const eight = await case8(g, f, NOW1); progress("case 8 done");
   case7(g, f, job); case9(g, eight.deferred); case10(g, args);
+  await case11(g); progress("case 11 done");
   g.store.close?.();
   const verdicts = TITLES.map((t) => { const r = results.get(t); return [t, !r ? "INCONCLUSIVE" : r.fail.length ? "FAIL" : r.inc.length || r.ok === 0 ? "INCONCLUSIVE" : "PASS"]; });
   for (const [t, v] of verdicts) say(`CASE ${t}: ${v}`);
