@@ -2581,7 +2581,7 @@ export class CoreWorker {
         });
       });
       // after the commit: the inbox row must not roll back the verdict end write; the producer never throws
-      if (escalated && v.paco_correction === null) recordCorrection(this.runStore, { about: v, run_id: i.run_id, chat_id: this.chatOf(i.run_id) });
+      if (escalated && v.paco_correction === null) recordCorrection(this.runStore, { about: v, run_id: i.run_id, chat_id: this.chatOf(i.run_id), origin: "escalation" });
     } catch (e) {
       console.error(`triage: verdict end write failed: ${safeReason(e)}`); // the reply is already decided; the ledger gap is logged
     }
@@ -3253,12 +3253,12 @@ export class CoreWorker {
     return { settled: true, save_outcome: "saved", note: memoryInformNote(w.saved), verdict_id: v.id, saved: w.saved, w };
   }
 
-  /** 2b-ii §2 (a): a memory-lane fix corrects the chat's PREVIOUS turn: the latest verdict that is not this run's (codex B6); none, skipped no_run. */
+  /** 2b-ii §2 (a): a memory-lane fix corrects the chat's PREVIOUS turn: the latest verdict that is not this run's (codex B6); none, skipped no_run. Telegram runs only stamp memlane_fix (a CLI or event run holds no message Paco typed). */
   private noteFixCorrection(run_id: string): void {
     const chat = this.chatOf(run_id);
     const prev = this.runStore.latestJevVerdictForChatExcluding(chat, new Date().toISOString(), run_id);
     if (!prev) { skipImproveSignal(this.runStore, "correction", "no_run", run_id); return; }
-    recordCorrection(this.runStore, { about: prev, run_id, chat_id: chat });
+    recordCorrection(this.runStore, { about: prev, run_id, chat_id: chat, origin: this.runStore.runSource(run_id) === "telegram" ? "memlane_fix" : null });
   }
 
   /**

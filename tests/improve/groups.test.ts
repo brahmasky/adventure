@@ -13,7 +13,7 @@ import { join } from "node:path";
 // the last improvement on the scope, the recurrence info and the R3 stated-rule flag.
 const NOW = "2026-10-21T10:00:00.000Z";
 const row = (o: Partial<ImproveSignalRow>): ImproveSignalRow => ({ signal_id: 1, signal: "correction", value: "answer", run_id: "run_b", chat_id: "555", about_run_id: "run_a",
-  source_outcome_id: null, created_at: NOW, consumed_at: null, ...o });
+  source_outcome_id: null, origin: null, created_at: NOW, consumed_at: null, ...o });
 const verdict = (category: JevVerdictRow["category"], lane: JevVerdictRow["lane"] = "planner"): JevVerdictRow => ({ verdict_id: "jv_1", run_id: "run_a", category, breadth: null, reasoning: null, actions: null,
   sets_rule: null, rule_scope: null, lane, role: "default", effort: null, model: null, cascade: null, save_outcome: "none", route_outcome: "fallback", handler_outcome: "planner_done",
   reason: "jev_skipped", skip_reason: null, fast_used_tool: 0, paco_correction: null, quoted_turn_id: null, decision_id: null, created_at: NOW, updated_at: NOW });

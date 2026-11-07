@@ -10,7 +10,7 @@ import { createQueuedTurnRun, createTelegramTurn } from "../helpers/runs.js";
 // every proposal shows a one-line code-built evidence.
 const NOW = "2026-10-21T10:00:00.000Z";
 const dj = (x: DraftResult) => JSON.parse((x as Draft).draft_json) as Record<string, any>;
-const row = (o: Partial<ImproveSignalRow>): ImproveSignalRow => ({ signal_id: 1, signal: "correction", value: "answer", run_id: "run_b", chat_id: "555", about_run_id: "run_a", source_outcome_id: null, created_at: NOW, consumed_at: null, ...o });
+const row = (o: Partial<ImproveSignalRow>): ImproveSignalRow => ({ signal_id: 1, signal: "correction", value: "answer", run_id: "run_b", chat_id: "555", about_run_id: "run_a", source_outcome_id: null, origin: null, created_at: NOW, consumed_at: null, ...o });
 const group = (r: ImproveSignalRow, extra: Partial<SignalGroup> = {}): SignalGroup => ({ key: `${r.signal}|answer`, signal: r.signal, value: r.value, scope: "answer", rows: [r], newest: r, stale: false, recurrence: null, ...extra });
 const state = (o: Partial<ImproveState> = {}): ImproveState => ({ signal: "correction", value: "answer", scope: "answer", count: 1, count14d: 3, category: "answer", lane: "answer", capability: null,
   pacoText: "please always answer in one line", toolSummary: "none", lastImprovement: null, recurrence: null, alreadyAuthored: false, skillExists: false, wikiArmed: false, scheduleHint: null, stale: false,

@@ -1265,7 +1265,7 @@ export class Gateway {
     const v = this.runStore.latestJevVerdictForChat(chat_id, now);
     if (!v || v.paco_correction !== null) return;
     this.runStore.updateJevVerdict(v.verdict_id, { paco_correction: "low_rating" });
-    recordCorrection(this.runStore, { about: v, run_id: null, chat_id, now });
+    recordCorrection(this.runStore, { about: v, run_id: null, chat_id, origin: "rating", now });
   }
 
   /** 2b-ii §2: the rating labels the chat's latest planner run (processRatingSignal returns early above 1 and has no run id). */

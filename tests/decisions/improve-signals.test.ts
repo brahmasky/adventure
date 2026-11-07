@@ -28,12 +28,27 @@ describe("recordImproveSignal", () => {
     expect(correctionValue(null)).toBe("other");
     expect(correctionValue("lookup")).toBe("lookup");
   });
-  it("recordCorrection labels the corrected turn with its category and the correcting run", () => {
+  it("recordCorrection labels the corrected turn with its category, the correcting run and its producer (spec 2026-11-07 §3.1: the origin decides what may apply on its own)", () => {
     const s = RunStore.openInMemory();
     const a = createQueuedTurnRun(s, "a");
     const v = verdictOf(s, a, "lookup");
-    expect(recordCorrection(s, { about: v, run_id: "run_b", chat_id: "555", now: NOW })).toBe(true);
-    expect(s.listUnconsumedSignals(5).map((r) => [r.signal, r.value, r.run_id, r.about_run_id, r.chat_id])).toEqual([["correction", "lookup", "run_b", a, "555"]]);
+    expect(recordCorrection(s, { about: v, run_id: "run_b", chat_id: "555", origin: "memlane_fix", now: NOW })).toBe(true);
+    expect(s.listUnconsumedSignals(5).map((r) => [r.signal, r.value, r.run_id, r.about_run_id, r.chat_id, r.origin])).toEqual([["correction", "lookup", "run_b", a, "555", "memlane_fix"]]);
+  });
+  it("a null origin (a non-Telegram correcting run, P16) is stored as null and never reads as memlane_fix", () => {
+    const s = RunStore.openInMemory();
+    const a = createQueuedTurnRun(s, "a");
+    expect(recordCorrection(s, { about: verdictOf(s, a, "lookup"), run_id: "run_cli", chat_id: "555", origin: null, now: NOW })).toBe(true);
+    expect(s.listUnconsumedSignals(5).map((r) => r.origin)).toEqual([null]);
+  });
+  it("each producer names its own origin, and only the memory lane's fix hand-off stamps memlane_fix, and only for a Telegram correcting run (the one correction that holds a message Paco typed)", () => {
+    const worker = readFileSync("src/core/core-worker.ts", "utf8"); const gateway = readFileSync("src/gateway/gateway.ts", "utf8"); const memlane = readFileSync("src/gateway/memlane-commands.ts", "utf8");
+    const all = `${worker}\n${gateway}\n${memlane}\n${readFileSync("src/omp/bridge-handler.ts", "utf8")}`;
+    expect((all.match(/"memlane_fix"/g) ?? []).length).toBe(1);
+    expect(worker.slice(worker.indexOf("private noteFixCorrection"))).toContain('recordCorrection(this.runStore, { about: prev, run_id, chat_id: chat, origin: this.runStore.runSource(run_id) === "telegram" ? "memlane_fix" : null })');
+    expect(worker).toContain('recordCorrection(this.runStore, { about: v, run_id: i.run_id, chat_id: this.chatOf(i.run_id), origin: "escalation" })');
+    expect(memlane).toContain('recordCorrection(store, { about: verdict, run_id: new_run_id, chat_id, origin: "dig_deeper", now })');
+    expect(gateway).toContain('recordCorrection(this.runStore, { about: v, run_id: null, chat_id, origin: "rating", now })');
   });
   it("recordApprovalDenied / recordApprovalExpired take the capability from the approval row; a missing row is no_capability", () => {
     const s = RunStore.openInMemory();

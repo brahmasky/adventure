@@ -67,7 +67,7 @@ export function recordTriageOverride(store: RunStore, original_run_id: string, n
   }
   // Spec §6: the tap is Paco's explicit correction, so it outranks any earlier label on the original turn's verdict.
   if (verdict) store.updateJevVerdict(verdict.verdict_id, { paco_correction: "ask_anyway" });
-  if (verdict) recordCorrection(store, { about: verdict, run_id: new_run_id, chat_id, now });
+  if (verdict) recordCorrection(store, { about: verdict, run_id: new_run_id, chat_id, origin: "dig_deeper", now });
   else skipImproveSignal(store, "correction", "no_run", original_run_id);
   if (verdict?.decision_id && lane !== null) recordTapOutcome(store, verdict.decision_id, "dig_deeper", lane, now); // Addition A
   const kind = savedMemoryKindOf(store, original_run_id);

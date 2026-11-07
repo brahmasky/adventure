@@ -1051,8 +1051,11 @@ export interface LadderMoveInsert {
   entry_id: string; scope: string; from_rung: RungKind; to_rung: RungKind; evidence: string[]; granted_by: "paco" | "auto";
   granted_via: string | null; paco_callback_id: string | null; revocable: boolean; created_at?: string;
 }
-export interface ImproveSignalInsert { signal: DecisionSignal; value: string | number; run_id: string | null; chat_id: string | null; about_run_id: string | null; source_outcome_id?: string | null; created_at?: string }
-export interface ImproveSignalRow { signal_id: number; signal: DecisionSignal; value: string; run_id: string | null; chat_id: string | null; about_run_id: string | null; source_outcome_id: string | null; created_at: string; consumed_at: string | null }
+/** Spec 2026-11-07 §3.1: which producer wrote a correction row. Only `memlane_fix` (the memory lane's fix hand-off, Telegram runs only) carries a message Paco typed; null on rows older builds wrote, on mirrored outcomes and on a non-Telegram correcting run. */
+export type ImproveOrigin = "memlane_fix" | "dig_deeper" | "escalation" | "rating";
+export const IMPROVE_ORIGINS: readonly ImproveOrigin[] = ["memlane_fix", "dig_deeper", "escalation", "rating"];
+export interface ImproveSignalInsert { signal: DecisionSignal; value: string | number; run_id: string | null; chat_id: string | null; about_run_id: string | null; source_outcome_id?: string | null; origin?: ImproveOrigin | null; created_at?: string }
+export interface ImproveSignalRow { signal_id: number; signal: DecisionSignal; value: string; run_id: string | null; chat_id: string | null; about_run_id: string | null; source_outcome_id: string | null; created_at: string; consumed_at: string | null; origin: ImproveOrigin | null }
 export interface ImproveCursor { outcome_created_at: string; outcome_rowid: number }
 export interface ImproveTickRow { local_date: string; started_at: string; finished_at: string | null; result: "running" | "done" | "stopped" | "failed"; detail: Record<string, unknown> }
 export interface RecurrenceCandidateRow { turn_id: string; run_id: string; chat_id: string; text: string; created_at: string; category: Category }
@@ -1297,7 +1300,8 @@ const IMPROVE_ROUTE_DDL = `
     about_run_id TEXT,
     source_outcome_id TEXT UNIQUE,
     created_at TEXT NOT NULL,
-    consumed_at TEXT
+    consumed_at TEXT,
+    origin TEXT CHECK (origin IS NULL OR origin IN ('memlane_fix', 'dig_deeper', 'escalation', 'rating'))
   );
   CREATE INDEX IF NOT EXISTS improve_signals_unconsumed_idx ON improve_signals(consumed_at, signal_id);
   CREATE INDEX IF NOT EXISTS improve_signals_signal_idx ON improve_signals(signal, created_at);
@@ -5233,9 +5237,10 @@ export class RunStore {
   /** 2b-ii §2: a producer's row; `checkOutcomeValue` keeps the value closed; a known `source_outcome_id` is ignored (0). */
   insertImproveSignal(s: ImproveSignalInsert): number {
     const value = checkOutcomeValue(s.signal, s.value);
+    if (s.origin != null && !IMPROVE_ORIGINS.includes(s.origin)) throw new Error("invalid_origin"); // INSERT OR IGNORE would drop a CHECK-refused row silently
     const r = this.db.prepare(`
-      INSERT OR IGNORE INTO improve_signals (signal, value, run_id, chat_id, about_run_id, source_outcome_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(s.signal, value, s.run_id, s.chat_id, s.about_run_id, s.source_outcome_id ?? null, s.created_at ?? new Date().toISOString());
+      INSERT OR IGNORE INTO improve_signals (signal, value, run_id, chat_id, about_run_id, source_outcome_id, created_at, origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(s.signal, value, s.run_id, s.chat_id, s.about_run_id, s.source_outcome_id ?? null, s.created_at ?? new Date().toISOString(), s.origin ?? null);
     return Number(r.changes) === 1 ? Number(r.lastInsertRowid) : 0;
   }
 
@@ -8647,12 +8652,14 @@ export class RunStore {
     });
   }
 
-  /** Decision ladder stage 2b-ii (improve.route): seven additive tables, guarded by IF NOT EXISTS like the 2a migration. */
+  /** Decision ladder stage 2b-ii (improve.route): seven additive tables, guarded by IF NOT EXISTS like the 2a migration; the `origin` column is added to an older table on every open. */
   private applyImproveRouteMigration(): void {
     const version = "2026-10-21-improve-route";
     this.inTransaction(() => {
       const applied = this.db.prepare(`SELECT version FROM schema_migrations WHERE version = ?`).get<{ version: string }>(version);
       this.db.exec(IMPROVE_ROUTE_DDL);
+      // spec 2026-11-07 §3.1: additive; the CHECK closes the set the way the DDL does for a new table
+      if (!this.tableColumns("improve_signals").has("origin")) this.db.exec(`ALTER TABLE improve_signals ADD COLUMN origin TEXT CHECK (origin IS NULL OR origin IN ('memlane_fix', 'dig_deeper', 'escalation', 'rating'))`);
       if (!applied) this.db.prepare(`INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)`).run(version, new Date().toISOString());
     });
   }
