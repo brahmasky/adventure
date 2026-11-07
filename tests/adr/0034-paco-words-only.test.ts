@@ -4,6 +4,8 @@
  * Paco typed on the memory lane (`memlane_fix`, a new run of his, never the corrected run), verdict lesson or fact, no rewrite.
  * Any other origin, a null origin (rows older builds wrote), a run-less row, or a rewrite is a card. Changing this rule changes this test.
  */
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { autoApplies as autoAppliesReal, IMPROVE_ROUTE, LESSON_REWRITE_DAYS, lessonRewrite } from "../../src/decisions/entries/improve-route.js";
 
@@ -41,5 +43,17 @@ describe("ADR 0034 rule 10.5: autoApplies", () => {
     expect(autoApplies({ rows: [fix] }, rewrite, "lesson")).toBe(false);
     expect(autoApplies({ rows: [fix] }, { signal: "correction", lastImprovement: { target: "lesson", ageDays: LESSON_REWRITE_DAYS + 1 } }, "lesson")).toBe(true);
     expect(autoApplies({ rows: [fix] }, { signal: "correction", lastImprovement: { target: "fact", ageDays: 1 } }, "lesson")).toBe(true);
+  });
+});
+
+const adr = readFileSync(join(import.meta.dirname, "..", "..", "docs", "decisions", "0034-decision-ladder-consolidated.md"), "utf8");
+const rule = (id: string): string => { const at = adr.indexOf(`- ${id} `); return adr.slice(at, adr.indexOf("\n- ", at + 1)); };
+describe("ADR 0034 names the rule the code pins", () => {
+  it("10.5 names autoApplies, memlane_fix, the empty prior, the 14-day accepted/reverted block and the card for the rest; 2.5 names pacoWordsOnly; 13.1 says no digest; 13.2 names improve_tick_degraded; 6.6 no longer names digest ✅/❌", () => {
+    expect(rule("10.5")).toMatch(/autoApplies/); expect(rule("10.5")).toMatch(/memlane_fix/); expect(rule("10.5")).toMatch(/prior: ""|empty prior|no prior/); expect(rule("10.5")).toMatch(/reverted/);
+    expect(rule("2.5")).toMatch(/pacoWordsOnly/);
+    expect(rule("13.1")).toMatch(/No digest/); expect(rule("13.2")).toMatch(/improve_tick_degraded/);
+    expect(rule("6.6")).not.toMatch(/Digest ✅\/❌/);
+    expect(rule("10.2")).toMatch(/HOUGE_IMPROVE_AT/);
   });
 });

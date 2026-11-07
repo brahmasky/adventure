@@ -1,6 +1,6 @@
 # ADR 0031: Chat carries what needs Paco; the change log carries the rest
 
-- **Status:** accepted 2026-11-04, signed off by Paco (scope and decisions 1-A, 2-A, 3-A, 4-A approved by Paco 2026-11-03; spec approved 2026-11-03)
+- **Status:** accepted 2026-11-04, signed off by Paco (scope and decisions 1-A, 2-A, 3-A, 4-A approved by Paco 2026-11-03; spec approved 2026-11-03); amended 2026-11-07 (the digest leaves chat; improvement cards and two log topics join — **awaiting Paco's signature**)
 - **Date:** 2026-11-03
 - **Deciders:** Paco
 - **Amends:** [0024](0024-introspection-invariant-sweep.md) (sweep alerts), [0028](0028-omp-runtime.md) (model tiers, omp
@@ -35,14 +35,16 @@ in ledger rows but nothing read it back in plain words.
 
 ## Consequences
 
-- Chat carries replies, run reports, approvals, memory cards, rating asks, the digest, idea panel, standing and
-  improvement cards, self-write notices, budget fuses, a failing skill re-check (it asks for `/skills retire`) and real
+- Chat carries replies, run reports, approvals, memory cards, rating asks, idea panel, standing cards,
+  **improvement proposal cards** (`improve_card`), self-write notices, budget fuses, a failing skill re-check (it asks for `/skills retire`) and real
   outages. Model switches, internal self-checks and routine Jev notices are read with `/changes`.
 - Two messages for one event become one where an incident and its card both fired (`hostile_schedule_turn`).
 - What else changed in code: a duplicate log write returns `duplicate_log` (no outbox record exists), not `duplicate`;
   an urgent card with no chat now throws instead of queueing an undeliverable row (`standing_grant` keeps "no grant
   without its card"; `trust_hostile` falls to `trust_card_failed`, which pages); `/models set` marks its override
   `via: "set"` so it is never read as a card tap; `/changes` collapses consecutive identical entries (`×N`).
+  2026-11-07 (spec improve-auto-apply, awaiting Paco's signature): the digest leaves the chat list; applied improvements
+  (`improve_log`) and standing-grant ends (`standing_log`) are change-log rows; `improve_tick_degraded` pages.
 - Residuals Paco accepts: background is visible only when he looks; a catalog outage and a stale static list left the daily
   reminder; an omp contract drift that degrades answers without failing spawns shows in `/status` and, after 7 days, in the
   reminder; rating asks stay in chat.

@@ -1,7 +1,8 @@
 # ADR 0034: Decision ladder (consolidated) — every decision on one list, a ladder of deciders, improved from outcomes
 
 - **Status:** accepted 2026-11-05 (signed by Paco, rulings A1–A5 included); consolidates and supersedes
-  [ADR 0030](0030-decision-ladder.md) with no change of meaning
+  [ADR 0030](0030-decision-ladder.md) with no change of meaning; amended 2026-11-07 (improvement proposals
+  auto-apply, the digest goes — **awaiting Paco's signature**)
 - **Date:** 2026-11-04
 - **Deciders:** Paco
 - **Supersedes:** [0030](0030-decision-ladder.md) (17 amendment sections) and
@@ -71,7 +72,9 @@ code-owned registry under `src/decisions/`. Everything else stays plain code (me
   change it suggests (lesson, fact, skill, wiki page) is a proposal for Paco's tap.
 - 2.2 Over **Paco's own message** a verdict may cause an effect directly if reversible and announced: a `turn.handler`
   lane reply (Dig deeper); the memory shortcut's instant lesson save (permanent; Undo on its card). Every automatic
-  lesson save, whatever the route, is announced on the memory card with Undo.
+  lesson save, whatever the route, is announced: on the memory card with Undo, or — for a lesson or fact `improve.route`
+  applies from a correcting turn Paco typed (rule 10.5) — on a `/changes` line with its undo command (`/forget <id>`,
+  `/forget_memory <id>`).
 - 2.3 **Context does not change the source.** An entry about Paco's message stays `paco` when its state also carries
   recent turns, Houge's replies included, as long as the effect only stores Paco's own words, reversibly and announced.
   An effect that would store or act on text from the context is `mixed`.
@@ -88,7 +91,11 @@ code-owned registry under `src/decisions/`. Everything else stays plain code (me
   carry an `effect` verdict over `tool` or `mixed` input (`steer` and `retry` are irreversible `effect`s over tool
   input; `include` and `inject` are `effect`s over `mixed` input; `rewrite`, `fetch`, `fallback`, `held` are `effect`s,
   `rewrite` over `mixed` input); a Jev or model rung joins only after a compliant effect contract — changing the input
-  to `paco` alone is not enough.
+  to `paco` alone is not enough. One allowance (spec 2026-11-07 §4): over `mixed` input a judged verdict may be a
+  reversible, announced `effect` when the entry names a code-owned provenance predicate (`pacoWordsOnly`; today
+  `improve.route`'s `autoApplies`) that holds by construction — the state the stored text comes from is Paco's own
+  message plus code-built fields. The provisional-bar rule (6.1) extends to that gated case. Every other mixed-input
+  effect still fails `entryProblems`.
 
 ### 3. Recording: decide, then record
 
@@ -207,9 +214,10 @@ write.
   item, `fix`/`other` go to the planner. It runs on the memory lane, on any lane's `sets_rule` save-first (a Jev
   `other`/`fix` there abstains, never suppressing the save), and inside the planner's `lesson_write` tool (where the Jev
   rung is not asked: the distill decides; ADR 0033 J3).
-- 6.6 **Taps are evidence.** Digest ✅/❌, Dig deeper, Undo and 认真想 write `decision_outcomes`. Only ✅ on a front-door lane
-  route becomes a category label; other taps put the turn on the next sitting's list; conflicting taps give no label. No
-  row is committed and no bar moves automatically. `lesson_undone` carries the lane the save came from.
+- 6.6 **Taps are evidence.** Dig deeper, Undo and 认真想 write `decision_outcomes`; the digest's ✅/❌ are gone (spec
+  2026-11-07 §9: no `review_ok`/`review_bad` labels, so `review_bad` → ladder proposals stop arising, and a button on an
+  old digest answers 'This review has closed.'). Calibration labels come from taps on cards only; conflicting taps give
+  no label. No row is committed and no bar moves automatically. `lesson_undone` carries the lane the save came from.
 
 ### 7. Judged tool input and egress
 
@@ -322,7 +330,7 @@ write.
 - 10.2 **Inbox and tick.** Producers write `improve_signals` (memory-lane fix, Dig deeper, escalation and low rating
   corrections; the rating; approval denials and expiries; planner failures beside every `run_failed`);
   `decision_outcomes` are mirrored behind a `(created_at, rowid)` cursor. The tick runs once per local date at the
-  digest's time (also while the digest is `off`), before it; groups by (signal, scope); one transaction per group
+  `HOUGE_IMPROVE_AT` (default 21:00; no `off`, R13: `HOUGE_IMPROVE_ENABLED=false` is the switch); groups by (signal, scope); one transaction per group
   (decision, an outcome per inbox row, the proposal or job, `consumed_at`). A failing group counts `record_failed` and
   stays unconsumed. 120 s per cycle, resumed next cycle; the daemon loop waits meanwhile; at most 40 groups per date;
   counts accumulate over the date.
@@ -344,13 +352,27 @@ write.
   `author_failed`. Paco promotes by tap (refuse / replace with lineage / keep both). `/disarm` holds queued jobs and
   defers job-starting groups. A cluster is already authored if a 90-day job in its category has an origin turn within
   the gate of a cluster turn, or shares a turn within 30 days; a `failed` job never suppresses.
-- 10.5 **Proposals** (lesson, fact, schedule, tool gap, ladder): digest taps, one open per (target, scope), expiring at
-  14 days; one dismissed or expired within 14 days blocks the same pair (`already_proposed`), checked before the draft.
-  Lesson and fact drafts pass the memory lane's backstops (refused: `nothing`/`no_text`); a waiting lesson shows its
-  AVOID. Accept writes through the memory lane's writers with Undo; Undo moves it to `reverted` and is no `turn.handler`
-  label. Schedule Accept applies only while the row equals `before`; Revert restores; both recompute `next_run_at`. A
-  skill Accept whose job exists dismisses. A ladder Accept records a `ladder_moves` row and changes nothing; a tool gap
-  replies the `self_write_propose` text.
+- 10.5 **Proposals** (lesson, fact, schedule, tool gap, ladder): one open per (target, scope), expiring at 14 days; one
+  dismissed, expired, **accepted or reverted** within 14 days blocks the same pair (`already_proposed`), checked before
+  the draft (an `already_known` dismissal never blocks its pair). **A lesson or fact applies on its own** (spec
+  2026-11-07 §3) only through `autoApplies` (`improve-route.ts`, pinned by `tests/adr/0034-paco-words-only.test.ts`):
+  every row of the group a correction Paco typed on the memory lane (`improve_signals.origin = memlane_fix`, stamped
+  only for a Telegram correcting run and re-checked at the apply boundary; a new run of his, never the corrected run),
+  verdict lesson or fact, not a 'lesson did not hold' rewrite; its draft is distilled with an empty prior (`prior: ""`:
+  Houge's reply never reaches the seat), passes the memory lane's backstops, and is saved inside the group's commit
+  through `saveMemoryPlan` under the corrected run, `accepted` with the ids, with one `/changes` row
+  (`improve_applied:<proposal_id>`, topic `improve_log`) naming `/forget <id>` or `/forget_memory <id>`; no chat → it
+  stays open. A capped lesson, a save with no change id, and every other proposal (Dig-deeper, escalation and rating
+  corrections, rewrites, schedule, tool gap, ladder, skill) is **one card** at the tick (`knowledge` stays recorded
+  only, R5: no card) (topic `improve_card`, key `improve_proposal:<proposal_id>`, Accept / Dismiss, `offered_at` set);
+  a null draft for anything but a capped lesson dismisses the proposal with reason `already_known` (no card, no
+  `/changes` line). Accept writes through the memory lane's writers and the reply carries Undo / Revert / Revoke.
+  `/forget <id>`, `/forget <scope>` and `/forget_memory <id>` move the proposal `accepted → reverted` in the removal's
+  transaction; Undo is no `turn.handler` label. Schedule Accept applies only while the row equals `before`; Revert
+  restores; both recompute `next_run_at`. A skill Accept whose job exists dismisses. A ladder Accept records a
+  `ladder_moves` row and changes nothing; a tool gap replies the `self_write_propose` text. Residual (accepted): with no
+  prior and Paco's line as both numbered evidence lines a fact can over-generalise his words; it is his words' reading,
+  never another source's, and one `/forget_memory` away.
 - 10.6 **Outages defer, never consume.** A Jev outage (rung timeout; `no_key`, `fused`, `auth`, `rate_limited`,
   `overloaded`, `timeout`, `transport`, `error`) or a failed seat call writes no row and counts `deferred_outage`; the
   first outage latches the segment: later groups run the rule rung only (Jev answers `latched`, Tiny abstains), a group
@@ -387,10 +409,10 @@ write.
   hostile. **Ends:** Revoke (30 days, its chat only); expiry at 30 days; schedule cancelled or disabled; a fingerprint
   mismatch from its own schedule and chat; a denial on (chat, fingerprint) from any run (30-day block); a streak idle 30
   days; a trial unsealed or reported after 24 h; `tampered_use`; `unverified_use` (no readable facts: grant and move
-  end, urgent card `standing_unverified:<id>`, no digest line; "ran unknown" is never trusted). `ran:false` before spawn
+  end, urgent card `standing_unverified:<id>`, no `/changes` row; "ran unknown" is never trusted). `ran:false` before spawn
   voids the trial. A scheduled run's approval is answered only from its notify chat (`APPROVAL_CHAT_MISMATCH` sends no
-  reply; it and `STANDING_HOOK_FAILED` are handled denials). Digest standing lines cover `[previous cutoff, now)`;
-  `standing_settle_failed` is keyed per row.
+  reply; it and `STANDING_HOOK_FAILED` are handled denials). Every other end writes one `/changes` row
+  (`standing_end:<standing_id>`, topic `standing_log`) in `endStandingTx`; `standing_settle_failed` is keyed per row.
 
 ### 12. Effects on other ADRs
 
@@ -405,18 +427,22 @@ write.
 
 ### 13. Review and decision-health kinds
 
-- 13.1 **Digest**, scoped to its chat: Improvements today, Proposals waiting, Unsure (within 0.15 of the bar, ✅/❌
-  writing outcome labels), Watch (`ticks failed · stopped · record failed · deferred_outage` when non-zero; a day with
-  only that still sends), and the standing lines (rule 11.3). Silence writes nothing. `/status` holds the counts, the
-  `turn.settle` health line and per-entry Jev-skip counts (24 h). Urgent cards go out at once for events that cannot
-  wait.
+- 13.1 **No digest** (spec 2026-11-07; Paco 2026-10-14 and 2026-11-07). `/status` holds the counts, the `turn.settle`
+  health line, per-entry Jev-skip counts (24 h), the 30-day proposal counts and the 'Improvement (7 d)' line (tick off,
+  unattached, silent families, deferrals, ticks failed, record failed, embeddings unavailable N d, wiki disarmed,
+  inapplicable tops, lessons not holding); `/changes` lists applied improvements and ended standing grants. Urgent cards
+  and proposal cards go out at once.
 - 13.2 **Kinds (ADR 0031).** `decision_record_failed`, `decision_golden_drift` and `decision_fallback` (slice R5: a rule
   that throws writes a `fail`-rung row, and three in an hour open `decision_fallback`) route to the log (topic
   `decision_internal`), counted in `/status`, listed by `/changes`. `decision_health` is a card kind: its urgent card is
   the page. `decision_fallback_streak` pages: a tick entry (stage `after_turn`, `alwaysRecord`, with a judge rung; today
   `improve.route`) whose last three runs, however far apart, ended only in counted fallbacks opens it once; the next answer
   from a counting rung resolves it (one or two groups a day seldom make three in an hour; per-turn entries keep the hourly
-  log).
+  log). `improve_tick_degraded` pages (subject `improve`): judged on each date's `improve_ticks` row at its end —
+  `failed` or a previous date still `running` opens at once, the third bad date (nothing decided while
+  `deferred_outage`, `record_failed` or `embed_unavailable` was above 0) with no healthy date between them opens once,
+  `stopped` is neutral (neither counted nor a reset), a `done` date that decided something (or had no group) with the
+  embedder up resolves.
 - 13.3 **Daily reminder.** A tick-loop step, independent of `HOUGE_MODEL_ROLES` and catalog outages, before the model
   ticks: one message a day (`incident_remind:<Sydney date>`) listing open `REMIND_KINDS` incidents older than 24 h, with
   ages and a code-owned action line — `role_unresolved`, `planner_session_reset_failed`, `omp_contract_drift` (at 7
@@ -478,7 +504,7 @@ write.
 - TypeSafe ships adversarial hardening, a retention commitment, or deterministic answers (the band goes).
 - `decisions` passes 1 million rows; a golden set drifts twice in 30 days; fact Undo taps exceed one in five fact saves
   over 30 days; real replies sent back exceed 10 % over 14 days; 14 days of `improve.route` rows are in for its bar and
-  gate.
+  gate (outcomes only: no review labels).
 - A locked entry needs a judgment code cannot make; a stage needs a non-additive migration (R13 needs Paco again); any
   assumption fails its check.
 
@@ -507,6 +533,7 @@ write.
 | 2026-11-05 | No off switch, no shadow: front-door shadow, HOUGE_JEV_LANES_OFF and HOUGE_JEV_TRIAGE_ENABLED removed; HOUGE_JEV_ENABLED is the front door's STOP flag | [no off switch](../superpowers/specs/2026-11-05-jev-no-off-switch-no-shadow-design.md) | 2026-11-06 |
 | 2026-11-06 | Drift rewording, no change of meaning: golden sets are daily ticks and version-check sets, and where each reports drift (6.2); the five unmarked `alwaysRecord` entries marked in rule 4, pinned by `tests/adr/` | — | 2026-11-06 |
 | 2026-11-06 | 6.3: the promise that the digest flags an entry until Paco commits a calibrated row is retired (nothing built it; Paco's decision 2026-11-06) | — | 2026-11-06 |
+| 2026-11-07 | Improvement proposals auto-apply, the digest goes: 2.2, 2.5 (gated allowance), 6.6 (no digest taps), 10.2 (HOUGE_IMPROVE_AT), 10.5 (autoApplies, origin, no prior, cards, reverted blocks), 11.3 and 13.1 (/changes rows, no digest), 13.2 (improve_tick_degraded) | [auto-apply](../superpowers/specs/2026-11-07-improve-auto-apply-design.md) | awaiting Paco's signature |
 | 2026-11-07 | 13.2: `decision_fallback_streak` pages three failed runs in a row of a tick entry (`improve.route` failed every day unseen); `improve.route`'s Tiny bound 8 s → 30 s | — | 2026-11-07 |
 
 ## Reference map
