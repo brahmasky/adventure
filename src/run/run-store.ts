@@ -61,6 +61,7 @@ import type { Category } from "../jev/questions/tree.js";
 import type { Effort, Lane, RouteReason, TurnRole } from "../jev/tree-policy.js";
 import type { MediaIngestedPayload } from "../media/media-config.js";
 import type { ProbeResult } from "../omp/omp-contract-probe.js";
+import { scheduleDisplayName } from "./schedule-spec.js";
 
 /**
  * The `role` recorded on every `llm_attempt` row (via `llmAuditSink`'s scope): chain calls, spawn
@@ -1076,6 +1077,14 @@ export type StandingTrial = Pick<StandingApprovalRow, "sealing_approval_id" | "s
 const isTrial = (row: StandingApprovalRow, t: StandingTrial | undefined): boolean => t === undefined
   || (row.sealing_approval_id === t.sealing_approval_id && row.sealed_run_id === t.sealed_run_id && row.sealed_tool_call_id === t.sealed_tool_call_id);
 export type StandingEndReason = "sealed_trial_failed" | "denied" | "revoked" | "expired" | "schedule_ended" | "stale" | "mismatch" | "tampered_use" | "unverified_use";
+/** An end Paco did not cause by his own tap: Revoke and a cancelled schedule are his acts, and a tampered or unverified use already sent an urgent card, so none gets a line (spec 2026-11-07 §8: a /changes row at the end; formerly the digest's standing line). */
+export const STANDING_DIGEST_TEXT = {
+  sealed_trial_failed: "the sealed run did not seal; it keeps asking",
+  denied: "denied; no standing approval for these bytes for 30 days",
+  expired: "the 30 days ran out; it asks again",
+  stale: "no approval in 30 days; the streak was dropped",
+  mismatch: "the command changed under the grant; it asks again"
+} as const;
 /** Why a standing use was refused; the runner then asks Paco instead (fails closed). */
 export type StandingUseRefusal = "not_standing" | "fingerprint_mismatch" | "expired" | "move_inactive" | "schedule_not_enabled" | "schedule_mismatch" | "chat_mismatch" | "already_used" | "lost";
 export interface StandingKey { schedule_id: string; chat_id: string; action_fingerprint: string }
@@ -5752,7 +5761,17 @@ export class RunStore {
     if (r.changes !== 1) return false;
     if (row.move_id) this.endLadderMove(row.move_id, i.now);
     this.appendStandingLedgerEvent("standing_ended", { standing_id: i.standing_id, reason: i.reason });
+    this.logStandingEnd(row, i.reason, i.now);
     return true;
+  }
+  /** Spec 2026-11-07 §8: one change-log row per ended grant Paco did not end himself, in the end's own transaction (plain statements: the deny hook's raw BEGIN); keyed by row, so every path writes it once. */
+  private logStandingEnd(row: StandingApprovalRow, reason: StandingEndReason, now: string): void {
+    if (!Object.hasOwn(STANDING_DIGEST_TEXT, reason)) return;
+    const name = scheduleDisplayName(this.getScheduledTask(row.schedule_id)?.goal ?? "") || row.schedule_id;
+    const r = this.logChange({ topic: "standing_log", idempotency_key: `standing_end:${row.standing_id}`, correlation_id: `standing:${row.standing_id}`,
+      text: `🔏 ${row.label} · ${name} — ${STANDING_DIGEST_TEXT[reason as keyof typeof STANDING_DIGEST_TEXT]}`, now });
+    // P18: a refused write is reported, never thrown — the end (a denial, an expiry) must commit whatever the log did
+    if (r.status === "conflict") console.error(`[standing] end row for ${row.standing_id} not logged (${r.error}); the grant ended`);
   }
   /** Run-bound when a run owns the transition (the run's ledger shows it); run-less for a sweep or a tap. */
   appendStandingLedgerEvent(event_type: LedgerEventType, payload: Record<string, unknown>, run_id?: string): void {
@@ -7249,6 +7268,7 @@ export class RunStore {
       this.db.prepare(`INSERT INTO standing_approvals (standing_id, schedule_id, chat_id, action_fingerprint, capability, label, state, denied_until, created_at, updated_at, ended_at, ended_reason)
         VALUES (?, ?, ?, ?, ?, ?, 'ended', ?, ?, ?, ?, 'denied')`).run(standing_id, key.schedule_id, key.chat_id, key.action_fingerprint, a.capability, a.summary, until, now, now, now);
       this.appendStandingLedgerEvent("standing_ended", { standing_id, reason: "denied" }, a.run_id);
+      this.logStandingEnd(this.getStandingApproval(standing_id)!, "denied", now); // the same /changes row as endStandingTx writes
     } catch (e) { throw new StandingHookError(e instanceof Error ? e.message : String(e)); }
   }
   /** §7: a scheduled run's approval is answered only from the run's own notify chat (the tap carries its chat as event.notify); a local or foreign target resolves nothing. */

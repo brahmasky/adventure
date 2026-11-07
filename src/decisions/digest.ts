@@ -1,7 +1,7 @@
 import { memoryUndoButton } from "../capabilities/memory-correct.js";
 import { memlaneUndoButton } from "../core/memory-lane-card.js";
 import type { NotificationButton } from "../notifications/notification-types.js";
-import type { DecisionRow, ImprovementJobRow, ImprovementProposalRow, RunStore } from "../run/run-store.js";
+import { STANDING_DIGEST_TEXT, type DecisionRow, type ImprovementJobRow, type ImprovementProposalRow, type RunStore } from "../run/run-store.js";
 import { formatInstantInZone, resolveDisplayZone, scheduleDisplayName } from "../run/schedule-spec.js";
 import { skillButtons } from "../skills/promote.js";
 import { resolveImproveEnabled } from "../improve/flag.js";
@@ -11,6 +11,7 @@ import { SETTLE_HEALTH_REASONS, TURN_SETTLE_ID } from "./entries/turn-settle.js"
 import { TRUST_ORDER, rankOf, type TrustLevel } from "./entries/turn-trust.js";
 import { TRUST_TAP_BUDGET } from "./trust-ask.js";
 import type { AnyEntry, DecidedBy } from "./types.js";
+export { STANDING_DIGEST_TEXT };
 
 /**
  * The daily decision digest (2b-ii §6.1): Improvements today (what the ladder saved or moved, each with its Undo / Revert /
@@ -267,15 +268,6 @@ export function improvementsToday(store: RunStore, since: string, chatId?: strin
   }
   return { lines, button_rows, job_ids };
 }
-
-/** An end Paco did not cause by his own tap; Revoke and a cancelled schedule are his acts, and a tampered or unverified use already sent an urgent card, so none gets a line. */
-export const STANDING_DIGEST_TEXT = {
-  sealed_trial_failed: "the sealed run did not seal; it keeps asking",
-  denied: "denied; no standing approval for these bytes for 30 days",
-  expired: "the 30 days ran out; it asks again",
-  stale: "no approval in 30 days; the streak was dropped",
-  mismatch: "the command changed under the grant; it asks again"
-} as const;
 
 /**
  * One line per standing row ended in [since, until) for one of those reasons, in the chat's own rows only (the taps it implies are
