@@ -1173,7 +1173,7 @@ writes none.
 write resolves it), `decision_fallback` (subject = the entry; three named fallbacks to the entry's fail answer in one hour,
 `budget` excluded; for `turn.handler` and `turn.gear` only cascade failures count, because the Jev incidents already page a
 Jev outage, and only a cascade answer resolves it; the kind routes to the change log (no urgent card, no chat message);
-for other entries the next Jev or model answer resolves it; a rule answer never does), `decision_fallback_streak` (subject = the entry; an `alwaysRecord` entry whose newest three rows are all counted fallbacks, however far apart — a daily entry such as `improve.route` never makes three in an hour; it pages; the next Jev or model answer resolves it), and `jev_skip_rate` with subject `decision:<entry>` (the sweep's
+for other entries the next Jev or model answer resolves it; a rule answer never does), `decision_fallback_streak` (subject = the entry; a tick entry — stage `after_turn`, `alwaysRecord`, with a judge rung; today only `improve.route` — whose last three runs, however far apart, ended only in counted fallbacks; one or two groups a day seldom make three in an hour; it pages; the next answer from a counting rung resolves it), and `jev_skip_rate` with subject `decision:<entry>` (the sweep's
 per-entry rate from Jev-rung failures; `turn.handler` and `turn.gear` keep the triage-wide `jev_skip_rate` above in stage 1).
 
 **Live gate:** from the feature worktree, `HOUGE_ENV_FILE=/abs/.env node scripts/live-gate-decisions-parity.mjs --old-dist <pre-stage-1 dist>`

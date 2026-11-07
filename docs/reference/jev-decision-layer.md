@@ -378,8 +378,9 @@ read with `/changes`. The kinds named here:
   `planner_done` / `planner_failed`. A killed turn (`fallthrough:aborted`) counts in neither number.
 - `decision_fallback` (subject `turn.handler`): three cascade failures in one hour (a Jev outage pages through the Jev
   incidents instead); a change-log line, no urgent card; the next cascade answer clears it.
-- `decision_fallback_streak`: an `alwaysRecord` entry's newest three rows are all counted fallbacks, however far apart (a daily
-  entry never makes three in an hour); one page; the next answer from a counting rung clears it.
+- `decision_fallback_streak`: a tick entry (stage `after_turn`, `alwaysRecord`, a judge rung; today only `improve.route`) whose
+  last three runs, however far apart, ended only in counted fallbacks (one or two groups a day seldom make three in an hour); one page;
+  the next answer from a counting rung clears it.
 - `decision_record_failed`: a `decisions` write failed; the routing stood (the verdict row then has `decision_id` null).
 - `role_unresolved` and `model_catalog_unavailable` (the model-role side, [configuration.md](configuration.md#model-roles)).
 

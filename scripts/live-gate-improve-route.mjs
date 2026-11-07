@@ -370,9 +370,9 @@ async function case11(g) {
     const runs = await runTick(g, g.c.at(g.c.addDays(g.c.d1, 3), "22:00")); const counts = runs.at(-1)?.counts ?? {};
     const rows = routeRows(g).filter((d) => !seen.has(d.decision_id));
     if (rows.length === 0 && counts.deferred_outage > 0) { unsure(c, "the pick decided", "the pick seat failed: the group was deferred as an outage"); return; }
-    const row = rows.find((d) => d.rung !== "rule");
+    const row = rows.find((d) => d.run_id === a);
     check(c, "the group reached the Tiny rung and it answered within its bound (rung model, no fallback)", row?.rung === "model" && row.fallback_reason === null,
-      `rows=${rows.length} rung=${row?.rung ?? "none"} reason=${row?.reason_code ?? "none"} fallback=${row?.fallback_reason ?? "none"} latency_ms=${row?.latency_ms ?? "n/a"} bound_ms=${g.m.IMPROVE_TINY_MS}`);
+      `planted_row=${row ? "found" : "missing"} rows=${rows.length} rung=${row?.rung ?? "none"} reason=${row?.reason_code ?? "none"} fallback=${row?.fallback_reason ?? "none"} latency_ms=${row?.latency_ms ?? "n/a"} bound_ms=${g.m.IMPROVE_TINY_MS}`);
   } finally { g.client = real; }
 }
 
