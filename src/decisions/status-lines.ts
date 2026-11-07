@@ -81,13 +81,21 @@ export function decisionWindow(store: RunStore, now: string): { since: string; a
   return { since, all, rows: settledRows(store, all) };
 }
 
-
 export const IMPROVE_WINDOW_DAYS = 7;
 const SILENT_FAMILIES = ["review_unsure", "lesson_unfollowed", "dig_deeper"] as const;
 const LESSON_NOT_HOLDING = "lesson did not hold";
 const sumDetail = (ticks: readonly { detail: Record<string, unknown> }[], key: string): number => ticks.reduce((a, t) => a + (typeof t.detail[key] === "number" ? (t.detail[key] as number) : 0), 0);
 
-/** Spec 2026-11-07 §8: the digest's diagnostic Watch lines (not its alarms: a failing tick pages improve_tick_degraded) as one /status line; null when every part is zero and the tick is on. */
+/** Tick faults over the window (the page improve_tick_degraded points here): failed or abandoned-while-running dates, record failures, dates the embedder was down. */
+function tickFaults(ticks: readonly { local_date: string; result: string; detail: Record<string, unknown> }[]): Array<[number, string]> {
+  const newest = ticks.reduce((m, t) => (t.local_date > m ? t.local_date : m), "");
+  const failed = ticks.filter((t) => t.result === "failed" || (t.result === "running" && t.local_date < newest)).length;
+  const record = sumDetail(ticks, "record_failed");
+  const embed = ticks.filter((t) => sumDetail([t], "embed_unavailable") > 0).length;
+  return [[failed, `ticks failed ${failed}`], [record, `record failed ${record}`], [embed, `embeddings unavailable ${embed} d`]];
+}
+
+/** Spec 2026-11-07 §8: the diagnostic counts (a failing tick also pages improve_tick_degraded, which points here) as one /status line; null when every part is zero and the tick is on. */
 export function improvementLine(store: RunStore, now: string, env: NodeJS.ProcessEnv = process.env): string | null {
   const since = new Date(Date.parse(now) - IMPROVE_WINDOW_DAYS * 86_400_000).toISOString();
   const signals = store.listImproveSignalsSince(since);
@@ -102,6 +110,7 @@ export function improvementLine(store: RunStore, now: string, env: NodeJS.Proces
   const reasons = (code: string): number => route.filter((r) => r.reason_code === code).length;
   const parts: Array<[number, string]> = [
     [resolveImproveEnabled(env) ? 0 : 1, "tick off"],
+    ...tickFaults(ticks),
     [skipped.size, `unattached ${[...skipped].sort(([a], [b]) => a.localeCompare(b)).map(([k, n]) => `${k} ${n}`).join(", ")}`],
     [silent.length, `silent ${silent.join(", ")}`],
     [sumDetail(ticks, "deferred"), `deferred ${sumDetail(ticks, "deferred")}`],

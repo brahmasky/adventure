@@ -5,8 +5,7 @@ import { countLines, decisionWindow, deciderLabel, improvementLine, injectionCou
 import { REGISTRY } from "./registry.js";
 
 /**
- * The decision ladder in `/status` (Paco 2026-10-14): a short section over the digest's own counting code, so the two never
- * disagree, and `/status decisions`, the newest rows. Code-built from ids, closed enums and numbers; never tool or user text.
+ * The decision ladder in `/status` (Paco 2026-10-14): a short section over the ladder's counting code, and `/status decisions`, the newest rows. Code-built from ids, closed enums and numbers; never tool or user text.
  */
 export const RECENT_DECISIONS = 10;
 

@@ -316,7 +316,7 @@ async function setup() {
   const [dNew, dOld] = [await loadDist(DIST), await loadDist(oldDist)];
   for (const k of ["storeOptionsFor", "CoreWorker", "createBridgeHandler", "Gateway"]) if (!dNew[k]) throw new SetupError(`${k} missing from the new dist: rebuild`);
   if (!dOld.RunStore) throw new SetupError("RunStore missing from the old dist");
-  const mods = async (dist) => ({ ...(await import(join(dist, "decisions/digest.js"))), ...(await import(join(dist, "decisions/status-view.js"))) });
+  const mods = async (dist) => ({ ...(await import(join(dist, "decisions/digest.js"))), ...(await import(join(dist, "decisions/status-lines.js")).catch(() => ({}))), ...(await import(join(dist, "decisions/status-view.js"))) }); // status-lines.js is absent in an old dist: its helpers live in digest.js there
   const [mNew, mOld] = [await mods(DIST), await mods(oldDist)];
   const A = join(mkTemp("copy-A"), "houge.sqlite"); const F = join(mkTemp("copy-F"), "houge.sqlite");
   vacuumInto(liveDb, A);

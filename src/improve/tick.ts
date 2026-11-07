@@ -67,7 +67,7 @@ export function improveTickDue(store: RunStore, env: NodeJS.ProcessEnv, now: str
 }
 
 let offLoggedFor = "";
-/** Switched off: nothing runs and nothing is written; one log line per local date (the Watch line says it too). */
+/** Switched off: nothing runs and nothing is written; one log line per local date (the /status Improvement line says it too). */
 function noteOff(d: ImproveTickDeps): void {
   const date = formatInstantInZone(d.now, resolveDisplayZone(d.env)).slice(0, 10);
   if (offLoggedFor === date) return;

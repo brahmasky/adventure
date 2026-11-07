@@ -38,4 +38,16 @@ describe("improvementLine", () => {
       .toBe("Improvement (7 d): tick off · unattached rating 1 · silent review_unsure, lesson_unfollowed, dig_deeper · deferred 2 · deferred on an outage 1 · wiki disarmed 1 · inapplicable top 1 · lessons not holding 1");
     expect(improvementLine(s, "2030-01-01T00:00:00.000Z", {})).toBeNull(); // everything older than 7 days (the skipped-signal ledger event is stamped with the wall clock, so the window is far ahead of it)
   });
+  it("tick faults show only when non-zero: a lone failed tick names itself; record failures, a stuck earlier date and embedder-down dates each add their part", () => {
+    const s = RunStore.openInMemory();
+    s.beginImproveTick("2026-10-19", "2026-10-19T11:00:00.000Z"); // left running, then a newer date began
+    s.beginImproveTick("2026-10-20", "2026-10-20T11:00:00.000Z"); s.finishImproveTick("2026-10-20", "failed", { record_failed: 2, embed_unavailable: 1 }, "2026-10-20T11:01:00.000Z");
+    expect(improvementLine(s, NOW, {})).toBe("Improvement (7 d): ticks failed 2 · record failed 2 · embeddings unavailable 1 d");
+    const lone = RunStore.openInMemory();
+    lone.beginImproveTick("2026-10-20", "2026-10-20T11:00:00.000Z"); lone.finishImproveTick("2026-10-20", "failed", {}, "2026-10-20T11:01:00.000Z");
+    expect(improvementLine(lone, NOW, {})).toBe("Improvement (7 d): ticks failed 1");
+    const ok = RunStore.openInMemory();
+    ok.beginImproveTick("2026-10-20", "2026-10-20T11:00:00.000Z"); ok.finishImproveTick("2026-10-20", "done", {}, "2026-10-20T11:01:00.000Z");
+    expect(improvementLine(ok, NOW, {})).toBeNull();
+  });
 });
