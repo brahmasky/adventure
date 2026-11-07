@@ -6,6 +6,8 @@ import { clip, parsed, str } from "./proposal-card.js";
 /** Spec 2026-11-07 §5: the /changes line of an applied proposal — id, scope, a 60-code-point excerpt of the stored text and the undo command. */
 export const APPLIED_EXCERPT_CHARS = 60;
 export type AppliedResult = { change_id: string; lesson_id: number } | { change_id: string; fact_id: number };
+/** A lesson the scope's cap refused: the proposal stays open (a card follows); null is "nothing saved" (the reconciler dropped it as already known). */
+export interface CappedLesson { capped: true }
 export interface ApplyInput { proposal_id: string; target: "lesson" | "fact"; draft_json: string; run_id: string; chat_id: string; now: string }
 
 export function memoryPlanOf(target: "lesson" | "fact", draft: Record<string, unknown>): MemoryPlan {
@@ -21,13 +23,14 @@ export function appliedLine(store: RunStore, target: "lesson" | "fact", result: 
 
 /**
  * Inside the group's transaction (never through acceptProposal, whose inTransaction would nest): the memory lane's writers,
- * then `accepted` with the ids, then the /changes row keyed by proposal. A capped lesson or a save with no change id applies
- * nothing and returns null (the caller queues the card); a lost transition or a refused log row throws, rolling the group back.
+ * then `accepted` with the ids, then the /changes row keyed by proposal. A capped lesson returns { capped: true } (the caller queues the card), a save that
+ * saved nothing (already known) returns null (the caller dismisses it); a lost transition or a refused log row throws, rolling the group back.
  */
-export function applyProposal(store: RunStore, i: ApplyInput): AppliedResult | null {
+export function applyProposal(store: RunStore, i: ApplyInput): AppliedResult | CappedLesson | null {
   const draft = parsed(i.draft_json);
   const saved = saveMemoryPlan(store, memoryPlanOf(i.target, draft), { run_id: i.run_id, chat_id: i.chat_id, source: "improve", now: i.now });
-  const result: AppliedResult | null = saved.lesson && !("capped" in saved.lesson) ? { change_id: saved.lesson.change_id, lesson_id: saved.lesson.id }
+  if (saved.lesson && "capped" in saved.lesson) return { capped: true };
+  const result: AppliedResult | null = saved.lesson ? { change_id: saved.lesson.change_id, lesson_id: saved.lesson.id }
     : saved.fact ? { change_id: saved.fact.change_id, fact_id: saved.fact.id } : null;
   if (!result) return null;
   if (!store.transitionProposal({ proposal_id: i.proposal_id, from: ["open"], to: "accepted", now: i.now, result_json: JSON.stringify(result) })) throw new Error("apply_lost");

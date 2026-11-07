@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
 import { errorCode } from "../domain/error-code.js";
 import { redactForImprove } from "../decisions/egress.js";
-import type { ImproveState, ImproveTarget } from "../decisions/entries/improve-route.js";
+import { autoApplies, type ImproveState, type ImproveTarget } from "../decisions/entries/improve-route.js";
+import { applyProposal } from "./apply.js";
+import { queueProposalCard } from "./proposal-card.js";
 import { resolveDigestAt } from "../decisions/digest.js";
 import { OutcomeRejected, outcomeValueOf } from "../decisions/outcomes.js";
 import { storeRecorder } from "../decisions/record.js";
@@ -21,7 +23,7 @@ import { scheduleHints } from "./schedule-shift.js";
 /**
  * The daily improvement tick (2b-ii §3). Once per local date at the digest's time (also when the digest is off): mirror the
  * day's outcomes into the inbox, compute recurrence and abandonment, group the unconsumed rows, decide each group with model
- * calls OUTSIDE any transaction, then commit one transaction per group. Deferred groups stay unconsumed (durable retry); a
+ * calls OUTSIDE any transaction, then commit one transaction per group — a lesson or fact from a correction Paco typed applies inside it with a /changes row, the rest become cards (spec 2026-11-07 §5). Deferred groups stay unconsumed (durable retry); a
  * crash resumes from the `running` latch; the stop signal is checked between model calls; `improve_tick` events bracket it.
  */
 export const IMPROVE_GROUPS_PER_TICK = 40;
@@ -52,9 +54,9 @@ export interface ImproveTickDeps {
 export const IMPROVE_TICK_BUDGET_MS = 120_000;
 /** Final fix E3: one seat call (distill, pick, classify, compose, verify) from the tick or a job never runs longer than this. */
 export const IMPROVE_SEAT_DEADLINE_MS = 60_000;
-export interface TickCounts { mirrored: number; recurrence: number; abandoned: number; groups: number; decided: number; proposals: number; jobs_queued: number; jobs_started: number; deferred: number; deferred_outage: number; stale: number; already_proposed: number; no_draft: number; record_failed: number; embed_unavailable: number }
+export interface TickCounts { mirrored: number; recurrence: number; abandoned: number; groups: number; decided: number; proposals: number; applied: number; cards: number; jobs_queued: number; jobs_started: number; deferred: number; deferred_outage: number; stale: number; already_proposed: number; no_draft: number; record_failed: number; embed_unavailable: number }
 export type ImproveTickResult = { ran: false } | { ran: true; result: "done" | "stopped" | "failed"; counts: TickCounts };
-const zero = (): TickCounts => ({ mirrored: 0, recurrence: 0, abandoned: 0, groups: 0, decided: 0, proposals: 0, jobs_queued: 0, jobs_started: 0, deferred: 0, deferred_outage: 0, stale: 0, already_proposed: 0, no_draft: 0, record_failed: 0, embed_unavailable: 0 });
+const zero = (): TickCounts => ({ mirrored: 0, recurrence: 0, abandoned: 0, groups: 0, decided: 0, proposals: 0, applied: 0, cards: 0, jobs_queued: 0, jobs_started: 0, deferred: 0, deferred_outage: 0, stale: 0, already_proposed: 0, no_draft: 0, record_failed: 0, embed_unavailable: 0 });
 
 /** Due once per local date at or after HOUGE_DECISION_DIGEST_AT (the default 21:00 when it is `off`): the date, or null. */
 export function improveTickDue(store: RunStore, env: NodeJS.ProcessEnv, now: string): string | null {
@@ -188,9 +190,10 @@ async function runGroup(d: ImproveTickDeps, g: SignalGroup, s: ImproveState, x: 
   const wantsDraft = r.verdict !== "nothing" && !(r.rung === "rule" && r.verdict === "skill");
   const duplicate = wantsDraft && NEEDS_DRAFT.has(r.verdict) && d.store.proposalBlocks(r.verdict as ProposalTarget, s.scope, ttlSince(d.now));
   if (x.latch.on && !duplicate && (r.verdict === "lesson" || r.verdict === "fact")) return "deferred_outage"; // its draft needs the distill seat
-  const draft = wantsDraft && !duplicate ? await draftFor(r.verdict, g, s, { store: d.store, env: d.env, now: d.now, tz: x.tz, distill: d.llm.distill, redact: (t) => redactForImprove(d.store, t), scheduleHints: x.hints }) : null;
+  const auto = autoApplies(g, s, r.verdict, (id) => d.store.runSource(id) === "telegram"); // spec 2026-11-07 §3: decided before the draft, so the draft can run without a prior; P16: the run's source re-checked here
+  const draft = wantsDraft && !duplicate ? await draftFor(r.verdict, g, s, { noPrior: auto, store: d.store, env: d.env, now: d.now, tz: x.tz, distill: d.llm.distill, redact: (t) => redactForImprove(d.store, t), scheduleHints: x.hints }) : null;
   if (draft === DRAFT_SEAT_FAILED) { x.latch.on = true; return "deferred_outage"; }
-  return commitGroup(d, g, s, r, { draft, duplicate }, rec2.flush, c);
+  return commitGroup(d, g, s, r, { draft, duplicate, auto }, rec2.flush, c);
 }
 const ttlSince = (now: string): string => new Date(Date.parse(now) - PROPOSAL_TTL_DAYS * DAY_MS).toISOString();
 /** A rule-rung skill/recurrence row starts a job (ruling 1): the state predicts it so the day's budget can defer before any call. */
@@ -200,15 +203,17 @@ const NEEDS_DRAFT: ReadonlySet<string> = new Set(["lesson", "fact", "skill", "sc
 
 /**
  * §3.1's commit boundary: the decision row (through the real recorder, patched when the proposal is not written — ruling 6),
- * one outcome row per inbox row (the stored text back through its check: outcomeValueOf), the proposal or the queued job,
- * and consumed_at — one transaction. A recorder that returns null (its write failed) consumes nothing: the rows are read
- * again tomorrow.
+ * one outcome row per inbox row (the stored text back through its check: outcomeValueOf), the proposal (applied, or its
+ * card: placeProposal) or the queued job, and consumed_at — one transaction. A recorder that returns null (its write failed)
+ * consumes nothing: the rows are read again tomorrow. Counts are bumped AFTER the commit (spec 2026-11-07 §5, codex): a
+ * rolled-back group bumps nothing.
  */
-function commitGroup(d: ImproveTickDeps, g: SignalGroup, s: ImproveState, r: DecideResult<ImproveTarget, unknown>, pre: { draft: Draft | null; duplicate: boolean },
+function commitGroup(d: ImproveTickDeps, g: SignalGroup, s: ImproveState, r: DecideResult<ImproveTarget, unknown>, pre: { draft: Draft | null; duplicate: boolean; auto: boolean },
   flush: (real: ReturnType<typeof storeRecorder>, patch?: RecordPatch) => string | null, c: TickCounts): GroupOutcome {
   // final fix C5: the backstop of the pre-check — a rule-rung job while skills are disarmed writes nothing and consumes nothing
   if (r.rung === "rule" && r.verdict === "skill" && !resolveSkillsEnabled(d.env)) return "deferred";
-  return d.store.inTransaction(() => {
+  const bumps = zero();
+  const outcome = d.store.inTransaction((): GroupOutcome => {
     const job = r.rung === "rule" && r.verdict === "skill" && s.recurrence !== null && d.jobs !== undefined;
     const wantsProposal = !job && NEEDS_DRAFT.has(r.verdict);
     const draft = pre.draft;
@@ -224,13 +229,36 @@ function commitGroup(d: ImproveTickDeps, g: SignalGroup, s: ImproveState, r: Dec
     if (job) {
       const origin = { turn_ids: s.recurrence!.turnIds, run_ids: g.rows.map((x) => x.about_run_id).filter((x): x is string => x !== null), category: s.category ?? "other", text_hashes: textHashes(g) };
       queued = d.jobs!.enqueueFromRecurrence(d.store, { decision_id, proposal_id: null, chat_id: g.newest.chat_id ?? d.chatId, origin, idempotency_key: s.recurrence!.idempotencyKey, now: d.now }) !== null;
-      if (queued) c.jobs_queued += 1;
-    } else if (patch?.reason === "already_proposed") c.already_proposed += 1;
-    else if (patch?.reason === "no_text") c.no_draft += 1;
-    else if (draft) { d.store.insertImprovementProposal({ decision_id, target: draft.target, scope: s.scope, chat_id: g.newest.chat_id ?? d.chatId, draft_json: draft.draft_json, evidence: draft.evidence, created_at: d.now }); c.proposals += 1; }
+      if (queued) bumps.jobs_queued += 1;
+    } else if (patch?.reason === "already_proposed") bumps.already_proposed += 1;
+    else if (patch?.reason === "no_text") bumps.no_draft += 1;
+    else if (draft) placeProposal(d, g, s, draft, decision_id, pre.auto, bumps);
     d.store.consumeSignals(g.rows.map((x) => x.signal_id), d.now);
     return queued ? "queued" : "committed";
   });
+  for (const k of Object.keys(bumps) as Array<keyof TickCounts>) c[k] += bumps[k];
+  return outcome;
+}
+
+/**
+ * Spec 2026-11-07 §5: the proposal row (`open`), then — from a correcting turn Paco typed (autoApplies), with a chat — the
+ * memory lane's save, `accepted` and its /changes line; every other proposal, and one the save could not apply (a capped
+ * lesson, no change id), is one card offered now. No chat: it stays open until it expires (logged; no card could be
+ * delivered and §3.5 forbids the save).
+ */
+function placeProposal(d: ImproveTickDeps, g: SignalGroup, s: ImproveState, draft: Draft, decision_id: string, auto: boolean, bumps: TickCounts): void {
+  const chat_id = g.newest.chat_id ?? d.chatId;
+  const proposal_id = d.store.insertImprovementProposal({ decision_id, target: draft.target, scope: s.scope, chat_id, draft_json: draft.draft_json, evidence: draft.evidence, created_at: d.now });
+  bumps.proposals += 1;
+  if (chat_id === null) { console.log(`[improve] proposal ${proposal_id} (${draft.target}) has no chat: it stays open`); return; }
+  const about = g.newest.about_run_id;
+  if (auto && about !== null && (draft.target === "lesson" || draft.target === "fact")) {
+    const applied = applyProposal(d.store, { proposal_id, target: draft.target, draft_json: draft.draft_json, run_id: about, chat_id, now: d.now });
+    if (applied === null) { d.store.transitionProposal({ proposal_id, from: ["open"], to: "dismissed", now: d.now, result_json: JSON.stringify({ reason: "already_known" }) }); return; } // a card for an already-known fact could never be accepted (accept_lost)
+    if (!("capped" in applied)) { bumps.applied += 1; return; }
+  }
+  queueProposalCard(d.store, { proposal_id, target: draft.target, draft_json: draft.draft_json, evidence: draft.evidence }, chat_id, d.now);
+  bumps.cards += 1;
 }
 
 /** sha256 of each cluster text (the job re-reads the texts from chat_turns; the hashes tell a changed row). */

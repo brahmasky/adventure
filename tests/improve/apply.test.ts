@@ -1,5 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { applyProposal, appliedLine, APPLIED_EXCERPT_CHARS } from "../../src/improve/apply.js";
 import { proposalCardButtons, proposalCardText, queueProposalCard } from "../../src/improve/proposal-card.js";
 import { parseImprovementCallback } from "../../src/triggers/telegram-command-parser.js";
@@ -46,13 +46,21 @@ describe("applyProposal", () => {
     const secret = "token=Zx9Qw7Lm3Kp5Vb2Nc8Rt4Yh6Jd1Fs0G";
     expect(appliedLine(s, "fact", { change_id: "mc_x", fact_id: 7 }, { text: `my ${secret} is old` })).not.toContain("Zx9Qw7Lm3Kp5Vb2Nc8Rt4Yh6Jd1Fs0G");
   });
-  it("a capped lesson applies nothing: null, the proposal stays open, no row, no change (the caller queues the card)", () => {
+  it("a capped lesson applies nothing: { capped: true }, the proposal stays open, no row, no change (the caller queues the card)", () => {
     const s = RunStore.openInMemory();
     const p = open(s, "lesson", { scope: "ask", text: "x".repeat(300) });
-    expect(s.inTransaction(() => applyProposal(s, { ...p, target: "lesson", chat_id: "555", now: NOW }))).toBeNull();
+    expect(s.inTransaction(() => applyProposal(s, { ...p, target: "lesson", chat_id: "555", now: NOW }))).toEqual({ capped: true });
     expect(s.getImprovementProposal(p.proposal_id)?.state).toBe("open");
     expect(logRow(s, `improve_applied:${p.proposal_id}`)).toBeUndefined();
     expect(s.listLessons("ask")).toHaveLength(0);
+  });
+  it("a fact the reconciler drops as already known saves nothing: null (not capped), the proposal stays open, no row", () => {
+    const s = RunStore.openInMemory();
+    const p = open(s, "fact", { text: "Paco's sister lives in Lima.", evidence: { line: 1, quote: "x" }, source_turn_ids: [] });
+    vi.spyOn(s, "saveReconciledFact").mockReturnValue({ verb: "drop" } as never);
+    expect(s.inTransaction(() => applyProposal(s, { ...p, target: "fact", chat_id: "555", now: NOW }))).toBeNull();
+    expect(s.getImprovementProposal(p.proposal_id)?.state).toBe("open");
+    expect(logRow(s, `improve_applied:${p.proposal_id}`)).toBeUndefined();
   });
   it("a proposal no longer open throws apply_lost (the save must not outlive a lost transition)", () => {
     const s = RunStore.openInMemory();
