@@ -3,6 +3,7 @@ import { escapeForTelegram } from "../capabilities/text-hygiene.js";
 import { recordSaveUndone } from "../decisions/tap-outcomes.js";
 import { revertImproveSave } from "./improve-undo.js";
 import type { TypedTaskEvent } from "../domain/types.js";
+import type { NotificationButton } from "../notifications/notification-types.js";
 import type { EpisodicFactRow, MemoryChange, RunStore } from "../run/run-store.js";
 import { clipText } from "../status/houge-status.js";
 import type { GatewayIntakeResult } from "./gateway.js";
@@ -30,11 +31,11 @@ export function oncePerTrigger(store: RunStore, event: TypedTaskEvent, fn: () =>
 }
 
 /** One code-owned reply to the event's chat, keyed on the event so a redelivery never replies twice. */
-export function replyTo(store: RunStore, event: TypedTaskEvent, suffix: string, text: string): void {
+export function replyTo(store: RunStore, event: TypedTaskEvent, suffix: string, text: string, buttons?: NotificationButton[]): void {
   store.enqueueNotification({
     topic: "reply",
     target: event.notify, intent_type: "progress", idempotency_key: `${event.idempotency_key}:${suffix}`,
-    correlation_id: event.source_reference, payload: { text }
+    correlation_id: event.source_reference, payload: { text, ...(buttons && buttons.length > 0 ? { buttons } : {}) }
   });
 }
 

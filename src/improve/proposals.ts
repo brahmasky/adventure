@@ -17,7 +17,9 @@ export interface Draft { target: ProposalTarget; draft_json: string; evidence: s
 /** Final fix D1: the distill seat call itself failed (an outage), as opposed to a parsed answer with nothing usable (null). */
 export const DRAFT_SEAT_FAILED = "seat_failed" as const;
 export type DraftResult = Draft | null | typeof DRAFT_SEAT_FAILED;
-export interface DraftDeps { store: RunStore; env: NodeJS.ProcessEnv; now: string; tz: string; distill: TickLlm; redact: (t: string) => string; scheduleHints?: ReadonlyMap<string, ScheduleHint> }
+export interface DraftDeps { store: RunStore; env: NodeJS.ProcessEnv; now: string; tz: string; distill: TickLlm; redact: (t: string) => string; scheduleHints?: ReadonlyMap<string, ScheduleHint>;
+  /** Spec 2026-11-07 §3.2: the auto-apply draft sends no prior — Houge's reply, and any tool text through it, never reaches the seat. */
+  noPrior?: boolean }
 const LOCKED: ReadonlySet<string> = new Set(LOCKED_ENTRY_IDS);
 const RESEARCH: ReadonlySet<string> = new Set(["lookup", "research"]);
 
@@ -61,7 +63,7 @@ function priorOf(store: RunStore, run_id: string | null, redact: (t: string) => 
 async function distillDraft(target: "lesson" | "fact", g: SignalGroup, s: ImproveState, d: DraftDeps, evidence: string): Promise<DraftResult> {
   const instruction = s.redacted.pacoText;
   if (instruction.trim().length === 0) return null;
-  const prior = priorOf(d.store, g.newest.about_run_id, d.redact);
+  const prior = d.noPrior ? "" : priorOf(d.store, g.newest.about_run_id, d.redact);
   const question = buildMemoryDistillQuestion({ thread: [instruction], prior, instruction, scope: lessonScopeFor(s.category), kind: target === "lesson" ? "rule" : "fact" });
   const r = await d.distill({ question, system: MEMORY_DISTILL_DISCIPLINE });
   if (!r.ok) return DRAFT_SEAT_FAILED;
