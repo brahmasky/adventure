@@ -507,7 +507,7 @@ write.
 | 2026-11-05 | No off switch, no shadow: front-door shadow, HOUGE_JEV_LANES_OFF and HOUGE_JEV_TRIAGE_ENABLED removed; HOUGE_JEV_ENABLED is the front door's STOP flag | [no off switch](../superpowers/specs/2026-11-05-jev-no-off-switch-no-shadow-design.md) | 2026-11-06 |
 | 2026-11-06 | Drift rewording, no change of meaning: golden sets are daily ticks and version-check sets, and where each reports drift (6.2); the five unmarked `alwaysRecord` entries marked in rule 4, pinned by `tests/adr/` | — | 2026-11-06 |
 | 2026-11-06 | 6.3: the promise that the digest flags an entry until Paco commits a calibrated row is retired (nothing built it; Paco's decision 2026-11-06) | — | 2026-11-06 |
-| 2026-11-07 | 13.2: `decision_fallback_streak` pages three failed runs in a row of a tick entry (`improve.route` failed every day unseen); `improve.route`'s Tiny bound 8 s → 30 s | — | awaiting Paco's signature |
+| 2026-11-07 | 13.2: `decision_fallback_streak` pages three failed runs in a row of a tick entry (`improve.route` failed every day unseen); `improve.route`'s Tiny bound 8 s → 30 s | — | 2026-11-07 |
 
 ## Reference map
 
