@@ -1,7 +1,7 @@
 # Improvement proposals apply on their own; the nightly digest goes
 
 **Status:** Rev 2.1 — after the senior review (Fable 5.1: 2 blockers, 7 warnings) and codex (4 blockers, 4 warnings), all
-taken; codex scoped re-review of Rev 2 (all Rev 1 items closed; 2 new blockers and 1 warning, taken in 2.1). Scope decided by Paco 2026-11-07 ("Auto-apply, alert on faults"). Awaiting Paco's approval.
+taken; codex scoped re-review of Rev 2 (all Rev 1 items closed; 2 new blockers and 1 warning, taken in 2.1). Scope decided by Paco 2026-11-07 ("Auto-apply, alert on faults"). **APPROVED by Paco 2026-11-07 (Rev 2.1).**
 **Changes what ADR 0034 means** (Tier C, Paco signs): rules 2.2, 2.5, 6.6, 10.2, 10.5, 13.1, 13.2; ADR 0031's chat list.
 **Code touched:** `src/decisions/` (protected; this spec's approval is Paco's hand), `src/improve/`, `src/gateway/`,
 `src/notifications/`, `src/core/standing-approval.ts`, `src/telegram/telegram-daemon.ts`, gate scripts.
