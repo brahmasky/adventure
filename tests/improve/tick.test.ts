@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { IMPROVE_GROUPS_PER_TICK, improveTickDue, runImproveTick, type ImproveTickDeps, type JobHooks } from "../../src/improve/tick.js";
+import { evaluateImproveDegraded, IMPROVE_DEGRADED_KIND } from "../../src/improve/degraded.js";
 import { SETTLE_REASON_VALUES } from "../../src/decisions/outcomes.js";
 import { RunStore, type DecisionInsert } from "../../src/run/run-store.js";
 import { SkillStore } from "../../src/skills/skill-store.js";
@@ -60,6 +61,14 @@ describe("improveTickDue", () => {
 });
 
 describe("runImproveTick", () => {
+  it("a tick that fails pages improve_tick_degraded from the tick itself (spec 2026-11-07 §7: the Watch line is gone)", async () => {
+    const s = RunStore.openInMemory();
+    correction(s);
+    vi.spyOn(s, "mirrorOutcomesIntoInbox").mockImplementation(() => { throw new Error("disk"); });
+    const err = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try { expect(await runImproveTick(deps(s, { env: { ...ENV, HOUGE_TELEGRAM_CHAT_ID: "555" } }))).toMatchObject({ ran: true, result: "failed" }); } finally { err.mockRestore(); }
+    expect(s.listOpenIncidents().map((i) => i.kind)).toContain(IMPROVE_DEGRADED_KIND);
+  });
   it("mirrors, groups, decides, and commits per group: a decision row with the group's newest run, one outcome row per inbox row, a proposal, consumed_at; events bracket it; the latch is done", async () => {
     const s = RunStore.openInMemory();
     const { about } = correction(s);
@@ -414,6 +423,15 @@ describe("HOUGE_IMPROVE_ENABLED", () => {
       work(s);
       expect(await runImproveTick(deps(s, { env: { ...ENV, ...(v === undefined ? {} : { HOUGE_IMPROVE_ENABLED: v }) } }))).toMatchObject({ ran: true });
     }
+  });
+  it("HOUGE_IMPROVE_ENABLED=false writes no improve_ticks row, so nothing opens and nothing resolves (P19)", async () => {
+    const s = RunStore.openInMemory();
+    s.beginImproveTick("2026-10-20", "2026-10-20T11:00:00.000Z"); s.finishImproveTick("2026-10-20", "failed", {}, "2026-10-20T11:00:00.000Z");
+    expect(evaluateImproveDegraded({ store: s, now: "2026-10-20T11:00:00.000Z", env: { HOUGE_TELEGRAM_CHAT_ID: "555" }, chatId: null }, "2026-10-20")).toBe("opened");
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    try { expect(await runImproveTick(deps(s, { env: { ...ENV, HOUGE_IMPROVE_ENABLED: "false", HOUGE_TELEGRAM_CHAT_ID: "555" } }))).toEqual({ ran: false }); } finally { log.mockRestore(); }
+    expect(s.getImproveTick("2026-10-21")).toBeUndefined();
+    expect(s.listOpenIncidents().filter((i) => i.kind === IMPROVE_DEGRADED_KIND)).toHaveLength(1); // still open: an off tick judges nothing
   });
 });
 

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { errorCode } from "../domain/error-code.js";
 import { redactForImprove } from "../decisions/egress.js";
 import { autoApplies, type ImproveState, type ImproveTarget } from "../decisions/entries/improve-route.js";
+import { evaluateImproveDegraded } from "./degraded.js";
 import { applyProposal } from "./apply.js";
 import { queueProposalCard } from "./proposal-card.js";
 import { resolveDigestAt } from "../decisions/digest.js";
@@ -90,6 +91,9 @@ export async function runImproveTick(d: ImproveTickDeps): Promise<ImproveTickRes
   }
   d.store.finishImproveTick(date, result, { ...counts }, d.now);
   d.store.recordMemoryEvent("improve_tick", { phase: "end", local_date: date, result, counts: { ...counts } }, "improve");
+  // spec 2026-11-07 §7: judged on the date's final row, after it is written; never costs the tick its result
+  try { evaluateImproveDegraded({ store: d.store, now: d.now, env: d.env, chatId: d.chatId }, date); }
+  catch (e) { console.error(`[improve] degraded check failed: ${errorCode(e)}`); }
   return { ran: true, result, counts };
 }
 
