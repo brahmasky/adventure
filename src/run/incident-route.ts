@@ -53,6 +53,7 @@ export const INCIDENT_ROUTE = {
   decision_record_failed: log("A decision record failed to save; the decision itself ran."),
   decision_fallback: log("A decider kept falling back to its backup this hour."),
   decision_fallback_streak: page("A once-a-day decider failed three runs in a row; it decides nothing until it answers again."),
+  improve_tick_degraded: page("My nightly improvement check failed, or came up empty on three nights in a row; your corrections may not be learned.", "check `/status` (the Improvement line) and the daemon log's [improve] lines"),
   decision_golden_drift: log("A decider's answers drifted from its test set; it keeps running."),
   omp_read_format_drift: log("omp's read output changed shape; reads use the last known format."),
   omp_contract_drift: log("omp's behaviour drifted from what I expect; I keep running."),

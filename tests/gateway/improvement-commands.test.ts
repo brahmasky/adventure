@@ -26,6 +26,7 @@ let cb = 0;
 const tap = (kind: "pr" | "sk" | "lm", id: string, action: string, callback = `cb${++cb}`) => buildTypedTaskEvent({ source: "telegram", type: "improvement_tap", requested_by: { kind: "user", id: "paco" },
   notify: { kind: "telegram", chat_id: "555" }, idempotency_key: `telegram:1:callback:${callback}`, source_reference: `telegram:update:1:callback:${callback}`,
   metadata: { telegram_update_id: 1, telegram_callback_id: callback, kind, id, action } });
+const payloads = (s: RunStore) => [...drainOutbox(s).values()];
 const reply = (s: RunStore) => [...drainOutbox(s).values()].map((p) => String(p.text));
 function proposal(s: RunStore, target: "lesson" | "fact" | "schedule" | "skill" | "tool_gap" | "ladder", draft: unknown, scope = "answer", offered = true, chat_id = "555") {
   const run_id = createTelegramTurn(s, "x").run_id;
@@ -41,7 +42,9 @@ describe("proposal taps", () => {
     const { id } = proposal(s, "lesson", { scope: "ask", text: "Answer in one line." });
     expect(handleImprovementTap(s, skills(), tap("pr", id, "acc"), NOW)).toMatchObject({ ok: true, status: "improvement_tapped" });
     expect(s.getImprovementProposal(id)).toMatchObject({ state: "accepted", result_json: expect.stringContaining("lc_") });
-    expect(reply(s)[0]).toMatch(/lesson #\d+ saved/i);
+    const first = payloads(s)[0]!;
+    expect(String(first.text)).toMatch(/lesson #\d+ saved/i);
+    expect(first.buttons).toEqual([{ text: "↩️ Undo", data: `memlane:undo:${(JSON.parse(s.getImprovementProposal(id)!.result_json!) as { change_id: string }).change_id}` }]);
     handleImprovementTap(s, skills(), tap("pr", id, "dis"), NOW);
     expect(reply(s)).toEqual([TAP_HANDLED_TEXT]);
     const { id: never } = proposal(s, "lesson", { scope: "ask", text: "x" }, "lookup", false);
@@ -100,6 +103,7 @@ describe("proposal taps", () => {
     const { id } = proposal(s, "schedule", { schedule_id, before, after, hour_from: 11, hour_to: 20 }, "shell_external");
     handleImprovementTap(s, skills(), tap("pr", id, "acc"), NOW);
     expect(s.getScheduledTask(schedule_id)).toMatchObject({ spec_json: after.spec_json, next_run_at: after.next_run_at });
+    expect(payloads(s)[0]!.buttons).toEqual([{ text: "↩️ Revert", data: `dec:pr:${id}:rev` }]);
     handleImprovementTap(s, skills(), tap("pr", id, "rev"), NOW);
     expect(s.getScheduledTask(schedule_id)?.spec_json).toBe(before.spec_json);
     expect(s.getImprovementProposal(id)?.state).toBe("reverted");
@@ -118,6 +122,7 @@ describe("proposal taps", () => {
     const move = s.listLadderMovesCreatedSince("2026-01-01T00:00:00.000Z")[0]!;
     expect(move).toMatchObject({ entry_id: "turn.settle", scope: "turn.settle", from_rung: "system_one", to_rung: "model", granted_by: "paco", granted_via: "improve.route", paco_callback_id: "cbl", state: "active" });
     expect(s.getImprovementProposal(id)?.result_json).toBe(JSON.stringify({ move_id: move.move_id }));
+    expect(payloads(s)[0]!.buttons).toEqual([{ text: "⏪ Revoke", data: `dec:lm:${move.move_id}:revoke` }]);
     const { id: tg } = proposal(s, "tool_gap", { focus: "answer turns fail on model_error 3 times" }, "model_error");
     handleImprovementTap(s, skills(), tap("pr", tg, "acc"), NOW);
     expect(reply(s).at(-1)).toBe('Send this to start a self-write: self_write_propose focus="answer turns fail on model_error 3 times"');

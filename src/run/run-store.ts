@@ -61,6 +61,7 @@ import type { Category } from "../jev/questions/tree.js";
 import type { Effort, Lane, RouteReason, TurnRole } from "../jev/tree-policy.js";
 import type { MediaIngestedPayload } from "../media/media-config.js";
 import type { ProbeResult } from "../omp/omp-contract-probe.js";
+import { scheduleDisplayName } from "./schedule-spec.js";
 
 /**
  * The `role` recorded on every `llm_attempt` row (via `llmAuditSink`'s scope): chain calls, spawn
@@ -1051,8 +1052,11 @@ export interface LadderMoveInsert {
   entry_id: string; scope: string; from_rung: RungKind; to_rung: RungKind; evidence: string[]; granted_by: "paco" | "auto";
   granted_via: string | null; paco_callback_id: string | null; revocable: boolean; created_at?: string;
 }
-export interface ImproveSignalInsert { signal: DecisionSignal; value: string | number; run_id: string | null; chat_id: string | null; about_run_id: string | null; source_outcome_id?: string | null; created_at?: string }
-export interface ImproveSignalRow { signal_id: number; signal: DecisionSignal; value: string; run_id: string | null; chat_id: string | null; about_run_id: string | null; source_outcome_id: string | null; created_at: string; consumed_at: string | null }
+/** Spec 2026-11-07 §3.1: which producer wrote a correction row. Only `memlane_fix` (the memory lane's fix hand-off, Telegram runs only) carries a message Paco typed; null on rows older builds wrote, on mirrored outcomes and on a non-Telegram correcting run. */
+export type ImproveOrigin = "memlane_fix" | "dig_deeper" | "escalation" | "rating";
+export const IMPROVE_ORIGINS: readonly ImproveOrigin[] = ["memlane_fix", "dig_deeper", "escalation", "rating"];
+export interface ImproveSignalInsert { signal: DecisionSignal; value: string | number; run_id: string | null; chat_id: string | null; about_run_id: string | null; source_outcome_id?: string | null; origin?: ImproveOrigin | null; created_at?: string }
+export interface ImproveSignalRow { signal_id: number; signal: DecisionSignal; value: string; run_id: string | null; chat_id: string | null; about_run_id: string | null; source_outcome_id: string | null; created_at: string; consumed_at: string | null; origin: ImproveOrigin | null }
 export interface ImproveCursor { outcome_created_at: string; outcome_rowid: number }
 export interface ImproveTickRow { local_date: string; started_at: string; finished_at: string | null; result: "running" | "done" | "stopped" | "failed"; detail: Record<string, unknown> }
 export interface RecurrenceCandidateRow { turn_id: string; run_id: string; chat_id: string; text: string; created_at: string; category: Category }
@@ -1073,6 +1077,14 @@ export type StandingTrial = Pick<StandingApprovalRow, "sealing_approval_id" | "s
 const isTrial = (row: StandingApprovalRow, t: StandingTrial | undefined): boolean => t === undefined
   || (row.sealing_approval_id === t.sealing_approval_id && row.sealed_run_id === t.sealed_run_id && row.sealed_tool_call_id === t.sealed_tool_call_id);
 export type StandingEndReason = "sealed_trial_failed" | "denied" | "revoked" | "expired" | "schedule_ended" | "stale" | "mismatch" | "tampered_use" | "unverified_use";
+/** An end Paco did not cause by his own tap: Revoke and a cancelled schedule are his acts, and a tampered or unverified use already sent an urgent card, so none gets a line (spec 2026-11-07 §8: a /changes row at the end; formerly the digest's standing line). */
+export const STANDING_DIGEST_TEXT = {
+  sealed_trial_failed: "the sealed run did not seal; it keeps asking",
+  denied: "denied; no standing approval for these bytes for 30 days",
+  expired: "the 30 days ran out; it asks again",
+  stale: "no approval in 30 days; the streak was dropped",
+  mismatch: "the command changed under the grant; it asks again"
+} as const;
 /** Why a standing use was refused; the runner then asks Paco instead (fails closed). */
 export type StandingUseRefusal = "not_standing" | "fingerprint_mismatch" | "expired" | "move_inactive" | "schedule_not_enabled" | "schedule_mismatch" | "chat_mismatch" | "already_used" | "lost";
 export interface StandingKey { schedule_id: string; chat_id: string; action_fingerprint: string }
@@ -1087,7 +1099,6 @@ interface MirrorOutcomeRow { outcome_id: string; rid: number; signal: DecisionSi
 export class LadderMoveRefused extends Error {
   constructor(readonly code: "locked_entry" | "auto_not_standing" | "paco_needs_callback") { super(`ladder move refused: ${code}`); }
 }
-export interface DecisionDigestRow { local_date: string; sent: number; offered: string[]; created_at: string }
 /** A decision row value outside its code-owned set (ruling 15). The message names the column, never the value. */
 export class DecisionRejected extends Error {
   constructor(readonly column: "stage" | "fallback_reason" | "reask") { super(`decision rejected: ${column} not allowed`); }
@@ -1297,7 +1308,8 @@ const IMPROVE_ROUTE_DDL = `
     about_run_id TEXT,
     source_outcome_id TEXT UNIQUE,
     created_at TEXT NOT NULL,
-    consumed_at TEXT
+    consumed_at TEXT,
+    origin TEXT CHECK (origin IS NULL OR origin IN ('memlane_fix', 'dig_deeper', 'escalation', 'rating'))
   );
   CREATE INDEX IF NOT EXISTS improve_signals_unconsumed_idx ON improve_signals(consumed_at, signal_id);
   CREATE INDEX IF NOT EXISTS improve_signals_signal_idx ON improve_signals(signal, created_at);
@@ -1926,9 +1938,11 @@ export class RunStore {
     `).run(id).changes === 1;
   }
 
-  /** Prune a scope's active lessons (the `/forget <scope>` control command) — reversible. */
-  forgetScope(scope: string): void {
-    this.db.prepare(`UPDATE lessons SET status = 'pruned' WHERE scope = ? AND status = 'active'`).run(scope);
+  /** Prune a scope's active lessons (the `/forget <scope>` control command) — reversible; returns the pruned ids (spec 2026-11-07 §6: each reverts its proposal). */
+  forgetScope(scope: string): number[] {
+    const ids = this.db.prepare(`SELECT id FROM lessons WHERE scope = ? AND status = 'active' ORDER BY id ASC`).all<{ id: number }>(scope).map((r) => r.id);
+    if (ids.length > 0) this.db.prepare(`UPDATE lessons SET status = 'pruned' WHERE id IN (${ids.map(() => "?").join(", ")}) AND status = 'active'`).run(...ids);
+    return ids;
   }
 
   /**
@@ -4798,8 +4812,8 @@ export class RunStore {
   /** >0 while an `inTransaction` callback runs: `insertRun` then joins it instead of opening its own (a nested BEGIN throws). */
   private outerTxDepth = 0;
 
-  /** Thrown inside a memory transaction when an id is not an active row of this chat: rolls the whole change back. */
-  private static readonly MEMORY_REFUSED = new Error("memory_change_refused");
+  /** Thrown inside a memory transaction when an id is not an active row of this chat: rolls the whole change back. Thrown by the *Tx memory writers on a refused row; a caller that wraps one in its own transaction maps it to null (memory-commands.ts). */
+  static readonly MEMORY_REFUSED = new Error("memory_change_refused");
 
   /** Flip one active row (a fact only when it is this chat's) to `next`; refuse the change otherwise. */
   private flipActiveMemoryRow(kind: MemoryKind, id: number, chat_id: string, next: "pruned"): void {
@@ -5077,7 +5091,7 @@ export class RunStore {
     return this.db.prepare(`SELECT * FROM decisions WHERE run_id = ? ORDER BY created_at ASC, rowid ASC`).all<DecisionRow>(run_id);
   }
 
-  /** Rows created in (since, until], oldest first: the digest's day. */
+  /** Rows created in (since, until], oldest first: one local day. */
   listDecisionsBetween(since: string, until: string): DecisionRow[] {
     return this.db.prepare(`SELECT * FROM decisions WHERE created_at > ? AND created_at <= ? ORDER BY created_at ASC, rowid ASC`).all<DecisionRow>(since, until);
   }
@@ -5176,29 +5190,6 @@ export class RunStore {
     return move_id;
   }
 
-  /** The digest latch (spec §8.1): one row per local date, whether or not a message went out. False when the date already has one. */
-  recordDecisionDigest(d: { local_date: string; sent: boolean; offered: string[]; created_at?: string }): boolean {
-    const r = this.db.prepare(`INSERT OR IGNORE INTO decision_digests (local_date, sent, offered_json, created_at) VALUES (?, ?, ?, ?)`)
-      .run(d.local_date, d.sent ? 1 : 0, JSON.stringify(d.offered), d.created_at ?? new Date().toISOString());
-    return Number(r.changes) === 1;
-  }
-
-  getDecisionDigest(local_date: string): DecisionDigestRow | undefined {
-    const r = this.db.prepare(`SELECT * FROM decision_digests WHERE local_date = ?`).get<Omit<DecisionDigestRow, "offered"> & { offered_json: string }>(local_date);
-    return r ? { local_date: r.local_date, sent: r.sent, offered: JSON.parse(r.offered_json) as string[], created_at: r.created_at } : undefined;
-  }
-
-  /** The persisted digest cutoff: the newest digest that went out. Its created_at commits with its enqueue, so it advances atomically with the message. */
-  lastSentDecisionDigestAt(): string | undefined {
-    return this.db.prepare(`SELECT MAX(created_at) AS at FROM decision_digests WHERE sent = 1`).get<{ at: string | null }>()?.at ?? undefined;
-  }
-
-  /** A review tap counts only for a decision a digest offered after `sinceIso` (spec §8.1: unknown or stale ids write nothing). */
-  wasDecisionOffered(decision_id: string, sinceIso: string): boolean {
-    return this.db.prepare(`SELECT 1 AS hit FROM decision_digests d, json_each(d.offered_json) j WHERE j.value = ? AND d.created_at > ? LIMIT 1`)
-      .get<{ hit: number }>(decision_id, sinceIso) !== undefined;
-  }
-
   /** Spec §7.2's tap budget: one row per local date, +1 per trust ask; returns the date's count after this one. */
   bumpTrustTapBudget(local_date: string, now: string): number {
     return this.db.prepare(`
@@ -5233,9 +5224,10 @@ export class RunStore {
   /** 2b-ii §2: a producer's row; `checkOutcomeValue` keeps the value closed; a known `source_outcome_id` is ignored (0). */
   insertImproveSignal(s: ImproveSignalInsert): number {
     const value = checkOutcomeValue(s.signal, s.value);
+    if (s.origin != null && !IMPROVE_ORIGINS.includes(s.origin)) throw new Error("invalid_origin"); // INSERT OR IGNORE would drop a CHECK-refused row silently
     const r = this.db.prepare(`
-      INSERT OR IGNORE INTO improve_signals (signal, value, run_id, chat_id, about_run_id, source_outcome_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(s.signal, value, s.run_id, s.chat_id, s.about_run_id, s.source_outcome_id ?? null, s.created_at ?? new Date().toISOString());
+      INSERT OR IGNORE INTO improve_signals (signal, value, run_id, chat_id, about_run_id, source_outcome_id, created_at, origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(s.signal, value, s.run_id, s.chat_id, s.about_run_id, s.source_outcome_id ?? null, s.created_at ?? new Date().toISOString(), s.origin ?? null);
     return Number(r.changes) === 1 ? Number(r.lastInsertRowid) : 0;
   }
 
@@ -5588,22 +5580,27 @@ export class RunStore {
   listOpenProposals(): ImprovementProposalRow[] {
     return this.db.prepare(`SELECT * FROM improvement_proposals WHERE state = 'open' ORDER BY created_at ASC, rowid ASC`).all<ImprovementProposalRow>();
   }
-  /** Final fix D3: an open proposal on (target, scope), or one Paco dismissed or that expired after `sinceIso`, blocks a new one (Dismiss sticks). */
+  /** Final fix D3 + spec 2026-11-07 §3.4: an open proposal on (target, scope), or one dismissed, expired, accepted or reverted after `sinceIso`, blocks a new one (Dismiss sticks; an applied or undone one does not pile up). */
   proposalBlocks(target: ProposalTarget, scope: string, sinceIso: string): boolean {
-    return this.db.prepare(`SELECT 1 AS hit FROM improvement_proposals WHERE target = ? AND scope = ? AND (state = 'open' OR (state IN ('dismissed', 'expired') AND resolved_at > ?)) LIMIT 1`)
+    return this.db.prepare(`SELECT 1 AS hit FROM improvement_proposals WHERE target = ? AND scope = ? AND (state = 'open' OR (state IN ('dismissed', 'expired', 'accepted', 'reverted') AND resolved_at > ? AND COALESCE(json_extract(result_json, '$.reason'), '') <> 'already_known')) LIMIT 1`)
       .get<{ hit: number }>(target, scope, sinceIso) !== undefined;
+  }
+  /** Spec 2026-11-07 §6: the accepted proposal whose save made this lesson or fact (its result_json names the id), for /forget and /forget_memory. */
+  proposalBySaved(kind: "lesson" | "fact", id: number): ImprovementProposalRow | undefined {
+    return this.db.prepare(`SELECT * FROM improvement_proposals WHERE state = 'accepted' AND target = ? AND json_extract(result_json, ?) = ? LIMIT 1`)
+      .get<ImprovementProposalRow>(kind, kind === "lesson" ? "$.lesson_id" : "$.fact_id", id);
   }
   /** Final fix D4: the improvement proposal whose Accept made this lesson/memory change (its result_json names the change), if any. */
   proposalByChange(change_id: string): ImprovementProposalRow | undefined {
     return this.db.prepare(`SELECT * FROM improvement_proposals WHERE state IN ('accepted', 'reverted') AND json_extract(result_json, '$.change_id') = ? LIMIT 1`).get<ImprovementProposalRow>(change_id);
   }
-  /** Fenced on the from states (§5.1: a tap acts only on the state named for it); the result (ids the digest shows) is kept with the state. */
+  /** Fenced on the from states (§5.1: a tap acts only on the state named for it); the result (ids the card and /changes show) is kept with the state. */
   transitionProposal(i: { proposal_id: string; from: readonly ProposalState[]; to: ProposalState; now: string; result_json?: string }): boolean {
     const r = this.db.prepare(`UPDATE improvement_proposals SET state = ?, resolved_at = ?, result_json = COALESCE(?, result_json) WHERE proposal_id = ? AND state IN (${i.from.map(() => "?").join(", ")})`)
       .run(i.to, i.now, i.result_json ?? null, i.proposal_id, ...i.from);
     return Number(r.changes) === 1;
   }
-  /** §5.1 / §6.1: the first offer wins; a later digest carrying the same proposal keeps the first timestamp. */
+  /** §5.1 / §6.1: the first offer wins; a later card carrying the same proposal keeps the first timestamp. */
   markProposalsOffered(ids: readonly string[], now: string): void {
     if (ids.length === 0) return;
     this.db.prepare(`UPDATE improvement_proposals SET offered_at = ? WHERE offered_at IS NULL AND proposal_id IN (${ids.map(() => "?").join(", ")})`).run(now, ...ids);
@@ -5740,7 +5737,21 @@ export class RunStore {
     if (r.changes !== 1) return false;
     if (row.move_id) this.endLadderMove(row.move_id, i.now);
     this.appendStandingLedgerEvent("standing_ended", { standing_id: i.standing_id, reason: i.reason });
+    this.logStandingEnd(row, i.reason, i.now);
     return true;
+  }
+  /** Spec 2026-11-07 §8: one change-log row per ended grant Paco did not end himself, in the end's own transaction (plain statements: the deny hook's raw BEGIN); keyed by row, so every path writes it once. */
+  private logStandingEnd(row: StandingApprovalRow, reason: StandingEndReason, now: string): void {
+    if (!Object.hasOwn(STANDING_DIGEST_TEXT, reason)) return;
+    const name = scheduleDisplayName(this.getScheduledTask(row.schedule_id)?.goal ?? "") || row.schedule_id;
+    // P18 / spec §8 R3: a refused or failed write is reported, never thrown — the end (a denial, an expiry) must commit whatever the log did
+    try {
+      const r = this.logChange({ topic: "standing_log", idempotency_key: `standing_end:${row.standing_id}`, correlation_id: `standing:${row.standing_id}`,
+        text: `🔏 ${row.label} · ${name} — ${STANDING_DIGEST_TEXT[reason as keyof typeof STANDING_DIGEST_TEXT]}`, now });
+      if (r.status === "conflict") console.error(`[standing] end row for ${row.standing_id} not logged (${r.error}); the grant ended`);
+    } catch (err) {
+      console.error(`[standing] end row for ${row.standing_id} not logged (${err instanceof Error ? err.message : String(err)}); the grant ended`);
+    }
   }
   /** Run-bound when a run owns the transition (the run's ledger shows it); run-less for a sweep or a tap. */
   appendStandingLedgerEvent(event_type: LedgerEventType, payload: Record<string, unknown>, run_id?: string): void {
@@ -7237,6 +7248,7 @@ export class RunStore {
       this.db.prepare(`INSERT INTO standing_approvals (standing_id, schedule_id, chat_id, action_fingerprint, capability, label, state, denied_until, created_at, updated_at, ended_at, ended_reason)
         VALUES (?, ?, ?, ?, ?, ?, 'ended', ?, ?, ?, ?, 'denied')`).run(standing_id, key.schedule_id, key.chat_id, key.action_fingerprint, a.capability, a.summary, until, now, now, now);
       this.appendStandingLedgerEvent("standing_ended", { standing_id, reason: "denied" }, a.run_id);
+      this.logStandingEnd(this.getStandingApproval(standing_id)!, "denied", now); // the same /changes row as endStandingTx writes
     } catch (e) { throw new StandingHookError(e instanceof Error ? e.message : String(e)); }
   }
   /** §7: a scheduled run's approval is answered only from the run's own notify chat (the tap carries its chat as event.notify); a local or foreign target resolves nothing. */
@@ -8647,12 +8659,14 @@ export class RunStore {
     });
   }
 
-  /** Decision ladder stage 2b-ii (improve.route): seven additive tables, guarded by IF NOT EXISTS like the 2a migration. */
+  /** Decision ladder stage 2b-ii (improve.route): seven additive tables, guarded by IF NOT EXISTS like the 2a migration; the `origin` column is added to an older table on every open. */
   private applyImproveRouteMigration(): void {
     const version = "2026-10-21-improve-route";
     this.inTransaction(() => {
       const applied = this.db.prepare(`SELECT version FROM schema_migrations WHERE version = ?`).get<{ version: string }>(version);
       this.db.exec(IMPROVE_ROUTE_DDL);
+      // spec 2026-11-07 §3.1: additive; the CHECK closes the set the way the DDL does for a new table
+      if (!this.tableColumns("improve_signals").has("origin")) this.db.exec(`ALTER TABLE improve_signals ADD COLUMN origin TEXT CHECK (origin IS NULL OR origin IN ('memlane_fix', 'dig_deeper', 'escalation', 'rating'))`);
       if (!applied) this.db.prepare(`INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)`).run(version, new Date().toISOString());
     });
   }
@@ -8824,7 +8838,7 @@ export class RunStore {
   }
 
   /**
-   * Decision ladder (ADR 0030): the ledger, outcomes, ladder moves and the digest latch, plus the two link columns. The
+   * Decision ladder (ADR 0030): the ledger, outcomes, ladder moves and the (now unused) digest latch table, plus the two link columns. The
    * columns are checked on every open, not only once: it runs after the jev_verdicts rebuild above, so a table rebuilt by an
    * older migration gets its column back. FKs are declared for readers; the store never enables PRAGMA foreign_keys.
    */

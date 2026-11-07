@@ -307,6 +307,9 @@ line. Pre-merge sanity PASS (planted 10/10, real window 7 groups, about 0.13 pro
 surface returns. **Deferred:** the wiki handler (R5), model-route proposals (R10), `lesson_unfollowed` (R4). ADR 0030
 amendment signed off by Paco 2026-10-22; merged, live after his kickstart the same day, digest on; bar 0.67.
 **Next: stage 3** (migrate the remaining families onto the registry).
+*(2026-11-07: the digest, its sections and its "digest on" state described above are gone; see the next entry.)*
+
+**Improvement auto-apply (2026-11-07):** lessons and facts from Paco's own memory-lane corrections apply at the tick with `/changes` lines and undo commands; every other proposal is a card; the 21:00 digest and its ✅/❌ are gone (`HOUGE_DECISION_DIGEST_AT` → `HOUGE_IMPROVE_AT`); standing ends are `/changes` rows; `improve_tick_degraded` pages. Known gap carried: no review surface produces `review_bad`.
 
 **SP4 scope change (2026-10-04).** The lifecycle-gap research
 (`docs/superpowers/research/2026-10-04-lifecycle-gap/00-synthesis.md`) found five lifecycle stages forbidden only

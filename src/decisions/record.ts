@@ -23,7 +23,7 @@ const STREAK_ROWS = 3 * 40 + 1;
 /**
  * Plan ruling 9: entries whose Jev-rung failures already page through the Jev incidents (openJevIncident and the triage
  * jev_skip_rate). Their Jev failures do not count toward decision_fallback: one call, one page. tool.injection joins them
- * (Paco 2026-10-14, "no alert, just log"): its plain timeouts and outages are logged and counted in the digest only; the
+ * (Paco 2026-10-14, "no alert, just log"): its plain timeouts and outages are logged and counted in /status only; the
  * turn's trust rise is the safety answer, and 429/auth still page through the Jev incidents. turn.settle joins them
  * (2b-i ruling 14): a Jev failure settles the turn as today and the Jev incident is the page; its own budget,
  * todo_unavailable and pass_errored rows page through decision_health (settle-judge.ts).

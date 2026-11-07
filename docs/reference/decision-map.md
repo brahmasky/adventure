@@ -15,7 +15,7 @@ Tried in this order on every registry entry; the first confident answer wins.
 | Jev | typed classifier, not generative | decides only when p clears a calibrated bar, else abstains |
 | Model rung | one-shot cheap LLM with a closed answer (Tiny cascade, distill) | below Jev |
 | Planner | omp tool loop on Claude (the newest Opus tier head for Default and Thinking, the newest Sonnet head for Fast) | composes between gates; never gates |
-| Paco | a tap: approval, Undo, Dig deeper, digest ✅/❌ | taps are also labels |
+| Paco | a tap: approval, Undo, Dig deeper, Accept on a card | taps are also labels |
 
 A lane is not "Jev instead of Claude": Jev only picks the route. The answer and lookup lanes reply with Claude Sonnet
 (Fast role) in one shot without tools; the planner is the tool loop. A lane never asks Paco anything, so a category that
@@ -26,7 +26,7 @@ announced (Undo); over tool output, only tightening (withhold, add a tap, send b
 Never allow or deny an action.
 
 Where a decision's notice goes (ADR 0031): a proactive message reaches chat only if Paco must act, his answers or schedules are
-affected now, or a locked rule says so. The decision digest, approval cards and Undo cards are chat topics. Decision-health
+affected now, or a locked rule says so. Improvement cards, approval cards and Undo cards are chat topics; applied improvements and standing-grant ends are change-log rows. Decision-health
 incidents (`decision_fallback`, `decision_record_failed` and the like), model changes and routine Jev notices go to the change
 log, read with `/changes`. `INCIDENT_ROUTE` in `src/run/incident-route.ts` names the route of each incident kind.
 
@@ -59,7 +59,7 @@ flowchart TD
   TR --> PL
   PL --> SE["Settle: turn.settle: one bounded send-back; secret.redact on the way out"]
   SE --> RP["Reply"]
-  RP --> NR["Notification router (ADR 0031): reply, approval, digest to chat; background notices to the change log"]
+  RP --> NR["Notification router (ADR 0031): reply, approval, cards to chat; background notices to the change log"]
   RP --> IR["After the turn: improve.route"]
   RP --> BG["Background episodic pass (model, not on the ladder)"]
 ```
@@ -124,7 +124,7 @@ Rungs run left to right; "code rule" is a single deterministic function. Locked 
 | `turn.trust` | max rule (locked) | tool | adds taps (untrusted, hostile) | live, locked |
 | `memory.kind` | Jev `memory_kind` (provisional bar 0.85) → distill → other | Paco | write a lesson and/or fact, an Undo per item; hand a fix or nothing to the planner | live |
 | `turn.settle` | rule (guards incl. `pass_errored`, then claims and todo checks; the delivered reply is audited) → Jev (four questions, per-question provisional bars) → settle | mixed | one bounded send-back through omp's `session_stop`; a Jev send-back also asks on writes for the rest of the turn | live |
-| `improve.route` | rule (stale, stated rule, recurrence, expiry pattern, `review_bad`) → Jev `improve_target` → Tiny pick → nothing | mixed | code: the skill-authoring job into `_pending`; Jev/Tiny: proposals (lesson, fact, schedule, knowledge, tool gap, ladder) | live |
+| `improve.route` | rule (stale, stated rule, recurrence, expiry pattern, `review_bad`) → Jev `improve_target` → Tiny pick → nothing | mixed (`pacoWordsOnly: autoApplies`) | code: the skill-authoring job into `_pending`, and a lesson/fact from a correction Paco typed, applied with a `/changes` line; Jev/Tiny: proposals as cards (schedule, tool gap, ladder; lesson/fact from any other correction); knowledge recorded only (R5) | live |
 | `tool.shell_class` | code rule | tool | classifies a shell command: plain, external write (asks) or destructive (asks) | live |
 | `tool.path` | code rule | tool | blocks a path the file floor denies | live, locked |
 | `selfwrite.guard` | code rule | tool | blocks a self-write that touches the protected surface | live, locked |

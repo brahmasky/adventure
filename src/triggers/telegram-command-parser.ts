@@ -340,7 +340,7 @@ export function parseMemLaneCallback(data: unknown): { action: "undo"; change_id
 
 const DEC_REVIEW = new RegExp(`^${REVIEW_PREFIX}(dec_${LC_UUID}):(ok|bad)$`);
 
-/** Decision digest taps (decision ladder spec §8.1): `dec:rv:<decision_id>:<ok|bad>`, at most 51 bytes; anything else returns null. */
+/** Old digest review taps (answered closed): `dec:rv:<decision_id>:<ok|bad>`, at most 51 bytes; anything else returns null. */
 export function parseDecisionReviewCallback(data: unknown): { decision_id: string; label: "ok" | "bad" } | null {
   if (typeof data !== "string") return null;
   const m = DEC_REVIEW.exec(data);

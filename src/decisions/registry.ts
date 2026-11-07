@@ -58,6 +58,8 @@ export const REGISTRY: readonly AnyEntry[] = [TURN_HANDLER as unknown as AnyEntr
 const PASSIVE: ReadonlySet<EffectKind> = new Set(["none", "tighten", "proposal"]);
 /** How a judge's effect over Paco's message must be announced (Paco 2026-10-12): an allowlist, so a missing or unknown value fails. */
 const ANNOUNCED: ReadonlySet<Announce> = new Set(["card"]);
+/** Spec 2026-11-07 §4: the gated effect over mixed input is announced on a card or on a `/changes` line naming its undo. */
+const GATED_ANNOUNCED: ReadonlySet<Announce> = new Set(["card", "changes"]);
 const LOCKED_IDS: ReadonlySet<string> = new Set(LOCKED_ENTRY_IDS);
 
 export function entryById(id: string): AnyEntry | undefined {
@@ -81,8 +83,8 @@ function shapeProblems(e: AnyEntry): string[] {
   if (e.locked && !LOCKED_IDS.has(e.id)) p.push("locked entry whose id is not in LOCKED_ENTRY_IDS");
   const provisional = e.ladder.some((r) => r.kind === "system_one" && r.bars.kind === "provisional");
   const failOpen = e.fail === e.defaultVerdict && noDirectEffect(e);
-  if (provisional && !e.monotone && !failOpen && !reversibleOverPaco(e)) {
-    p.push("provisional bar on an entry that is not monotone, not fail-open without direct effects, and not over Paco's words with every effect reversible and announced");
+  if (provisional && !e.monotone && !failOpen && !reversibleOverPaco(e) && !gatedPacoWords(e)) {
+    p.push("provisional bar on an entry that is not monotone, not fail-open without direct effects, not over Paco's words with every effect reversible and announced, and not gated by pacoWordsOnly");
   }
   return p;
 }
@@ -100,10 +102,19 @@ function reversibleOverPaco(e: AnyEntry): boolean {
   });
 }
 
+/** Spec 2026-11-07 §4: a mixed-input entry naming a provenance predicate whose every effect is passive, or an `effect` reversible and announced (card or /changes). */
+function gatedPacoWords(e: AnyEntry): boolean {
+  return e.input === "mixed" && typeof e.pacoWordsOnly === "function" && e.verdicts.every((v) => {
+    const fx = e.effects[v];
+    return fx !== undefined && (PASSIVE.has(fx.kind) || (fx.kind === "effect" && fx.reversible && GATED_ANNOUNCED.has(fx.announced)));
+  });
+}
+
 /**
  * R12: a verdict a Jev or model rung can choose may, over tool (or mixed) input, only tighten or propose; over Paco's own
  * message it may cause a reply or an effect only when reversible and announced. Code-only entries are not bound.
  * Announced means a code-built card with Undo (Paco 2026-10-12): "reply" is not accepted.
+ * One allowance (spec 2026-11-07 §4): over `mixed` input an `effect` passes when the entry names `pacoWordsOnly`, and it is reversible and announced on a card or a `/changes` line.
  */
 function effectProblems(e: AnyEntry): string[] {
   const p: string[] = Object.keys(e.effects).filter((v) => !e.verdicts.includes(v)).map((v) => `effect declared for ${v}, which is not a verdict`);
@@ -112,8 +123,10 @@ function effectProblems(e: AnyEntry): string[] {
     const fx = e.effects[v];
     if (fx === undefined) { p.push(`no effect declared for ${v}`); continue; }
     if (!judged || PASSIVE.has(fx.kind)) continue;
-    if (e.input !== "paco") p.push(`a jev/model rung over ${e.input} input can choose ${v}, which is not tightening`);
-    else if (!fx.reversible || !ANNOUNCED.has(fx.announced)) p.push(`a jev/model rung can choose ${v}, an effect not reversible or not announced on a card`);
+    if (e.input === "paco") { if (!fx.reversible || !ANNOUNCED.has(fx.announced)) p.push(`a jev/model rung can choose ${v}, an effect not reversible or not announced on a card`); continue; }
+    // spec 2026-11-07 §4 (ADR 0034 2.5): over mixed input one allowance — a reversible, announced `effect` behind a code-owned provenance predicate
+    if (e.input === "mixed" && fx.kind === "effect" && typeof e.pacoWordsOnly === "function" && fx.reversible && GATED_ANNOUNCED.has(fx.announced)) continue;
+    p.push(`a jev/model rung over ${e.input} input can choose ${v}, which is not tightening`);
   }
   return p;
 }

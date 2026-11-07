@@ -5,7 +5,7 @@
 //     --old-dist <main checkout>/.worktrees/base-1451a66/dist [--live-db <path>]
 // Two VACUUM copies of the live DB: A (this build writes a seed to it, then 1451a66 opens it, then this build reopens it) and F
 // (only 1451a66 ever opens it; it is VACUUMed from A before A is touched). 1451a66 does the same six things on both: migrations,
-// render /status + digest + /status decisions, resolve an approval, run a resume (no bind row), enqueue a masked report (no redact
+// render /status + /status decisions, resolve an approval, run a resume (no bind row), enqueue a masked report (no redact
 // row), refuse review_ok outcomes naming the two new ids. PASS = nothing throws, no row count drops, and A and F differ only in the
 // stated way: A's /status carries `· approval.bind` and `· secret.redact` count lines (F's carry neither), and every other count line
 // equals F's plus the seed's own per-entry delta (computed from the rows the seed wrote, asserted, never excluded).
@@ -172,11 +172,9 @@ function identity(name, before, after) {
 // ---- rendering and comparison ----
 const norm = (l) => l.replace(/\b\d\d-\d\d \d\d:\d\d\b/g, "<ts>").replace(/\b[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\b/g, "<id>").replace(/\b(run|tool|op|dec)_[0-9A-Za-z-]+/g, "<id>").replace(/ run [0-9a-f]{8}\b/g, " run <id>")
   .replace(/\d{4}-\d\d-\d\d(?:T[\d:.]+Z?)?/g, "<ts>").replace(/\b\d\d:\d\d\b/g, "<ts>");
-/** The three renderers 1451a66 and this build share: the /status block, the digest, /status decisions. `now` is shared by A and F. */
+/** The two renderers 1451a66 and this build share: the /status block and /status decisions. `now` is shared by A and F. */
 function render(m, store, now) {
-  // the improvement-tick-off watch line makes the digest non-empty on any copy, so its render is always compared (as check-standing-rollback does)
-  const dg = m.buildDecisionDigest(store, now, { ...process.env, HOUGE_IMPROVE_ENABLED: "false" });
-  return { status: m.decisionStatusLines(store, now), digest: dg ? dg.text.split("\n") : [], list: m.decisionListText(store, process.env).split("\n") };
+  return { status: m.decisionStatusLines(store, now), list: m.decisionListText(store, process.env).split("\n") };
 }
 const RUNGS = ["rule", "system_one", "model", "paco", "fail"];
 const SUFFIX = " (final, failure and evolution reports only)";
@@ -214,7 +212,6 @@ function cmpStatus(a, f, rungs, label) {
   if (JSON.stringify(got.map((l) => COUNT_RE.exec(l)[1])) !== JSON.stringify(want.map((l) => COUNT_RE.exec(l)[1]))) bad.push("count line order differs");
   return bad;
 }
-function cmpDigest(a, f) { const [x, y] = [a.map(norm), f.map(norm)]; return JSON.stringify(x) === JSON.stringify(y) ? [] : [`digest lines differ (A ${x.length}, F ${y.length})`]; }
 /** The line the list prints for a row, in normalised form (status-view.ts recentLine). */
 const listLine = (r, label) => `<ts> · ${r.entry_id} · ${label(r.rung)} → ${r.verdict} · p ${r.p === null ? "–" : r.p.toFixed(2)} · run ${r.run_id ? "<id>" : "–"}`;
 /** The newest-10 list, whole: the old build's own rows (newest), then the seed's rows, then F's older rows, cut at 10. A dropped, reordered or changed row differs. */
@@ -228,9 +225,9 @@ function cmpList(a, f, seedRows, oldRows, label) {
   return got.length === want.length && at < 0 ? [] : [`recent-decisions list: A has ${got.length - 1} rows, expected ${want.length - 1}; first difference at row ${at < 0 ? "end" : at}`];
 }
 function cmpRenders(tag, ra, rf, seed, oldRows, label) {
-  const bad = [...cmpStatus(ra.status, rf.status, seed.rungs, label), ...cmpDigest(ra.digest, rf.digest), ...cmpList(ra.list, rf.list, seed.seedRows, oldRows, label)];
+  const bad = [...cmpStatus(ra.status, rf.status, seed.rungs, label), ...cmpList(ra.list, rf.list, seed.seedRows, oldRows, label)];
   const seen = NEW_IDS.map((id) => `${id} ${countMap(ra.status).get(id) ?? 0}`).join(" · ");
-  check(`A vs F at ${tag}: full /status count lines = F + seed delta per decider, digest equal, recent list = expected newest 10`, bad.length === 0, bad.length ? bad.join("; ") : `A carries [${seen}], F carries none; ${countLinesOf(ra.status).length} count lines compared whole; digest ${ra.digest.length} lines equal; list ${ra.list.length - 1} rows`);
+  check(`A vs F at ${tag}: full /status count lines = F + seed delta per decider, recent list = expected newest 10`, bad.length === 0, bad.length ? bad.join("; ") : `A carries [${seen}], F carries none; ${countLinesOf(ra.status).length} count lines compared whole; list ${ra.list.length - 1} rows`);
 }
 const countMap = (lines) => new Map(lines.flatMap((l) => { const m = COUNT_RE.exec(l); return m ? [[m[1], Number(m[2])]] : []; }));
 
@@ -309,7 +306,7 @@ async function setup() {
   const [dNew, dOld] = [await loadDist(DIST), await loadDist(oldDist)];
   for (const k of ["storeOptionsFor", "CapabilityRunner", "Gateway", "createToolApprovalSink"]) if (!dNew[k]) throw new SetupError(`${k} missing from the new dist: rebuild`);
   for (const k of ["RunStore", "CapabilityRunner", "Gateway", "createToolApprovalSink"]) if (!dOld[k]) throw new SetupError(`${k} missing from the old dist`);
-  const mods = async (dist) => ({ ...(await import(join(dist, "decisions/digest.js"))), ...(await import(join(dist, "decisions/status-view.js"))) });
+  const mods = async (dist) => ({ ...(await import(join(dist, "decisions/digest.js"))), ...(await import(join(dist, "decisions/status-lines.js")).catch(() => ({}))), ...(await import(join(dist, "decisions/status-view.js"))) }); // status-lines.js is absent in an old dist: its helpers live in digest.js there
   const [mNew, mOld] = [await mods(DIST), await mods(oldDist)];
   const sched = await import(join(oldDist, "run/schedule-tick.js"));
   const A = join(mkTemp("copy-A"), "houge.sqlite"); const F = join(mkTemp("copy-F"), "houge.sqlite");

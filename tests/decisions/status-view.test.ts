@@ -122,3 +122,16 @@ describe("/status decisions list", () => {
     s.close();
   });
 });
+
+describe("/status improvement line (spec 2026-11-07 §8)", () => {
+  it("with no decision in 24 h the line stands alone after a blank; with decisions it is the last line", () => {
+    const prev = process.env.HOUGE_IMPROVE_ENABLED;
+    process.env.HOUGE_IMPROVE_ENABLED = "false";
+    try {
+      expect(decisionStatusLines(RunStore.openInMemory(), NOW)).toEqual(["", "Improvement (7 d): tick off"]);
+      const lines = decisionStatusLines(seeded(), NOW);
+      expect(lines[1]).toBe("🪜 DECISIONS (24h)");
+      expect(lines.at(-1)).toBe("Improvement (7 d): tick off");
+    } finally { if (prev === undefined) delete process.env.HOUGE_IMPROVE_ENABLED; else process.env.HOUGE_IMPROVE_ENABLED = prev; }
+  });
+});

@@ -1,12 +1,12 @@
 import type { DecisionSignal } from "./types.js";
 import { errorCode } from "../domain/error-code.js";
 import { OutcomeRejected } from "./outcomes.js";
-import type { ImproveSignalInsert, JevVerdictRow, RunStore } from "../run/run-store.js";
+import type { ImproveOrigin, ImproveSignalInsert, JevVerdictRow, RunStore } from "../run/run-store.js";
 
 /**
  * The improvement producers (2b-ii §2). A producer writes an inbox row, never a decision_outcomes row (a failed run or a
  * pre-ladder turn may have no decision). It never throws into its caller (recordTapOutcome's contract): what cannot be
- * inserted becomes an `improve_signal_skipped {signal, code}` event, counted per family by the digest's Watch line.
+ * inserted becomes an `improve_signal_skipped {signal, code}` event, counted per family in /status.
  */
 export type SkipCode = "no_run" | "no_capability" | "refused" | "store_error";
 
@@ -32,9 +32,9 @@ export function skipImproveSignal(store: RunStore, signal: DecisionSignal, code:
 /** CORRECTION_VALUES is the category list; a verdict without one (P1: 6 of 32) is `other`. */
 export const correctionValue = (category: string | null): string => category ?? "other";
 
-/** One correction row on the corrected turn (`about`), by the correcting run (null for a rating, which has none). */
-export function recordCorrection(store: RunStore, i: { about: JevVerdictRow; run_id: string | null; chat_id: string; now?: string }): boolean {
-  return recordImproveSignal(store, { signal: "correction", value: correctionValue(i.about.category), run_id: i.run_id, chat_id: i.chat_id, about_run_id: i.about.run_id,
+/** One correction row on the corrected turn (`about`), by the correcting run (null for a rating, which has none), stamped with its producer (spec 2026-11-07 §3.1: only `memlane_fix` may apply on its own; `null` = a correcting run that is not Telegram's, P16). */
+export function recordCorrection(store: RunStore, i: { about: JevVerdictRow; run_id: string | null; chat_id: string; origin: ImproveOrigin | null; now?: string }): boolean {
+  return recordImproveSignal(store, { signal: "correction", value: correctionValue(i.about.category), run_id: i.run_id, chat_id: i.chat_id, about_run_id: i.about.run_id, origin: i.origin,
     ...(i.now ? { created_at: i.now } : {}) });
 }
 

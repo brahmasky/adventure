@@ -1,9 +1,10 @@
 import { enqueueMemoryChangeCard, searchActiveMemory } from "../capabilities/memory-correct.js";
 import { escapeForTelegram } from "../capabilities/text-hygiene.js";
 import { recordSaveUndone } from "../decisions/tap-outcomes.js";
-import { revertImproveSave } from "./improve-undo.js";
+import { revertImproveSave, revertSavedProposal } from "./improve-undo.js";
 import type { TypedTaskEvent } from "../domain/types.js";
-import type { EpisodicFactRow, MemoryChange, RunStore } from "../run/run-store.js";
+import type { NotificationButton } from "../notifications/notification-types.js";
+import { RunStore, type EpisodicFactRow, type MemoryChange } from "../run/run-store.js";
 import { clipText } from "../status/houge-status.js";
 import type { GatewayIntakeResult } from "./gateway.js";
 
@@ -30,11 +31,11 @@ export function oncePerTrigger(store: RunStore, event: TypedTaskEvent, fn: () =>
 }
 
 /** One code-owned reply to the event's chat, keyed on the event so a redelivery never replies twice. */
-export function replyTo(store: RunStore, event: TypedTaskEvent, suffix: string, text: string): void {
+export function replyTo(store: RunStore, event: TypedTaskEvent, suffix: string, text: string, buttons?: NotificationButton[]): void {
   store.enqueueNotification({
     topic: "reply",
     target: event.notify, intent_type: "progress", idempotency_key: `${event.idempotency_key}:${suffix}`,
-    correlation_id: event.source_reference, payload: { text }
+    correlation_id: event.source_reference, payload: { text, ...(buttons && buttons.length > 0 ? { buttons } : {}) }
   });
 }
 
@@ -102,13 +103,21 @@ export function handleMemories(store: RunStore, event: TypedTaskEvent): GatewayI
   });
 }
 
+/** The retire and the applied proposal's revert in one transaction (spec 2026-11-07 §6); a refused id (inactive, another chat) is null and writes nothing. */
+function forgetFact(store: RunStore, id: number, chat_id: string, now: string): MemoryChange | null {
+  try {
+    return store.inTransaction(() => { const c = store.retireMemoryRowsTx({ kind: "fact", ids: [id], chat_id, run_id: null, now }); revertSavedProposal(store, "fact", id, now); return c; });
+  } catch (e) {
+    if (e === RunStore.MEMORY_REFUSED) return null;
+    throw e;
+  }
+}
+
 /** `/forget_memory <id>`: Paco's direct command, so no turn or taint rule; only an active fact of this chat. */
-export function handleForgetMemory(store: RunStore, event: TypedTaskEvent): GatewayIntakeResult {
+export function handleForgetMemory(store: RunStore, event: TypedTaskEvent, now: string = new Date().toISOString()): GatewayIntakeResult {
   return oncePerTrigger(store, event, () => {
     const id = Number(event.program);
-    const change = Number.isSafeInteger(id) && id > 0
-      ? store.retireMemoryRows({ kind: "fact", ids: [id], chat_id: chatOf(event), run_id: null })
-      : null;
+    const change = Number.isSafeInteger(id) && id > 0 ? forgetFact(store, id, chatOf(event), now) : null;
     if (!change) {
       replyTo(store, event, "forget_memory_refused", `No active memory #${Number.isSafeInteger(id) ? id : "?"} here. /memories lists them.`);
       return { ok: false, error: { code: MEMORY_NOT_FOUND, message: "No active memory with that id in this chat" } };

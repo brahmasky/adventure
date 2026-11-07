@@ -17,7 +17,8 @@ export const ENV_NOT_CONFIGURATION: Record<string, string> = {
   HOUGE_OMP_JUDGES: "retired chain variable (see HOUGE_OMP_TICKS); documented as `_JUDGES`",
   HOUGE_OMP_CHAIR: "retired chain variable (see HOUGE_OMP_TICKS); documented as `_CHAIR`",
   HOUGE_OMP_READER: "retired chain variable (see HOUGE_OMP_TICKS)",
-  HOUGE_OMP_REVIEWER: "retired chain variable (see HOUGE_OMP_TICKS); documented as `_REVIEWER`"
+  HOUGE_OMP_REVIEWER: "retired chain variable (see HOUGE_OMP_TICKS); documented as `_REVIEWER`",
+  HOUGE_DECISION_DIGEST_AT: "retired (spec 2026-11-07 §10: the digest is gone); named once at boot by warnRetiredDigestAt, never read"
 };
 
 export const ADR_TEMPLATE = "0000-template.md";

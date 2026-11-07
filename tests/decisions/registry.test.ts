@@ -38,6 +38,26 @@ describe("the registry", () => {
     expect(entryById("turn.gear")?.input).toBe("paco");
     expect(Object.values(shape(entryById("turn.gear")!)).map((f) => f[0])).toEqual(["none", "none", "none"]);
   });
+  // Spec 2026-11-07 §4 (ADR 0034 2.5): one allowance over mixed input — an `effect` behind a code-owned provenance predicate,
+  // reversible and announced (card or a /changes line). Everything that drops one leg of it must FAIL here.
+  it("improve.route's lesson and fact are effects over mixed input only behind pacoWordsOnly, reversible and announced; a copy without the predicate, irreversible, unannounced, a reply, or over tool input fails", () => {
+    const route = entryById("improve.route") as AnyEntry;
+    expect(typeof route.pacoWordsOnly).toBe("function");
+    expect([shape(route).lesson, shape(route).fact]).toEqual([["effect", true, "changes"], ["effect", true, "changes"]]);
+    expect(entryProblems(route)).toEqual([]);
+    const { pacoWordsOnly: _drop, ...bare } = route;
+    const bareProblems = entryProblems(bare as AnyEntry);
+    expect(bareProblems).toEqual(expect.arrayContaining(["a jev/model rung over mixed input can choose lesson, which is not tightening", "a jev/model rung over mixed input can choose fact, which is not tightening"]));
+    expect(bareProblems.some((p) => p.startsWith("provisional bar"))).toBe(true); // the 0.67 bar needs the same gate
+    const withFx = (v: string, f: VerdictEffect): AnyEntry => ({ ...route, effects: { ...route.effects, [v]: f } });
+    expect(entryProblems(withFx("lesson", fx("effect", false, "changes")))).toContain("a jev/model rung over mixed input can choose lesson, which is not tightening");
+    expect(entryProblems(withFx("fact", fx("effect", true, "none")))).toContain("a jev/model rung over mixed input can choose fact, which is not tightening");
+    expect(entryProblems(withFx("lesson", fx("reply", true, "changes")))).toContain("a jev/model rung over mixed input can choose lesson, which is not tightening");
+    expect(entryProblems({ ...route, input: "tool" })).toContain("a jev/model rung over tool input can choose lesson, which is not tightening");
+  });
+  it("over Paco's own message `changes` is not an announcement: that path still needs a card", () => {
+    expect(entryProblems(base({ input: "paco", effects: { ...HANDLER.effects, answer: fx("effect", true, "changes") } }))).toContain("a jev/model rung can choose answer, an effect not reversible or not announced on a card");
+  });
 });
 
 describe("entryProblems (R12 as data: a judged entry over Paco's message must be reversible and announced)", () => {
@@ -88,7 +108,7 @@ describe("entryProblems (R12 as data: a judged entry over Paco's message must be
   // on a fail-open entry that causes no direct effect (none or tighten only), or on an entry over Paco's own message whose
   // every effect is reversible and announced. memory.kind is fail-open but saves, so only the amended clause admits it.
   const ladder = HANDLER.ladder.map((r) => (r.kind === "system_one" ? { ...r, bars: { kind: "provisional" as const, question: "q", criteriaHash: "h", model: "m", p: 0.5, source: "mu" } } : r));
-  const msg = "provisional bar on an entry that is not monotone, not fail-open without direct effects, and not over Paco's words with every effect reversible and announced";
+  const msg = "provisional bar on an entry that is not monotone, not fail-open without direct effects, not over Paco's words with every effect reversible and announced, and not gated by pacoWordsOnly";
   const passive = Object.fromEntries(HANDLER.verdicts.map((v) => [v, fx("none", true, "none")]));
   it("admits paco input with every effect reversible and announced (turn.handler's shape), even when not fail-open", () => {
     expect(entryProblems(base({ ladder, fail: "answer" }))).not.toContain(msg);

@@ -675,3 +675,6 @@ The clean-room merge rebuilt `dist/` (new `omp/shell-wrapper.sh`) and the kickst
 - **A subagent's "full suite" can be a subset.** The final fixer reported "full npm test: 198 files" — the full suite is 475. Counts that do not match the last known full run are a subset; the controller re-runs `npm test` itself before trusting "full".
 - **A parity gate that flakes is a gate nobody believes.** `memory.kind` stamped `age_s` from the wall clock while triage used the gate's clock; three replay misses looked like a branch regression until a hermetic old-vs-old control reproduced them. Before blaming the branch, run the control (old vs old) without real calls.
 - **Plan wording that restates the spec can still be false.** The plan's ADR 1.6 text said "armed whenever Jev runs"; the calibration-file and marker caps contradict it. Task reviewers caught it; the ADR text is checked against the resolver, not against the plan.
+
+## 2026-11-07 — Improve auto-apply
+- **A spec's file citation is checked against the tree before the plan.** The spec cited `src/core/standing-approval.ts` for the standing-grant end; the file and the real transaction (`endStandingTx` in the run store) were looked up first, and the plan cites the real ones. A cited path that does not exist is a spec bug caught for free at plan time, expensive in Task 6.

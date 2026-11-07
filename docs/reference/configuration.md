@@ -701,8 +701,8 @@ environment variable. Spec: `docs/superpowers/specs/2026-11-03-chat-is-for-paco-
 [ADR 0031](../decisions/0031-chat-carries-what-needs-paco.md).
 
 - **Topics.** Every notification names a closed topic. `TOPIC_ROUTE` (`src/notifications/topics.ts`) maps each topic to `chat` or `log`;
-  the topic alone decides. Replies, run reports, approvals, memory cards, the digest, urgent cards, self-write cards, incident pages,
-  reminders and summaries are chat. `model_change`, `incident_log`, `jev_notice` and `decision_internal` are log. A
+  the topic alone decides. Replies, run reports, approvals, memory cards, improvement cards, urgent cards, self-write cards, incident pages,
+  reminders and summaries are chat. `model_change`, `incident_log`, `jev_notice`, `decision_internal`, `improve_log` and `standing_log` are log. A
   `NotificationIntent` is a chat intent or a log intent, and `RunStore.enqueueNotification` sends one to the outbox and the other to
   `logChange` (a log row is deduplicated by its idempotency key).
 - **Incident routes.** `INCIDENT_ROUTE` (`src/run/incident-route.ts`) gives every incident kind one of three routes. A **page** is one
@@ -1118,8 +1118,8 @@ decided by a ladder of deciders (code rule → Jev → model → Paco) and recor
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `HOUGE_DECISION_DIGEST_AT` | `21:00` | Local time (`HH:MM`, in `HOUGE_DISPLAY_TZ`) of the daily decision digest to the operator chat, or `off` (any case) for no digest: the tick sends nothing and writes no latch row, while decisions and outcomes are recorded as before and the `decision_fallback` change-log line and incidents are unaffected (`/status` still shows the 24 h counts; `/status decisions` the last 10 rows). Any other malformed value → the default. Sent once per local date on the first poll at or after the time; a day with nothing to say sends nothing (the latch row still records the date). **Moving the digest moves the improvement tick**: the tick runs at this time, before the digest, and also when the digest is `off`. While a pass runs, the daemon's loop (Telegram polling, the outbox) waits; a pass has a 120 s budget per cycle and resumes on the next one. |
-| `HOUGE_IMPROVE_ENABLED` | on | Switch for the daily improvement tick (`improve.route`). Only the exact word `false` (any case) turns it off; unset, empty, `0`, `off` and any typo keep it on, so a typo never silences the loop. Read live at every tick, and in `DISARM_FLAGS`: `/disarm` forces it to `false` in the running process. Off = the tick does nothing at all (no inbox mirror, no seat or Jev call, no proposal, no job, no latch row, no ledger event), logs one line per local date, and the digest's Watch section says `improvement tick off`, so an otherwise empty day is still sent. The digest, the review taps and the ledger are unaffected. |
+| `HOUGE_IMPROVE_AT` | `21:00` | Local time (`HH:MM`, in `HOUGE_DISPLAY_TZ`) of the daily improvement tick (`improve.route`). No `off`: `HOUGE_IMPROVE_ENABLED=false` is the switch; a typo keeps 21:00. `HOUGE_DECISION_DIGEST_AT` is retired (named once at boot if still set; delete the `.env` line). |
+| `HOUGE_IMPROVE_ENABLED` | on | Switch for the daily improvement tick (`improve.route`). Only the exact word `false` (any case) turns it off; unset, empty, `0`, `off` and any typo keep it on, so a typo never silences the loop. Read live at every tick, and in `DISARM_FLAGS`: `/disarm` forces it to `false` in the running process. Off = the tick does nothing at all (no inbox mirror, no seat or Jev call, no proposal, no job, no latch row, no ledger event), logs one line per local date, and `/status` says `Improvement (7 d): … tick off`. Cards already sent, Undo and the ledger are unaffected. |
 | `HOUGE_RECURRENCE_COSINE_GATE` | `0.6` | Cosine similarity at or above which two of Paco's turns in one category count as the same request, for the recurrence that queues a skill-authoring job (3 turns, 14 days, category not `other` / `status` / `memory`, text of 20+ characters). Deliberately above the episodic gate 0.42: on the last 14 days (P2) 0.42 clustered 15 short `other` turns, 0.5 gave four clusters, 0.6 one. A float from 0 to 1; anything else uses the default. Read per tick. |
 | `HOUGE_TRUST_ASK_TTL_MS` | `300000` (5 min) | How long a trust card (an approval asked only because the turn read outside content, spec §7.2) waits for Paco, and the most a turn's trust cards together may pause its deadline and frame watchdog. A positive integer up to 1 800 000; anything else uses the default. Read per call; no restart needed. |
 
@@ -1128,22 +1128,12 @@ The injection judge, turn trust, the golden set and the noise band have no switc
 **No off switch (ruling R13).** There is no variable that turns the decision system off or into shadow. The one flag over the
 front door is the ADR 0018 STOP flag `HOUGE_JEV_ENABLED`, outside the rule (ruling A5). If a build is fundamentally wrong, revert
 its commit, rebuild `dist/`, kickstart: every stage's migrations are additive, and `scripts/check-decisions-rollback.mjs`
-proves the previous build runs on a migrated DB (run by each stage's final task). After such a revert, a digest still in
-the outbox is sent without its buttons (the old adapter ignores `button_rows`), and a tap on an earlier digest is answered
-as unrecognised callback data; neither writes anything.
+proves the previous build runs on a migrated DB (run by each stage's final task). After such a revert, a card still in
+the outbox is sent without its buttons (the old adapter ignores `button_rows`), and an old ✅/❌ answers 'closed'; neither writes anything.
 
-**The digest** (one Telegram message, rich-rendered, scoped to the digest's chat) has five sections:
-**Improvements today** (what the tick did: lessons and facts saved with Undo, skill jobs and their endings),
-**Standing approvals** (trials that did not seal, grants that were denied, lapsed or went stale),
-**Proposals waiting** (taps: lesson, fact, schedule, tool gap, ladder; at most 8, one open per target and scope, expiring at 14 days),
-**Unsure** (System One judgements within 0.15 of their bar, at most 8, each with ✅ / ❌ review taps that write `review_ok` / `review_bad`, which the improvement tick turns into ladder proposals)
-and **Watch** (signal groups the ladder left alone, plus `ticks failed N · stopped N · record failed N` when any is
-non-zero; a day with only that still sends; `deferred on an outage N` when groups waited on an outage). The counts and the health lines moved to `/status` (the 24 h counts per entry, the
-`turn.settle` health line and the per-entry Jev-skip counts). A front-door row counts only when its turn's verdict links it.
-No tool text ever reaches the digest; improvement-side text is Paco's own words through `redactForImprove`.
+**No digest.** A lesson or fact from a correction Paco typed on the memory lane applies at the tick (one `/changes` line: `📒 Lesson #N learned from your correction (scope): … — undo: /forget N`); every other proposal is one card (Accept / Dismiss); ended standing grants are `/changes` rows; a failing tick pages `improve_tick_degraded`; `/status` carries the counts and the Improvement (7 d) line (tick off, unattached, silent families, deferrals, ticks failed, record failed, embeddings unavailable N d, wiki disarmed, inapplicable tops, lessons not holding). A null draft for anything but a capped lesson dismisses the proposal with reason `already_known` (no card, no `/changes` line). Improvement-side text is Paco's own words through `redactForImprove`; no tool text reaches a card or a log line.
 
-**The improvement tick** (`improve.route`) runs once per local date at `HOUGE_DECISION_DIGEST_AT`, before the digest
-and also when the digest is `off`. It reads the inbox, mirrors new `decision_outcomes` rows into it, groups, decides and
+**The improvement tick** (`improve.route`) runs once per local date at `HOUGE_IMPROVE_AT`. It reads the inbox, mirrors new `decision_outcomes` rows into it, groups, decides and
 commits one transaction per group. A failing group is isolated (counted `record_failed`, its signals stay unconsumed). At
 most one skill-authoring job starts per tick, up to 3 queue per day, a queued job expires after 3 days. Audit roles:
 `improve` (Jev's `improve_target`) and `improve_pick` (the Tiny pick). Ledger events: `improve_tick` (one per pass, with
@@ -1152,7 +1142,7 @@ row). A tap on a proposal or job card arrives as the `improvement_tap` task even
 `improve_cursor`, `turn_embeddings`, `improvement_proposals`, `improvement_jobs`, `improvement_taps`. The bar for
 `improve_target` is code (`IMPROVE_BAR_P`, 0.67, set by Paco 2026-10-22 from the sanity run's suggestion); there is no env override. One env var, `HOUGE_IMPROVE_ENABLED` (table above); the
 bounds are code constants: `IMPROVE_SEAT_DEADLINE_MS = 60 000` per seat call, `EMBED_PER_TICK_MAX = 50` embeds per call,
-`IMPROVE_GROUPS_PER_TICK = 40` per local date, a proposal blocks its (target, scope) for 14 days after a dismissal or expiry.
+`IMPROVE_GROUPS_PER_TICK = 40` per local date, a proposal blocks its (target, scope) while it is open and for 14 days after it is dismissed, expired, accepted or reverted (an `already_known` dismissal never blocks).
 An outage (Jev or a seat call) leaves a group unconsumed and counts `deferred_outage`. **`/disarm`** (`HOUGE_SKILLS_ENABLED`
 off) holds skill jobs: queued jobs stay queued and a recurrence group that would start one waits. An unreviewed skill offer
 expires after 14 days.
@@ -1164,8 +1154,7 @@ expires after 14 days.
 `created_at`; no state column; `stage` and `fallback_reason` are validated in code so a later stage can extend them),
 `decision_outcomes` (closed signal and value per row, validated in code; one review label per decision), `ladder_moves`
 (who decides, moved; only a standing approval may write an automatic row, for `tool.policy`; every Paco row carries its
-callback id, used once; locked entries refuse every move), `decision_digests` (the daily latch and the ids each digest
-offered). `jev_decisions.ladder_decision_id` and `jev_verdicts.decision_id` link the Jev rows and the verdict to their
+callback id, used once; locked entries refuse every move), `decision_digests` (kept: the latch and offered ids of the retired digest; nothing writes it now). `jev_decisions.ladder_decision_id` and `jev_verdicts.decision_id` link the Jev rows and the verdict to their
 `turn.handler` decision; the front door writes its decision row in the same transaction as the verdict, so a lost turn
 writes none.
 
@@ -1173,12 +1162,11 @@ writes none.
 write resolves it), `decision_fallback` (subject = the entry; three named fallbacks to the entry's fail answer in one hour,
 `budget` excluded; for `turn.handler` and `turn.gear` only cascade failures count, because the Jev incidents already page a
 Jev outage, and only a cascade answer resolves it; the kind routes to the change log (no urgent card, no chat message);
-for other entries the next Jev or model answer resolves it; a rule answer never does), `decision_fallback_streak` (subject = the entry; a tick entry — stage `after_turn`, `alwaysRecord`, with a judge rung; today only `improve.route` — whose last three runs, however far apart, ended only in counted fallbacks; one or two groups a day seldom make three in an hour; it pages; the next answer from a counting rung resolves it), and `jev_skip_rate` with subject `decision:<entry>` (the sweep's
+for other entries the next Jev or model answer resolves it; a rule answer never does), `decision_fallback_streak` (subject = the entry; a tick entry — stage `after_turn`, `alwaysRecord`, with a judge rung; today only `improve.route` — whose last three runs, however far apart, ended only in counted fallbacks; one or two groups a day seldom make three in an hour; it pages; the next answer from a counting rung resolves it), `improve_tick_degraded` (subject `improve`; it pages; read from each date's `improve_ticks` row: `failed`, or a previous date still `running`, opens at once; the third bad date in a row — nothing decided while `deferred_outage`, `record_failed` or `embed_unavailable` was above 0 — opens once; `stopped` is neutral; a `done` date that decided something, or had no group, with the embedder up resolves it), and `jev_skip_rate` with subject `decision:<entry>` (the sweep's
 per-entry rate from Jev-rung failures; `turn.handler` and `turn.gear` keep the triage-wide `jev_skip_rate` above in stage 1).
 
 **Live gate:** from the feature worktree, `HOUGE_ENV_FILE=/abs/.env node scripts/live-gate-decisions-parity.mjs --old-dist <pre-stage-1 dist>`
-(P6: the last 200 Telegram texts through the old and new triage on two copies of the DB; coverage floor; the digest
-rendered through the Telegram adapter; a ❌ tap). Exit 3 = INCONCLUSIVE, never a pass. The rollback check,
+(P6: the last 200 Telegram texts through the old and new triage on two copies of the DB; coverage floor; no digest export, topic or row — the gate checks the digest is gone; an old ✅/❌ tap answers 'closed'). Exit 3 = INCONCLUSIVE, never a pass. The rollback check,
 `HOUGE_ENV_FILE=/abs/.env node scripts/check-decisions-rollback.mjs --old-dist <pre-stage-1 dist>`, boots the previous
 build on a copy of the live DB that the new build migrated (it must settle a triage turn and run its sweep).
 
@@ -1276,7 +1264,7 @@ room only when the validated execution record carries `executor: "cleanroom"` (S
 **No environment variable.** Durations are code constants (`src/decisions/standing-approval.ts`, and `STANDING_STREAK` in `run-store.ts`). Not configurable; recorded here so an operator knows what stands and how to end it.
 
 - **The rule:** three distinct consumed approvals of the same key (schedule, chat, byte-identical command fingerprint) from three distinct scheduled runs make it a candidate; the fourth runs sealed in the clean room; the grant is automatic when every fact is true (`succeeded`, exit 0, not truncated, ran, torn down, not tampered, not escaped, check not failed, run completed, report delivered). One use per run (store CAS); 30-day expiry; deny block 30 days; a streak or candidate idle 30 days is ended; a sealing row with no call facts ends at 24 h. No credit is earned for an approval consumed while the chat's transcript is hostile; clean-room availability is checked at trial selection and at every use.
-- **What Paco sees:** the fourth card's "Why:" line (verbatim `STANDING_TRIAL_LINE`); the grant card with Revoke; `/schedule` → "常驻批准" with `#N label · schedule · 到期 date` and one Revoke each; digest "Standing approvals" lines for `sealed_trial_failed`, `denied`, `expired`, `stale`, `mismatch`, covering `[previous cutoff, now)` so each ending is listed once. A broken seal on a use (`tampered_use`) or a use with no readable clean-room facts (`unverified_use`) ends the grant with an urgent card (`standing_unverified:<id>` for the latter) and no digest line.
+- **What Paco sees:** the fourth card's "Why:" line (verbatim `STANDING_TRIAL_LINE`); the grant card with Revoke; `/schedule` → "常驻批准" with `#N label · schedule · 到期 date` and one Revoke each; a `/changes` row (`standing_end:<standing_id>`, topic `standing_log`) for `sealed_trial_failed`, `denied`, `expired`, `stale`, `mismatch`, written when the grant ends so each ending is listed once. A broken seal on a use (`tampered_use`) or a use with no readable clean-room facts (`unverified_use`) ends the grant with an urgent card (`standing_unverified:<id>` for the latter) and no `/changes` row.
 - **Callback:** `dec:sa:<standing_id>:revoke` (the row's chat only, one-shot).
 - **Intake denials:** `APPROVAL_CHAT_MISMATCH` (no reply on purpose, so a foreign chat cannot learn an approval id is live) and `STANDING_HOOK_FAILED` are handled denials; the poll loop advances.
 - **Ledger events:** `standing_streak|sealing|sealed|granted|used|ended` (ids, reasons, counts, seal facts — never command bytes).

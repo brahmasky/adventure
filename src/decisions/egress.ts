@@ -378,7 +378,7 @@ export function redactForJudge(text: string, o: RedactOptions = {}): string {
 /**
  * 2b-ii §7 (codex D10): the one redactor for improvement text read from durable rows (a turn's extracted codes and links
  * live only on the live turn): the broker's values, link tokens and code shapes. Jev, the Tiny pick, the distill's
- * prior, and every draft and evidence line the digest or a card shows go through it.
+ * prior, and every draft and evidence line a card or a /changes row shows go through it.
  */
 export function redactForImprove(store: Pick<RunStore, "redactSecretValues">, text: string): string {
   return redactForJudge(text, { brokerRedact: (s) => store.redactSecretValues(s), linkTokens: true, codeShapes: true });

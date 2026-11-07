@@ -4,20 +4,22 @@ import { checkFactSide, checkLessonSide } from "../capabilities/memory-backstops
 import { PENDING_TURN_PREFIX } from "../capabilities/memory-sources.js";
 import { LOCKED_ENTRY_IDS } from "../decisions/entry-ids.js";
 import { turnTrustFinal } from "../decisions/trust.js";
-import type { ImproveState, ImproveTarget } from "../decisions/entries/improve-route.js";
+import { lessonRewrite, type ImproveState, type ImproveTarget } from "../decisions/entries/improve-route.js";
 import type { ProposalTarget, RunStore } from "../run/run-store.js";
 import { formatInstantInZone } from "../run/schedule-spec.js";
 import type { TickLlm } from "./decide-improve.js";
 import { PACO_TEXT_CAP, type SignalGroup } from "./groups.js";
 import { scheduleDraft, type ScheduleHint } from "./schedule-shift.js";
 
-/** 2b-ii §5.1: proposals are drafted at proposal time, code-built or distilled from Paco's words; the digest shows the draft beside its evidence. */
+/** 2b-ii §5.1: proposals are drafted at proposal time, code-built or distilled from Paco's words; the card shows the draft beside its evidence. */
 export const PROPOSAL_TTL_DAYS = 14;
 export interface Draft { target: ProposalTarget; draft_json: string; evidence: string }
 /** Final fix D1: the distill seat call itself failed (an outage), as opposed to a parsed answer with nothing usable (null). */
 export const DRAFT_SEAT_FAILED = "seat_failed" as const;
 export type DraftResult = Draft | null | typeof DRAFT_SEAT_FAILED;
-export interface DraftDeps { store: RunStore; env: NodeJS.ProcessEnv; now: string; tz: string; distill: TickLlm; redact: (t: string) => string; scheduleHints?: ReadonlyMap<string, ScheduleHint> }
+export interface DraftDeps { store: RunStore; env: NodeJS.ProcessEnv; now: string; tz: string; distill: TickLlm; redact: (t: string) => string; scheduleHints?: ReadonlyMap<string, ScheduleHint>;
+  /** Spec 2026-11-07 §3.2: the auto-apply draft sends no prior — Houge's reply, and any tool text through it, never reaches the seat. */
+  noPrior?: boolean }
 const LOCKED: ReadonlySet<string> = new Set(LOCKED_ENTRY_IDS);
 const RESEARCH: ReadonlySet<string> = new Set(["lookup", "research"]);
 
@@ -26,7 +28,7 @@ export const lessonScopeFor = (category: string | null): "ask" | "research" => (
 export function evidenceOf(g: SignalGroup, s: ImproveState, tz: string): string {
   const date = formatInstantInZone(g.newest.created_at, tz).slice(0, 10);
   // spec §7: a correction on a scope that got a lesson within 30 days is "lesson did not hold" evidence (the proposal is then a rewrite)
-  if (s.signal === "correction" && s.lastImprovement?.target === "lesson" && s.lastImprovement.ageDays <= 30) return `lesson did not hold: ${s.count14d} corrections since (${s.lastImprovement.ageDays} d)`;
+  if (lessonRewrite(s)) return `lesson did not hold: ${s.count14d} corrections since (${s.lastImprovement?.ageDays} d)`;
   if (s.signal === "correction") return `correction on ${date}, scope ${s.category ?? "other"}`;
   if (s.signal === "recurrence" && s.recurrence) return `${s.recurrence.turnIds.length} requests over ${s.recurrence.spanDays} days`;
   if (s.signal === "review_bad") return `${s.count14d} ❌ on ${s.scope} in 14 days`;
@@ -61,7 +63,7 @@ function priorOf(store: RunStore, run_id: string | null, redact: (t: string) => 
 async function distillDraft(target: "lesson" | "fact", g: SignalGroup, s: ImproveState, d: DraftDeps, evidence: string): Promise<DraftResult> {
   const instruction = s.redacted.pacoText;
   if (instruction.trim().length === 0) return null;
-  const prior = priorOf(d.store, g.newest.about_run_id, d.redact);
+  const prior = d.noPrior ? "" : priorOf(d.store, g.newest.about_run_id, d.redact);
   const question = buildMemoryDistillQuestion({ thread: [instruction], prior, instruction, scope: lessonScopeFor(s.category), kind: target === "lesson" ? "rule" : "fact" });
   const r = await d.distill({ question, system: MEMORY_DISTILL_DISCIPLINE });
   if (!r.ok) return DRAFT_SEAT_FAILED;

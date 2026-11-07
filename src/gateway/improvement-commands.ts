@@ -1,5 +1,10 @@
 import { createHash } from "node:crypto";
 import { saveMemoryPlan, LESSON_CAPPED_HINT } from "../capabilities/memory-save.js";
+import { memoryUndoButton } from "../capabilities/memory-correct.js";
+import { memlaneUndoButton } from "../core/memory-lane-card.js";
+import { DIGEST_LM_PREFIX, DIGEST_PR_PREFIX } from "../decisions/digest.js";
+import { button } from "../improve/proposal-card.js";
+import type { NotificationButton } from "../notifications/notification-types.js";
 import type { TypedTaskEvent } from "../domain/types.js";
 import { startSkillJob } from "../core/skill-job.js";
 import { errorCode } from "../domain/error-code.js";
@@ -27,24 +32,28 @@ export const PROMOTE_RETRY_TEXT = "That did not go through; it is retried at the
 const DAY_MS = 24 * 60 * 60 * 1000;
 const tapped = (): GatewayIntakeResult => ({ ok: true, status: "improvement_tapped", run_id: "" });
 const chatOf = (e: TypedTaskEvent): string => (e.notify.kind === "telegram" ? e.notify.chat_id : "");
+/** Spec 2026-11-07 §2: the tap's own reply carries the Undo / Revert / Revoke button (the digest line that carried it is gone). */
+export type TapReply = string | { text: string; buttons: NotificationButton[] };
+const textOf = (r: TapReply): string => (typeof r === "string" ? r : r.text);
 interface Tap { kind: "pr" | "sk" | "lm" | "sa"; id: string; action: string; callback: string }
 
 export function handleImprovementTap(store: RunStore, skills: SkillStore, event: TypedTaskEvent, now: string = new Date().toISOString()): GatewayIntakeResult {
   return oncePerTrigger(store, event, () => {
     const m = event.metadata ?? {};
     const tap: Tap = { kind: m.kind as Tap["kind"], id: String(m.id ?? ""), action: String(m.action ?? ""), callback: String(m.telegram_callback_id ?? "") };
-    let text = TAP_FAILED_TEXT;
+    let reply: TapReply = TAP_FAILED_TEXT;
     try {
-      text = tap.kind === "pr" ? proposalTap(store, skills, tap, chatOf(event), now) : tap.kind === "sk" ? jobTap(store, skills, tap, chatOf(event), now)
+      reply = tap.kind === "pr" ? proposalTap(store, skills, tap, chatOf(event), now) : tap.kind === "sk" ? jobTap(store, skills, tap, chatOf(event), now)
         : tap.kind === "sa" ? standingTap(store, tap, chatOf(event), now) : moveTap(store, tap, chatOf(event), now);
     } catch (e) {
       console.error(`[improve] tap ${tap.kind}:${tap.action} failed: ${errorCode(e)}`);
     }
+    const text = textOf(reply);
     try {
       const result = text === TAP_HANDLED_TEXT ? "handled" : text === TAP_FAILED_TEXT || text === PROMOTE_RETRY_TEXT ? "failed" : text === LESSON_CAPPED_HINT ? "capped" : "applied";
       // improvement_taps.subject_kind is CHECK-bound to three kinds: a standing tap is a move tap whose id starts sa_
       store.insertImprovementTap({ subject_kind: tap.kind === "pr" ? "proposal" : tap.kind === "sk" ? "job" : "move", subject_id: tap.id, action: tap.action, telegram_callback_id: tap.callback, result, created_at: now });
-      replyTo(store, event, "improvement_tap", text);
+      replyTo(store, event, "improvement_tap", text, typeof reply === "string" ? undefined : reply.buttons);
     } catch (e) {
       console.error(`[improve] tap ${tap.kind}:${tap.action} record failed: ${errorCode(e)}`);
     }
@@ -55,7 +64,7 @@ export function handleImprovementTap(store: RunStore, skills: SkillStore, event:
 const stale = (at: string | null, now: string): boolean => at === null || Date.parse(now) - Date.parse(at) > TAP_STALE_DAYS * DAY_MS;
 
 /** Accept and Dismiss act within 14 days of the OFFER; Revert within 14 days of the ACCEPT (`resolved_at`; codex B21). Ruling 19: the tapping chat must be the proposal's. */
-function proposalTap(store: RunStore, skills: SkillStore, tap: Tap, chat_id: string, now: string): string {
+function proposalTap(store: RunStore, skills: SkillStore, tap: Tap, chat_id: string, now: string): TapReply {
   const p = store.getImprovementProposal(tap.id);
   if (!p || p.chat_id !== chat_id) return TAP_HANDLED_TEXT;
   if (tap.action === "rev") return revertSchedule(store, p, now);
@@ -66,7 +75,7 @@ function proposalTap(store: RunStore, skills: SkillStore, tap: Tap, chat_id: str
 }
 
 /** Accept: the handler runs inside the same transaction as the state change where it is a store write (§5.1). */
-function acceptProposal(store: RunStore, p: ImprovementProposalRow, tap: Tap, chat_id: string, now: string): string {
+function acceptProposal(store: RunStore, p: ImprovementProposalRow, tap: Tap, chat_id: string, now: string): TapReply {
   const draft = JSON.parse(p.draft_json) as Record<string, unknown>;
   const run_id = store.getDecision(p.decision_id)?.run_id ?? null;
   switch (p.target) {
@@ -93,27 +102,27 @@ function acceptSkill(store: RunStore, p: ImprovementProposalRow, draft: Record<s
   return "✅ Queued: the skill will be drafted at the next tick.";
 }
 
-function acceptMemory(store: RunStore, p: ImprovementProposalRow, draft: Record<string, unknown>, run_id: string | null, chat_id: string, now: string): string {
+function acceptMemory(store: RunStore, p: ImprovementProposalRow, draft: Record<string, unknown>, run_id: string | null, chat_id: string, now: string): TapReply {
   if (!run_id) return TAP_HANDLED_TEXT;
   const plan = p.target === "lesson" ? { lesson: draft as { scope: string; text: string; avoid?: string } } : { fact: draft as { text: string; evidence: { line: number; quote: string }; source_turn_ids: string[] } };
   const saved = saveMemoryPlan(store, plan, { run_id, chat_id, source: "improve", now });
   if (saved.lesson && "capped" in saved.lesson) return LESSON_CAPPED_HINT;
   const result = saved.lesson ? { change_id: saved.lesson.change_id, lesson_id: saved.lesson.id } : saved.fact ? { change_id: saved.fact.change_id, fact_id: saved.fact.id } : null;
   if (!result || !store.transitionProposal({ proposal_id: p.proposal_id, from: ["open"], to: "accepted", now, result_json: JSON.stringify(result) })) throw new Error("accept_lost");
-  return saved.lesson ? `📒 Lesson #${(saved.lesson as { id: number }).id} saved. Undo is on tonight's digest line.` : `🧠 Fact #${saved.fact!.id} saved. Undo is on tonight's digest line.`;
+  return saved.lesson ? { text: `📒 Lesson #${(saved.lesson as { id: number }).id} saved.`, buttons: [memlaneUndoButton(result.change_id)] } : { text: `🧠 Fact #${saved.fact!.id} saved.`, buttons: [memoryUndoButton(result.change_id)] };
 }
 
 interface ScheduleDraft { schedule_id: string; before: { spec_json: string; tz: string; next_run_at: string }; after: { spec_json: string; tz: string; next_run_at: string }; hour_from: number; hour_to: number }
 
 /** §5.5: apply `after` only while the row still equals `before` (Paco edited it meanwhile → handled, state expired). */
-function applySchedule(store: RunStore, p: ImprovementProposalRow, draft: Record<string, unknown>, now: string): string {
+function applySchedule(store: RunStore, p: ImprovementProposalRow, draft: Record<string, unknown>, now: string): TapReply {
   const d = draft as unknown as ScheduleDraft;
   const row = store.getScheduledTask(d.schedule_id);
   if (!row || row.spec_json !== d.before.spec_json || row.tz !== d.before.tz) { store.transitionProposal({ proposal_id: p.proposal_id, from: ["open"], to: "expired", now }); return TAP_HANDLED_TEXT; }
   const next = nextRunAt(d.after.spec_json, d.after.tz, now); // recomputed at tap time: the drafted value is up to 14 days old
   if (!next || !store.updateScheduledTask({ schedule_id: d.schedule_id, spec_json: d.after.spec_json, tz: d.after.tz, next_run_at: next, now })) return TAP_HANDLED_TEXT;
   if (!store.transitionProposal({ proposal_id: p.proposal_id, from: ["open"], to: "accepted", now })) throw new Error("accept_lost");
-  return `⏰ Moved to ${String(d.hour_to).padStart(2, "0")}:00. Revert is on tonight's digest line.`;
+  return { text: `⏰ Moved to ${String(d.hour_to).padStart(2, "0")}:00.`, buttons: [button("↩️ Revert", `${DIGEST_PR_PREFIX}${p.proposal_id}:rev`)] };
 }
 
 function nextRunAt(spec_json: string, tz: string, now: string): string | null {
@@ -138,13 +147,13 @@ function revertSchedule(store: RunStore, p: ImprovementProposalRow, now: string)
 }
 
 /** R6: a paco move with the callback id; the store refuses locked entries (never proposed, defended anyway). */
-function acceptLadder(store: RunStore, p: ImprovementProposalRow, draft: Record<string, unknown>, callback: string, now: string): string {
+function acceptLadder(store: RunStore, p: ImprovementProposalRow, draft: Record<string, unknown>, callback: string, now: string): TapReply {
   const entry_id = String(draft.entry_id ?? ""); const move = String(draft.move ?? "");
   try {
     const move_id = store.insertLadderMove({ entry_id, scope: p.scope, from_rung: "system_one", to_rung: move === "retire_judge" ? "model" : "system_one", evidence: [p.proposal_id], granted_by: "paco",
       granted_via: "improve.route", paco_callback_id: callback, revocable: true, created_at: now });
     if (!store.transitionProposal({ proposal_id: p.proposal_id, from: ["open"], to: "accepted", now, result_json: JSON.stringify({ move_id }) })) throw new Error("accept_lost");
-    return `🪜 Recorded: ${move} on ${entry_id}. Nothing changes until a human edit; Revoke is on tonight's digest line.`;
+    return { text: `🪜 Recorded: ${move} on ${entry_id}. Nothing changes until a human edit.`, buttons: [button("⏪ Revoke", `${DIGEST_LM_PREFIX}${move_id}:revoke`)] };
   } catch (e) {
     if (e instanceof LadderMoveRefused) return TAP_HANDLED_TEXT;
     throw e;

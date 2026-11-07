@@ -40,10 +40,11 @@ describe("routes", () => {
   });
   it("every other table row pages, and the table size is pinned (a flipped, added or removed row fails)", () => {
     const keys = Object.keys(INCIDENT_ROUTE);
-    expect(keys).toHaveLength(55);
+    // 56 rows, 33 pages: improve_tick_degraded (spec 2026-11-07 §7) is the newest page
+    expect(keys).toHaveLength(56);
     const notPage = new Set([...CARD_KINDS, ...LOG_KINDS]);
     const pages = keys.filter((k) => !notPage.has(k));
-    expect(pages).toHaveLength(32);
+    expect(pages).toHaveLength(33);
     for (const k of pages) { expect(routeOf(k)).toBe("page"); expect(incidentNotice(k, "x")?.topic).toBe("incident_page"); }
   });
   it("the unknown-kind stderr line prints once per kind per process", () => {

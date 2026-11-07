@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applicableTargets, IMPROVE_BAR, IMPROVE_BAR_P, IMPROVE_REASONS, IMPROVE_ROUTE, IMPROVE_TARGETS, improveJevState, improveRule, jevVerdictOf, type ImproveState } from "../../src/decisions/entries/improve-route.js";
+import { applicableTargets, autoApplies, IMPROVE_BAR, IMPROVE_BAR_P, IMPROVE_REASONS, IMPROVE_ROUTE, IMPROVE_TARGETS, improveJevState, improveRule, jevVerdictOf, type ImproveState } from "../../src/decisions/entries/improve-route.js";
 import { IMPROVE_TARGET } from "../../src/jev/questions/improve.js";
 import { entryById, entryProblems } from "../../src/decisions/registry.js";
 import { criteriaHash, optionsOf } from "../../src/jev/questions/types.js";
@@ -22,7 +22,9 @@ describe("the improve.route entry", () => {
     expect(e.ladder.map((r) => `${r.kind}:${r.name}`)).toEqual(["rule:improve_rule", "system_one:improve_target", "model:improve_pick"]);
     expect([...e.outcomes]).toEqual([...DECISION_SIGNALS]);
     expect(entryProblems(e)).toEqual([]);
-    for (const v of IMPROVE_TARGETS.filter((t) => t !== "nothing")) expect(e.effects[v]).toMatchObject({ kind: "proposal", reversible: true, announced: "card" });
+    for (const v of ["lesson", "fact"] as const) expect(e.effects[v]).toMatchObject({ kind: "effect", reversible: true, announced: "changes" });
+    for (const v of IMPROVE_TARGETS.filter((t) => !["nothing", "lesson", "fact"].includes(t))) expect(e.effects[v]).toMatchObject({ kind: "proposal", reversible: true, announced: "card" });
+    expect(e.pacoWordsOnly).toBe(autoApplies);
     expect([...e.reasonCodes]).toEqual([...IMPROVE_REASONS]);
   });
   it("the one fixed question: escape first, eight options, the bar hashes it at 0.67", () => {

@@ -201,12 +201,11 @@ Slash commands keep it inspectable (idempotent, no run, no budget unless noted):
 - `/skills [scope]` view skills; `/skills retire|restore <name>`, `/skills retired`, `/skills pending`.
 - `/schedule` · `/schedule cancel <N>` list or cancel this chat's schedules. Schedules are created and
   updated conversationally through `schedule_task`.
-- `/status` health digest (with a `Jev front door: armed` or `off (cause)` line, plus 24 h decision counts, the settle health line and per-entry Jev skips when there were any) · `/status decisions` the last 10 decisions · `/changes` background changes of the last 30 days in plain words (model switches, internal self-checks, routine Jev notices — what no longer comes to chat) · `/usage` token use per model (omp rows show "sub", never dollars).
+- `/status` health digest (with a `Jev front door: armed` or `off (cause)` line, plus 24 h decision counts, the settle health line, per-entry Jev skips when there were any, and the Improvement (7 d) line) · `/status decisions` the last 10 decisions · `/changes` background changes of the last 30 days in plain words (model switches, internal self-checks, routine Jev notices — what no longer comes to chat) · `/usage` token use per model (omp rows show "sub", never dollars).
 - `/memories [query]` view what Houge remembers about Paco · `/forget_memory <id>` retire one fact (with an Undo card).
 - `/models` which model each role resolves to; `/models set` and `/models reset` override or restore one · `/fresh` a new planner conversation at the next message.
 - `/run <program> <goal>` start a named program run by hand.
-- The daily digest has five sections: improvements today, standing approvals, proposals waiting for a tap, unsure
-  judgements (with review taps) and a watch line
+- Improvements learned from your own corrections apply on their own and show in `/changes` with their undo command; anything else arrives as one card with Accept / Dismiss; `/forget <id>` and `/forget_memory <id>` undo an applied one
   ([configuration](docs/reference/configuration.md#decision-ladder-adr-0034)).
 - `/radar [n]` · `/radar week` · `/radar pick <n>` (`/idea` is an alias) the Idea Radar board and the weekly panel's shortlist
   ([ADR 0026](docs/decisions/0026-idea-radar-read-surface.md), [0027](docs/decisions/0027-idea-panel-claude-chair.md)).
@@ -333,7 +332,7 @@ the live intent shadow was removed on 2026-10-06. Only the offline replay (`houg
 **The decision ladder** ([ADR 0034](docs/decisions/0034-decision-ladder-consolidated.md)): every judgment call is a registry
 entry that tries a code rule first, then Jev, then a model, then Paco. What a Jev or model verdict may cause depends on
 what it read, and every decision is recorded with its outcome. The ladder covers intake, context, supervision, lookup,
-tool gates, approvals, memory and improvement. The daily digest, standing approvals, the clean room and turn trust are part of it.
+tool gates, approvals, memory and improvement. Proposal cards, standing approvals, the clean room and turn trust are part of it.
 The full list of entries, with the rung and the effect of each, is the
 [decision map](docs/reference/decision-map.md).
 

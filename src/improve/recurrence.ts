@@ -8,7 +8,7 @@ import { RECURRENCE_WINDOW_DAYS, type RecurrenceInfo } from "./groups.js";
 /**
  * Recurrence (2b-ii §3.3, P2): 3 or more of Paco's telegram turns in 14 days, one category, request cosine ≥ the gate.
  * Short turns and the other/status/memory categories are not a skill (P2: at 0.42 the greetings formed a 15-turn cluster).
- * Embeddings are stored once per turn; Ollama down means no recurrence today, said in the Watch line.
+ * Embeddings are stored once per turn; Ollama down means no recurrence today, said in the /status Improvement line.
  */
 export const RECURRENCE_MIN_TURNS = 3;
 export const RECURRENCE_MIN_CHARS = 20;

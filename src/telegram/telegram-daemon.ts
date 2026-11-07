@@ -9,7 +9,6 @@ import { runIdeaRadarTick } from "../capabilities/idea-radar.js";
 import { runLessonConsolidateTick } from "../capabilities/lesson-consolidate.js";
 import { runSkillReverifyTick } from "../capabilities/skill-reverify.js";
 import { resolveWikiEnabled } from "../capabilities/wiki.js";
-import { runDecisionDigestTick } from "../decisions/digest.js";
 import { settleDeliveredReport } from "../decisions/standing-approval.js";
 import { reportOmpCheck, tickCorrelationId, tickSeat } from "../llm/registry.js";
 import { newestMtimeMs } from "../capabilities/self-write-merge.js";
@@ -35,6 +34,7 @@ import type { TelegramAllowlist } from "../domain/types.js";
 import { Gateway } from "../gateway/gateway.js";
 import { ANCHOR_DIR, bootJevAnchor } from "../decisions/jev-anchor-import.js";
 import { warnRetiredJevFlags } from "../jev/jev-flags.js";
+import { warnRetiredDigestAt } from "../improve/flag.js";
 import { embedText, resolveEmbedConfig } from "../llm/embeddings.js";
 import { storeRecorder } from "../decisions/record.js";
 import { resolveMediaIngestEnabled } from "../media/media-config.js";
@@ -453,6 +453,7 @@ function leaseRecoveryIntervalMs(): number {
 function bootPlanners(worker: CoreWorker, options: RunTelegramDaemonOptions, now: () => string): ReturnType<typeof setInterval> {
   warnRetiredOmpChainVars(process.env);
   warnRetiredJevFlags(process.env);
+  warnRetiredDigestAt(process.env);
   bootJevAnchor(options.store, join(options.projectRoot, ANCHOR_DIR)); // Jev version check §2.2: import the reference when the anchor is empty; a failure is logged, boot continues
   try { resolveLegacyGoldenModelIncidents(options.store, now()); } catch (e) { console.error(`[telegram-daemon] golden incident cleanup failed: ${errorCode(e)}`); } // final fix D2
   worker.validateOmpConfig();
@@ -592,7 +593,6 @@ async function runSignalPathTick(
     await runMemoryKindGolden(options, now);
     await runSettleGolden(options, now);
     await runImproveTickSafe(options, worker, now, chatId);
-    runDigestTick(options.store, chatId, now);
     // ADR 0024: the deterministic self-sensing sweep. Runs LAST among the state-changing
     // ticks so it observes this cycle's work, self-throttles to 5 min, and alerts at most
     // once per incident transition. Flag-gated OFF; pure reads + incident bookkeeping —
@@ -604,7 +604,7 @@ async function runSignalPathTick(
   }
 }
 
-/** 2b-ii §3.1: the daily improvement tick, before the digest (the digest shows what it proposed). Its own catch: never skips the digest or the sweep. */
+/** 2b-ii §3.1: the daily improvement tick (spec 2026-11-07: it applies, cards and pages on its own; no digest follows). Its own catch: never skips the sweep. */
 async function runImproveTickSafe(options: RunTelegramDaemonOptions, worker: CoreWorker, now: string, chatId: string | null): Promise<void> {
   try {
     const roles = worker.modelRoles();
@@ -635,7 +635,7 @@ function runJevVersionTickSafe(options: RunTelegramDaemonOptions, chatId: string
   }
 }
 
-/** Spec 4.2 (plan S4): tool.injection's golden set, once a local date. Its own catch: a failure never skips the digest or the sweep. */
+/** Spec 4.2 (plan S4): tool.injection's golden set, once a local date. Its own catch: a failure never skips the sweep. */
 async function runGoldenTick(options: RunTelegramDaemonOptions, now: string): Promise<void> {
   try {
     const client = createJevClient({ apiKey: options.broker ? options.broker.typesafeKey() : process.env.TYPESAFE_API_KEY,
@@ -647,7 +647,7 @@ async function runGoldenTick(options: RunTelegramDaemonOptions, now: string): Pr
   }
 }
 
-/** Spec 2026-10-15 §3: memory.kind's golden set, once a local date, on its own audit role (`memory_kind`; precedent: injection's set on `injection`). Its own catch: never skips the digest or the sweep. */
+/** Spec 2026-10-15 §3: memory.kind's golden set, once a local date, on its own audit role (`memory_kind`; precedent: injection's set on `injection`). Its own catch: never skips the sweep. */
 async function runMemoryKindGolden(options: RunTelegramDaemonOptions, now: string): Promise<void> {
   try {
     const client = createJevClient({ apiKey: options.broker ? options.broker.typesafeKey() : process.env.TYPESAFE_API_KEY,
@@ -659,7 +659,7 @@ async function runMemoryKindGolden(options: RunTelegramDaemonOptions, now: strin
   }
 }
 
-/** 2b-i §7: turn.settle's golden set, once a local date, on its own audit role (`settle`). Its own catch: never skips the digest or the sweep. */
+/** 2b-i §7: turn.settle's golden set, once a local date, on its own audit role (`settle`). Its own catch: never skips the sweep. */
 async function runSettleGolden(options: RunTelegramDaemonOptions, now: string): Promise<void> {
   try {
     const client = createJevClient({ apiKey: options.broker ? options.broker.typesafeKey() : process.env.TYPESAFE_API_KEY,
@@ -668,15 +668,6 @@ async function runSettleGolden(options: RunTelegramDaemonOptions, now: string): 
     await runSettleGoldenTick({ store: options.store, client, now });
   } catch (error) {
     console.error(`[telegram-daemon] turn.settle golden tick failed: ${errorCode(error)}`);
-  }
-}
-
-/** Spec §8.1: the daily decision digest. Its own catch: a failed digest never skips the sweep after it. */
-function runDigestTick(store: RunTelegramDaemonOptions["store"], chatId: string | null, now: string): void {
-  try {
-    runDecisionDigestTick({ store, chatId, now });
-  } catch (error) {
-    console.error(`[telegram-daemon] decision digest tick failed: ${errorCode(error)}`);
   }
 }
 

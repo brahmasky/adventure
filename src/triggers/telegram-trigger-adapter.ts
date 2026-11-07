@@ -357,7 +357,7 @@ function buildMemLaneTapEvent(
   });
 }
 
-/** A decision digest tap (decision ladder §8.1): the approval tap's shape, with the decision id and label in metadata. */
+/** An old decision digest tap (decision ladder §8.1; the digest is gone, the tap is answered closed): the approval tap's shape, with the decision id and label in metadata. */
 function buildDecisionReviewTapEvent(
   update: TelegramUpdate, callback: TelegramCallbackQuery, chat_id: number, identity: Identity, review: { decision_id: string; label: "ok" | "bad" }
 ): TypedTaskEvent {

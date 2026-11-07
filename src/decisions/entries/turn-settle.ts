@@ -18,14 +18,14 @@ export const SETTLE_REASONS = ["hostile", "already_sent_back", "last_call_denied
   "claim_attached", "claim_sent", "todo_pending", "todo_unavailable", "jev_claims_done", "jev_unverified", "jev_promise", "jev_asks_permission", "budget", "settled"] as const;
 export type SettleReason = (typeof SETTLE_REASONS)[number];
 /**
- * The settle reasons that mean "could not finish a settle": three in an hour page through decision_health, and the digest
+ * The settle reasons that mean "could not finish a settle": three in an hour page through decision_health, and /status
  * counts each (R0': a run of pass_errored rows is a planner-side outage window, made visible, never silent).
  */
 export const SETTLE_HEALTH_REASONS = ["budget", "todo_unavailable", "pass_errored"] as const satisfies readonly SettleReason[];
 export const SETTLE_DISCARDED_VALUES = ["extension_timeout", "signal", "continuation_failed"] as const;
 /** Calibration 2026-10-20 (spec §3.3): a question sends back when its p exceeds ITS bar; unverified's 0.8 sits just above a 0.7–0.8 cluster of honest reports. */
 export const SETTLE_QUESTION_BARS: Readonly<Record<SettleQuestionId, number>> = { settle_claims_done: 0.6, settle_unverified: 0.8, settle_promise: 0.7, settle_asks_permission: 0.7 };
-/** The entry's single bar (what the digest's unsure band reads): the lowest per-question bar. */
+/** The entry's single bar (the provisional bar SETTLE_BAR below carries): the lowest per-question bar. */
 export const SETTLE_BAR_P = 0.6;
 export const SETTLE_JEV_MS = 1_500;
 export const DEADLINE_SHORT_MS = 60_000;

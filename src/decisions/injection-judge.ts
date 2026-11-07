@@ -84,7 +84,7 @@ export function createInjectionJudge(d: JudgeDeps): InjectionJudge {
       exec: { system_one: () => askPassages(d, i, state, track) } });
     persistRows(d, track.batches, r.decisionId);
     const out = outcomeOf(i.text, state, r, track);
-    // Paco 2026-10-14: a lost judgement pages nothing (record.ts); it is logged here and counted in the digest
+    // Paco 2026-10-14: a lost judgement pages nothing (record.ts); it is logged here and counted in /status
     if (out.unanswered > 0) console.error(`decisions: ${TOOL_INJECTION_ID} judgement lost (${out.unanswered} of ${out.sent} passages); not paged`);
     return out;
   };

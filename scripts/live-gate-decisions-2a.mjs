@@ -36,9 +36,8 @@ function parseArgs(argv) {
 async function load() {
   const paths = ["config/load-env.js", "run/run-store.js", "gateway/gateway.js", "gateway/memlane-commands.js", "core/core-worker.js", "domain/types.js",
     "jev/jev-client.js", "jev/decide.js", "jev/tap-labels.js", "decisions/injection-judge.js", "decisions/entries/tool-injection.js", "decisions/egress.js",
-    "decisions/injection-corpus.js", "decisions/trust.js", "decisions/digest.js", "decisions/status-view.js", "omp/bridge-handler.js", "omp/tool-approval-sink.js", "omp/tool-decls.js",
-    "omp/omp-config.js", "omp/seatbelt.js", "omp/protected-paths.js", "omp/planner-supervisor.js", "tools/tool-registry.js", "budget/budget-ledger.js", "jev/questions/types.js",
-    "notifications/telegram-notification-adapter.js"];
+    "decisions/injection-corpus.js", "decisions/trust.js", "decisions/status-view.js", "omp/bridge-handler.js", "omp/tool-approval-sink.js", "omp/tool-decls.js",
+    "omp/omp-config.js", "omp/seatbelt.js", "omp/protected-paths.js", "omp/planner-supervisor.js", "tools/tool-registry.js", "budget/budget-ledger.js", "jev/questions/types.js"];
   const mods = await Promise.all(paths.map((p) => import(join(DIST, p))));
   const m = Object.assign({}, ...mods);
   m.decideJev = mods[paths.indexOf("jev/decide.js")].decide; // `decide` also names the ladder runner elsewhere: take the Jev one by module
@@ -515,24 +514,12 @@ async function caseTaps(g) {
   check("C8 the tap reader maps every tap row it reads", t.evidence.length === rows.filter((r) => mapped.has(r.signal)).length, `${rows.length} row(s)`);
 }
 
-/** C9: /status carries the injection counts, and the digest (2b-ii) is no message or only the three new sections, rendered through the rich renderer. */
-async function caseDigest(g) {
+/** C9: /status carries the injection counts (the digest that once shared this case is gone: spec 2026-11-07 §8). */
+async function caseStatus(g) {
   const now = new Date().toISOString();
   const status = g.m.decisionStatusLines(g.store, now);
   if (!status.some((l) => l.startsWith("Injection:"))) return cannotRun("C9 status", "no decisions on the copy (C1/C3 did not run)");
   check("C9 /status carries the injection counts", status.some((l) => /^Injection: withheld \d+ · framed \d+ · not checked \d+$/.test(l)), status.find((l) => l.startsWith("Injection:")));
-  const d = g.m.buildDecisionDigest(g.store, now, process.env, "-4200");
-  const headers = new Set(["**Improvements today**", "**Proposals waiting**", "**Watch (7 d)**"]);
-  check("C9 the digest is no message or the header and only the three new sections", d === null || (d.text.startsWith("🪜 **Decisions — ") && d.text.split("\n").slice(1).filter((l) => l.startsWith("**")).every((l) => headers.has(l))), d ? d.text.split("\n")[0] : "null (empty day)");
-  if (!d) return;
-  g.store.enqueueNotification({ topic: "digest", target: { kind: "telegram", chat_id: "-4200" }, intent_type: "progress", idempotency_key: `gate2a:digest:${Date.now()}`,
-    correlation_id: "gate2a-digest", payload: { text: d.text, ...(d.button_rows.length ? { button_rows: d.button_rows } : {}) } });
-  let note = g.store.claimNextNotification("gate2a", 30);
-  while (note && !note.idempotency_key.startsWith("gate2a:digest:")) note = g.store.claimNextNotification("gate2a", 30);
-  if (!note) return cannotRun("C9 digest render", "the digest message was not claimable from the copy's outbox");
-  const sent = [];
-  await new g.m.TelegramNotificationAdapter({ sendMessage: async (input) => { sent.push(input); return { message_id: 1 }; } }).send(note);
-  check("C9 it renders as HTML", sent.length === 1 && sent[0].parse_mode === "HTML", sent[0]?.text.split("\n")[0] ?? "nothing sent");
 }
 
 async function setup(args) {
@@ -577,7 +564,7 @@ async function main() {
   const g = await setup(parseArgs(process.argv.slice(2)));
   console.log(`decision ladder 2a gate — copies under ${g.root}\n`);
   try {
-    for (const c of [caseSanity, caseSeeds, caseBridge, caseCredentials, caseNoiseBand, caseTaps, caseDigest, caseTtl, caseSchedule]) await c(g);
+    for (const c of [caseSanity, caseSeeds, caseBridge, caseCredentials, caseNoiseBand, caseTaps, caseStatus, caseTtl, caseSchedule]) await c(g);
   } finally { await g.worker.shutdownPlanners?.(); g.store.close(); g.e2eStore.close(); }
   return verdict();
 }

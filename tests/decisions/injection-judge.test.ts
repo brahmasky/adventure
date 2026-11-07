@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { FRAME_OPEN, INJECTION_TEMPLATE_HASH, NOT_CHECKED_CLOSE, NOT_CHECKED_OPEN, WITHHELD_TEXT, WITHHELD_UNJUDGED_TEXT } from "../../src/decisions/entries/tool-injection.js";
-import { trustLines } from "../../src/decisions/digest.js";
+import { injectionCounts } from "../../src/decisions/status-lines.js";
 import { createInjectionJudge, localOutcome, type JudgeInput } from "../../src/decisions/injection-judge.js";
 import type { NoiseBand } from "../../src/decisions/noise-band.js";
 import type { JevRequest, JevResult } from "../../src/jev/jev-client.js";
@@ -262,9 +262,8 @@ describe("tool.injection judge", () => {
       expect(store.listOpenIncidents().map((i) => i.kind)).not.toContain("decision_fallback");
       expect(store.listOpenIncidents().filter((i) => i.subject === "tool.injection")).toEqual([]);
       expect(err.mock.calls.filter(([m]) => String(m).includes("tool.injection judgement lost")).length).toBe(4);
-      const now = new Date().toISOString();
       const rows = store.listDecisionsBetween(new Date(Date.now() - 3_600_000).toISOString(), new Date(Date.now() + 1_000).toISOString());
-      expect(trustLines(store, rows, now, {}).join("\n")).toContain("judgement lost 4");
+      expect(injectionCounts(rows).lost).toBe(4);
     } finally { err.mockRestore(); }
   });
   describe("localOutcome: the thrown-judge fallback runs the same local checks (codex B2, Ruling 28)", () => {

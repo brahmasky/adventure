@@ -15,7 +15,7 @@ export interface NotificationButton {
 export interface NotificationPayload {
   text: string;
   buttons?: NotificationButton[];
-  /** Several keyboard rows (the decision digest: one ✅/❌ pair per row); when present the adapter renders these instead of `buttons`. */
+  /** Several keyboard rows (one button pair per row); when present the adapter renders these instead of `buttons`. */
   button_rows?: NotificationButton[][];
   [key: string]: unknown;
 }
