@@ -163,7 +163,7 @@ describe("storeRecorder: decision_fallback (ruling 9)", () => {
 // three in an hour. An entry that records every decision (alwaysRecord) and whose last three rows are all counted
 // fallbacks, however far apart, pages decision_fallback_streak:<entry> to chat; an answer from a counting rung clears it.
 describe("storeRecorder: decision_fallback_streak (low-frequency entries)", () => {
-  const DAILY = { ...E, id: "test.daily", alwaysRecord: true } as Entry<S, V>;
+  const DAILY = { ...E, id: "test.daily", stage: "after_turn", alwaysRecord: true } as Entry<S, V>;
   const daily = (store: RunStore, env: NodeJS.ProcessEnv = ENV) => {
     let t = Date.parse("2026-11-01T10:00:00.000Z");
     const rec = storeRecorder(store, { env, now: () => new Date(t).toISOString() });
@@ -177,15 +177,27 @@ describe("storeRecorder: decision_fallback_streak (low-frequency entries)", () =
     const store = RunStore.openInMemory(); const day = daily(store);
     await day(DAILY, jevDown); await day(DAILY, jevDown);
     expect(store.listOpenIncidents()).toEqual([]);
-    await day(DAILY, jevDown); await day(DAILY, jevDown);
+    await day(DAILY, jevDown);
     expect(open(store)).toEqual([["decision_fallback_streak", "test.daily"]]);
+    await day(DAILY, jevDown);
     expect(pages(store)).toHaveLength(1);
     store.close();
   });
-  it("an entry that does not record every decision never opens it (its rows are not consecutive decisions)", async () => {
+  it("left out: an entry that does not record every decision, a per-turn entry (the hourly log covers it), a rule-only entry (nothing could clear it)", async () => {
     const store = RunStore.openInMemory(); const day = daily(store);
-    for (let k = 0; k < 4; k += 1) await day(E, jevDown);
-    expect(store.listOpenIncidents()).toEqual([]);
+    const perTurn = { ...DAILY, id: "test.turn", stage: "pre_model" } as Entry<S, V>;
+    const ruleOnly = { ...DAILY, id: "test.rules", ladder: [{ kind: "rule", name: "boom", decide: () => { throw new Error("x"); } }] } as unknown as Entry<S, V>;
+    const throws = vi.fn(async (): Promise<RungResult<V>> => ({ failed: "outage", reason: "transport" }));
+    for (let k = 0; k < 4; k += 1) { await day(E, jevDown); await day(perTurn, jevDown); }
+    for (let k = 0; k < 4; k += 1) await day(ruleOnly, throws, "abstain");
+    expect(store.listOpenIncidents().filter((i) => i.kind === "decision_fallback_streak")).toEqual([]);
+    store.close();
+  });
+  it("one run's several failed groups (one created_at) count as one run, not three", async () => {
+    const store = RunStore.openInMemory();
+    const rec = storeRecorder(store, { env: ENV, now: () => "2026-11-01T10:00:00.000Z" });
+    for (let k = 0; k < 5; k += 1) await decide(DAILY, { v: "abstain" }, { run_id: null, recorder: rec, exec: { system_one: jevDown } });
+    expect(store.listOpenIncidents().filter((i) => i.kind === "decision_fallback_streak")).toEqual([]);
     store.close();
   });
   it("a recorded answer in between breaks the streak; a budget stop is not a failure", async () => {

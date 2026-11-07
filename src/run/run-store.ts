@@ -5097,10 +5097,10 @@ export class RunStore {
     `).all<{ skip_reason: string; n: number }>(since, until, ...exclude);
   }
 
-  /** `decision_fallback_streak` input (Paco 2026-11-07): the entry's newest `n` rows, newest first. */
-  latestDecisionRungs(entry_id: string, n: number): { rung: string; fallback_reason: string | null; fallback_rung: string | null }[] {
-    return this.db.prepare(`SELECT rung, fallback_reason, fallback_rung FROM decisions WHERE entry_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?`)
-      .all<{ rung: string; fallback_reason: string | null; fallback_rung: string | null }>(entry_id, n);
+  /** `decision_fallback_streak` input (Paco 2026-11-07): the entry's newest `n` rows, newest first (a tick stamps all its rows with one `created_at`). */
+  latestDecisionRungs(entry_id: string, n: number): { rung: string; fallback_reason: string | null; fallback_rung: string | null; created_at: string }[] {
+    return this.db.prepare(`SELECT rung, fallback_reason, fallback_rung, created_at FROM decisions WHERE entry_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?`)
+      .all<{ rung: string; fallback_reason: string | null; fallback_rung: string | null; created_at: string }>(entry_id, n);
   }
 
   /**

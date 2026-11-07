@@ -12,11 +12,14 @@ import { enqueueUrgentCard } from "./urgent.js";
 export const DECISION_FALLBACK_LIMIT = 3;
 export const DECISION_FALLBACK_WINDOW_MS = 60 * 60 * 1000;
 /**
- * Paco 2026-11-07: an entry that records every decision (alwaysRecord) and whose newest this-many rows are all counted
- * fallbacks pages decision_fallback_streak:<entry>, however far apart they are. A daily entry (improve.route) never
- * makes three in an hour; its rows are its decisions, so three in a row is three runs in a row.
+ * Paco 2026-11-07: a tick entry (stage `after_turn`, alwaysRecord, with a judge rung) whose last this-many runs ended
+ * only in counted fallbacks pages decision_fallback_streak:<entry>, however far apart. The hourly rule needs three rows in
+ * an hour, which a once-a-day tick with one or two groups never makes. A run is one `created_at` (a tick stamps its groups
+ * alike). Per-turn entries keep the hourly log; rule-only entries are left out, since no answer of theirs could clear it.
  */
 export const DECISION_FALLBACK_STREAK = 3;
+/** Rows read for the streak: the tick decides at most 40 groups a run, so three runs fit. */
+const STREAK_ROWS = 3 * 40 + 1;
 /**
  * Plan ruling 9: entries whose Jev-rung failures already page through the Jev incidents (openJevIncident and the triage
  * jev_skip_rate). Their Jev failures do not count toward decision_fallback: one call, one page. tool.injection joins them
@@ -99,13 +102,20 @@ function countsAsFallback(entry_id: string, r: { rung: string; fallbackReason: s
   return !(JEV_PAGED_ELSEWHERE.has(entry_id) && r.fallbackRung === "system_one");
 }
 
-/** Paco 2026-11-07: the newest DECISION_FALLBACK_STREAK rows of an alwaysRecord entry are all counted fallbacks: page once, to chat. */
+/** A tick entry the streak watches: records every decision, runs off the turn path, and has a judge rung whose answer clears it. */
+function streakWatched(entry: AnyEntry): boolean {
+  return entry.alwaysRecord === true && entry.stage === "after_turn" && entry.ladder.some((r) => r.kind === "system_one" || r.kind === "model");
+}
+
+/** Paco 2026-11-07: the last DECISION_FALLBACK_STREAK runs of a watched entry ended only in counted fallbacks: page once, to chat. */
 function pageStreak(store: RunStore, entry: AnyEntry, now: string, env: NodeJS.ProcessEnv | undefined): void {
-  if (!entry.alwaysRecord) return;
-  const rows = store.latestDecisionRungs(entry.id, DECISION_FALLBACK_STREAK);
-  const all = rows.length === DECISION_FALLBACK_STREAK
-    && rows.every((x) => countsAsFallback(entry.id, { rung: x.rung, fallbackReason: x.fallback_reason, fallbackRung: x.fallback_rung }));
-  if (!all) return;
+  if (!streakWatched(entry)) return;
+  const runs = new Set<string>();
+  for (const x of store.latestDecisionRungs(entry.id, STREAK_ROWS)) {
+    if (!countsAsFallback(entry.id, { rung: x.rung, fallbackReason: x.fallback_reason, fallbackRung: x.fallback_rung })) break;
+    runs.add(x.created_at);
+  }
+  if (runs.size < DECISION_FALLBACK_STREAK) return;
   openAlertedIncident(store, { kind: "decision_fallback_streak", subject: entry.id, detail: { entry: entry.id, streak: DECISION_FALLBACK_STREAK }, now, ...(env ? { env } : {}) });
 }
 
