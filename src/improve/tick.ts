@@ -4,7 +4,7 @@ import { redactForImprove } from "../decisions/egress.js";
 import { autoApplies, type ImproveState, type ImproveTarget } from "../decisions/entries/improve-route.js";
 import { evaluateImproveDegraded } from "./degraded.js";
 import { applyProposal } from "./apply.js";
-import { repeatCandidatesFor, repeatCheck, sameIds } from "./repeat.js";
+import { candidateKey, repeatCandidatesFor, repeatCheck, sameIds } from "./repeat.js";
 import { parsed, queueProposalCard, str } from "./proposal-card.js";
 import { OutcomeRejected, outcomeValueOf } from "../decisions/outcomes.js";
 import { storeRecorder } from "../decisions/record.js";
@@ -230,7 +230,7 @@ function commitGroup(d: ImproveTickDeps, g: SignalGroup, s: ImproveState, r: Dec
   const bumps = zero();
   const outcome = d.store.inTransaction((): GroupOutcome => {
     // addendum Rev 2.3.1 A: the candidates the repeat check embedded are read again; a card accepted meanwhile changes them — retry next tick, nothing written
-    if (pre.repeatIds !== null && pre.draft !== null && !sameIds(pre.repeatIds, repeatCandidatesFor(d.store, pre.draft.target as "lesson" | "fact", s.scope, d.now).map((x) => x.proposal_id))) return "deferred";
+    if (pre.repeatIds !== null && pre.draft !== null && !sameIds(pre.repeatIds, repeatCandidatesFor(d.store, pre.draft.target as "lesson" | "fact", s.scope, d.now).map(candidateKey))) return "deferred";
     const job = r.rung === "rule" && r.verdict === "skill" && s.recurrence !== null && d.jobs !== undefined;
     const wantsProposal = !job && NEEDS_DRAFT.has(r.verdict);
     const draft = pre.draft;

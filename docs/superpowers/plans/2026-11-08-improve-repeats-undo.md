@@ -1546,3 +1546,7 @@ separates: no at 0.8; a constant between the groups: 0.57
 ```
 
 **Ruling (controller, 2026-11-08): `LESSON_REPEAT_COSINE = 0.6`.** Probe (embeddinggemma): max distinct 0.479, min near-copy 0.667, both languages separate between them; 0.8 failed (3 of 8 near pairs below it). A false "repeat" silently loses a different correction (worse); a false "new" only adds a duplicate lesson, so the cut sits closer to the near-copies (0.12 above distinct, 0.067 below near); 0.6 equals the existing recurrence cosine gate.
+
+Per pair (embeddinggemma via Ollama, 2026-11-08): near-copy English 0.682, 0.876, 0.851, 0.721; near-copy Chinese 0.896, 0.840, 0.807, 0.667; distinct English 0.356, 0.333, 0.407, 0.479; distinct Chinese 0.276, 0.359, 0.399, 0.339. Ruling: `LESSON_REPEAT_COSINE = 0.6`.
+
+Cross-language repeats (a Chinese correction then an English one) were not probed; they likely fall below 0.6 and count as new (a duplicate lesson, the cheaper failure).

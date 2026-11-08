@@ -691,6 +691,30 @@ describe("runImproveTick — block only repeats (addendum Rev 2.3.1)", () => {
     expect(routeRows(s)).toHaveLength(1);
     expect(s.listLessons("ask").map((l) => l.text)).not.toContain("Name the source of every figure.");
   });
+  it("a reverted near-copy wins over an accepted one: with both held, the draft is already_proposed, not the rewrite card (Paco's undo sticks)", async () => {
+    const s = RunStore.openInMemory();
+    await appliedDay1(s); // accepted: "Answer in one line."
+    const id = s.insertImprovementProposal({ decision_id: s.insertDecision(D({})), target: "lesson", scope: "answer", chat_id: "555", draft_json: JSON.stringify({ scope: "ask", text: "Keep answers to one line." }), evidence: "e", created_at: "2026-10-20T12:00:00.000Z" });
+    s.transitionProposal({ proposal_id: id, from: ["open"], to: "reverted", now: "2026-10-21T12:00:00.000Z" }); // a second near-copy Paco undid
+    corrected(s, "memlane_fix", { text: "and once more: one line only" });
+    const next = await runImproveTick(deps(s, { now: DAY2, embed: byText("one line"), llm: { ...deps(s).llm, distill: lessonDistill("Answer in one line, always.") } }));
+    expect(next).toMatchObject({ ran: true, counts: { already_proposed: 1, cards: 0, applied: 0, proposals: 0 } });
+    expect(routeRows(s).at(-1)).toMatchObject({ verdict: "nothing", reason_code: "already_proposed" });
+  });
+  it("a candidate accepted at check time and undone before the commit defers the group (same id, new state)", async () => {
+    const s = RunStore.openInMemory();
+    const first = await appliedDay1(s);
+    corrected(s, "memlane_fix", { text: "always name the source of every figure" });
+    let raced = false;
+    const embed = async (t: string): Promise<Float32Array> => {
+      if (!raced && t === "Name the source of every figure.") { raced = true; s.transitionProposal({ proposal_id: first, from: ["accepted"], to: "reverted", now: DAY2 }); } // /forget lands during the embeds
+      return byText("one line")(t);
+    };
+    const next = await runImproveTick(deps(s, { now: DAY2, embed, llm: { ...deps(s).llm, distill: lessonDistill("Name the source of every figure.") } }));
+    expect(raced).toBe(true);
+    expect(next).toMatchObject({ ran: true, counts: { deferred: 1, decided: 0, applied: 0, cards: 0, proposals: 0 } });
+    expect(s.listUnconsumedSignals(10)).toHaveLength(1);
+  });
   it("the tick budget spent during the repeat check stops the tick with the group unconsumed (the next cycle resumes it)", async () => {
     const s = RunStore.openInMemory();
     await appliedDay1(s, true);
