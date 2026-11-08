@@ -211,6 +211,11 @@ re-check's 2 blockers (iterative scope undo; other targets keep their block) and
   and compared with `cosineSimilarity`; at or above `LESSON_REPEAT_COSINE` (a code constant, provisionally 0.8, set from
   the probe below) the group records `nothing` / `already_proposed` as today. So a near-copy of a lesson or fact Houge
   already learned, or one Paco undid, is skipped; a different one is applied (or carded).
+- **"Lesson did not hold" (controller ruling R1', 2026-11-08, inside Paco's Q1-B):** the rewrite rule no longer fires on
+  any correction after a recent lesson. It fires only when the new lesson draft is a near-copy of a lesson an `accepted`
+  proposal on the pair saved within 30 days (`LESSON_REWRITE_DAYS`): that repeat means the lesson is not working, so the
+  group becomes the rewrite card. A near-copy of a `reverted` proposal (14 days) is skipped and wins over an accepted
+  one; a near-copy of an accepted fact is skipped; a different lesson or fact is applied (or carded by provenance).
 - **Embedder down:** the group is deferred as an outage (`deferred_outage`, unconsumed, the tick's latch set). The
   30-day stale rule later consumes it as `nothing` / `stale`, as for every deferred group today.
 - **Commit-time recheck:** the embed calls run outside the transaction. Inside the commit the candidate set (the ids of
