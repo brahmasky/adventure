@@ -315,7 +315,7 @@ export async function main() {
     console.log(failures.length === 0 ? "\nROLLBACK CHECK: PASS" : `\nROLLBACK CHECK: FAIL\n  - ${failures.join("\n  - ")}`);
     process.exitCode = failures.length === 0 ? 0 : 1;
   } catch (e) {
-    console.error("setup_failed");
+    console.error(e instanceof SetupError ? `setup_failed: ${e.message}` : `setup_failed: ${errCode(e)}`);
     process.exitCode = 2;
   } finally {
     for (const h of handles.splice(0)) closeStore(h);

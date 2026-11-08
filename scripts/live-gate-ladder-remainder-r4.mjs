@@ -351,7 +351,7 @@ try {
   note(`${passed}/8 PASS · houge.kill in cwd/main checkout ${tomb} (want 0)`);
   process.exitCode = out.length === 8 && passed === 8 ? 0 : 1;
 } catch (e) {
-  console.error("setup_failed");
+  console.error(e instanceof SetupError ? `setup_failed: ${e.message}` : `setup_failed: ${e instanceof Error ? e.name : "non-Error"}`);
   process.exitCode = 2;
 } finally {
   const root = G.root;
