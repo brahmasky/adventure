@@ -191,20 +191,23 @@ events (a resumed date emits several). Evaluated once per tick date, at its end,
 Merge, rebuild, kickstart (Tier A after green gates). The first 21:00 after deploy sends no digest. Paco's `.env` line
 `HOUGE_DECISION_DIGEST_AT=ON` can be deleted at leisure.
 
-## Addendum Rev 2.3 — block only repeats; undo reverses the whole change (Paco, 2026-11-08)
+## Addendum Rev 2.3.1 — block only repeats; undo reverses the whole change (Paco, 2026-11-08)
 
 Decided by Paco 2026-11-08 after the final review's two questions (options Q1-B and Q2-A). Changes ADR 0034 10.5.
 Rev 2.3 replaces Rev 2.2 after a codex design check against the code (4 blockers: nested transactions, `/forget <scope>`
-order, `reverted` still blocking the whole category, and the false premise that a fact `ADD` reconciles).
+order, `reverted` still blocking the whole category, and the false premise that a fact `ADD` reconciles); 2.3.1 closes the
+re-check's 2 blockers (iterative scope undo; other targets keep their block) and its warning (the whole 14-day window).
 
 **A. The 14-day block covers repeats, not the category (lessons and facts alike).**
 
-- `proposalBlocks(target, scope)` keeps blocking the pair only for an `open` proposal and for `dismissed` / `expired`
-  within 14 days (what Paco turned down or let lapse, as before 2026-11-07). `accepted` and `reverted` no longer block
-  the pair.
+- For `lesson` and `fact` only, `proposalBlocks(target, scope)` keeps blocking the pair only for an `open` proposal and
+  for `dismissed` / `expired` within 14 days (what Paco turned down or let lapse, as before 2026-11-07); `accepted` and
+  `reverted` no longer block a lesson or fact pair. Every other target (`skill`, `schedule`, `tool_gap`, `ladder`) keeps
+  today's rule unchanged (accepted and reverted block the pair 14 days), at the pre-draft and the commit checks.
 - **Repeat check, after the draft:** the new draft's text is compared with the draft text (`draft_json.text`, stored
   on the proposal, so it works even after the saved row is gone) of every `accepted` or `reverted` proposal on the same
-  (target, scope) resolved in the last 14 days, newest first, at most 10. Each text is embedded with the tick's embedder
+  (target, scope) resolved in the last 14 days (all of them: the volume is a few a month; the embeds count against the tick's 120 s
+  budget like any seat call, and a group that would overrun is left for the next cycle). Each text is embedded with the tick's embedder
   and compared with `cosineSimilarity`; at or above `LESSON_REPEAT_COSINE` (a code constant, provisionally 0.8, set from
   the probe below) the group records `nothing` / `already_proposed` as today. So a near-copy of a lesson or fact Houge
   already learned, or one Paco undid, is skipped; a different one is applied (or carded).
@@ -228,8 +231,9 @@ order, `reverted` still blocking the whole category, and the false premise that 
   transaction. The reply names how many pruned lessons came back. If the undo refuses (`not_found`, `already_undone`,
   `changed_since`), fall back to today's status flip, still revert the proposal, and say the pruned lessons were not
   restored. A lesson with no improvement proposal keeps today's behaviour.
-- **`/forget <scope>`:** first, newest first, undo the change of every active improvement-saved lesson in that scope
-  (while each is still active), then prune every lesson still active in the scope, including any the undos restored
+- **`/forget <scope>`:** repeatedly, newest first, find an active improvement-saved lesson in that scope (one with an
+  `accepted` proposal) and undo its change, until none is left — an undo may restore an older improvement-saved lesson,
+  which the next round then undoes with its own proposal — then prune every lesson still active in the scope, including any the undos restored
   into it — `/forget <scope>` means the scope ends empty. Each improvement proposal moves to `reverted`.
 - **`/forget_memory <id>`** on a fact an improvement proposal saved: undo that change with `undoMemoryChangeTx` and
   revert the proposal, in one transaction; the reply is plain text with no Undo button (undoing an undo is not offered;
@@ -237,7 +241,7 @@ order, `reverted` still blocking the whole category, and the false premise that 
   fact with no improvement proposal keeps today's behaviour and card.
 - A partial restore (some pruned rows changed since and stay pruned) is reported as "restored N of M".
 
-**Tests:** a different second lesson and a different second fact on the same category within 14 days are applied; a
+**Tests:** `/forget <scope>` where undoing the newest improvement lesson restores an older improvement lesson: both proposals end `reverted`, the scope ends empty; a schedule or tool_gap pair is still blocked by an accepted proposal; a different second lesson and a different second fact on the same category within 14 days are applied; a
 near-copy of an accepted one, and of a reverted one, is `already_proposed`; the embedder down defers the group; a card
 accepted between the embed and the commit defers the group; `/forget <id>` on an improvement lesson saved at the cap
 restores the pruned lesson, the refusal fallback, `/forget <scope>` with improvement lessons ends empty with their
