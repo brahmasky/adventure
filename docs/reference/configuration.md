@@ -679,9 +679,9 @@ a turn runs (detached turns).
 | `/usage` | control | Token use per provider and model from the ledger; omp rows show "sub", never dollars. |
 | `/help` | control | The command list; an unknown `/command` returns it instead of starting a turn. |
 | `/lessons [scope]` | control | View the active lesson rows: each with its id, reuse/applied counters, `AVOID` line, and `supersedes #n` lineage. No scope → lists all scopes. |
-| `/forget <scope\|id>` | control | Prune that scope's lessons, or one lesson by numeric id (a reversible status flip — rows are never deleted) and ack. |
+| `/forget <scope\|id>` | control | Prune that scope's lessons, or one lesson by numeric id (a reversible status flip — rows are never deleted) and ack. A lesson an improvement proposal saved has its whole change undone (what its save pruned at the cap comes back) and the proposal reverted; `/forget <scope>` undoes each such lesson newest first, then prunes the scope empty. |
 | `/memories [query]` | control | Up to 10 of this chat's ACTIVE episodic facts as `#id · text · date`: the matches for the query (keyword and substring search), or with no query the 10 most-applied. Read-only. |
-| `/forget_memory <id>` | control | (Alias `/forget-memory`.) Retire one active fact of this chat (a reversible status flip, recorded in `memory_changes`) and reply with the card's **Undo** button. Allowlist only; an unknown, retired or other chat's id gets a refusal reply. |
+| `/forget_memory <id>` | control | (Alias `/forget-memory`.) Retire one active fact of this chat (a reversible status flip, recorded in `memory_changes`) and reply with the card's **Undo** button. Allowlist only; an unknown, retired or other chat's id gets a refusal reply. A fact an improvement proposal saved in this chat has its whole change undone instead (what its save pruned comes back), the proposal is reverted, and the reply is plain text with no Undo button. |
 | `/skills [scope]` | control | Read-only **viewer** of the ambient skills (name · scope · `when:` · version); regenerates `skills/REGISTRY.md`. Never invokes a skill. No scope → lists all scopes. |
 | `/skills pending` | control | Read-only **viewer** of the parked (blocked auto-author) drafts under `skills/_pending/` — inert, never applied. Inspect to hand-fix + promote, or discard. |
 | `/radar week` · `/radar pick <n>` | control | The same as `/idea` and `/idea pick <n>` below (`/idea` is an alias of the `/radar` family). |
@@ -1142,7 +1142,7 @@ row). A tap on a proposal or job card arrives as the `improvement_tap` task even
 `improve_cursor`, `turn_embeddings`, `improvement_proposals`, `improvement_jobs`, `improvement_taps`. The bar for
 `improve_target` is code (`IMPROVE_BAR_P`, 0.67, set by Paco 2026-10-22 from the sanity run's suggestion); there is no env override. One env var, `HOUGE_IMPROVE_ENABLED` (table above); the
 bounds are code constants: `IMPROVE_SEAT_DEADLINE_MS = 60 000` per seat call, `EMBED_PER_TICK_MAX = 50` embeds per call,
-`IMPROVE_GROUPS_PER_TICK = 40` per local date, a proposal blocks its (target, scope) while it is open and for 14 days after it is dismissed, expired, accepted or reverted (an `already_known` dismissal never blocks).
+`IMPROVE_GROUPS_PER_TICK = 40` per local date, a proposal blocks its (target, scope) while it is open and for 14 days after it is dismissed or expired (an `already_known` dismissal never blocks), and a schedule, tool gap, ladder or skill one also after it is accepted or reverted; a lesson or fact draft is skipped only as a near-copy of one reverted on the pair within 14 days (or of an accepted fact), and a near-copy of a lesson accepted within 30 days is the 'lesson did not hold' card (`LESSON_REPEAT_COSINE = 0.6`, its value set by the threshold probe on 2026-11-08; cosine with the tick's embedder; the embedder down defers the group as an outage).
 An outage (Jev or a seat call) leaves a group unconsumed and counts `deferred_outage`. **`/disarm`** (`HOUGE_SKILLS_ENABLED`
 off) holds skill jobs: queued jobs stay queued and a recurrence group that would start one waits. An unreviewed skill offer
 expires after 14 days.

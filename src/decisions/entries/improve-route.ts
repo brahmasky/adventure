@@ -105,10 +105,8 @@ export function jevVerdictOf(a: JevChoiceAnswer, s: ImproveState): Rule {
   return { abstain: true, reason: "below_bar", detail: { ...detail, top2: [best[0]!, best[1] ?? best[0]!] } };
 }
 
-/** 2b-ii §7: a correction on a scope that got a lesson this recently is "lesson did not hold" evidence; its proposal is a rewrite, which only a tap may apply (saveMemoryPlan adds, never replaces). */
+/** Ruling R1': a lesson draft that is a near-copy of one an accepted proposal on the pair saved within this many days is a 'lesson did not hold' rewrite (the repeat check finds it, improve/repeat.ts). */
 export const LESSON_REWRITE_DAYS = 30;
-export const lessonRewrite = (s: Pick<ImproveState, "signal" | "lastImprovement">): boolean =>
-  s.signal === "correction" && s.lastImprovement !== null && s.lastImprovement.target === "lesson" && s.lastImprovement.ageDays <= LESSON_REWRITE_DAYS;
 
 /** A group's rows as the provenance gate reads them (SignalGroup.rows, improve/groups.ts). */
 export type ProvenanceRows = { rows: readonly Pick<ImproveSignalRow, "origin" | "run_id" | "about_run_id">[] };
@@ -116,12 +114,12 @@ export type ProvenanceRows = { rows: readonly Pick<ImproveSignalRow, "origin" | 
 /**
  * Spec 2026-11-07 §3 (ADR 0034 10.5, R12): a lesson or fact applies on its own only when every row of the group is a
  * correction Paco typed on the memory lane (`memlane_fix`: its correcting run is a new Telegram message of his, never the
- * corrected run — `isTelegramRun` re-checks the run's source here, plan ruling P16) and the proposal is no rewrite.
+ * corrected run — `isTelegramRun` re-checks the run's source here, plan ruling P16) and the proposal is no rewrite — `rewrite` is the repeat check's verdict (a near-copy of a lesson accepted on the pair within LESSON_REWRITE_DAYS, ruling R1'); the tick asks once before the draft with false (provenance only) and again after the check.
  * The no-pile-up check (proposalBlocks) and the chat check live at the commit.
  */
-export function autoApplies(g: ProvenanceRows, s: Pick<ImproveState, "signal" | "lastImprovement">, verdict: ImproveTarget, isTelegramRun: (run_id: string) => boolean): boolean {
+export function autoApplies(g: ProvenanceRows, s: Pick<ImproveState, "signal">, verdict: ImproveTarget, isTelegramRun: (run_id: string) => boolean, rewrite: boolean): boolean {
   if (verdict !== "lesson" && verdict !== "fact") return false;
-  if (s.signal !== "correction" || lessonRewrite(s)) return false;
+  if (s.signal !== "correction" || rewrite) return false;
   return g.rows.length > 0 && g.rows.every((r) => r.origin === "memlane_fix" && r.run_id !== null && r.run_id !== r.about_run_id && isTelegramRun(r.run_id));
 }
 

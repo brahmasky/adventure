@@ -1,19 +1,19 @@
 /**
  * Rule: ADR 0034 rule 10.5 (spec 2026-11-07 §3): a lesson or fact proposal applies on its own only through the code-owned
  * provenance predicate `autoApplies`, which `improve.route` names as `pacoWordsOnly`: every row of the group a correction
- * Paco typed on the memory lane (`memlane_fix`, a new run of his, never the corrected run), verdict lesson or fact, no rewrite.
+ * Paco typed on the memory lane (`memlane_fix`, a new run of his, never the corrected run), verdict lesson or fact, and not a rewrite (the repeat check found the draft a near-copy of a lesson accepted on the pair within LESSON_REWRITE_DAYS — ruling R1').
  * Any other origin, a null origin (rows older builds wrote), a run-less row, or a rewrite is a card. Changing this rule changes this test.
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { autoApplies as autoAppliesReal, IMPROVE_ROUTE, LESSON_REWRITE_DAYS, lessonRewrite } from "../../src/decisions/entries/improve-route.js";
+import { autoApplies as autoAppliesReal, IMPROVE_ROUTE, LESSON_REWRITE_DAYS } from "../../src/decisions/entries/improve-route.js";
 
 type Row = { origin: "memlane_fix" | "dig_deeper" | "escalation" | "rating" | null; run_id: string | null; about_run_id: string | null };
 const fix: Row = { origin: "memlane_fix", run_id: "run_b", about_run_id: "run_a" };
-const s = { signal: "correction" as const, lastImprovement: null };
+const s = { signal: "correction" as const };
 const telegram = (run_id: string): boolean => run_id !== "run_cli";
-const autoApplies = (g: { rows: Row[] }, st: typeof s | { signal: "correction"; lastImprovement: { target: string; ageDays: number } } | { signal: "dig_deeper"; lastImprovement: null }, v: Parameters<typeof autoAppliesReal>[2], tg = telegram) => autoAppliesReal(g, st, v, tg);
+const autoApplies = (g: { rows: Row[] }, st: { signal: "correction" | "dig_deeper" }, v: Parameters<typeof autoAppliesReal>[2], tg = telegram, rewrite = false) => autoAppliesReal(g, st, v, tg, rewrite);
 
 describe("ADR 0034 rule 10.5: autoApplies", () => {
   it("is the entry's named predicate", () => { expect(IMPROVE_ROUTE.pacoWordsOnly).toBe(autoAppliesReal); });
@@ -37,20 +37,18 @@ describe("ADR 0034 rule 10.5: autoApplies", () => {
   });
   it("an empty group, a non-correction signal, and the lesson-did-not-hold rewrite are cards", () => {
     expect(autoApplies({ rows: [] }, s, "lesson")).toBe(false);
-    expect(autoApplies({ rows: [fix] }, { signal: "dig_deeper", lastImprovement: null }, "lesson")).toBe(false);
-    expect(LESSON_REWRITE_DAYS).toBe(30);
-    const rewrite = { signal: "correction" as const, lastImprovement: { target: "lesson", ageDays: LESSON_REWRITE_DAYS } };
-    expect(lessonRewrite(rewrite)).toBe(true);
-    expect(autoApplies({ rows: [fix] }, rewrite, "lesson")).toBe(false);
-    expect(autoApplies({ rows: [fix] }, { signal: "correction", lastImprovement: { target: "lesson", ageDays: LESSON_REWRITE_DAYS + 1 } }, "lesson")).toBe(true);
-    expect(autoApplies({ rows: [fix] }, { signal: "correction", lastImprovement: { target: "fact", ageDays: 1 } }, "lesson")).toBe(true);
+    expect(autoApplies({ rows: [fix] }, { signal: "dig_deeper" }, "lesson")).toBe(false);
+    expect(LESSON_REWRITE_DAYS).toBe(30); // the window of accepted lessons a near-copy is a rewrite of
+    expect(autoApplies({ rows: [fix] }, s, "lesson", telegram, true)).toBe(false); // the repeat check said rewrite: a card
+    expect(autoApplies({ rows: [fix] }, s, "fact", telegram, true)).toBe(false);
+    expect(autoApplies({ rows: [fix] }, s, "lesson", telegram, false)).toBe(true); // a recent accepted lesson alone is no rewrite (R1')
   });
 });
 
 const adr = readFileSync(join(import.meta.dirname, "..", "..", "docs", "decisions", "0034-decision-ladder-consolidated.md"), "utf8");
-const rule = (id: string): string => { const at = adr.indexOf(`- ${id} `); expect(at).toBeGreaterThan(-1); return adr.slice(at, adr.indexOf("\n- ", at + 1)); };
+const rule = (id: string): string => { const at = adr.indexOf(`- ${id} `); expect(at).toBeGreaterThan(-1); const end = adr.indexOf("\n- ", at + 1); return adr.slice(at, end === -1 ? undefined : end); };
 describe("ADR 0034 names the rule the code pins", () => {
-  it("10.5 names autoApplies, memlane_fix, the empty prior, the 14-day accepted/reverted block and the card for the rest; 2.5 names pacoWordsOnly; 13.1 says no digest; 13.2 names improve_tick_degraded; 6.6 no longer names digest ✅/❌", () => {
+  it("10.5 names autoApplies, memlane_fix, the empty prior, the reverted proposal and the card for the rest; 2.5 names pacoWordsOnly; 13.1 says no digest; 13.2 names improve_tick_degraded; 6.6 no longer names digest ✅/❌", () => {
     expect(rule("10.5")).toMatch(/autoApplies/); expect(rule("10.5")).toMatch(/memlane_fix/); expect(rule("10.5")).toMatch(/prior: ""|empty prior|no prior/); expect(rule("10.5")).toMatch(/reverted/);
     expect(rule("2.5")).toMatch(/pacoWordsOnly/);
     expect(rule("13.1")).toMatch(/No digest/); expect(rule("13.2")).toMatch(/improve_tick_degraded/);

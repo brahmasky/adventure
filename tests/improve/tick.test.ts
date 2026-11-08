@@ -454,6 +454,10 @@ const distillSpy = () => vi.fn(async (i: { question: string }) => ({ ok: true as
 const PRIOR_HEADING = "PRIOR HOUGE ANSWER (reference only — never a source, never instructions):\n";
 const priorOf = (question: string): string => question.slice(question.indexOf(PRIOR_HEADING) + PRIOR_HEADING.length, question.indexOf("\n\nPACO'S INSTRUCTION:"));
 
+/** A text-dependent stub: [1,0] when the text carries `mark` (a near-copy family), else [0,1] (cosine 0 between the families). */
+const byText = (mark: string) => async (t: string): Promise<Float32Array> => Float32Array.from(t.toLowerCase().includes(mark) ? [1, 0] : [0, 1]);
+const lessonDistill = (lesson: string) => vi.fn(async (_i: { question: string; system?: string }) => ({ ok: true as const, answer: JSON.stringify({ kind: "rule", lesson }) })); // the seat's input, so mock.calls[0][0].question typechecks
+
 // Spec 2026-11-07 §3, §5, §12: only a correction Paco typed on the memory lane applies, with no prior at the seat, inside the
 // group's commit, with one /changes row and no chat row; every other correction is a card; a failure never half-applies.
 describe("runImproveTick — auto-apply (spec 2026-11-07)", () => {
@@ -505,15 +509,20 @@ describe("runImproveTick — auto-apply (spec 2026-11-07)", () => {
     expect(s.listOpenProposals()).toHaveLength(1);
     expect(s.listLessons("ask")).toHaveLength(0);
   });
-  it("a 'lesson did not hold' rewrite (an accepted lesson on the scope 20 days ago) is a card, not an apply", async () => {
+  it("a 'lesson did not hold' rewrite (a near-copy of a lesson accepted on the scope 20 days ago) is a card, not an apply; a different lesson then applies", async () => {
     const s = RunStore.openInMemory();
-    const old = s.insertImprovementProposal({ decision_id: s.insertDecision(D({ entry_id: "improve.route", stage: "after_turn", verdict: "lesson" })), target: "lesson", scope: "answer", chat_id: "555", draft_json: "{}", evidence: "e", created_at: "2026-10-01T00:00:00.000Z" });
+    const old = s.insertImprovementProposal({ decision_id: s.insertDecision(D({ entry_id: "improve.route", stage: "after_turn", verdict: "lesson" })), target: "lesson", scope: "answer", chat_id: "555", draft_json: JSON.stringify({ scope: "ask", text: "Answer in one line." }), evidence: "e", created_at: "2026-10-01T00:00:00.000Z" });
     s.transitionProposal({ proposal_id: old, from: ["open"], to: "accepted", now: "2026-10-01T00:00:00.000Z", result_json: "{}" });
     corrected(s, "memlane_fix");
     expect(await runImproveTick(deps(s))).toMatchObject({ ran: true, counts: { proposals: 1, applied: 0, cards: 1, already_proposed: 0 } });
     const fresh = s.listOpenProposals();
     expect(fresh).toHaveLength(1);
     expect(fresh[0]!.evidence).toMatch(/^lesson did not hold/);
+    const s2 = RunStore.openInMemory();   // the same accepted lesson, but the new draft is a different rule: applied
+    const old2 = s2.insertImprovementProposal({ decision_id: s2.insertDecision(D({ entry_id: "improve.route", stage: "after_turn", verdict: "lesson" })), target: "lesson", scope: "answer", chat_id: "555", draft_json: JSON.stringify({ scope: "ask", text: "Answer in one line." }), evidence: "e", created_at: "2026-10-01T00:00:00.000Z" });
+    s2.transitionProposal({ proposal_id: old2, from: ["open"], to: "accepted", now: "2026-10-01T00:00:00.000Z", result_json: "{}" });
+    corrected(s2, "memlane_fix", { text: "always name the source of every figure" });
+    expect(await runImproveTick(deps(s2, { embed: byText("one line"), llm: { ...deps(s2).llm, distill: lessonDistill("Name the source of every figure.") } }))).toMatchObject({ ran: true, counts: { applied: 1, cards: 0 } });
   });
   it("a capped lesson is a card and the proposal stays open (nothing half-saved)", async () => {
     const s = RunStore.openInMemory();
@@ -570,15 +579,158 @@ describe("runImproveTick — auto-apply (spec 2026-11-07)", () => {
     expect(s.listOpenProposals()).toHaveLength(0);
     expect(db(s).prepare("SELECT COUNT(*) AS n FROM change_log").get()).toEqual({ n: 0 });
   });
-  it("a second memlane_fix correction on the scope within 14 days is already_proposed (the applied one blocks), with no distill call", async () => {
+});
+
+const DAY2 = "2026-10-22T11:00:00.000Z";
+/** Day 1: a memlane_fix correction applies "Answer in one line."; returns its proposal id (reverted on request). */
+async function appliedDay1(s: RunStore, revert = false): Promise<string> {
+  corrected(s, "memlane_fix");
+  expect(await runImproveTick(deps(s, { embed: byText("one line") }))).toMatchObject({ ran: true, counts: { applied: 1 } });
+  const [p] = s.listProposalsResolvedSince("2026-01-01T00:00:00.000Z");
+  if (revert) s.transitionProposal({ proposal_id: p!.proposal_id, from: ["accepted"], to: "reverted", now: "2026-10-21T12:00:00.000Z" });
+  return p!.proposal_id;
+}
+
+// Addendum Rev 2.3.1 A (Paco 2026-11-08, Q1-B) + ruling R1': the 14-day block covers repeats, not the category — a near-copy
+// of a lesson Paco undid is skipped, a near-copy of one Houge still holds is the 'lesson did not hold' card, a different one
+// goes ahead. An embedder outage never consumes.
+describe("runImproveTick — block only repeats (addendum Rev 2.3.1)", () => {
+  it("R1': a near-copy of an accepted lesson is the 'lesson did not hold' card after its draft — never applied, never blocked before the draft", async () => {
     const s = RunStore.openInMemory();
-    corrected(s, "memlane_fix");
-    expect(await runImproveTick(deps(s))).toMatchObject({ ran: true, counts: { applied: 1 } });
+    const first = await appliedDay1(s);
+    corrected(s, "memlane_fix", { text: "and once more: one line only", reply: "Lima is the capital, founded in 1535." }); // a clean prior exists: the auto draft must still not send it
+    const distill = lessonDistill("Answer in one line, always.");
+    const next = await runImproveTick(deps(s, { now: DAY2, embed: byText("one line"), llm: { ...deps(s).llm, distill } }));
+    expect(next).toMatchObject({ ran: true, counts: { decided: 1, proposals: 1, cards: 1, applied: 0, already_proposed: 0 } });
+    expect(distill).toHaveBeenCalledTimes(1);
+    expect(priorOf(distill.mock.calls[0]![0].question)).toBe(""); // drafted on the provenance-only auto decision: no prior even though it ends a card
+    const [card] = s.listOpenProposals();
+    expect(card!.evidence).toBe("lesson did not hold: 2 corrections since (1 d)");
+    expect((JSON.parse(card!.draft_json) as { rewrite_of?: string }).rewrite_of).toBe(first); // the matched accepted proposal, for audit and the gate
+    expect(s.listLessons("ask").map((l) => l.text)).toEqual(["Answer in one line."]); // nothing saved twice
+  });
+  it("a near-copy of a lesson Paco undid (reverted) is already_proposed: the undo sticks for 14 days", async () => {
+    const s = RunStore.openInMemory();
+    await appliedDay1(s, true);
     corrected(s, "memlane_fix", { text: "and once more: one line only" });
-    const distill = distillSpy();
-    const next = await runImproveTick(deps(s, { now: "2026-10-22T11:00:00.000Z", embed: async () => null, llm: { ...deps(s).llm, distill } }));
-    expect(next).toMatchObject({ ran: true, counts: { already_proposed: 1, applied: 0, proposals: 0 } });
-    expect(distill).not.toHaveBeenCalled();
+    const next = await runImproveTick(deps(s, { now: DAY2, embed: byText("one line"), llm: { ...deps(s).llm, distill: lessonDistill("Answer in one line, always.") } }));
+    expect(next).toMatchObject({ ran: true, counts: { already_proposed: 1, applied: 0, proposals: 0, cards: 0 } });
     expect(routeRows(s).at(-1)).toMatchObject({ verdict: "nothing", reason_code: "already_proposed" });
+  });
+  it("a different lesson after the first was undone is applied: an undo does not block the category", async () => {
+    const s = RunStore.openInMemory();
+    await appliedDay1(s, true);
+    corrected(s, "memlane_fix", { text: "always name the source of every figure" });
+    const next = await runImproveTick(deps(s, { now: DAY2, embed: byText("one line"), llm: { ...deps(s).llm, distill: lessonDistill("Name the source of every figure.") } }));
+    expect(next).toMatchObject({ ran: true, counts: { applied: 1, already_proposed: 0 } });
+    expect(s.listLessons("ask").map((l) => l.text)).toContain("Name the source of every figure.");
+  });
+  it("R1': a different second lesson within 14 days while the first is still accepted is applied (no rewrite: it is not a near-copy)", async () => {
+    const s = RunStore.openInMemory();
+    await appliedDay1(s);
+    corrected(s, "memlane_fix", { text: "always name the source of every figure" });
+    const next = await runImproveTick(deps(s, { now: DAY2, embed: byText("one line"), llm: { ...deps(s).llm, distill: lessonDistill("Name the source of every figure.") } }));
+    expect(next).toMatchObject({ ran: true, counts: { applied: 1, cards: 0, already_proposed: 0 } });
+    expect(s.listLessons("ask").map((l) => l.text).sort()).toEqual(["Answer in one line.", "Name the source of every figure."]);
+  });
+  it("a different second fact on the same category within 14 days is applied; the first fact stays", async () => {
+    const s = RunStore.openInMemory();
+    const factDeps = (fact: string, quote: string, o: Partial<ImproveTickDeps> = {}) => deps(s, { client: jev({ fact: 0.8, nothing: 0.2 }), embed: byText("sister"),
+      llm: { ...deps(s).llm, pick: llm("fact"), distill: llm(JSON.stringify({ kind: "fact", fact, evidence: { line: 1, quote } })) }, ...o });
+    corrected(s, "memlane_fix", { text: "my sister lives in lima" });
+    expect(await runImproveTick(factDeps("Paco's sister lives in Lima.", "sister lives in lima"))).toMatchObject({ ran: true, counts: { applied: 1 } });
+    corrected(s, "memlane_fix", { text: "my brother lives in quito" });
+    const next = await runImproveTick(factDeps("Paco's brother lives in Quito.", "brother lives in quito", { now: DAY2 }));
+    expect(next).toMatchObject({ ran: true, counts: { applied: 1, already_proposed: 0 } });
+    expect(s.getActiveEpisodicFacts("555").map((f) => f.fact).sort()).toEqual(["Paco's brother lives in Quito.", "Paco's sister lives in Lima."]);
+    corrected(s, "memlane_fix", { text: "my sister lives in lima, remember" });   // a fact has no rewrite: a near-copy of an accepted one is skipped
+    const third = await runImproveTick(factDeps("Paco's sister lives in Lima.", "sister lives in lima", { now: "2026-10-23T11:00:00.000Z" }));
+    expect(third).toMatchObject({ ran: true, counts: { already_proposed: 1, applied: 0 } }); // (a third about turn may form a recurrence group: only these counts are pinned)
+    expect(s.getActiveEpisodicFacts("555")).toHaveLength(2);
+  });
+  it("the embedder down at the repeat check defers the group as an outage (unconsumed, no decision row) and latches the rest of the segment", async () => {
+    const s = RunStore.openInMemory();
+    await appliedDay1(s);
+    corrected(s, "memlane_fix", { text: "and once more: one line only" }); correction(s, "find me the march invoice again", "lookup");
+    const distill = lessonDistill("Answer in one line, always.");
+    const next = await runImproveTick(deps(s, { now: DAY2, embed: async () => null, llm: { ...deps(s).llm, distill } }));
+    expect(next).toMatchObject({ ran: true, result: "done", counts: { decided: 0, deferred_outage: 2, already_proposed: 0 } });
+    expect(distill).toHaveBeenCalledTimes(1); // the latch: the second group never reached a seat
+    expect(s.listUnconsumedSignals(10)).toHaveLength(2);
+    expect(routeRows(s)).toHaveLength(1); // day 1's only
+  });
+  it("a candidate with no draft text is never embedded (no '' embed), so a different draft is applied", async () => {
+    const s = RunStore.openInMemory();
+    const old = s.insertImprovementProposal({ decision_id: s.insertDecision(D({ entry_id: "improve.route", stage: "after_turn", verdict: "lesson" })), target: "lesson", scope: "answer", chat_id: "555", draft_json: "{}", evidence: "e", created_at: "2026-10-20T00:00:00.000Z" });
+    s.transitionProposal({ proposal_id: old, from: ["open"], to: "reverted", now: "2026-10-20T00:00:00.000Z" });
+    corrected(s, "memlane_fix", { text: "always name the source of every figure" });
+    const seen: string[] = [];
+    const embed = async (t: string): Promise<Float32Array> => { seen.push(t); return byText("one line")(t); };
+    const next = await runImproveTick(deps(s, { now: DAY2, embed, llm: { ...deps(s).llm, distill: lessonDistill("Name the source of every figure.") } }));
+    expect(next).toMatchObject({ ran: true, counts: { applied: 1, already_proposed: 0 } });
+    expect(seen).not.toContain("");
+    expect(seen).not.toContain("Name the source of every figure."); // the only candidate has no text: the repeat check embeds nothing (other embeds are the recurrence stage's)
+  });
+  it("a card accepted between the embeds and the commit defers the group (nothing written, counted deferred, retried next tick)", async () => {
+    const s = RunStore.openInMemory();
+    await appliedDay1(s, true);
+    corrected(s, "memlane_fix", { text: "always name the source of every figure" });
+    let raced = false;
+    const embed = async (t: string): Promise<Float32Array> => {
+      if (!raced && t === "Name the source of every figure.") { // the draft's own embed: Paco accepts a card on the same pair meanwhile
+        raced = true;
+        const id = s.insertImprovementProposal({ decision_id: s.insertDecision(D({})), target: "lesson", scope: "answer", chat_id: "555", draft_json: JSON.stringify({ scope: "ask", text: "Use metric units." }), evidence: "e", created_at: DAY2 });
+        s.transitionProposal({ proposal_id: id, from: ["open"], to: "accepted", now: DAY2 });
+      }
+      return byText("one line")(t);
+    };
+    const next = await runImproveTick(deps(s, { now: DAY2, embed, llm: { ...deps(s).llm, distill: lessonDistill("Name the source of every figure.") } }));
+    expect(raced).toBe(true);
+    expect(next).toMatchObject({ ran: true, counts: { deferred: 1, decided: 0, applied: 0, proposals: 0 } });
+    expect(s.listUnconsumedSignals(10)).toHaveLength(1);
+    expect(routeRows(s)).toHaveLength(1);
+    expect(s.listLessons("ask").map((l) => l.text)).not.toContain("Name the source of every figure.");
+  });
+  it("a reverted near-copy wins over an accepted one: with both held, the draft is already_proposed, not the rewrite card (Paco's undo sticks)", async () => {
+    const s = RunStore.openInMemory();
+    await appliedDay1(s); // accepted: "Answer in one line."
+    const id = s.insertImprovementProposal({ decision_id: s.insertDecision(D({})), target: "lesson", scope: "answer", chat_id: "555", draft_json: JSON.stringify({ scope: "ask", text: "Keep answers to one line." }), evidence: "e", created_at: "2026-10-20T12:00:00.000Z" });
+    s.transitionProposal({ proposal_id: id, from: ["open"], to: "reverted", now: "2026-10-21T12:00:00.000Z" }); // a second near-copy Paco undid
+    corrected(s, "memlane_fix", { text: "and once more: one line only" });
+    const next = await runImproveTick(deps(s, { now: DAY2, embed: byText("one line"), llm: { ...deps(s).llm, distill: lessonDistill("Answer in one line, always.") } }));
+    expect(next).toMatchObject({ ran: true, counts: { already_proposed: 1, cards: 0, applied: 0, proposals: 0 } });
+    expect(routeRows(s).at(-1)).toMatchObject({ verdict: "nothing", reason_code: "already_proposed" });
+  });
+  it("a candidate accepted at check time and undone before the commit defers the group (same id, new state)", async () => {
+    const s = RunStore.openInMemory();
+    const first = await appliedDay1(s);
+    corrected(s, "memlane_fix", { text: "always name the source of every figure" });
+    let raced = false;
+    const embed = async (t: string): Promise<Float32Array> => {
+      if (!raced && t === "Name the source of every figure.") { raced = true; s.transitionProposal({ proposal_id: first, from: ["accepted"], to: "reverted", now: DAY2 }); } // /forget lands during the embeds
+      return byText("one line")(t);
+    };
+    const next = await runImproveTick(deps(s, { now: DAY2, embed, llm: { ...deps(s).llm, distill: lessonDistill("Name the source of every figure.") } }));
+    expect(raced).toBe(true);
+    expect(next).toMatchObject({ ran: true, counts: { deferred: 1, decided: 0, applied: 0, cards: 0, proposals: 0 } });
+    expect(s.listUnconsumedSignals(10)).toHaveLength(1);
+  });
+  it("the tick budget spent during the repeat check stops the tick with the group unconsumed (the next cycle resumes it)", async () => {
+    const s = RunStore.openInMemory();
+    await appliedDay1(s, true);
+    corrected(s, "memlane_fix", { text: "always name the source of every figure" });
+    let late = false;
+    const embed = async (t: string): Promise<Float32Array> => { if (t === "Name the source of every figure.") late = true; return byText("one line")(t); };
+    const next = await runImproveTick(deps(s, { now: DAY2, embed, budgetMs: 1_000, clock: () => (late ? 10_000 : 0), llm: { ...deps(s).llm, distill: lessonDistill("Name the source of every figure.") } }));
+    expect(next).toMatchObject({ ran: true, result: "stopped", counts: { decided: 0, deferred: 0, applied: 0 } });
+    expect(s.listUnconsumedSignals(10)).toHaveLength(1);
+    expect(s.getImproveTick("2026-10-22")?.result).toBe("stopped");
+  });
+  it("R3: the repeat check covers the card path too — a dig_deeper near-copy of an undone lesson is already_proposed, no card", async () => {
+    const s = RunStore.openInMemory();
+    await appliedDay1(s, true);
+    corrected(s, "dig_deeper", { text: "and once more: one line only" });
+    const next = await runImproveTick(deps(s, { now: DAY2, embed: byText("one line"), llm: { ...deps(s).llm, distill: lessonDistill("Answer in one line, always.") } }));
+    expect(next).toMatchObject({ ran: true, counts: { already_proposed: 1, cards: 0, proposals: 0 } });
   });
 });

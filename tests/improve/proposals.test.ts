@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { draftFor, evidenceOf, lessonScopeFor, type Draft, type DraftResult } from "../../src/improve/proposals.js";
+import { draftFor, evidenceOf, lessonScopeFor, rewriteEvidence, type Draft, type DraftResult } from "../../src/improve/proposals.js";
 import type { SignalGroup } from "../../src/improve/groups.js";
 import type { ImproveState } from "../../src/decisions/entries/improve-route.js";
 import { RunStore, type ImproveSignalRow } from "../../src/run/run-store.js";
@@ -83,7 +83,9 @@ describe("draftFor", () => {
     expect(evidenceOf(group(row({})), state(), "Australia/Sydney")).toBe("correction on 2026-10-21, scope answer");
     expect(evidenceOf(group(row({ signal: "recurrence" })), state({ signal: "recurrence", recurrence: { clusterId: "r", turnIds: ["a", "b", "c"], idempotencyKey: "k", spanDays: 2 } }), "Australia/Sydney")).toBe("3 requests over 2 days");
     expect(evidenceOf(group(row({ signal: "review_bad", value: "turn.settle" })), state({ signal: "review_bad", scope: "turn.settle", count14d: 3 }), "Australia/Sydney")).toBe("3 ❌ on turn.settle in 14 days");
-    expect(evidenceOf(group(row({})), state({ count14d: 2, lastImprovement: { target: "lesson", ageDays: 9 } }), "Australia/Sydney")).toBe("lesson did not hold: 2 corrections since (9 d)"); // spec §7
+    // R1': a recent accepted lesson alone no longer makes a rewrite — only the repeat check's near-copy does, and it brings the evidence
+    expect(evidenceOf(group(row({})), state({ count14d: 2, lastImprovement: { target: "lesson", ageDays: 9 } }), "Australia/Sydney")).toBe("correction on 2026-10-21, scope answer");
+    expect(rewriteEvidence(2, 9)).toBe("lesson did not hold: 2 corrections since (9 d)"); // spec §7
     expect(lessonScopeFor("lookup")).toBe("research"); expect(lessonScopeFor("answer")).toBe("ask"); expect(lessonScopeFor(null)).toBe("ask");
   });
   it("ladder: fewer than three ❌ lower the bar", async () => {

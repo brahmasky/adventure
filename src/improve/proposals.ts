@@ -4,7 +4,7 @@ import { checkFactSide, checkLessonSide } from "../capabilities/memory-backstops
 import { PENDING_TURN_PREFIX } from "../capabilities/memory-sources.js";
 import { LOCKED_ENTRY_IDS } from "../decisions/entry-ids.js";
 import { turnTrustFinal } from "../decisions/trust.js";
-import { lessonRewrite, type ImproveState, type ImproveTarget } from "../decisions/entries/improve-route.js";
+import type { ImproveState, ImproveTarget } from "../decisions/entries/improve-route.js";
 import type { ProposalTarget, RunStore } from "../run/run-store.js";
 import { formatInstantInZone } from "../run/schedule-spec.js";
 import type { TickLlm } from "./decide-improve.js";
@@ -27,13 +27,14 @@ export const lessonScopeFor = (category: string | null): "ask" | "research" => (
 
 export function evidenceOf(g: SignalGroup, s: ImproveState, tz: string): string {
   const date = formatInstantInZone(g.newest.created_at, tz).slice(0, 10);
-  // spec §7: a correction on a scope that got a lesson within 30 days is "lesson did not hold" evidence (the proposal is then a rewrite)
-  if (lessonRewrite(s)) return `lesson did not hold: ${s.count14d} corrections since (${s.lastImprovement?.ageDays} d)`;
   if (s.signal === "correction") return `correction on ${date}, scope ${s.category ?? "other"}`;
   if (s.signal === "recurrence" && s.recurrence) return `${s.recurrence.turnIds.length} requests over ${s.recurrence.spanDays} days`;
   if (s.signal === "review_bad") return `${s.count14d} ❌ on ${s.scope} in 14 days`;
   return `${s.count14d} ${s.signal} on ${s.scope} in 14 days`;
 }
+
+/** Spec §7 + ruling R1': the evidence of a 'lesson did not hold' card — the repeat check found the draft a near-copy of a lesson accepted `ageDays` ago. */
+export const rewriteEvidence = (count14d: number, ageDays: number): string => `lesson did not hold: ${count14d} corrections since (${ageDays} d)`;
 
 export async function draftFor(target: ImproveTarget, g: SignalGroup, s: ImproveState, d: DraftDeps): Promise<DraftResult> {
   const evidence = evidenceOf(g, s, d.tz);
