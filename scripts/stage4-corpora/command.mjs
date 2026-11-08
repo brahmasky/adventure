@@ -15,7 +15,9 @@ import { SetupError } from "../stage4-diff-lib.mjs";
 import { REPO_ROOT, transcriptCalls, testLiterals } from "../stage4-sources.mjs";
 import { join } from "node:path";
 
-const TRANSCRIPT_COMMANDS = 153; // Houge's live omp transcript grows (one new distinct bash command since R1 shipped at 147); re-pin when it moves (153 at the loud-degradation rollback, 2026-11-02)
+// Houge's live omp transcripts only grow, so this is a floor, not an exact pin: fewer means the source was lost or misread (a silent
+// shrink of the corpus), more is new sessions. The harness prints the item count. Floor = the count at the loud-degradation rollback, 2026-11-02.
+const TRANSCRIPT_COMMANDS_MIN = 153;
 
 // ADR 0028 "Matcher misses (D12, best effort)" (docs/decisions/0028-omp-runtime.md:239-241), one concrete command per miss:
 // Concrete forms chosen so each really is classified plain today (probed on this build); the two quoting misses hide a `git push`.
@@ -46,7 +48,7 @@ function tableItems(cls) {
 
 function transcriptItems(dir, cls) {
   const cmds = [...new Set(transcriptCalls(dir, ["bash"]).map((c) => c.arguments.command).filter((x) => typeof x === "string"))];
-  if (cmds.length !== TRANSCRIPT_COMMANDS) throw new SetupError(`transcript bash commands: found ${cmds.length} distinct, pinned at exactly ${TRANSCRIPT_COMMANDS}`);
+  if (cmds.length < TRANSCRIPT_COMMANDS_MIN) throw new SetupError(`transcript bash commands: found ${cmds.length} distinct, need at least ${TRANSCRIPT_COMMANDS_MIN} (the transcripts only grow)`);
   return cmds.map((command, i) => ({ key: `transcript#${i + 1}`, command, private: true, tags: ["transcript", ...classTags(cls(command))] }));
 }
 
@@ -58,7 +60,7 @@ function residualItems(cls) {
 export default {
   name: "command",
   pairs: [["s3", "new"], ["s4a", "new"]],
-  min: { items: 100 + TRANSCRIPT_COMMANDS + 9, branches: ["external_write", "destructive", "plain", "unseen_shell_script", "table", "transcript", "adr_residual", ...GROUPS] },
+  min: { items: 100 + TRANSCRIPT_COMMANDS_MIN + 9, branches: ["external_write", "destructive", "plain", "unseen_shell_script", "table", "transcript", "adr_residual", ...GROUPS] },
   async load(ctx) {
     const cls = (c) => ctx.dists.new.classifyCommand(c);
     return [...tableItems(cls), ...transcriptItems(ctx.transcriptsDir, cls), ...residualItems(cls)];

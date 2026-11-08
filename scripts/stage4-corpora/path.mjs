@@ -9,7 +9,9 @@ import { ROOTS, gateCall, hookCall } from "../stage4-bridge-seam.mjs";
 import { SetupError } from "../stage4-diff-lib.mjs";
 import { REPO_ROOT, testLiterals, transcriptCalls } from "../stage4-sources.mjs";
 
-const TRANSCRIPT_INPUTS = 14; // distinct read/write/edit inputs in the live omp transcript (13 at R1's ship; it grows, re-pin when it moves)
+// Distinct read/write/edit inputs in Houge's live omp transcripts. They only grow, so this is a floor (fewer = source lost or misread);
+// the harness prints the item count. Floor = the last exact pin (13 at R1's ship, 14 after).
+const TRANSCRIPT_INPUTS_MIN = 14;
 
 const MANY = Array.from({ length: 300 }, (_, i) => `p${i}`).join(";"); // > MAX_GATE_TARGETS candidates
 const FEW = Array.from({ length: 100 }, (_, i) => `p${i}`).join(";"); // under it: valid
@@ -48,7 +50,7 @@ function protectedItems(n) {
 function transcriptItems(dir) {
   const seen = new Map();
   for (const c of transcriptCalls(dir, ["read", "write", "edit"])) seen.set(`${c.name}:${JSON.stringify(c.arguments)}`, c);
-  if (seen.size !== TRANSCRIPT_INPUTS) throw new SetupError(`transcript read/write/edit inputs: found ${seen.size} distinct, pinned at exactly ${TRANSCRIPT_INPUTS}`);
+  if (seen.size < TRANSCRIPT_INPUTS_MIN) throw new SetupError(`transcript read/write/edit inputs: found ${seen.size} distinct, need at least ${TRANSCRIPT_INPUTS_MIN} (the transcripts only grow)`);
   return [...seen.values()].map((c, i) => ({ key: `transcript#${i + 1}`, private: true, tags: ["transcript", `tool_${c.name}`], input: gateInput(c.arguments), tool: c.name, args: c.arguments }));
 }
 
@@ -59,7 +61,7 @@ const distName = (d) => d.dir.split("/").slice(-2, -1)[0];
 export default {
   name: "path",
   pairs: [["s3", "new"], ["s4a", "new"]],
-  min: { items: 5 + SYNTHETIC.length + TRANSCRIPT_INPUTS,
+  min: { items: 5 + SYNTHETIC.length + TRANSCRIPT_INPUTS_MIN,
     branches: [...new Set(SYNTHETIC.map(([t]) => t)), "table", "protected", "secret_path", "protected_repo", "write_deny", "write_root", "credential_name", "transcript", "tool_read", "tool_write", "tool_edit"] },
   async load(ctx) {
     const lits = [...new Set(testLiterals(join(REPO_ROOT, "tests/omp/gate-path.test.ts"), ["gateTargets"]))];
