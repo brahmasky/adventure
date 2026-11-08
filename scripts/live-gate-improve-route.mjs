@@ -299,6 +299,7 @@ function case4Undo(g, p, now) {
 /** Case 4 (part 2, after the day-2 tick): the near-copy was drafted (the category is not blocked) and then recorded nothing/already_proposed with no proposal — the repeat check. */
 function case4Block(g) {
   const c = C4; if (!g.c4) return;
+  if (!g.c4.ok) { unsure(c, "near-copy decision", "recordCorrection refused the near-copy correction"); return; }
   const row = routeRows(g).find((d) => d.run_id === g.c4.a);
   if (!row) { unsure(c, "near-copy decision", "the near-copy correction was not decided (deferred: an outage, the budget or the cap)"); return; }
   if (row.rung === "fail" || row.fallback_reason) { unsure(c, "near-copy decision", `rung=${row.rung} fallback=${row.fallback_reason ?? "-"} (an outage, not a result)`); return; }
@@ -378,8 +379,8 @@ async function case8(g, f, now1) {
   // computed before any early return: case 9 must list the legitimately deferred recurrence rows on every path, INCONCLUSIVE ones too
   const open = g.q.all(`SELECT * FROM improve_signals WHERE signal = 'recurrence' AND consumed_at IS NULL AND signal_id > ?`, g.baseSignalId); const deferred = open.map((s) => s.signal_id);
   if (!r || r.counts.embed_unavailable > 0) { unsure(c, "fresh-date tick", `no tick or embedder unavailable (${r?.counts.embed_unavailable ?? "n/a"})`); return { now2, deferred }; }
-  const want = 4 + (g.c4 ? 1 : 0); // R11: case 4's near-copy correction is its own group in this tick
-  if (r.counts.groups !== want) { unsure(c, "four clusters", `the tick formed ${r.counts.groups} group(s), ${want} expected (four planted topics${g.c4 ? " and case 4's correction" : ""})`); return { now2, deferred }; }
+  const want = 4 + (g.c4?.ok ? 1 : 0); // R11: case 4's near-copy correction is its own group in this tick
+  if (r.counts.groups !== want) { unsure(c, "four clusters", `the tick formed ${r.counts.groups} group(s), ${want} expected (four planted topics${g.c4?.ok ? " and case 4's correction" : ""})`); return { now2, deferred }; }
   const made = jobsOf(g).filter((j) => j.created_at === now2);
   check(c, "exactly 3 jobs created, deferred >= 1, the 4th cluster's row unconsumed", made.length === 3 && r.counts.deferred >= 1 && open.length === 1, `jobs=${made.length} deferred=${r.counts.deferred} unconsumed=${open.length} queued=${r.counts.jobs_queued} started=${r.counts.jobs_started}`);
   check(c, "at most one job started while the lane was busy", made.filter((j) => j.started_at !== null).length <= 1, `started=${made.filter((j) => j.started_at !== null).length}`);
@@ -469,7 +470,7 @@ async function case11(g) {
     if (!ok) { unsure(c, "the correction was planted", "recordCorrection refused it"); return; }
     const runs = await runTick(g, g.c.at(g.c.addDays(g.c.d1, 3), "22:00")); const counts = runs.at(-1)?.counts ?? {};
     const rows = routeRows(g).filter((d) => !seen.has(d.decision_id));
-    if (rows.length === 0 && counts.deferred_outage > 0) { unsure(c, "the pick decided", "the pick seat failed: the group was deferred as an outage"); return; }
+    if (!rows.some((d) => d.run_id === a) && counts.deferred_outage > 0) { unsure(c, "the pick decided", "the pick seat failed: the group was deferred as an outage"); return; }
     const row = rows.find((d) => d.run_id === a);
     check(c, "the group reached the Tiny rung and it answered within its bound (rung model, no fallback)", row?.rung === "model" && row.fallback_reason === null,
       `planted_row=${row ? "found" : "missing"} rows=${rows.length} rung=${row?.rung ?? "none"} reason=${row?.reason_code ?? "none"} fallback=${row?.fallback_reason ?? "none"} latency_ms=${row?.latency_ms ?? "n/a"} bound_ms=${g.m.IMPROVE_TINY_MS}`);
