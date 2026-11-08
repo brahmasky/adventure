@@ -64,7 +64,7 @@ import { decisionListText, decisionStatusLines } from "../decisions/status-view.
 import { recordApprovalDenied, recordCorrection, recordImproveSignal, skipImproveSignal } from "../decisions/improve-signals.js";
 import type { NotificationButton, NotificationPayload } from "../notifications/notification-types.js";
 import { standingScheduleSection } from "../decisions/standing-approval.js";
-import { revertSavedProposal } from "./improve-undo.js";
+import { forgetImprovementLesson, forgetScopeWithUndo } from "./improve-undo.js";
 import { handleForgetMemory, handleMemories, handleMemoryUndo } from "./memory-commands.js";
 import { handleModels, modelsUnavailable, type ModelsRoles } from "./models-commands.js";
 import { handleFresh } from "./fresh-command.js";
@@ -583,7 +583,8 @@ export class Gateway {
   /**
    * `/forget <scope|id>` — a control command (no run, no budget). Prunes that scope's
    * active lessons, or one lesson by numeric id (⓪·3 S1: a reversible status flip —
-   * rows are never deleted). Idempotent on the trigger key.
+   * rows are never deleted); a lesson an improvement proposal saved has its whole change
+   * undone (addendum Rev 2.3.1 B). Idempotent on the trigger key.
    */
   private handleForget(event: TypedTaskEvent, now: string): GatewayIntakeResult {
     const replay = this.runStore.beginTriggerProcessing(event);
@@ -610,12 +611,12 @@ export class Gateway {
     let text: string;
     if (/^\d+$/.test(arg)) {
       const id = Number(arg);
-      // spec 2026-11-07 §6: the prune and its proposal's revert commit together
-      const pruned = this.runStore.inTransaction(() => { const ok = this.runStore.forgetLesson(id); if (ok) revertSavedProposal(this.runStore, "lesson", id, now); return ok; });
-      text = pruned ? `Forgotten ✓ — pruned lesson #${arg}` : `No active lesson #${arg} to forget.`;
+      // addendum Rev 2.3.1 B: an improvement-saved lesson undoes its whole change with the proposal's revert; any other is today's flip — one transaction
+      text = this.runStore.inTransaction(() => forgetImprovementLesson(this.runStore, id, now)
+        ?? (this.runStore.forgetLesson(id) ? `Forgotten ✓ — pruned lesson #${arg}` : `No active lesson #${arg} to forget.`));
     } else {
-      this.runStore.inTransaction(() => { for (const id of this.runStore.forgetScope(arg)) revertSavedProposal(this.runStore, "lesson", id, now); });
-      text = `Forgotten ✓ — cleared lessons for "${arg}"`;
+      const undone = this.runStore.inTransaction(() => forgetScopeWithUndo(this.runStore, arg, now));
+      text = `Forgotten ✓ — cleared lessons for "${arg}"${undone > 0 ? ` (${undone} learned from your corrections, their changes undone)` : ""}`;
     }
 
     const result: GatewayIntakeResult = { ok: true, status: "forgotten", run_id: "" };
