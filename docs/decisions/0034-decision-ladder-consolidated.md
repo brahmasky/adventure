@@ -352,22 +352,25 @@ write.
   `author_failed`. Paco promotes by tap (refuse / replace with lineage / keep both). `/disarm` holds queued jobs and
   defers job-starting groups. A cluster is already authored if a 90-day job in its category has an origin turn within
   the gate of a cluster turn, or shares a turn within 30 days; a `failed` job never suppresses.
-- 10.5 **Proposals** (lesson, fact, schedule, tool gap, ladder): one open per (target, scope), expiring at 14 days; one
-  dismissed or expired within 14 days blocks the same pair (`already_proposed`), checked before the draft and again at
-  the commit (an `already_known` dismissal never blocks its pair); for schedule, tool gap, ladder and skill an
+- 10.5 **Proposals** (lesson, fact, schedule, tool gap, ladder, skill): one open per (target, scope), expiring at 14
+  days; one dismissed or expired within 14 days blocks the same pair (`already_proposed`), checked before the draft and
+  again at the commit (an `already_known` dismissal never blocks its pair); for schedule, tool gap, ladder and skill an
   **accepted or reverted** one within 14 days blocks it too. **A lesson or fact blocks only its repeats** (addendum
   Rev 2.3.1, Paco 2026-11-08): after the draft its text is embedded with the tick's embedder and compared
   (`repeatCheck`, `improve/repeat.ts`) with the stored draft text of every lesson or fact proposal on the pair accepted
-  or reverted on it (reverted within 14 days; accepted within 14 days for a fact, within `LESSON_REWRITE_DAYS` (30) for a
-  lesson). A near-copy (cosine ≥ `LESSON_REPEAT_COSINE`, 0.6, its value set by the threshold probe on 2026-11-08) of a reverted one, or of an accepted fact,
-  records `already_proposed`; a near-copy of an accepted lesson is the 'lesson did not hold' rewrite — a card, never
-  applied; a different one goes on (applied, or a card, by provenance). The embedder down defers the group as an outage
-  (latched; the 30-day stale rule bounds it); a candidate set that changed before the commit defers it (`deferred`). **A lesson or fact applies on its own** (spec
-  2026-11-07 §3) only through `autoApplies` (`improve-route.ts`, pinned by `tests/adr/0034-paco-words-only.test.ts`):
-  every row of the group a correction Paco typed on the memory lane (`improve_signals.origin = memlane_fix`, stamped
-  only for a Telegram correcting run and re-checked at the apply boundary; a new run of his, never the corrected run),
-  verdict lesson or fact, not a 'lesson did not hold' rewrite (the repeat check's verdict, passed to `autoApplies` — a recent accepted lesson on the scope alone is no rewrite); its draft is distilled with an empty prior (`prior: ""`:
-  Houge's reply never reaches the seat), passes the memory lane's backstops, and is saved inside the group's commit
+  or reverted on it (reverted within 14 days; accepted within 14 days for a fact, within `LESSON_REWRITE_DAYS` (30) for
+  a lesson). A near-copy (cosine ≥ `LESSON_REPEAT_COSINE`, 0.6, its value set by the threshold probe on 2026-11-08) of
+  a reverted one, or of an accepted fact, records `already_proposed`; a different one goes on (applied, or a card, by
+  provenance), and a near-copy of an accepted lesson is the 'lesson did not hold' rewrite — a card, never applied. The
+  embedder down defers the group as an outage (latched; the 30-day stale rule bounds it); a candidate set that changed
+  before the commit defers it (`deferred`). The check's embeds count against the tick's 120 s budget: a group that
+  would overrun stops unconsumed and resumes next cycle. **A lesson or fact applies on its own** (spec 2026-11-07 §3)
+  only through `autoApplies` (`improve-route.ts`, pinned by `tests/adr/0034-paco-words-only.test.ts`): every row of the
+  group a correction Paco typed on the memory lane (`improve_signals.origin = memlane_fix`, stamped only for a Telegram
+  correcting run and re-checked at the apply boundary; a new run of his, never the corrected run), verdict lesson or
+  fact, not a 'lesson did not hold' rewrite (the repeat check's verdict, passed to `autoApplies` — a recent accepted
+  lesson on the scope alone is no rewrite); its draft is distilled with an empty prior (`prior: ""`: Houge's reply
+  never reaches the seat), passes the memory lane's backstops, and is saved inside the group's commit
   through `saveMemoryPlan` under the corrected run, `accepted` with the ids, with one `/changes` row
   (`improve_applied:<proposal_id>`, topic `improve_log`) naming `/forget <id>` or `/forget_memory <id>`; no chat → it
   stays open. A capped lesson, a save with no change id, and every other proposal (Dig-deeper, escalation and rating
@@ -378,7 +381,8 @@ write.
   `/forget <id>` and `/forget_memory <id>` on a row a proposal saved undo that save's **whole change** (what it pruned
   at the cap comes back; a refused undo falls back to the flip or retire and says so; the fact reply carries no Undo
   button), and `/forget <scope>` undoes each such lesson newest first, then prunes the scope empty — each moving its
-  proposal `accepted → reverted` in the same transaction; Undo is no `turn.handler` label. Schedule Accept applies only while the row equals `before`; Revert
+  proposal `accepted → reverted` in the same transaction; `/forget_memory <id>` on a row saved in another chat takes
+  today's path; Undo is no `turn.handler` label. Schedule Accept applies only while the row equals `before`; Revert
   restores; both recompute `next_run_at`. A skill Accept whose job exists dismisses. A ladder Accept records a
   `ladder_moves` row and changes nothing; a tool gap replies the `self_write_propose` text. Residual (accepted): with no
   prior and Paco's line as both numbered evidence lines a fact can over-generalise his words; it is his words' reading,

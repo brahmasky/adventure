@@ -35,7 +35,7 @@ describe("ADR 0034 rule 10.5: block only repeats", () => {
 });
 
 const adr = readFileSync(join(import.meta.dirname, "..", "..", "docs", "decisions", "0034-decision-ladder-consolidated.md"), "utf8");
-const rule = (id: string): string => { const at = adr.indexOf(`- ${id} `); expect(at).toBeGreaterThan(-1); return adr.slice(at, adr.indexOf("\n- ", at + 1)); };
+const rule = (id: string): string => { const at = adr.indexOf(`- ${id} `); expect(at).toBeGreaterThan(-1); const end = adr.indexOf("\n- ", at + 1); return adr.slice(at, end === -1 ? undefined : end); };
 describe("ADR 0034 names the rule the code pins (addendum Rev 2.3.1)", () => {
   it("10.5 says a lesson or fact blocks only its near-copies (LESSON_REPEAT_COSINE) and that /forget undoes the whole change; the History row awaits Paco's signature", () => {
     const r = rule("10.5");
