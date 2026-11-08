@@ -3,7 +3,7 @@
 //   From the worktree after `npm run build` THERE (never in the main checkout: the daemon runs its dist/):
 //   HOUGE_ENV_FILE=<main checkout>/.env node scripts/check-ladder-stage4c-rollback.mjs \
 //     --old-dist <main checkout>/.worktrees/base-c558413/dist [--old-base <full sha>] [--live-db <path>]
-// --old-base <full sha>: the base the old build must be pinned to; required once the branch is merged (merge-base of HEAD and main is then HEAD itself).
+// --old-base <full sha>: defaults to Stage 4C's own merge base c558413 (4C is merged: the merge base of a later branch is not 4C's base).
 // 4C adds record-only decision rows (no migration, no table). Two VACUUM copies of the live DB: A (this build writes one row of each new id
 // through its own call sites, as scripts/live-gate-ladder-stage4c.mjs does; then the merge base c558413 opens it; then this build reopens it)
 // and F (only c558413 ever opens it; VACUUMed from A before A is touched). c558413 does the same things on both: open (the schema must be
@@ -29,6 +29,8 @@ import { mergeBaseOf, provenanceText, verifyStampedDist } from "./old-dist-prove
 import { adminWorker, scheduleRun } from "./stage4-admit-fixture.mjs";
 
 const DIST = resolve(new URL("../dist", import.meta.url).pathname);
+/** Stage 4C's merge base (git merge-base of 01331a3f's parents); the old build is pinned to it unless --old-base says otherwise. */
+const STAGE4C_BASE = "c558413c3e248122256c3355b8852d3879aed3f6";
 const argv = process.argv.slice(2);
 const arg = (k) => { const i = argv.indexOf(k); return i >= 0 ? argv[i + 1] : undefined; };
 let phase = "setup";
@@ -295,12 +297,12 @@ async function oldSteps(ctx, path, now, tOld) {
 
 async function setup() {
   if (!DIST.includes("/.worktrees/")) throw new SetupError(`run from the worktree (this dist is ${DIST}); never build in the main checkout`);
-  if (!arg("--old-dist")) throw new SetupError("usage: --old-dist <merge-base dist> [--old-base <full sha>] [--live-db <path>]");
+  if (!arg("--old-dist")) throw new SetupError("usage: --old-dist <main checkout>/.worktrees/base-c558413/dist [--old-base <full sha>] [--live-db <path>]");
   const oldDist = resolve(arg("--old-dist"));
   const liveDb = resolve(arg("--live-db") ?? join(dirname(resolve(process.env.HOUGE_ENV_FILE ?? join(process.cwd(), ".env"))), "houge.sqlite"));
   if (!existsSync(liveDb)) throw new SetupError("live DB not found (--live-db <path>)");
   let prov, base;
-  try { base = mergeBaseOf(DIST, arg("--old-base")); prov = verifyStampedDist(oldDist, DIST, base); } catch (e) { throw new SetupError(provenanceText(e)); }
+  try { base = mergeBaseOf(DIST, arg("--old-base") ?? STAGE4C_BASE); prov = verifyStampedDist(oldDist, DIST, base); } catch (e) { throw new SetupError(provenanceText(e)); }
   console.log(`old build pinned to merge base ${base.slice(0, 7)}: worktree HEAD ${prov.head.slice(0, 7)}, stamped dist ${prov.hash.slice(0, 12)}`);
   const root = initTemp(false);
   mkdirSync(join(root, "daemon"), { recursive: true, mode: 0o700 });
