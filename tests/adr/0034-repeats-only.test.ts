@@ -37,11 +37,11 @@ describe("ADR 0034 rule 10.5: block only repeats", () => {
 const adr = readFileSync(join(import.meta.dirname, "..", "..", "docs", "decisions", "0034-decision-ladder-consolidated.md"), "utf8");
 const rule = (id: string): string => { const at = adr.indexOf(`- ${id} `); expect(at).toBeGreaterThan(-1); const end = adr.indexOf("\n- ", at + 1); return adr.slice(at, end === -1 ? undefined : end); };
 describe("ADR 0034 names the rule the code pins (addendum Rev 2.3.1)", () => {
-  it("10.5 says a lesson or fact blocks only its near-copies (LESSON_REPEAT_COSINE) and that /forget undoes the whole change; the History row awaits Paco's signature", () => {
+  it("10.5 says a lesson or fact blocks only its near-copies (LESSON_REPEAT_COSINE) and that /forget undoes the whole change; the History row is signed (2026-11-08)", () => {
     const r = rule("10.5");
     expect(r).toMatch(/LESSON_REPEAT_COSINE/); expect(r).toMatch(/near-copy/); expect(r).toMatch(/whole change/);
     expect(r).toMatch(/near-copy of an accepted lesson is the 'lesson did not hold' rewrite/); expect(r).toMatch(/LESSON_REWRITE_DAYS/); // R1'
     expect(r).not.toMatch(/one\s+dismissed, expired, \*\*accepted or reverted\*\* within 14 days blocks the same pair/); // the category block is gone for lesson and fact
-    expect(adr).toMatch(/\| 2026-11-08 \| 10\.5: .*\| awaiting Paco's signature \|/);
+    expect(adr).toMatch(/\| 2026-11-08 \| 10\.5: .*\| 2026-11-08 \|/);
   });
 });
