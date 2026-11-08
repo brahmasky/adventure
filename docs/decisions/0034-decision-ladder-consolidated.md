@@ -161,7 +161,7 @@ write.
 | `attach.path` | `settle` · `tool` | yes | refusals (1-A): parse `refuse`/`marker_outside`, once per distinct refused path on the success arm; send `refuse`/`over_count` (one for all paths past the fifth), `workspace_unverified`, `outside_workspace`, `not_a_file`, `too_large`, `linked`, `changed`, `not_found`, `unreadable`, `unsupported`, written by the dispatcher after `markDelivered` with the outbox row's `run_id`; rows describe each observed check; `send` default; `fail: "refuse"`; `send_failed` is execution, no row | R7 |
 
 - 4.1 **Shared predicates and limits.** Code and rule share one predicate where named: `mayRetryOf`, `clarifyCapOf`,
-  `rewriteFilterOf`/`queryCheckOf`/`thinOf` (`core/lanes/lookup-predicates.ts`; `attach.path`'s send predicate is `checkAttachment`/`overCount` (`notifications/attachment-check.ts`), its parse predicate `parseAttachments`' containment conjunction), `isBareAck` (nothing is approved by an
+  `rewriteFilterOf`/`queryCheckOf`/`thinOf` (`core/lanes/lookup-predicates.ts`), `attach.path`'s send predicate `checkAttachment`/`overCount` (`notifications/attachment-check.ts`) and its parse predicate (`parseAttachments`' containment conjunction), `isBareAck` (nothing is approved by an
   ack), `CRASH_LIMIT`/`CRASH_WINDOW_MS` exported from the entry, one clock read for input and guard.
   `intake.rate_limit`'s exemption (`kill` and the three decision-tap prefixes) is code in front of the entry, so no later rung can
   delay `kill`. A crash-guard consult reached after its turn finished writes no row, even when it is the consult that
