@@ -11,10 +11,10 @@
 // Two VACUUM copies: A (never seeded) and F (cut from A, then seeded by this build, dated now so inside the /status 24 h window). Prep on A before the cut: non-final outbox
 // rows parked. The old build then opens both copies; its /status (every line but attach.path byte-identical A vs F; that line, rendered without the seam suffix, equals the line built
 // from SQL), list and ENTRY_IDS-validated writer (review_ok) are compared; its own dispatcher then delivers a final_report with two attachments on F; this build reopens F.
-// Exit 0 PASS · 1 FAIL · 2 setup error. The live DB is read only by VACUUM INTO; every write goes to a copy under /tmp/hg-s4d-*, removed on every exit path (pass, FAIL, throw,
+// Exit 0 PASS · 1 FAIL · 2 setup error. The live DB is read only by VACUUM INTO; every write goes to a copy under /tmp/hg-s4d-* (the fixtures' workdirs, hdl-* and hsv-*, under os.tmpdir()), all removed on every exit path (pass, FAIL, throw,
 // SIGINT, SIGTERM, SIGHUP, SIGQUIT, uncaught exception). Pins set before any store opens and restored on exit: HOUGE_DAEMON_TMP_DIR / HOUGE_TOMBSTONE_PATH / HOUGE_DISARM_PATH
 // under the temp root, HOUGE_TELEGRAM_CHAT_ID = -1003; scheduler/radar/media flags deleted. No omp, no Telegram client. Only line names, entry ids, counts, verdicts and codes from
-// closed sets are printed; never an error message, message text, chat id or file path. Synthetic text only.
+// closed sets are printed; never an error message from a build or the DB, message text, chat id or file path. Synthetic text only.
 import { existsSync, mkdirSync, renameSync, rmSync, symlinkSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { pathToFileURL } from "node:url";
@@ -115,6 +115,10 @@ function expectedLine(path, now, suffix) {
   const parse = refused.filter((r) => r.rung !== "fail" && r.reason_code === "marker_outside").length;
   return `${line} (parse ${parse} · send ${refused.length - failed - parse} · failed ${failed})`;
 }
+const norm = (l) => l.replace(/\b\d\d-\d\d \d\d:\d\d\b/g, "<ts>");
+const shortRun = (run_id) => (run_id ? run_id.replace(/^run_/, "").slice(0, 8) : "–"); // status-view.ts shortRun
+/** The recent-list line for a seeded row, as the old build renders it (status-view.ts recentLine). */
+const listLine = (r, label) => `<ts> · ${r.entry_id} · ${label(r.rung)} → ${r.verdict} · p ${r.p === null ? "–" : r.p.toFixed(2)} · run ${shortRun(r.run_id)}`;
 const apLines = (lines) => lines.filter((l) => l.startsWith(`· ${AP} `));
 const otherLines = (lines) => lines.filter((l) => !l.startsWith(`· ${AP} `));
 
@@ -186,7 +190,7 @@ async function seedF(ctx, path) {
 /** The attach.path rows of F as [run label, rung, verdict, reason_code], in write order, with the exact fields the old build must read back. */
 function seededRows(path, runs) {
   const label = (id) => (id === null ? "progress_runless" : Object.entries(runs).find(([, v]) => v === id)?.[0] ?? "?");
-  return ro(path, (db) => db.prepare("SELECT run_id, rung, verdict, reason_code, entry_version, decision_id FROM decisions WHERE entry_id = ? ORDER BY rowid").all(AP).map((r) => ({ ...r, label: label(r.run_id) })));
+  return ro(path, (db) => db.prepare("SELECT entry_id, p, run_id, rung, verdict, reason_code, entry_version, decision_id FROM decisions WHERE entry_id = ? ORDER BY rowid").all(AP).map((r) => ({ ...r, label: label(r.run_id) })));
 }
 
 // ---- step 2: the merge base on the copy ----
@@ -244,8 +248,8 @@ async function setup() {
     HOUGE_TELEGRAM_CHAT_ID: STUB_CHAT, HOUGE_OMP_BIN: "/nonexistent/houge-rollback/omp", HOUGE_EPISODIC_ENABLED: "false", HOUGE_WIKI_ENABLED: "false", HOUGE_JEV_ENABLED: "0", HOUGE_JEV_TRIAGE_ENABLED: "off" });
   const [dNew, dOld] = [await loadDist(DIST), await loadDist(oldDist)];
   for (const k of ["storeOptionsFor", "Gateway", "buildTypedTaskEvent", "DEFAULT_GLOBAL_BUDGET_CAPS", "storeRecorder", "PlannerSupervisor", "ToolRegistry", "resolveOmpConfig", "NotificationOutbox", "NotificationDispatcher", "workspaceTelegramAdapter", "chatWorkspace", "ATTACH_PATH"]) if (!dNew[k]) throw new SetupError(`${k} missing from the new dist: rebuild`);
-  for (const k of ["RunStore", "Gateway", "NotificationOutbox", "NotificationDispatcher", "workspaceTelegramAdapter", "chatWorkspace"]) if (!dOld[k]) throw new SetupError(`${k} missing from the old dist`);
-  const mods = async (dist) => ({ ...(await import(join(dist, "decisions/digest.js"))), ...(await import(join(dist, "decisions/status-view.js"))) });
+  for (const k of ["RunStore", "Gateway", "buildTypedTaskEvent", "DEFAULT_GLOBAL_BUDGET_CAPS", "NotificationOutbox", "NotificationDispatcher", "workspaceTelegramAdapter", "chatWorkspace"]) if (!dOld[k]) throw new SetupError(`${k} missing from the old dist`);
+  const mods = async (dist) => ({ ...(await import(join(dist, "decisions/digest.js"))), ...(await import(join(dist, "decisions/status-lines.js"))), ...(await import(join(dist, "decisions/status-view.js"))) });
   const [mNew, mOld] = [await mods(DIST), await mods(oldDist)];
   const A = join(mkTemp("copy-A"), "houge.sqlite"); const F = join(mkTemp("copy-F"), "houge.sqlite");
   vacuumInto(liveDb, A);
@@ -265,7 +269,7 @@ async function seedPhase(ctx, st) {
   const snapA = { counts: counts(A), keys: keysOf(A), schema: schemaOf(A), content: contentOf(A) };
   check("this build wrote exactly the seven expected attach.path rows through its real paths: the parse refusal marker_outside (the dist supervisor, a `../` marker) and, at the send seam, too_large, workspace_unverified, not_found and over_count with a run id, not_found with run_id null (progress_runless) and one refusal at rung fail (planted throw); each at entry_version of the entry, nothing else",
     same(got, EXPECTED) && rows.slice(before.apN).every((r) => r.entry_version === ctx.dNew.ATTACH_PATH.version) && rows.slice(before.apN).every((r) => (r.label === "progress_runless") === (r.run_id === null)) && rows.length === before.apN + 7
-    && snapF.counts.decisions > snapA.counts.decisions && same(before.schema, snapF.schema),
+    && snapF.counts.decisions === snapA.counts.decisions + 7 && same(before.schema, snapF.schema),
     `rows ${got.map((r) => `${r[0]}:${r[1]}/${r[2]}/${r[3]}`).join(" ")} · attach.path rows A ${apCount(A)} F ${apCount(F)} · outbox parked on A ${ctx.prep.parked}`);
   Object.assign(st, { before, runs, rows, snapF, snapA });
 }
@@ -287,15 +291,18 @@ async function oldPhase(ctx, st) {
 }
 /** Step 3: the rendered comparisons and row integrity. */
 function compareAndRefusePhase(ctx, st) {
-  const { A, F } = ctx; const { rows, snapF, snapA, now, oa, of, aA, aF, before } = st;
+  const { A, F, mOld } = ctx; const { rows, snapF, snapA, now, oa, of, aA, aF, before } = st;
   const fRows = rows.slice(before.apN);
   const lineF = apLines(of.status); const wantF = `· ${AP} ${fRows.length + windowRows(A, now).length} — code ${fRows.length - 1 + windowRows(A, now).length} · fallback 1`;
-  const noDigest = ctx.mOld.buildDecisionDigest === undefined; // the nightly digest is gone from the merge base too (spec 2026-11-07): nothing to compare, and a build that brings it back must fail here
+  const noDigest = mOld.buildDecisionDigest === undefined; // the nightly digest is gone from the merge base too (spec 2026-11-07): nothing to compare, and a build that brings it back must fail here
+  const [head, ...aRows] = oa.listText.map(norm);
+  const wantList = [head, ...[...fRows].reverse().map((r) => listLine(r, mOld.deciderLabel)), ...aRows].slice(0, 11);
+  const listOk = same(of.listText.map(norm), wantList);
   const sqlF = expectedLine(F, now, false); const sqlA = expectedLine(A, now, false);
-  const ok = noDigest && of.listText.length > 1 && of.listText[0] === oa.listText[0] && same(otherLines(oa.status), otherLines(of.status)) && of.status.length === oa.status.length + 1 - (apLines(oa.status).length)
-    && same(lineF, [sqlF]) && lineF[0] === wantF && same(apLines(oa.status), sqlA === null ? [] : [sqlA]) && !/\(parse /.test(lineF[0] ?? "");
-  check("A vs F as rendered by the old build: the nightly digest has no builder in the old build (gone since spec 2026-11-07), /status is byte-identical in every line but attach.path, and that line (rendered without the seam suffix) equals `· attach.path <n> — code <n-1> · fallback 1`, n from SQL over the window",
-    ok, `F line [${lineF.join(" | ")}] = SQL-built ${same(lineF, [sqlF])} · A attach.path lines ${apLines(oa.status).length} · other lines ${otherLines(of.status).length} equal ${same(otherLines(oa.status), otherLines(of.status))} · digest builder absent ${noDigest} · /status decisions list ${of.listText.length - 1} rows (A ${oa.listText.length - 1})`);
+  const ok = noDigest && listOk && same(otherLines(oa.status), otherLines(of.status)) && of.status.length === oa.status.length + 1 - (apLines(oa.status).length)
+    && same(lineF, [sqlF]) && (windowRows(A, now).length > 0 || lineF[0] === wantF) && same(apLines(oa.status), sqlA === null ? [] : [sqlA]) && !/\(parse /.test(lineF[0] ?? "");
+  check("A vs F as rendered by the old build: the nightly digest has no builder in the old build (gone since spec 2026-11-07), /status is byte-identical in every line but attach.path, that line (rendered without the seam suffix) equals `· attach.path <n> — code <n-1> · fallback 1`, n from SQL over the window, and the /status decisions list is A's with the seven seeded rows on top",
+    ok, `F line [${lineF.join(" | ")}] = SQL-built ${same(lineF, [sqlF])} · A attach.path lines ${apLines(oa.status).length} · other lines ${otherLines(of.status).length} equal ${same(otherLines(oa.status), otherLines(of.status))} · digest builder absent ${noDigest} · /status decisions list = A's with the seven seeded rows on top ${listOk} (F ${of.listText.length - 1} rows)`);
   const readBack = rows.map((r) => of.readRows.find((x) => x.decision_id === r.decision_id));
   const gone = lost(snapF.keys, keysOf(F)); const goneA = lost(snapA.keys, keysOf(A));
   const seeded = fRows.every((r) => { const x = of.readRows.find((y) => y.decision_id === r.decision_id); return x && x.rung === r.rung && x.entry_version === r.entry_version && x.verdict === r.verdict && x.reason_code === r.reason_code && x.run_id === r.run_id && x.entry_id === AP; });
@@ -321,7 +328,7 @@ async function dispatchPhase(ctx, st) {
   try { n = await deliverOn(ctx.dNew, ref, spec, true); } finally { closeStore(ref); }
   const oneUpload = uploadsOf(o.log).length === 1 && uploadsOf(o.log)[0][0] === "small.txt";
   check("the old build's own dispatcher (NotificationDispatcher + workspaceTelegramAdapter, fake client) delivers a final_report with two attachments on F: the row delivered, one upload, the follow-up line byte-equal to this build's, zero new attach.path rows",
-    o.status === "delivered" && o.delivered && oneUpload && same(uploadsOf(o.log), uploadsOf(n.log).filter((u) => u[0] === "small.txt")) && same(followOf(o.log), ["⚠ Not attached: big.bin (over 20 MB)"]) && same(followOf(o.log), followOf(n.log)) && apCount(F) === n0,
+    o.status === "delivered" && o.delivered && oneUpload && same(uploadsOf(o.log), uploadsOf(n.log)) && same(followOf(o.log), ["⚠ Not attached: big.bin (over 20 MB)"]) && same(followOf(o.log), followOf(n.log)) && apCount(F) === n0,
     `dispatch ${o.status} · uploads ${uploadsOf(o.log).length} (want 1) · follow-ups ${followOf(o.log).length} byte-equal to this build's ${same(followOf(o.log), followOf(n.log))} · attach.path rows on F ${n0} -> ${apCount(F)}`);
 }
 /** Step 5: this build reopens F. */
