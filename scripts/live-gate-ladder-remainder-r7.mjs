@@ -52,7 +52,11 @@ const ERROR_NAMES = new Set(["Error", "TypeError", "RangeError", "SyntaxError", 
 /** A thrown value prints as its standard class name only, never its message. */
 const errCode = (e) => (e instanceof Error ? (ERROR_NAMES.has(e.name) ? e.name : "<other>") : "non-Error");
 /** A thrown message, only when it is one of this gate's own fixed strings or a Node errno code (never an fs message, which carries paths, or anything from the DB). */
-const closedMsg = (e) => { const m = e instanceof Error ? e.message : ""; return /^gate(?: fault)?: [a-zA-Z .]{1,60}$/.test(m) || /^[A-Z][A-Z0-9_]{2,20}$/.test(e?.code ?? "") ? `(${/^gate/.test(m) ? m : e.code})` : ""; };
+const closedMsg = (e) => {
+  const m = e instanceof Error ? e.message : "";
+  if (/^gate(?: fault)?: [a-zA-Z .]{1,60}$/.test(m)) return `(${m})`; // only a strict match prints the message
+  return /^[A-Z][A-Z0-9_]{2,20}$/.test(e?.code ?? "") ? `(${e.code})` : "";
+};
 async function runLine(n, name, fn) {
   try { const r = await fn(); verdict(n, name, r.ok, r.detail); } catch (e) { verdict(n, name, false, `threw: ${errCode(e)} ${closedMsg(e)}`); }
 }
@@ -149,7 +153,15 @@ function priorWindow(store, now = wall()) {
   const rows = all(store, "SELECT rung, verdict, reason_code FROM decisions WHERE entry_id = ? AND created_at > ? AND created_at <= ?", AP, since, now);
   const refused = rows.filter((r) => r.verdict === "refuse"); const failed = refused.filter((r) => r.rung === "fail").length;
   const parse = refused.filter((r) => r.rung !== "fail" && r.reason_code === "marker_outside").length;
-  return { total: rows.length, code: rows.filter((r) => r.rung === "rule").length, parse, send: refused.length - failed - parse, failed };
+  return { total: rows.length, rows, code: rows.filter((r) => r.rung === "rule").length, parse, send: refused.length - failed - parse, failed };
+}
+const RUNG_ORDER = ["rule", "system_one", "model", "paco", "fail"]; const RUNG_LABEL = { rule: "code", system_one: "Jev", model: "model", paco: "you", fail: "fallback" };
+/** The `/status` base count line for a set of rows (digest.ts countLines order), so a prior in-window row of any rung is expected, not refused. */
+function rungLine(rows) {
+  const m = new Map(); for (const r of rows) m.set(r.rung, (m.get(r.rung) ?? 0) + 1);
+  const known = RUNG_ORDER.filter((k) => m.has(k)).map((k) => `${RUNG_LABEL[k]} ${m.get(k)}`);
+  const other = [...m.keys()].filter((k) => !RUNG_ORDER.includes(k)).sort().map((k) => `${k} ${m.get(k)}`);
+  return `· ${AP} ${rows.length} — ${[...known, ...other].join(" · ")}`;
 }
 const allRows = (store) => countOf(store, "SELECT COUNT(*) AS n FROM decisions WHERE entry_id = ?", AP);
 /** One synthetic 2-day-old refusal, so a baseline taken over ALL rows (not the window) fails line 7. */
@@ -308,7 +320,7 @@ async function line6() {
 async function line7() {
   const sv = await import(join(DIST, "decisions/status-view.js"));
   const p = G.priorA; const now = wall();
-  const want = `· ${AP} ${p.total + 5} — code ${p.code + 5} (parse ${p.parse + 1} · send ${p.send + 4} · failed ${p.failed})`;
+  const want = `${rungLine([...p.rows, ...Array.from({ length: 5 }, () => ({ rung: "rule" }))])} (parse ${p.parse + 1} · send ${p.send + 4} · failed ${p.failed})`;
   const lines = sv.decisionStatusLines(G.A, now).filter((l) => l.startsWith(`· ${AP} `));
   const total = allRows(G.A); const win = priorWindow(G.A, now);
   return { ok: lines.length === 1 && lines[0] === want && total === G.priorAllA + 5 && win.total === p.total + 5, detail: `lines ${lines.length} (want 1) · ${lines[0] ?? "none"} (want ${want}; in-window prior ${p.total} + line 1's four send refusals + line 3's one parse refusal) · rows on copy A ${total} (want ${G.priorAllA} prior incl. one planted 2-day-old + 5) · in-window ${win.total} (want ${p.total + 5})` };
@@ -350,7 +362,6 @@ async function setup() {
   plantOld(G.A); plantOld(G.B);
   G.priorA = priorWindow(G.A); G.priorAllA = allRows(G.A); G.priorAllB = allRows(G.B);
   G.liveAttach = G.priorAllA - 1;
-  if (G.priorA.total !== G.priorA.code) throw new SetupError("the copy holds in-window attach.path rows of another rung: the status line's code count cannot be derived");
   note(`copies: non-final outbox rows parked A ${parkOutbox(G.A)} · B ${parkOutbox(G.B)}; attach.path rows already on the copies ${G.liveAttach}`);
 }
 function closeAll() { for (const k of ["A", "B", "T"]) { try { G[k]?.close(); } catch { /* a closed handle is not a finding */ } G[k] = null; } }

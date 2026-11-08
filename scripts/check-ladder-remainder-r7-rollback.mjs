@@ -102,14 +102,18 @@ const windowRows = (path, now) => {
   const since = new Date(Date.parse(now) - WINDOW_MS).toISOString();
   return ro(path, (db) => db.prepare("SELECT rung, verdict, reason_code FROM decisions WHERE entry_id = ? AND created_at > ? AND created_at <= ?").all(AP, since, now));
 };
+/** The base count line `· attach.path <n> — <rung> <k> · …` for a set of rows (rung order as digest.ts countLines). */
+function rungLine(rows) {
+  const m = new Map(); for (const r of rows) m.set(r.rung, (m.get(r.rung) ?? 0) + 1);
+  const known = RUNG_ORDER.filter((k) => m.has(k)).map((k) => `${RUNG_LABEL[k]} ${m.get(k)}`);
+  const other = [...m.keys()].filter((k) => !RUNG_ORDER.includes(k)).sort().map((k) => `${k} ${m.get(k)}`);
+  return `· ${AP} ${rows.length} — ${[...known, ...other].join(" · ")}`;
+}
 /** The count line (digest.ts countLines format) from SQL over the window; null when the window holds no attach.path row. `suffix` is the R7 seam suffix of status-lines.ts attachSuffix. */
 function expectedLine(path, now, suffix) {
   const rows = windowRows(path, now);
   if (rows.length === 0) return null;
-  const m = new Map(); for (const r of rows) m.set(r.rung, (m.get(r.rung) ?? 0) + 1);
-  const known = RUNG_ORDER.filter((k) => m.has(k)).map((k) => `${RUNG_LABEL[k]} ${m.get(k)}`);
-  const other = [...m.keys()].filter((k) => !RUNG_ORDER.includes(k)).sort().map((k) => `${k} ${m.get(k)}`);
-  const line = `· ${AP} ${rows.length} — ${[...known, ...other].join(" · ")}`;
+  const line = rungLine(rows);
   if (!suffix) return line;
   const refused = rows.filter((r) => r.verdict === "refuse"); const failed = refused.filter((r) => r.rung === "fail").length;
   const parse = refused.filter((r) => r.rung !== "fail" && r.reason_code === "marker_outside").length;
@@ -293,7 +297,7 @@ async function oldPhase(ctx, st) {
 function compareAndRefusePhase(ctx, st) {
   const { A, F, mOld } = ctx; const { rows, snapF, snapA, now, oa, of, aA, aF, before } = st;
   const fRows = rows.slice(before.apN);
-  const lineF = apLines(of.status); const wantF = `· ${AP} ${fRows.length + windowRows(A, now).length} — code ${fRows.length - 1 + windowRows(A, now).length} · fallback 1`;
+  const lineF = apLines(of.status); const wantF = rungLine([...fRows, ...windowRows(A, now)]); // the seeded rows plus A's in-window prior, whatever rungs the prior holds
   const noDigest = mOld.buildDecisionDigest === undefined; // the nightly digest is gone from the merge base too (spec 2026-11-07): nothing to compare, and a build that brings it back must fail here
   const [head, ...aRows] = oa.listText.map(norm);
   const wantList = [head, ...[...fRows].reverse().map((r) => listLine(r, mOld.deciderLabel)), ...aRows].slice(0, 11);
@@ -301,7 +305,7 @@ function compareAndRefusePhase(ctx, st) {
   const sqlF = expectedLine(F, now, false); const sqlA = expectedLine(A, now, false);
   const ok = noDigest && listOk && same(otherLines(oa.status), otherLines(of.status)) && of.status.length === oa.status.length + 1 - (apLines(oa.status).length)
     && same(lineF, [sqlF]) && (windowRows(A, now).length > 0 || lineF[0] === wantF) && same(apLines(oa.status), sqlA === null ? [] : [sqlA]) && !/\(parse /.test(lineF[0] ?? "");
-  check("A vs F as rendered by the old build: the nightly digest has no builder in the old build (gone since spec 2026-11-07), /status is byte-identical in every line but attach.path, that line (rendered without the seam suffix) equals `· attach.path <n> — code <n-1> · fallback 1`, n from SQL over the window, and the /status decisions list is A's with the seven seeded rows on top",
+  check("A vs F as rendered by the old build: the nightly digest has no builder in the old build (gone since spec 2026-11-07), /status is byte-identical in every line but attach.path, that line (rendered without the seam suffix) equals the rung-count line `· attach.path <n> — code … · fallback …` computed from the seeded rows plus the copy's in-window prior, and the /status decisions list is A's with the seven seeded rows on top",
     ok, `F line [${lineF.join(" | ")}] = SQL-built ${same(lineF, [sqlF])} · A attach.path lines ${apLines(oa.status).length} · other lines ${otherLines(of.status).length} equal ${same(otherLines(oa.status), otherLines(of.status))} · digest builder absent ${noDigest} · /status decisions list = A's with the seven seeded rows on top ${listOk} (F ${of.listText.length - 1} rows)`);
   const readBack = rows.map((r) => of.readRows.find((x) => x.decision_id === r.decision_id));
   const gone = lost(snapF.keys, keysOf(F)); const goneA = lost(snapA.keys, keysOf(A));
