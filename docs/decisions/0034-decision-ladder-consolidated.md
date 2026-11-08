@@ -353,12 +353,20 @@ write.
   defers job-starting groups. A cluster is already authored if a 90-day job in its category has an origin turn within
   the gate of a cluster turn, or shares a turn within 30 days; a `failed` job never suppresses.
 - 10.5 **Proposals** (lesson, fact, schedule, tool gap, ladder): one open per (target, scope), expiring at 14 days; one
-  dismissed, expired, **accepted or reverted** within 14 days blocks the same pair (`already_proposed`), checked before
-  the draft (an `already_known` dismissal never blocks its pair). **A lesson or fact applies on its own** (spec
+  dismissed or expired within 14 days blocks the same pair (`already_proposed`), checked before the draft and again at
+  the commit (an `already_known` dismissal never blocks its pair); for schedule, tool gap, ladder and skill an
+  **accepted or reverted** one within 14 days blocks it too. **A lesson or fact blocks only its repeats** (addendum
+  Rev 2.3.1, Paco 2026-11-08): after the draft its text is embedded with the tick's embedder and compared
+  (`repeatCheck`, `improve/repeat.ts`) with the stored draft text of every lesson or fact proposal on the pair accepted
+  or reverted on it (reverted within 14 days; accepted within 14 days for a fact, within `LESSON_REWRITE_DAYS` (30) for a
+  lesson). A near-copy (cosine ≥ `LESSON_REPEAT_COSINE`, 0.6, its value set by the threshold probe on 2026-11-08) of a reverted one, or of an accepted fact,
+  records `already_proposed`; a near-copy of an accepted lesson is the 'lesson did not hold' rewrite — a card, never
+  applied; a different one goes on (applied, or a card, by provenance). The embedder down defers the group as an outage
+  (latched; the 30-day stale rule bounds it); a candidate set that changed before the commit defers it (`deferred`). **A lesson or fact applies on its own** (spec
   2026-11-07 §3) only through `autoApplies` (`improve-route.ts`, pinned by `tests/adr/0034-paco-words-only.test.ts`):
   every row of the group a correction Paco typed on the memory lane (`improve_signals.origin = memlane_fix`, stamped
   only for a Telegram correcting run and re-checked at the apply boundary; a new run of his, never the corrected run),
-  verdict lesson or fact, not a 'lesson did not hold' rewrite; its draft is distilled with an empty prior (`prior: ""`:
+  verdict lesson or fact, not a 'lesson did not hold' rewrite (the repeat check's verdict, passed to `autoApplies` — a recent accepted lesson on the scope alone is no rewrite); its draft is distilled with an empty prior (`prior: ""`:
   Houge's reply never reaches the seat), passes the memory lane's backstops, and is saved inside the group's commit
   through `saveMemoryPlan` under the corrected run, `accepted` with the ids, with one `/changes` row
   (`improve_applied:<proposal_id>`, topic `improve_log`) naming `/forget <id>` or `/forget_memory <id>`; no chat → it
@@ -367,8 +375,10 @@ write.
   only, R5: no card) (topic `improve_card`, key `improve_proposal:<proposal_id>`, Accept / Dismiss, `offered_at` set);
   a null draft for anything but a capped lesson dismisses the proposal with reason `already_known` (no card, no
   `/changes` line). Accept writes through the memory lane's writers and the reply carries Undo / Revert / Revoke.
-  `/forget <id>`, `/forget <scope>` and `/forget_memory <id>` move the proposal `accepted → reverted` in the removal's
-  transaction; Undo is no `turn.handler` label. Schedule Accept applies only while the row equals `before`; Revert
+  `/forget <id>` and `/forget_memory <id>` on a row a proposal saved undo that save's **whole change** (what it pruned
+  at the cap comes back; a refused undo falls back to the flip or retire and says so; the fact reply carries no Undo
+  button), and `/forget <scope>` undoes each such lesson newest first, then prunes the scope empty — each moving its
+  proposal `accepted → reverted` in the same transaction; Undo is no `turn.handler` label. Schedule Accept applies only while the row equals `before`; Revert
   restores; both recompute `next_run_at`. A skill Accept whose job exists dismisses. A ladder Accept records a
   `ladder_moves` row and changes nothing; a tool gap replies the `self_write_propose` text. Residual (accepted): with no
   prior and Paco's line as both numbered evidence lines a fact can over-generalise his words; it is his words' reading,
@@ -537,6 +547,7 @@ write.
 | 2026-11-06 | 6.3: the promise that the digest flags an entry until Paco commits a calibrated row is retired (nothing built it; Paco's decision 2026-11-06) | — | 2026-11-06 |
 | 2026-11-07 | Improvement proposals auto-apply, the digest goes: 2.2, 2.5 (gated allowance), 6.6 (no digest taps), 10.2 (HOUGE_IMPROVE_AT), 10.5 (autoApplies, origin, no prior, cards, reverted blocks), 11.3 and 13.1 (/changes rows, no digest), 13.2 (improve_tick_degraded) | [auto-apply](../superpowers/specs/2026-11-07-improve-auto-apply-design.md) | 2026-11-08 |
 | 2026-11-07 | 13.2: `decision_fallback_streak` pages three failed runs in a row of a tick entry (`improve.route` failed every day unseen); `improve.route`'s Tiny bound 8 s → 30 s | — | 2026-11-07 |
+| 2026-11-08 | 10.5: the 14-day block covers repeats, not the category — a lesson or fact draft is skipped only as a near-copy (`LESSON_REPEAT_COSINE`) of one reverted (or an accepted fact) on the pair, and is the 'lesson did not hold' card only as a near-copy of a lesson accepted within 30 days; `/forget` and `/forget_memory` undo an improvement's whole change (Q1-B, Q2-A; controller ruling R1') | [auto-apply addendum Rev 2.3.1](../superpowers/specs/2026-11-07-improve-auto-apply-design.md) | awaiting Paco's signature |
 
 ## Reference map
 

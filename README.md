@@ -197,12 +197,12 @@ merged lesson and supersedes the originals; it never deletes. Preview with
 
 Slash commands keep it inspectable (idempotent, no run, no budget unless noted):
 
-- `/lessons [scope]` view lessons · `/forget <scope|id>` retire them (a reversible status flip).
+- `/lessons [scope]` view lessons · `/forget <scope|id>` retire them (a reversible status flip; one the improvement check saved has its whole change undone).
 - `/skills [scope]` view skills; `/skills retire|restore <name>`, `/skills retired`, `/skills pending`.
 - `/schedule` · `/schedule cancel <N>` list or cancel this chat's schedules. Schedules are created and
   updated conversationally through `schedule_task`.
 - `/status` health digest (with a `Jev front door: armed` or `off (cause)` line, plus 24 h decision counts, the settle health line, per-entry Jev skips when there were any, and the Improvement (7 d) line) · `/status decisions` the last 10 decisions · `/changes` background changes of the last 30 days in plain words (model switches, internal self-checks, routine Jev notices — what no longer comes to chat) · `/usage` token use per model (omp rows show "sub", never dollars).
-- `/memories [query]` view what Houge remembers about Paco · `/forget_memory <id>` retire one fact (with an Undo card).
+- `/memories [query]` view what Houge remembers about Paco · `/forget_memory <id>` retire one fact (with an Undo card; one the improvement check saved has its whole change undone, with no card).
 - `/models` which model each role resolves to; `/models set` and `/models reset` override or restore one · `/fresh` a new planner conversation at the next message.
 - `/run <program> <goal>` start a named program run by hand.
 - Improvements learned from your own corrections apply on their own and show in `/changes` with their undo command; anything else arrives as one card with Accept / Dismiss; `/forget <id>` and `/forget_memory <id>` undo an applied one

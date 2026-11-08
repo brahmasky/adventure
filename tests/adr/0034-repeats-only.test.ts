@@ -4,6 +4,8 @@
  * text embeds at or above LESSON_REPEAT_COSINE against one Paco reverted within 14 days is `already_proposed`, against a
  * lesson accepted within LESSON_REWRITE_DAYS the 'lesson did not hold' card (ruling R1'), against an accepted fact `already_proposed`. Skill, schedule, tool gap and ladder keep the accepted/reverted block. Changing this rule changes this test.
  */
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { LESSON_REPEAT_COSINE } from "../../src/improve/repeat.js";
 import { PROPOSAL_TTL_DAYS } from "../../src/improve/proposals.js";
@@ -29,5 +31,17 @@ describe("ADR 0034 rule 10.5: block only repeats", () => {
       accepted(s, target);
       expect([target, s.proposalBlocks(target, "answer", SINCE)]).toEqual([target, target !== "lesson" && target !== "fact"]);
     }
+  });
+});
+
+const adr = readFileSync(join(import.meta.dirname, "..", "..", "docs", "decisions", "0034-decision-ladder-consolidated.md"), "utf8");
+const rule = (id: string): string => { const at = adr.indexOf(`- ${id} `); expect(at).toBeGreaterThan(-1); return adr.slice(at, adr.indexOf("\n- ", at + 1)); };
+describe("ADR 0034 names the rule the code pins (addendum Rev 2.3.1)", () => {
+  it("10.5 says a lesson or fact blocks only its near-copies (LESSON_REPEAT_COSINE) and that /forget undoes the whole change; the History row awaits Paco's signature", () => {
+    const r = rule("10.5");
+    expect(r).toMatch(/LESSON_REPEAT_COSINE/); expect(r).toMatch(/near-copy/); expect(r).toMatch(/whole change/);
+    expect(r).toMatch(/near-copy of an accepted lesson is the 'lesson did not hold' rewrite/); expect(r).toMatch(/LESSON_REWRITE_DAYS/); // R1'
+    expect(r).not.toMatch(/one\s+dismissed, expired, \*\*accepted or reverted\*\* within 14 days blocks the same pair/); // the category block is gone for lesson and fact
+    expect(adr).toMatch(/\| 2026-11-08 \| 10\.5: .*\| awaiting Paco's signature \|/);
   });
 });

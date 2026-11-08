@@ -294,10 +294,14 @@ tick, not in a turn. Signals (corrections, ratings, denials and expiries, planne
   add up across the segments of a local date; the 40-group cap is per date.
 - **Skill job endings.** `pending_review` / `collision` offers expire after 14 days (`expired`, one card). Result codes:
   `gate_a_unavailable`, `offer_expired`, `promote_retry:N`, `promote_failed` (3 failed retries). `/disarm` holds queued jobs.
-- **Repeats and Undo.** A proposal Paco dismissed, or that expired, blocks the same (target, scope) for 14 days. An already
-  authored cluster also covers a job of the last 90 days in the same category whose origin turn embeds within the recurrence
-  gate; a `failed` job never counts. Undo of an improve-sourced save moves its proposal to `reverted` and writes no
-  `turn.handler` label.
+- **Repeats and Undo.** A proposal Paco dismissed, or that expired, blocks the same (target, scope) for 14 days; an
+  accepted or reverted schedule, tool gap, ladder or skill proposal does too. A lesson or fact is skipped only as a
+  near-copy: its draft embeds at or above `LESSON_REPEAT_COSINE` (0.6, set by the threshold probe on 2026-11-08) against one reverted on the pair within 14 days,
+  or an accepted fact; a near-copy of a lesson accepted within 30 days is the 'lesson did not hold' card
+  (`improve/repeat.ts`; the embedder down defers the group). An already authored cluster also covers a job
+  of the last 90 days in the same category whose origin turn embeds within the recurrence gate; a `failed` job never
+  counts. Undo of an improve-sourced save (`/forget`, `/forget_memory`, the card's Undo) reverses its whole change,
+  moves its proposal to `reverted` and writes no `turn.handler` label.
 
 ## Arming
 
