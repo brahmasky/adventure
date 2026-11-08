@@ -203,6 +203,9 @@ export const LOUD_DEGRADATION_NEW = {
   plannerSessionStateKeys: ["fresh_requested_at", "transcript_trust_at"]
 };
 
+/** auto-apply 2026-11-07 (8ff30da6) column the r1–r6 merge-base builds never had; R7 does not touch improve_signals. Dropped BY NAME from every dump (P32; never a pattern). No schema_migrations row came with it. */
+export const IMPROVE_AUTO_APPLY_NEW = { improveSignalsKeys: ["origin"] };
+
 /**
  * Every table's rows in rowid order, virtual tables, their shadows and sqlite_* excluded (regularTables): the whole-DB projection (spec R1 §6). Raw column
  * values, `*_json` strings NOT parsed (byte-identical compare; relabelClocks reaches clocks inside them textually). `decisions` rows
@@ -218,6 +221,7 @@ export function dumpDb(store, { dropDecisionIds = [] } = {}) {
     if (name === "decisions") rows = rows.filter((r) => !drop.has(r.entry_id));
     if (name === "schema_migrations") rows = rows.filter((r) => !LOUD_DEGRADATION_NEW.migrations.includes(r.version));
     if (name === "planner_session_state") rows = rows.map((r) => Object.fromEntries(Object.entries(r).filter(([k]) => !LOUD_DEGRADATION_NEW.plannerSessionStateKeys.includes(k))));
+    if (name === "improve_signals") rows = rows.map((r) => Object.fromEntries(Object.entries(r).filter(([k]) => !IMPROVE_AUTO_APPLY_NEW.improveSignalsKeys.includes(k))));
     if (rows.length) out[name] = rows.map((r) => ({ ...r }));
   }
   return out;
