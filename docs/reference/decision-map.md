@@ -1,6 +1,6 @@
 # Decision map: who decides what in a Houge turn
 
-As of 2026-11-05. The registry below is the live list; the build queue is in `tasks/todo.md`. Design: [ADR 0033](../decisions/0033-jev-system-one-consolidated.md),
+As of 2026-11-08. The registry below is the live list; the build queue is in `tasks/todo.md`. Design: [ADR 0033](../decisions/0033-jev-system-one-consolidated.md),
 [ADR 0034](../decisions/0034-decision-ladder-consolidated.md), [ADR 0031](../decisions/0031-chat-carries-what-needs-paco.md) (where a decision's notice goes), [the decision-tree spec](../superpowers/specs/2026-10-06-jev-decision-tree-design.md),
 [the decision-ladder spec](../superpowers/specs/2026-10-12-decision-ladder-design.md). Jev details (bars, rows, arming):
 [jev-decision-layer.md](jev-decision-layer.md). Update this map whenever an entry, lane or rung changes (re-read it, do not only append).
