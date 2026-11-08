@@ -190,3 +190,38 @@ events (a resumed date emits several). Evaluated once per tick date, at its end,
 
 Merge, rebuild, kickstart (Tier A after green gates). The first 21:00 after deploy sends no digest. Paco's `.env` line
 `HOUGE_DECISION_DIGEST_AT=ON` can be deleted at leisure.
+
+## Addendum Rev 2.2 — block only repeats; undo reverses the whole change (Paco, 2026-11-08)
+
+Decided by Paco 2026-11-08 after the final review's two questions (options Q1-B and Q2-A). Changes ADR 0034 10.5.
+
+**A. The 14-day block covers repeats, not the category.** Today `proposalBlocks(target, scope)` counts an `accepted`
+proposal on the same (target, scope) for 14 days, so after one auto-applied lesson every *different* correction on that
+category is consumed as `already_proposed` with no trace. After this change:
+
+- **Facts:** `accepted` no longer blocks a `fact` proposal. The fact store's reconciler already merges or skips a fact
+  it knows (`saveReconciledFact`). `open`, `dismissed`, `expired`, `reverted` keep blocking as today.
+- **Lessons:** `accepted` no longer blocks the pair before the draft. After the draft, the new lesson text is compared
+  with the text of every lesson an `accepted` lesson proposal on the same scope saved in the last 14 days (the saved
+  lesson's current text, through `result_json.lesson_id`), using the tick's embedder and `cosineSimilarity`. At or above
+  `LESSON_REPEAT_COSINE` (0.8, a code constant: "near-copy") the group records `nothing` / `already_proposed` as today;
+  below it the lesson is applied (or carded) as any other. A lesson whose saved row is no longer active (forgotten,
+  pruned) is not compared.
+- **Embedder down:** the comparison cannot run, so the group is deferred as an outage (unconsumed, `deferred_outage`,
+  the tick's latch), never applied unchecked and never dropped. The 30-day stale rule bounds it, as today.
+- `reverted` keeps blocking its pair for 14 days (Houge does not re-learn what Paco removed); `already_known` still
+  never blocks.
+
+**B. `/forget` and `/forget_memory` reverse the whole change.** For a lesson or fact the improvement check saved
+(`proposalBySaved` finds an `accepted` proposal with a `change_id`), `/forget <id>` runs `undoLessonChange(change_id)`
+and `/forget_memory <id>` runs `undoMemoryChange(change_id)` — removing the saved row and restoring what that save
+pruned at the cap — and moves the proposal to `reverted`, in one transaction. A row with no improvement proposal keeps
+today's behaviour. `/forget <scope>` keeps the status flip for rows it prunes, but an improvement-saved row in that
+scope is reversed through its change as above. If the change cannot be undone (`undo*Change` refuses: a later change
+superseded it), the command falls back to today's status flip and still reverts the proposal, and says so in its reply.
+
+**Tests:** a second, different lesson correction in the same category within 14 days is applied; a near-copy is
+`already_proposed`; a second fact correction is applied (or merged by the reconciler); the embedder down defers the
+lesson group; `/forget <id>` on an improvement lesson saved at the cap restores the pruned lesson; `/forget_memory`
+likewise for a fact at its cap; the refused-undo fallback. The live gate's case 4 keeps "undo, then the same
+correction is blocked" (reverted) and gains "a different correction on the same category is applied".
