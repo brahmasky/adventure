@@ -30,7 +30,7 @@ const CHAT = "555"; // the notify chat of every seeded run; its workspace is <da
 const AP = "attach.path";
 const MIB = 1024 * 1024;
 const BIG = 1_000_000_000;
-const SET_PINS = ["HOUGE_TOMBSTONE_PATH", "HOUGE_DISARM_PATH", "HOUGE_TELEGRAM_CHAT_ID"];
+const SET_PINS = ["HOUGE_TOMBSTONE_PATH", "HOUGE_DISARM_PATH", "HOUGE_TELEGRAM_CHAT_ID", "HOUGE_DAEMON_TMP_DIR"];
 const DELETE_PINS = ["HOUGE_LLM_MEDIA_PROVIDERS", "HOUGE_RATING_PENDING_MINUTES", "HOUGE_MODEL_ROLES", "FAKE_OMP_SCENARIO", "FAKE_OMP_ARGV_LOG",
   "HOUGE_EMBED_URL", "HOUGE_EMBED_MODEL", "HOUGE_EMBED_TIMEOUT_MS", "HOUGE_MAX_CONSECUTIVE_CLARIFY", "HOUGE_LESSON_CAP_PER_SCOPE", "HOUGE_CHAT_CONTEXT_TURNS"];
 const FAKE_VARS = ["HOUGE_OMP_BIN", "HOUGE_OMP_SANDBOX", "HOUGE_OMP_ENV_PASSTHROUGH", "FAKE_OMP_SCENARIO", "FAKE_OMP_ARGV_LOG"];
@@ -51,8 +51,10 @@ function verdict(n, name, ok, detail) {
 const ERROR_NAMES = new Set(["Error", "TypeError", "RangeError", "SyntaxError", "ReferenceError", "AssertionError"]);
 /** A thrown value prints as its standard class name only, never its message. */
 const errCode = (e) => (e instanceof Error ? (ERROR_NAMES.has(e.name) ? e.name : "<other>") : "non-Error");
+/** A thrown message, only when it is one of this gate's own fixed strings or a Node errno code (never an fs message, which carries paths, or anything from the DB). */
+const closedMsg = (e) => { const m = e instanceof Error ? e.message : ""; return /^gate(?: fault)?: [a-zA-Z .]{1,60}$/.test(m) || /^[A-Z][A-Z0-9_]{2,20}$/.test(e?.code ?? "") ? `(${/^gate/.test(m) ? m : e.code})` : ""; };
 async function runLine(n, name, fn) {
-  try { const r = await fn(); verdict(n, name, r.ok, r.detail); } catch (e) { verdict(n, name, false, `threw: ${errCode(e)}`); }
+  try { const r = await fn(); verdict(n, name, r.ok, r.detail); } catch (e) { verdict(n, name, false, `threw: ${errCode(e)} ${closedMsg(e)}`); }
 }
 /** console.error captured (not printed) while `fn` runs; the lines are returned for counting, never echoed. */
 async function captured(fn) {
@@ -139,6 +141,23 @@ async function recorderLess(seed) {
 }
 const stateOf = (store, id) => store.getNotification(id)?.state;
 
+// ---- the window-aware prior (R6 precedent): /status counts the last 24 h, so a baseline over all rows would drift ----
+const WINDOW_MS = 24 * 3_600_000;
+/** attach.path rows of `store` inside the renderer's window, bucketed as the suffix does (rung fail -> failed, marker_outside -> parse, other refusals -> send). */
+function priorWindow(store, now = wall()) {
+  const since = new Date(Date.parse(now) - WINDOW_MS).toISOString();
+  const rows = all(store, "SELECT rung, verdict, reason_code FROM decisions WHERE entry_id = ? AND created_at > ? AND created_at <= ?", AP, since, now);
+  const refused = rows.filter((r) => r.verdict === "refuse"); const failed = refused.filter((r) => r.rung === "fail").length;
+  const parse = refused.filter((r) => r.rung !== "fail" && r.reason_code === "marker_outside").length;
+  return { total: rows.length, code: rows.filter((r) => r.rung === "rule").length, parse, send: refused.length - failed - parse, failed };
+}
+const allRows = (store) => countOf(store, "SELECT COUNT(*) AS n FROM decisions WHERE entry_id = ?", AP);
+/** One synthetic 2-day-old refusal, so a baseline taken over ALL rows (not the window) fails line 7. */
+function plantOld(store) {
+  store.insertDecision({ entry_id: AP, entry_version: G.d.ATTACH_PATH.version, run_id: null, tool_call_id: null, stage: G.d.ATTACH_PATH.stage, rung: "rule", verdict: "refuse", p: null,
+    reason_code: "too_large", fallback_reason: null, fallback_rung: null, armed_mode: "on", latency_ms: 0, created_at: new Date(Date.now() - 2 * 24 * 3_600_000).toISOString() });
+}
+
 // ---- line 1 ----
 const WANT_FOLLOW = "⚠ Not attached: big.bin (over 20 MB)\n⚠ Not attached: notes.txt (a hard-linked file)\n⚠ Not attached: leak.txt (outside my workspace)\n⚠ Not attached: f6.txt (more than 5 files)";
 const WANT_ROWS = ["refuse/too_large", "refuse/linked", "refuse/outside_workspace", "refuse/over_count"];
@@ -158,7 +177,6 @@ async function line1() {
     && canon(follow) === canon([WANT_FOLLOW]) && canon(rowsStr(rows)) === canon(WANT_ROWS) && rows.every((r) => r.run_id === run && r.tool_call_id === null && r.rung === "rule")
     && countOf(G.A, "SELECT COUNT(*) AS n FROM decisions WHERE entry_id = ? AND verdict = 'send'", AP) === 0
     && seen.length === 4 && seen.every((s) => s === "delivered");
-  G.l1 = { run, id };
   return { ok, detail: `dispatch ${res.status} seeded row delivered ${stateOf(G.A, id) === "delivered"} · sendDocument ${up.length} (want 2: ${up.map((u) => u[0])}) small bytes ${up[0]?.[1]} (want 1024) · follow-ups ${follow.length} (want 1) byte-equal to want ${canon(follow) === canon([WANT_FOLLOW])} to recorder-less ${viewOf(log) === viewOf(ref.log)} · rows [${rowsStr(rows)}] (want ${WANT_ROWS}) with the run id ${rows.every((r) => r.run_id === run)} · accepted/send rows 0 · state at each record call [${seen}] (want 4 x delivered) · recorder-less rows ${ref.attachN} (want 0)` };
 }
 
@@ -173,8 +191,8 @@ async function line2() {
     telegramClient: { getUpdates: async () => [], ...client } });
   const rows = attachRows(G.B, run); const total = countOf(G.B, "SELECT COUNT(*) AS n FROM decisions WHERE entry_id = ?", AP);
   const ok = stateOf(G.B, id) === "delivered" && ref.delivered && viewOf(log) === viewOf(ref.log) && canon(rowsStr(rows)) === canon(WANT_ROWS)
-    && rows.every((r) => r.run_id === run) && total === 4;
-  return { ok, detail: `poll cycle processed ${res.processed_updates} updates, ${res.dispatch_results.filter((r) => r.status === "delivered").length} delivered · seeded row delivered ${stateOf(G.B, id) === "delivered"} · uploads and follow-up byte-equal to recorder-less ${viewOf(log) === viewOf(ref.log)} (uploads ${uploadsOf(log).length}) · rows [${rowsStr(rows)}] (want ${WANT_ROWS}) run_id equals the outbox row's ${rows.every((r) => r.run_id === run)} · attach.path rows on the copy ${total} (want 4)` };
+    && rows.every((r) => r.run_id === run) && total === G.priorAllB + 4 && res.dispatch_results.some((r) => r.status === "delivered" && r.notification_id === id);
+  return { ok, detail: `poll cycle processed ${res.processed_updates} updates, ${res.dispatch_results.filter((r) => r.status === "delivered").length} delivered · seeded row delivered ${stateOf(G.B, id) === "delivered"} · uploads and follow-up byte-equal to recorder-less ${viewOf(log) === viewOf(ref.log)} (uploads ${uploadsOf(log).length}) · rows [${rowsStr(rows)}] (want ${WANT_ROWS}) run_id equals the outbox row's ${rows.every((r) => r.run_id === run)} · poll dispatch_results delivered the seeded id ${res.dispatch_results.some((r) => r.status === "delivered" && r.notification_id === id)} · attach.path rows on the copy ${total} (want ${G.priorAllB} prior + 4)` };
 }
 
 // ---- a CoreWorker turn on the fake omp (copy store `store`, chat 555) ----
@@ -249,7 +267,7 @@ async function line5() {
   try { seenErr = await captured(() => G.mods.createOutboxDispatcher(G.B, { local: localAdapter(), telegram: G.d.workspaceTelegramAdapter(a.client, data) }).dispatchOnce("gate-5a")); res = seenErr.value; }
   finally { G.B.insertDecision = real; }
   const s1 = snap(G.B); const inc = failedIncidents(G.B);
-  const insertOk = attempts >= 1 && s1.inc - s0.inc === 1 && inc.at(-1)?.subject === AP && s1.log - s0.log === 1 && s1.opened - s0.opened === 1 && s1.stub - s0.stub === 0
+  const insertOk = attempts === 4 && s1.inc - s0.inc === 1 && inc.at(-1)?.subject === AP && s1.log - s0.log === 1 && s1.opened - s0.opened === 1 && s1.stub - s0.stub === 0
     && res.status === "delivered" && stateOf(G.B, id) === "delivered" && viewOf(a.log) === viewOf(ref.log) && attachRows(G.B, run).length === 0;
   // a recorder that throws past itself: no incident, no log row, the row delivered
   const t = mkData("g"); const seed2 = seedReport(G.B, sixFiles(t.data, t.ws)); parkExcept(G.B, seed2.id);
@@ -268,7 +286,7 @@ async function line5() {
   try { mistake = await captured(() => G.mods.createOutboxDispatcher(G.B, { local: localAdapter(), telegram: G.d.workspaceTelegramAdapter(c.client, m.data) }).dispatchOnce("gate-5c")); }
   finally { G.d.ATTACH_PATH.ladder = ladder; }
   const s5 = snap(G.B); const mLogged = mistake.seen.filter((l) => l.startsWith("[notification-dispatcher] attach_path_record_failed for ")).length;
-  const mistakeOk = mistake.value.status === "delivered" && mistake.value.notification_id === seed3.id && stateOf(G.B, seed3.id) === "delivered" && s5.inc === s4.inc && s5.stub === s4.stub
+  const mistakeOk = mistake.value.status === "delivered" && mistake.value.notification_id === seed3.id && stateOf(G.B, seed3.id) === "delivered" && s5.inc === s4.inc && s5.log === s4.log && s5.opened === s4.opened && s5.stub === s4.stub
     && viewOf(c.log) === viewOf(ref.log) && mLogged === 1 && attachRows(G.B, seed3.run).length === 0;
   return { ok: insertOk && thrownOk && mistakeOk, detail: `insert fault: attempts ${attempts} incidents +${s1.inc - s0.inc} (want 1, subject ${inc.at(-1)?.subject}) change_log incident_log +${s1.log - s0.log} (want 1) incident_opened events +${s1.opened - s0.opened} (want 1) outbox rows to the stub chat +${s1.stub - s0.stub} (want 0) uploads and follow-up byte-equal to recorder-less ${viewOf(a.log) === viewOf(ref.log)} row delivered ${stateOf(G.B, id) === "delivered"} (dispatch ${res.status}) attach.path rows 0 · thrown recorder: dispatch ${thrown.value.status} row delivered ${stateOf(G.B, seed2.id) === "delivered"} incidents +${s3.inc - s2.inc} (want 0) change_log +${s3.log - s2.log} (want 0) incident_opened +${s3.opened - s2.opened} (want 0) uploads byte-equal ${viewOf(b.log) === viewOf(ref.log)} logged ${logged} (want 6, one per consult: five checks and the overflow, P6) · registry mistake: dispatch ${mistake.value.status} (want delivered) row delivered ${stateOf(G.B, seed3.id) === "delivered"} logged ${mLogged} (want 1) incidents +${s5.inc - s4.inc} (want 0) uploads byte-equal ${viewOf(c.log) === viewOf(ref.log)}` };
 }
@@ -287,12 +305,13 @@ async function line6() {
 }
 
 // ---- line 7 ----
-const WANT_STATUS = "· attach.path 5 — code 5 (parse 1 · send 4 · failed 0)";
 async function line7() {
   const sv = await import(join(DIST, "decisions/status-view.js"));
-  const lines = sv.decisionStatusLines(G.A, wall()).filter((l) => l.startsWith(`· ${AP} `));
-  const total = countOf(G.A, "SELECT COUNT(*) AS n FROM decisions WHERE entry_id = ?", AP);
-  return { ok: lines.length === 1 && lines[0] === WANT_STATUS && total === 5, detail: `lines ${lines.length} (want 1) · ${lines[0] ?? "none"} (want ${WANT_STATUS}) · attach.path rows on copy A ${total} (want 5: line 1's four send refusals + line 3's one parse refusal; the live DB held ${G.liveAttach} before)` };
+  const p = G.priorA; const now = wall();
+  const want = `· ${AP} ${p.total + 5} — code ${p.code + 5} (parse ${p.parse + 1} · send ${p.send + 4} · failed ${p.failed})`;
+  const lines = sv.decisionStatusLines(G.A, now).filter((l) => l.startsWith(`· ${AP} `));
+  const total = allRows(G.A); const win = priorWindow(G.A, now);
+  return { ok: lines.length === 1 && lines[0] === want && total === G.priorAllA + 5 && win.total === p.total + 5, detail: `lines ${lines.length} (want 1) · ${lines[0] ?? "none"} (want ${want}; in-window prior ${p.total} + line 1's four send refusals + line 3's one parse refusal) · rows on copy A ${total} (want ${G.priorAllA} prior incl. one planted 2-day-old + 5) · in-window ${win.total} (want ${p.total + 5})` };
 }
 
 // ---- main ----
@@ -301,7 +320,7 @@ function pinEnv(root) {
   G.saved = Object.fromEntries([...SET_PINS, ...DELETE_PINS, ...flags].map((k) => [k, process.env[k]]));
   for (const k of Object.keys(G.saved)) delete process.env[k];
   Object.assign(process.env, { HOUGE_TOMBSTONE_PATH: join(root, "houge.kill"), HOUGE_DISARM_PATH: join(root, "houge.disarm"), HOUGE_TELEGRAM_CHAT_ID: STUB_CHAT,
-    HOUGE_OMP_BIN: "/nonexistent/houge-gate/omp", HOUGE_MODEL_ROLES: "static" });
+    HOUGE_OMP_BIN: "/nonexistent/houge-gate/omp", HOUGE_MODEL_ROLES: "static", HOUGE_DAEMON_TMP_DIR: join(root, "dtmp") });
 }
 function restoreEnv() {
   if (!G.saved) return;
@@ -328,7 +347,10 @@ async function setup() {
   await loadMods();
   vacuumInto(liveDb, join(root, "a.sqlite")); vacuumInto(liveDb, join(root, "b.sqlite")); // both from the untouched live DB
   G.A = openStore(join(root, "a.sqlite")); G.B = openStore(join(root, "b.sqlite")); G.T = openStore(join(root, "t.sqlite"));
-  G.liveAttach = countOf(G.A, "SELECT COUNT(*) AS n FROM decisions WHERE entry_id = ?", AP);
+  plantOld(G.A); plantOld(G.B);
+  G.priorA = priorWindow(G.A); G.priorAllA = allRows(G.A); G.priorAllB = allRows(G.B);
+  G.liveAttach = G.priorAllA - 1;
+  if (G.priorA.total !== G.priorA.code) throw new SetupError("the copy holds in-window attach.path rows of another rung: the status line's code count cannot be derived");
   note(`copies: non-final outbox rows parked A ${parkOutbox(G.A)} · B ${parkOutbox(G.B)}; attach.path rows already on the copies ${G.liveAttach}`);
 }
 function closeAll() { for (const k of ["A", "B", "T"]) { try { G[k]?.close(); } catch { /* a closed handle is not a finding */ } G[k] = null; } }
