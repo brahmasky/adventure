@@ -8,6 +8,7 @@
 // [entry, rung, verdict, reason, run, tool_call] in write order, the exact per-entry recorder call count (P6 tally), and the behaviour facts, so a scenario that silently stopped
 // reaching its branch fails too. The old build must hold no attach.path row. Faults (P20) plant on d.ATTACH_PATH (the new dist's module object; null on the old dist, where the
 // item runs unplanted).
+import { createHash } from "node:crypto";
 import { existsSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { DISTS, NEW_ROW_IDS, canon, compare, dumpDb, mkStore, mkTemp, regularTables, extraDropFilter, relabelClocks, requireNew } from "../stage4-diff-lib.mjs";
@@ -18,10 +19,10 @@ import { deliver, removeDeliveryDirs } from "../stage4-delivery-fixture.mjs";
 import { cleanup, fakeSession, heldSession, intakeRun, mkSupervisor, req, seedWorkspace, until } from "../stage4-supervisor-fixture.mjs";
 
 const AP = "attach.path";
+const sha = (b) => createHash("sha256").update(b).digest("hex").slice(0, 16);
 const MIB = 1024 * 1024;
 /** One expected attach.path row: [entry, rung, verdict, reason, run, tool_call]. */
 const R = (verdict, reason, rung = "rule", run = "a") => [AP, rung, verdict, reason, run, null];
-const THREW = "threw"; // a rule that threw: the recorder stores no reason_code for it (rowOf: not a known code) — pinned below by the exact rows
 const NO_STATE = { todoPhases: [], queuedMessageCount: 0, queuedMessages: { steering: [], followUp: [] } };
 const routed = () => ({ triage: async () => ({ kind: "fallthrough", route: { role: "default", effort: null, verdict_id: "jv_1" } }) });
 
@@ -82,8 +83,8 @@ async function parseOkSendSwapped(x) {
   const out = join(data, "outside.txt"); writeFileSync(out, "outside"); rmSync(join(ws, "r.txt")); symlinkSync(out, join(ws, "r.txt"));
   x.store.enqueueFinalReportNotification(id, { text: "here you go", report_path: "r.md", attachments: accepted });
   const log = [];
-  const tg = { sendMessage: async (m) => { log.push(["sendMessage", "-", "HTML", m.text.startsWith("⚠") ? m.text : null]); return { message_id: log.length }; },
-    sendDocument: async (doc) => { log.push(["sendDocument", doc.filename, doc.content.length]); } };
+  const tg = { sendMessage: async (m) => { log.push(["sendMessage", sha(m.text), m.parse_mode ?? "plain", m.text.startsWith("⚠") ? m.text : null]); return { message_id: log.length }; },
+    sendDocument: async (doc) => { log.push(["sendDocument", doc.filename, doc.content.length, sha(Buffer.from(doc.content))]); } };
   const adapter = new x.d.TelegramNotificationAdapter(tg, { workspaceFor: () => x.d.chatWorkspace(data, "42") });
   const outbox = new x.d.NotificationOutbox(x.store);
   const dispatcher = new x.d.NotificationDispatcher(outbox, { local: { send: async () => ({ provider_message_id: "local" }) }, telegram: adapter }, { recorder: x.recorder });
@@ -93,8 +94,8 @@ async function parseOkSendSwapped(x) {
 
 // items ---------------------------------------------------------------------------------------------------------------------------------------------------------
 const OKD = (text, attachments = []) => ({ text, attachments });
-const parse = (key, drive, rows, calls, facts) => ({ key, seam: "parse", drive, rows, calls: { [AP]: calls }, facts: { failed: [], incidents: [], ...facts } });
-const send = (key, spec, rows, calls, facts = {}, extra = {}) => ({ key, seam: "send", drive: sendOf(spec), rows, calls: { [AP]: calls }, facts: { states: ["delivered"], ...facts }, ...extra });
+const parse = (key, drive, rows, calls, facts) => ({ key, seam: "parse", drive, rows, calls: { [AP]: calls }, facts: { failed: [], incidents: [], logged: [], ...facts } });
+const send = (key, spec, rows, calls, facts = {}, extra = {}) => ({ key, seam: "send", drive: sendOf(spec), rows, calls: { [AP]: calls }, facts: { states: ["delivered"], logged: [], ...facts }, ...extra });
 const MARKER_OUT = (text, files = []) => ({ final: `${text}\n[[attach: ../x]]`, files });
 const P = (key, o, rows, calls, facts) => parse(key, plain(o), rows, calls, facts);
 const refuse1 = [R("refuse", "marker_outside")];
@@ -135,7 +136,7 @@ const ITEMS = [
   send("text_fails_then_ok", { files: [["a.txt", "file"], ["gone.txt", "missing"]], opts: { textFails: [1] }, attempts: 2 }, [R("refuse", "not_found")], 2,
     { results: ["failed", "delivered"], states: ["delivered"], markCount: 1, timing: { afterUploads: true, afterFollowUp: true, afterMark: true } }),
   send("runless_progress", { files: [["gone.txt", "missing"]], intent: "progress_runless" }, [R("refuse", "not_found", "rule", null)], 1, { uploads: [], lines: [UNREAD] }),
-  { key: "parse_ok_send_swapped", seam: "both", drive: parseOkSendSwapped, rows: [R("refuse", "outside_workspace")], calls: { [AP]: 2 }, facts: { done: [OKD("ok", ["ws/r.txt"])], states: ["delivered"], uploads: [], lines: [OUTSIDE] } },
+  { key: "parse_ok_send_swapped", seam: "both", drive: parseOkSendSwapped, rows: [R("refuse", "outside_workspace")], calls: { [AP]: 2 }, facts: { done: [OKD("ok", ["ws/r.txt"])], logged: [], states: ["delivered"], uploads: [], lines: [OUTSIDE] } },
   // timing, lease and faults ------------------------------------------------------------------------------------------------------------------------------------
   send("write_timing", { files: [["a.txt", "file"], ["gone.txt", "missing"], ["c.txt", "file"]] }, [R("refuse", "not_found")], 3,
     { uploads: ["a.txt", "c.txt"], lines: [UNREAD], timing: { afterUploads: true, afterFollowUp: true, afterMark: true } }),
@@ -176,6 +177,13 @@ function labelRunOwners(v, ownerLabel) {
   const out = {};
   for (const [k, e] of Object.entries(v)) { out[k] = labelRunOwners(e, ownerLabel); if (k === "run_id") out.run_label = typeof e === "string" ? ownerLabel(e) : e; }
   return out;
+}
+// An outbox payload_hash is stableHash(payload) and the payload names the random delivery temp dir. As intake.mjs does: recompute it with that dist's own stableHash over the
+// UNSCRUBBED stored payload; equal -> replaced by a marker (the payload itself is compared after root scrubbing); unequal -> the raw value stays and shows as a difference.
+function maskOutboxHashes(d, db) {
+  if (!db.notification_outbox) return db;
+  const ok = (r) => { try { return d.stableHash(JSON.parse(r.payload_json)) === r.payload_hash; } catch { return false; } };
+  return { ...db, notification_outbox: db.notification_outbox.map((r) => (typeof r.payload_hash === "string" && ok(r) ? { ...r, payload_hash: "hash-of-payload-ok" } : r)) };
 }
 const all = (store, sql) => store.db.prepare(sql).all().map((r) => ({ ...r }));
 
@@ -288,7 +296,7 @@ function finishProjection(c) {
   const seen = (list) => list.map(({ run_id, ...rest }) => ({ ...rest, ...("duration_ms" in rest ? { duration_ms: durationClass(rest.duration_ms) } : {}), run_id: label(run_id), run_label: ownerLabel(run_id) }));
   const ws = rig ? c.d.chatWorkspace(rig.data, "42") : null;
   const rel = (p) => { const r = ws ? relative(ws, p) : ""; return r && !r.startsWith("..") ? `ws/${r}` : p; };
-  const observed = { sends: sends.map((s) => ({ log: s.log.filter((e) => e[0] !== "record" && e[0] !== "inside"), results: s.results, outbox: s.outbox })), db: classDurations(labelRunOwners(db, ownerLabel)) };
+  const observed = { sends: sends.map((s) => ({ log: s.log.filter((e) => e[0] !== "record" && e[0] !== "inside"), results: s.results, outbox: s.outbox })), db: classDurations(labelRunOwners(maskOutboxHashes(c.d, db), ownerLabel)) };
   const facts = { notes: c.notes, logged: c.errs.filter((l) => /attach_path_record_failed|record failed|threw past the recorder/.test(l)).map((l) => l.replace(/for \S+:/, "for <id>:")) };
   if (rig) {
     const { outcome } = rig;
@@ -298,7 +306,7 @@ function finishProjection(c) {
   }
   if (sends.length) Object.assign(facts, sendFacts(sends.at(-1)));
   if (item.insertFault) facts.shape = fault.shape;
-  return { ...scrubTemp(scrubIds(relabelClocks(observed, isClockKey))), newRows, calls: { [AP]: counting?.calls[AP] ?? 0 }, facts, __strip: ["newRows", "calls", "facts", "payload_hash"] };
+  return { ...scrubTemp(scrubIds(relabelClocks(observed, isClockKey))), newRows, calls: { [AP]: counting?.calls[AP] ?? 0 }, facts, __strip: ["newRows", "calls", "facts"] };
 }
 
 function required(d, item, proj) {
