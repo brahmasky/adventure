@@ -243,7 +243,7 @@ export async function runTelegramPollOnce(
   const dispatcher = new NotificationDispatcher(new NotificationOutbox(options.store), {
     local: new LocalNotificationAdapter(),
     telegram: workspaceTelegramAdapter(options.telegramClient, options.omp?.dataDir ?? options.projectRoot)
-  });
+  }, { recorder: storeRecorder(options.store) });
 
   const dispatch_results: DispatchResult[] = [];
   for (;;) {

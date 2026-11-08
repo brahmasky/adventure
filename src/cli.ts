@@ -131,13 +131,14 @@ if (command === "run") {
   const { LocalNotificationAdapter } = await import("./notifications/local-notification-adapter.js");
   const { workspaceTelegramAdapter } = await import("./telegram/telegram-poll-runner.js");
   const { TelegramClient } = await import("./telegram/telegram-client.js");
+  const { storeRecorder } = await import("./decisions/record.js");
   const store = RunStore.open("houge.sqlite", storeOptions);
   try {
     // houge.sqlite is opened from the cwd, so the cwd is the omp data dir its attachments live under (M6)
     const dispatcher = new NotificationDispatcher(new NotificationOutbox(store), {
       local: new LocalNotificationAdapter(),
       telegram: workspaceTelegramAdapter(new TelegramClient({ token: (broker ? broker.telegramToken() : process.env.HOUGE_TELEGRAM_BOT_TOKEN) ?? "" }), process.cwd())
-    });
+    }, { recorder: storeRecorder(store) });
     console.log(JSON.stringify(await dispatcher.dispatchOnce("cli-send-outbox"), null, 2));
   } finally {
     store.close();
