@@ -321,14 +321,14 @@ describe("PlannerSupervisor — detached turns (spec §7)", () => {
   });
 
   it("strips the attach marker and keeps only paths inside the workspace", () => {
-    expect(parseAttachments("done\n[[attach: out/report.pdf]]", "/w")).toEqual({ text: "done", attachments: ["/w/out/report.pdf"] });
-    expect(parseAttachments("x\n[[attach: ../../etc/passwd]]", "/w")).toEqual({ text: "x", attachments: [] });
+    expect(parseAttachments("done\n[[attach: out/report.pdf]]", "/w")).toEqual({ text: "done", attachments: ["/w/out/report.pdf"], refused: [] });
+    expect(parseAttachments("x\n[[attach: ../../etc/passwd]]", "/w")).toEqual({ text: "x", attachments: [], refused: ["/etc/passwd"] });
   });
 
   it("refuses an attachment that is a symlink out of the workspace (a secret must never ride a reply)", () => {
     const d = mkdtempSync(join(tmpdir(), "hat-")); cleanups.push(() => rmSync(d, { recursive: true, force: true }));
     const ws = join(d, "ws"); mkdirSync(ws); writeFileSync(join(d, "secret"), "k"); symlinkSync(join(d, "secret"), join(ws, "leak"));
-    expect(parseAttachments("x\n[[attach: leak]]", ws)).toEqual({ text: "x", attachments: [] });
+    expect(parseAttachments("x\n[[attach: leak]]", ws)).toEqual({ text: "x", attachments: [], refused: [join(ws, "leak")] });
   });
 });
 

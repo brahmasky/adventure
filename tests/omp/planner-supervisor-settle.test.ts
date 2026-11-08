@@ -74,6 +74,15 @@ describe("passes and the continuation (spec §3.5)", () => {
     h.emit({ type: "agent_start" }); h.say("Here is the full report.\n[[attach: r.txt]]"); h.emit({ type: "agent_end" }); await sup.whenIdle();
     expect(outcome.done[0]).toMatchObject({ text: "Here is the full report.", attachments: [join(ws, "r.txt")] });
   });
+  it("R7 §4.1: delivered() keeps the accepted list and dedupes the refused one across passes (same used set)", async () => {
+    const { session, h } = held(); const { store, sup, outcome, data } = harness(session);
+    const ws = chatWorkspace(data, "42"); mkdirSync(ws, { recursive: true }); writeFileSync(join(ws, "r.txt"), "r");
+    const run_id = createQueuedTurnRun(store); sup.submit(req(run_id)); await running(sup, h);
+    h.say("Report.\n[[attach: r.txt]]\n[[attach: ../x]]"); sendBack(sup);
+    h.emit({ type: "agent_start" }); h.say("Full report.\n[[attach: ../x]]"); h.emit({ type: "agent_end" }); await sup.whenIdle();
+    expect(outcome.done[0]).toMatchObject({ text: "Full report.", attachments: [join(ws, "r.txt")] });
+    expect(Object.keys(outcome.done[0] as object)).not.toContain("refused"); // 5-A: refused never reaches outcome.complete
+  });
   it("an aborted assistant message after a send-back is not stored; an abort in pass 1 delivers pass 0 (A9: a complete pass 0 is never lost)", async () => {
     const { session, h } = held(); const { store, sup, outcome } = harness(session);
     const run_id = createQueuedTurnRun(store); sup.submit(req(run_id)); await running(sup, h);

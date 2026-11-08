@@ -1613,8 +1613,11 @@ export class PlannerSupervisor {
   private delivered(t: Turn): Delivered {
     // spec §3.5: a model error in pass 1 completes with pass 0 alone (an errored fragment is never delivered)
     const used = t.continuationFailed ? t.passes.slice(0, 1) : t.passes;
-    const attachments = [...new Set(used.flatMap((p) => parseAttachments(p.final, this.workspace()).attachments))];
-    return { text: parseAttachments(replyOfPasses(used), this.workspace()).text, attachments };
+    const ws = this.workspace();
+    const parsed = used.map((p) => parseAttachments(p.final, ws));
+    const attachments = [...new Set(parsed.flatMap((p) => p.attachments))];
+    const refused = [...new Set(parsed.flatMap((p) => p.refused))]; // spec R7 §4.1: the same used set and dedupe as the accepted list
+    return { text: parseAttachments(replyOfPasses(used), ws).text, attachments, refused };
   }
 
   private finishSuccess(t: Turn, delivered: Delivered): void {
