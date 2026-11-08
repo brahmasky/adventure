@@ -682,3 +682,7 @@ The clean-room merge rebuilt `dist/` (new `omp/shell-wrapper.sh`) and the kickst
 ## 2026-11-08 — Block only repeats
 - **A rule removed exposes the rule behind it.** Accepted proposals blocking the pair hid `lessonRewrite`: once the block went, a different second lesson within 30 days would have reached the rewrite rule and become a card, against Paco's intent; the rewrite moved behind the repeat check (near-copies only, ruling R1'). Before planning a removal, trace what the removed gate used to keep from running.
 - **A gate that counts groups counts every planted group.** Case 8's "5 groups from 4 topics" INCONCLUSIVE was case 4's correction sharing the tick, not the embedder.
+
+## 2026-11-08 — Remainder R7 (attach.path)
+- **A spec's "not protected" claim is checked against `PROTECTED_FILES`, not assumed.** The R7 spec called the Telegram adapter self-writable; it was already protected since `6ac4b0d2` (defect D1). The plan grepped the guard before touching it.
+- **An ADR sentence that adds an exception is checked against its neighbours.** Appending the settle-stage rows to rule 3.2 would have left "only while the turn is live", "follow the incoming run's successful claim" and the heading "a lost turn writes no row" contradicting it; the plan review found all three, and the ADR test asserts both the qualified wording and the absence of the bare one.

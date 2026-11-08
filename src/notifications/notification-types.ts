@@ -1,3 +1,4 @@
+import type { AttachCheck } from "./attachment-check.js";
 import type { NotifyTarget } from "../domain/types.js";
 import type { ChatTopic, LogTopic } from "./topics.js";
 
@@ -76,6 +77,8 @@ export interface NotificationDispatchRecord {
 
 export interface NotificationSendResult {
   provider_message_id: string;
+  /** The attachment checks this delivery made (spec R7 §4.2): enums only, never a path; absent when the payload carried none. */
+  attach_checks?: readonly AttachCheck[];
 }
 
 export interface NotificationAdapter {

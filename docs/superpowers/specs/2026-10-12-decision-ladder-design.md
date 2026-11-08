@@ -404,6 +404,8 @@ entry, not a locked rule inside it. Remainder order and slices: spec `2026-10-30
 
 **Note (2026-11-03, remainder R6, Paco's Decisions 1-A, 2-A; ADR 0030 amendment):** A21 `lookup.rewrite` and `lookup.thin` (the lane's two decisions; the lane bodies stay mechanics) and A22 `turn.model` (the planner pin only; resolution, effort clamp, the spawn model and other seats stay mechanics) are registered (stage `pre_model`), rule-only. Spec `2026-11-03-ladder-remainder-r6-lookup-model-design.md`.
 
+**Note (2026-11-08, remainder R7, Paco's Decisions 1-A, 2-A, 3-A, 4-A, 5-A; ADR 0034 amendment):** E2+E11 `attach.path` (locked) is registered (stage `settle`), rule-only: refusals at parse (`marker_outside`) and at send (ten reasons, written by the dispatcher after `markDelivered`); the send predicate in the protected `notifications/attachment-check.ts`. Every §6.1 row now has an entry. Spec `2026-11-08-ladder-remainder-r7-attach-path-design.md`.
+
 ### 6.2 Move, don't improve
 
 For every migrated entry:

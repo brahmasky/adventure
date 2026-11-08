@@ -1,5 +1,6 @@
 import type { DecisionRow, RunStore } from "../run/run-store.js";
 import { resolveImproveEnabled } from "../improve/flag.js";
+import { ATTACH_PATH_ID } from "./entries/attach-path.js";
 import { SETTLE_HEALTH_REASONS, TURN_SETTLE_ID } from "./entries/turn-settle.js";
 import { TRUST_ORDER, rankOf, type TrustLevel } from "./entries/turn-trust.js";
 import type { DecidedBy } from "./types.js";
@@ -28,6 +29,15 @@ function settledRows(store: RunStore, rows: readonly DecisionRow[]): DecisionRow
   });
 }
 
+/** Spec R7 §4.3: attach.path's refusals per seam — a fail-rung row names no seam (failed), marker_outside is parse, every other refusal is send; accepted rows are not counted. */
+// a fail-rung row's reason_code is null (decide.ts: { failed: "threw" } carries no reason), so `rung !== "fail"` below is belt and braces; kept so a future reason on fail rows cannot leak into parse
+function attachSuffix(rows: readonly DecisionRow[]): string {
+  const refused = rows.filter((r) => r.entry_id === ATTACH_PATH_ID && r.verdict === "refuse");
+  const failed = refused.filter((r) => r.rung === "fail").length;
+  const parse = refused.filter((r) => r.rung !== "fail" && r.reason_code === "marker_outside").length;
+  return ` (parse ${parse} · send ${refused.length - failed - parse} · failed ${failed})`;
+}
+
 /** Per entry, counts by decider under the display labels; `/status` prints these lines. */
 export function countLines(rows: readonly DecisionRow[]): string[] {
   const by = new Map<string, Map<string, number>>();
@@ -40,7 +50,7 @@ export function countLines(rows: readonly DecisionRow[]): string[] {
     const total = [...m.values()].reduce((a, b) => a + b, 0);
     const known = RUNG_ORDER.filter((k) => m.has(k)).map((k) => `${RUNG_LABEL[k]} ${m.get(k)}`);
     const other = [...m.keys()].filter((k) => !(RUNG_ORDER as readonly string[]).includes(k)).sort().map((k) => `${k} ${m.get(k)}`);
-    return `· ${id} ${total} — ${[...known, ...other].join(" · ")}${id === "secret.redact" ? " (final, failure and evolution reports only)" : ""}`;
+    return `· ${id} ${total} — ${[...known, ...other].join(" · ")}${id === "secret.redact" ? " (final, failure and evolution reports only)" : ""}${id === ATTACH_PATH_ID ? attachSuffix(rows) : ""}`;
   });
 }
 

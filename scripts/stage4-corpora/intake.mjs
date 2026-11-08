@@ -70,6 +70,22 @@ function hashOk(d, r) {
 }
 const maskIdHashes = (d, db) => Object.fromEntries(Object.entries(db).map(([t, rows]) => [t, rows.map((r) =>
   typeof r.payload_hash === "string" && RANDOM_ID.test(String(r.payload_json)) && hashOk(d, r) ? { ...r, payload_hash: "hash-of-payload-ok" } : r)]));
+/**
+ * Named exclusion, item `exempt:decision_review` only: the old-review tap's reply text changed in af0bce28 (improve-auto-apply, merged b78ba3b1: "old review taps
+ * answer closed"; the r1 base build replies with the pre-digest-removal text). Only the text differs, so the payload is masked on both sides once it is exactly
+ * {text}; the new side's text is pinned to REVIEW_CLOSED_TEXT. R7 does not touch this reply.
+ */
+const REVIEW_CLOSED = "This review has closed.";
+function maskReviewReply(d, db, item) {
+  if (item.key !== "exempt:decision_review" || !db.notification_outbox) return db;
+  const rows = db.notification_outbox.map((r) => {
+    const p = JSON.parse(r.payload_json);
+    if (Object.keys(p).join() !== "text") return r;
+    if (d.dir === DISTS.new && p.text !== REVIEW_CLOSED) throw new Error("exempt:decision_review: the new build's reply is not REVIEW_CLOSED_TEXT");
+    return { ...r, payload_json: "review-reply-masked", payload_hash: "review-reply-masked" };
+  });
+  return { ...db, notification_outbox: rows };
+}
 const isClockKey = (k) => /(_at|_since|^since|^now)$/.test(k);
 
 // Coverage self-test: the dump must hold, per table, exactly the rows the DB holds (minus the intentionally dropped intake decisions rows),
@@ -135,7 +151,7 @@ async function project(d, item) {
       const want = tableCounts(store);
       checkCoverage(db, want);
       omittedRowSelfTest(db, want);
-      return { ...scrubIds(relabelClocks({ results, db: maskIdHashes(d, db) }, isClockKey)), intake, r2, __strip: ["intake", "r2"] };
+      return { ...scrubIds(relabelClocks({ results, db: maskReviewReply(d, maskIdHashes(d, db), item) }, isClockKey)), intake, r2, __strip: ["intake", "r2"] };
     }));
   } finally { try { store?.close(); } catch { /* closed */ } }
 }

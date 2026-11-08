@@ -5,7 +5,7 @@
 //                 sleepMs?: number, usage?: {input:number, output:number} }
 //   rpc mode also reads: rpcText, rpcEcho (reply carries the prompt), rpcNoManifest (skip the bridge
 //   manifest at startup), rpcSteerError (answer a steer success:false with this text), rpcIgnoreAbort (ack an abort but never end the turn), rpcFinishOnSteer (hold the reply until a steer arrives), rpcCall: { tool, args } (one bridge `call` after the prompt; its content is
-//   appended to the reply as " CALL:<content>"), rpcCalls: [{ tool, args }, …] (the same, in order, toolCallIds tc1…tcN), rpcHangAfterPrompt, rpcNoReply, rpcExitAfterPrompt, …
+//   appended to the reply as " CALL:<content>"), rpcCalls: [{ tool, args }, …] (the same, in order, toolCallIds tc1…tcN), rpcHangAfterPrompt, rpcAbortAfterText (the reply's text arrives, then omp ends the turn aborted: a lost turn that carried text; R7), rpcNoReply, rpcExitAfterPrompt, …
 // Top-level rpcNewSessionCancelled: true answers new_session {cancelled:true}; rpcNewSessionError: "<text>" answers it success:false;
 // rpcNewSessionReply: <any> answers it success:true with exactly that data (a malformed reply) (memory A1 §6).
 // Top-level `rpcBadModelAtStart: ["<provider/model>", …]` (rpc AND -p modes): when --model matches, the fake does what
@@ -121,7 +121,7 @@ async function runRpc() {
       usage: { input: 100, output: 10, cacheRead: 0, cacheWrite: 0 }, stopReason: b.rpcErrorText ? "error" : "stop",
       ...(b.rpcErrorText ? { errorMessage: b.rpcErrorText } : {}) };
     out({ type: "turn_start" }); out({ type: "message_end", message: msg });
-    out({ type: "turn_end", message: msg }); out({ type: "agent_end", messages: [msg] });
+    out({ type: "turn_end", message: msg }); out({ type: "agent_end", messages: [msg], ...(b.rpcAbortAfterText ? { aborted: true } : {}) });
   };
   let buf = "";
   process.stdin.on("data", (d) => {

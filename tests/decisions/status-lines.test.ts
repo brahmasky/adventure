@@ -24,6 +24,16 @@ describe("countLines / settleHealthLine / injectionCounts", () => {
   });
 });
 
+describe("attach.path suffix", () => {
+  it("R7 §4.3: attach.path's line splits its refusals by seam; a fail-rung row is failed; an accepted row changes no count", () => {
+    const a = (o: Partial<DecisionInsert>) => row({ entry_id: "attach.path", stage: "settle", rung: "rule", verdict: "refuse", p: null, ...o });
+    const rows = [a({ reason_code: "marker_outside" }), a({ reason_code: "too_large" }), a({ reason_code: "workspace_unverified" }), a({ reason_code: "over_count" }),
+      a({ rung: "fail", reason_code: null }), a({ verdict: "send", reason_code: "checked" }), a({ verdict: "send", reason_code: "parsed" })];
+    expect(countLines(rows)).toEqual(["· attach.path 7 — code 6 · fallback 1 (parse 1 · send 3 · failed 1)"]);
+    expect(countLines([a({ reason_code: "marker_outside" })])).toEqual(["· attach.path 1 — code 1 (parse 1 · send 0 · failed 0)"]);
+  });
+});
+
 describe("improvementLine", () => {
   it("is null on a quiet week with the tick on", () => { expect(improvementLine(RunStore.openInMemory(), NOW, {})).toBeNull(); });
   it("names the tick off, unattached families, silent families, deferrals, wiki-disarmed topics, inapplicable tops and lessons not holding, non-zero parts only", () => {

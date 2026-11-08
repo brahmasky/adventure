@@ -10,6 +10,7 @@ import { INTAKE_BARE_ACK } from "../decisions/entries/intake-bare-ack.js";
 import { INTAKE_STEER_OR_QUEUE, type SteerOrQueueInput, type SteerReason } from "../decisions/entries/intake-steer-or-queue.js";
 import { CRASH_LIMIT, CRASH_WINDOW_MS, PLANNER_CRASH_GUARD, type CrashGuardInput } from "../decisions/entries/planner-crash-guard.js";
 import { TURN_RETRY, type RetryInput } from "../decisions/entries/turn-retry.js";
+import { ATTACH_PATH } from "../decisions/entries/attach-path.js";
 import { CONTEXT_LESSONS } from "../decisions/entries/context-lessons.js";
 import { TURN_MODEL, type ModelInput } from "../decisions/entries/turn-model.js";
 import type { DecisionRecorder, Entry } from "../decisions/types.js";
@@ -429,6 +430,18 @@ export class PlannerSupervisor {
   private record<S, V extends string>(entry: Entry<S, V>, s: S, run_id: string): void {
     const recorder = this.d.recorder;
     if (recorder) decideSync(entry, s, { run_id, tool_call_id: null, recorder });
+  }
+
+  /** record() in its own catch (spec R7 §4.4): decideSync throws on a non-rule rung before its recorder's catch, and a settle-stage consult must never skip recordChatTurn or routeEnd. */
+  private recordSafe<S, V extends string>(entry: Entry<S, V>, s: S, run_id: string): void {
+    try { this.record(entry, s, run_id); } catch (e) { console.error(`planner supervisor: ${entry.id.replace(".", "_")}_record_failed (${errorCode(e)})`); }
+  }
+
+  /** attach.path at parse (spec R7 §4.0, 5-A): one consult per distinct marker path on the consulting turn, accepted first, then refused; best-effort terminal records. */
+  private recordAttach(t: Turn, d: Delivered): void {
+    if (t.laneEnded) return; // lane replies are out of scope (spec R7 §2): the parse row is for non-lane turns; the status lane is code-rendered and emits no marker
+    d.attachments.forEach(() => this.recordSafe(ATTACH_PATH, { seam: "parse", check: "accepted" }, t.req.run_id));
+    d.refused.forEach(() => this.recordSafe(ATTACH_PATH, { seam: "parse", check: "marker_outside" }, t.req.run_id));
   }
 
   /** The nudged run completes on its own, code-owned, with zero tool calls; the waiting turn is untouched. */
@@ -1613,8 +1626,11 @@ export class PlannerSupervisor {
   private delivered(t: Turn): Delivered {
     // spec §3.5: a model error in pass 1 completes with pass 0 alone (an errored fragment is never delivered)
     const used = t.continuationFailed ? t.passes.slice(0, 1) : t.passes;
-    const attachments = [...new Set(used.flatMap((p) => parseAttachments(p.final, this.workspace()).attachments))];
-    return { text: parseAttachments(replyOfPasses(used), this.workspace()).text, attachments };
+    const ws = this.workspace();
+    const parsed = used.map((p) => parseAttachments(p.final, ws));
+    const attachments = [...new Set(parsed.flatMap((p) => p.attachments))];
+    const refused = [...new Set(parsed.flatMap((p) => p.refused))]; // spec R7 §4.1: the same used set and dedupe as the accepted list
+    return { text: parseAttachments(replyOfPasses(used), ws).text, attachments, refused };
   }
 
   private finishSuccess(t: Turn, delivered: Delivered): void {
@@ -1629,6 +1645,7 @@ export class PlannerSupervisor {
     const base = { worker_id: t.worker, text: sent, duration_ms: Date.now() - t.startedAt, tool_calls: t.active.budget.usage().tool_calls };
     outcome.complete({ ...base, run_id: t.req.run_id, attachments, ...(t.laneButtons ? { buttons: t.laneButtons } : {}) });
     for (const m of t.merged) outcome.complete({ ...base, run_id: m, merged_into: t.req.run_id, attachments: [] });
+    this.recordAttach(t, delivered); // spec R7 §4.0: after outcome.complete, before recordChatTurn; kept when the run later fails to stage or loses its claim
     store.recordChatTurn({ chat_id: chatId, run_id: t.req.run_id, role: "assistant", text, intent: assistantIntentFor(text, t.usedTool) });
     this.routeEnd(t, "planner_done");
   }

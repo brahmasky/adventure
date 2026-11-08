@@ -1,9 +1,11 @@
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { CoreWorker } from "../../src/core/core-worker.js";
+import { chatWorkspace } from "../../src/omp/workspace.js";
 import { RunStore } from "../../src/run/run-store.js";
 import { pinEnabledFlags, pinOmpEnv, shortTmp, useFakeOmp } from "../helpers/omp-env.js";
-import { fakeLog, ompWorker, until } from "../helpers/omp-worker.js";
+import { drainOutbox, fakeLog, ompWorker, until } from "../helpers/omp-worker.js";
 import { createQueuedTurnRun } from "../helpers/runs.js";
 
 pinOmpEnv();
@@ -102,5 +104,23 @@ describe("production wiring: CoreWorker passes its recorder to the supervisor", 
     const run = createQueuedTurnRun(store, "first"); worker.submitTurn(run);
     await until(() => store.getRunState(run) === "completed");
     expect(store.listDecisionsForRun(run).filter((r) => r.entry_id === "turn.model").map((r) => [r.verdict, r.reason_code])).toEqual([["fallback", "next_leg"]]);
+  });
+  it("R7 (c): a production turn whose reply names an inside and an outside file writes one attach.path marker_outside row; ompComplete gets the inside file", async () => {
+    useFakeOmp({ "*": { rpcText: "ok\n[[attach: in.txt]]\n[[attach: ../outside.txt]]" } }, tmp.dir);
+    worker = ompWorker(store, tmp.dir);
+    const ws = chatWorkspace(tmp.dir, "555"); mkdirSync(ws, { recursive: true }); writeFileSync(join(ws, "in.txt"), "i");
+    const run = createQueuedTurnRun(store, "send it"); worker.submitTurn(run);
+    await until(() => store.getRunState(run) === "completed");
+    expect(store.listDecisionsForRun(run).filter((r) => r.entry_id === "attach.path").map((r) => [r.verdict, r.reason_code, r.run_id])).toEqual([["refuse", "marker_outside", run]]);
+    const payload = drainOutbox(store).get(`${run}:final_report`) as { text: string; attachments?: string[] };
+    expect(payload.attachments).toEqual([join(ws, "in.txt")]);
+    expect(payload.text).not.toContain("[[attach:");
+  });
+  it("R7 (c'): a production turn whose reply carries a refused marker and is then aborted by omp takes the failure arm and writes no attach.path row", async () => {
+    useFakeOmp({ "*": { rpcText: "ok\n[[attach: ../outside.txt]]", rpcAbortAfterText: true } }, tmp.dir);
+    worker = ompWorker(store, tmp.dir);
+    const run = createQueuedTurnRun(store, "send it"); worker.submitTurn(run);
+    await until(() => store.getRunState(run) === "failed");
+    expect(store.listDecisionsForRun(run).filter((r) => r.entry_id === "attach.path")).toEqual([]);
   });
 });

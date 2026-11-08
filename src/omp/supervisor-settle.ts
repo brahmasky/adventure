@@ -1,6 +1,6 @@
 // turn.settle's supervisor-side glue (2b-i §3.5–3.6), as functions over a narrow context (senior plan S: beside the
 // supervisor, not inside its 1 400 lines).
-import { parseAttachments } from "./attachments.js"; // a leaf module (Task 9 moved it out of the supervisor): no runtime cycle
+import { parseAttachments } from "./attachments.js"; // a leaf module apart from the protected attachment leaf it imports (notifications/attachment-check.ts → omp/workspace.ts): no runtime cycle
 import type { Pass, PlannerSessionLike } from "./planner-supervisor.js"; // types only: no runtime cycle
 import { finalAuditReasons, reaskAfterDelivery, settleNote, type SettleDeps } from "./settle-judge.js";
 import { redactForJudge } from "../decisions/egress.js";
@@ -87,7 +87,7 @@ export function writeSettleOutcomes(ctx: SettleCtx, t: SettleTurn): void {
 }
 
 /** What Paco received: the reply text after attachment parsing, and the attachments sent with it. */
-export interface Delivered { text: string; attachments: readonly string[] }
+export interface Delivered { text: string; attachments: readonly string[]; /** attach.path at parse (spec R7 §4.1): refused marker paths, deduped; never reaches outcome.complete. */ refused: readonly string[] }
 
 /**
  * The final-pass audit (2b-R10): the code checks on the DELIVERED reply (2b-i final review A6: an empty pass 1 delivers pass 0,

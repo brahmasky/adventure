@@ -4,7 +4,7 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-export const DISTS = { new: null, s3: null, s4a: null, s4b: null, r1: null, r2: null, r3: null, r4: null, r5: null, r6: null }; // filled by the CLI
+export const DISTS = { new: null, s3: null, s4a: null, s4b: null, r1: null, r2: null, r3: null, r4: null, r5: null, r6: null, r7: null }; // filled by the CLI
 export const CORPORA = [];                               // filled by the CLI from scripts/stage4-corpora/*.mjs
 /** Async teardown callbacks (a corpus's open sockets); the CLI runs them in a finally, on success and on error alike. */
 export const closers = [];
@@ -44,7 +44,11 @@ const EXPORTS = {
   PlannerSupervisor: "omp/planner-supervisor.js", lessonSetFingerprint: "run/lesson-render.js",
   parseModelString: "omp/model-string.js", selectorKey: "omp/model-roles.js",
   // Slice R6: the planner session's own error class (isModelRefusal checks instanceof, so a scripted refusal must be that dist's) and the lookup lane
-  PlannerRpcError: "omp/planner-session.js", runLookupLane: "core/lanes/lookup-lane.js"
+  PlannerRpcError: "omp/planner-session.js", runLookupLane: "core/lanes/lookup-lane.js",
+  // Slice R7: the delivery fixture (scripts/stage4-delivery-fixture.mjs) and the attach.path entry (null on an old dist)
+  NotificationOutbox: "notifications/notification-outbox.js", NotificationDispatcher: "notifications/notification-dispatcher.js",
+  TelegramNotificationAdapter: "notifications/telegram-notification-adapter.js", attachmentRefusedLine: "notifications/telegram-notification-adapter.js",
+  workspaceTelegramAdapter: "telegram/telegram-poll-runner.js", chatWorkspace: "omp/workspace.js", ATTACH_PATH: "decisions/entries/attach-path.js"
 };
 const distCache = new Map();
 
@@ -159,22 +163,25 @@ export const R4_IDS = ["planner.crash_guard", "turn.retry"];
 export const R5_IDS = ["context.recall", "context.catch_up", "context.lessons", "turn.clarify_cap"];
 /** The three Slice R6 rows: the lookup lane's rewrite and thin judgements (written at the lane's end) and the planner supervisor's turn.model (written at each pin-walk consult). */
 export const R6_IDS = ["lookup.rewrite", "lookup.thin", "turn.model"];
+/** The Slice R7 row: attach.path (parse refusals in finishSuccess; send refusals by the dispatcher after markDelivered). */
+export const R7_IDS = ["attach.path"];
 /**
  * Decision rows one pair's NEW build records and the OLD build cannot: excluded from both sides before comparing (per old build, P1).
- * The branch build is the new side of every pair, so R2_IDS, R3_IDS, R4_IDS, R5_IDS and R6_IDS are in every set. The corpora that intake scheduled turns through Gateway
+ * The branch build is the new side of every pair, so R2_IDS, R3_IDS, R4_IDS, R5_IDS, R6_IDS and R7_IDS are in every set. The corpora that intake scheduled turns through Gateway
  * (R1 intake.mjs `source: "schedule"` items, 4B memadmit.mjs) would otherwise show a spurious `restrict` row in a raw-decisions read;
  * they assert that row exactly instead (P10). 4C's schedule.mjs never touches Gateway.
  */
 export const NEW_ROW_IDS = {
-  s3: new Set(["approval.bind", "secret.redact", ...INTAKE_IDS, ...R2_IDS, ...R3_IDS, ...R4_IDS, ...R5_IDS, ...R6_IDS]),
-  s4a: new Set(["approval.bind", "secret.redact", ...INTAKE_IDS, ...R2_IDS, ...R3_IDS, ...R4_IDS, ...R5_IDS, ...R6_IDS]),
-  s4b: new Set(["memory.lesson_admit", "schedule.admit", "memory.correct_preflight", ...INTAKE_IDS, ...R2_IDS, ...R3_IDS, ...R4_IDS, ...R5_IDS, ...R6_IDS]),
-  r1: new Set([...INTAKE_IDS, ...R2_IDS, ...R3_IDS, ...R4_IDS, ...R5_IDS, ...R6_IDS]),
-  r2: new Set([...R2_IDS, ...R3_IDS, ...R4_IDS, ...R5_IDS, ...R6_IDS]),
-  r3: new Set([...R3_IDS, ...R4_IDS, ...R5_IDS, ...R6_IDS]),
-  r4: new Set([...R4_IDS, ...R5_IDS, ...R6_IDS]),
-  r5: new Set([...R5_IDS, ...R6_IDS]),
-  r6: new Set(R6_IDS)
+  s3: new Set(["approval.bind", "secret.redact", ...INTAKE_IDS, ...R2_IDS, ...R3_IDS, ...R4_IDS, ...R5_IDS, ...R6_IDS, ...R7_IDS]),
+  s4a: new Set(["approval.bind", "secret.redact", ...INTAKE_IDS, ...R2_IDS, ...R3_IDS, ...R4_IDS, ...R5_IDS, ...R6_IDS, ...R7_IDS]),
+  s4b: new Set(["memory.lesson_admit", "schedule.admit", "memory.correct_preflight", ...INTAKE_IDS, ...R2_IDS, ...R3_IDS, ...R4_IDS, ...R5_IDS, ...R6_IDS, ...R7_IDS]),
+  r1: new Set([...INTAKE_IDS, ...R2_IDS, ...R3_IDS, ...R4_IDS, ...R5_IDS, ...R6_IDS, ...R7_IDS]),
+  r2: new Set([...R2_IDS, ...R3_IDS, ...R4_IDS, ...R5_IDS, ...R6_IDS, ...R7_IDS]),
+  r3: new Set([...R3_IDS, ...R4_IDS, ...R5_IDS, ...R6_IDS, ...R7_IDS]),
+  r4: new Set([...R4_IDS, ...R5_IDS, ...R6_IDS, ...R7_IDS]),
+  r5: new Set([...R5_IDS, ...R6_IDS, ...R7_IDS]),
+  r6: new Set([...R6_IDS, ...R7_IDS]),
+  r7: new Set(R7_IDS)
 };
 
 /** Every ordinary table: sqlite_* internals, virtual tables and their shadow tables (`<virtual>_*`) as sqlite_master reports them are excluded; a name alone (e.g. "_fts") never excludes one. */
@@ -196,6 +203,9 @@ export const LOUD_DEGRADATION_NEW = {
   plannerSessionStateKeys: ["fresh_requested_at", "transcript_trust_at"]
 };
 
+/** auto-apply 2026-11-07 (8ff30da6) column the r1–r6 merge-base builds never had; R7 does not touch improve_signals. Dropped BY NAME from every dump (P32; never a pattern). No schema_migrations row came with it. */
+export const IMPROVE_AUTO_APPLY_NEW = { improveSignalsKeys: ["origin"] };
+
 /**
  * Every table's rows in rowid order, virtual tables, their shadows and sqlite_* excluded (regularTables): the whole-DB projection (spec R1 §6). Raw column
  * values, `*_json` strings NOT parsed (byte-identical compare; relabelClocks reaches clocks inside them textually). `decisions` rows
@@ -211,6 +221,7 @@ export function dumpDb(store, { dropDecisionIds = [] } = {}) {
     if (name === "decisions") rows = rows.filter((r) => !drop.has(r.entry_id));
     if (name === "schema_migrations") rows = rows.filter((r) => !LOUD_DEGRADATION_NEW.migrations.includes(r.version));
     if (name === "planner_session_state") rows = rows.map((r) => Object.fromEntries(Object.entries(r).filter(([k]) => !LOUD_DEGRADATION_NEW.plannerSessionStateKeys.includes(k))));
+    if (name === "improve_signals") rows = rows.map((r) => Object.fromEntries(Object.entries(r).filter(([k]) => !IMPROVE_AUTO_APPLY_NEW.improveSignalsKeys.includes(k))));
     if (rows.length) out[name] = rows.map((r) => ({ ...r }));
   }
   return out;

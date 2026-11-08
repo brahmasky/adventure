@@ -125,7 +125,8 @@ export const PROTECTED_FILES: readonly string[] = [
   "src/omp/extension/houge.ts",
   "scripts/copy-omp-assets.mjs",
   "src/llm/providers/omp.ts", // the one-shot seats: `--no-tools` on the reader, the child env
-  "src/notifications/telegram-notification-adapter.ts", // the attachment check (workspace re-verification, C2)
+  "src/notifications/telegram-notification-adapter.ts", // the send loop, upload and follow-up line (the predicate is attachment-check.ts below; C2 swap check)
+  "src/notifications/attachment-check.ts", // attach.path's send predicate (locked; R7 Decision 4-A): checkAttachment/overCount, one inside
   "src/run/git-hardened.ts", // daemon-side git without user/system config, fsmonitor or hooks (A3)
   // ── Improvement loop (decision ladder 2b-ii; Paco's word 2026-10-22) ──
   "src/skills/promote.ts", // nothing reaches the active skills tree without Paco's tap: the promotion gate itself

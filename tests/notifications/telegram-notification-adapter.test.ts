@@ -220,4 +220,52 @@ describe("TelegramNotificationAdapter — omp turn attachments (Task 13, ruling 
     expect(docs).toEqual([]);
     expect(texts[1]!.text).toContain(attachmentRefusedLine("x.pdf", "not_a_file"));
   }, 2_000);
+
+  it("R7 §4.2: send() returns attach_checks — the first five checks, then ONE over_count for the whole overflow; a line per overflow path as today", async () => {
+    const seen: string[] = [];
+    const { ws, docs, texts, send } = setup((p) => { seen.push(p); });
+    const files = Array.from({ length: 9 }, (_, i) => { const p = join(ws, `f${i}.txt`); writeFileSync(p, `c${i}`); return p; });
+    const r = await send(files);
+    expect(r).toEqual({ provider_message_id: "telegram:1", attach_checks: ["ok", "ok", "ok", "ok", "ok", "over_count"] });
+    expect(docs.map((d) => d.filename)).toEqual(["f0.txt", "f1.txt", "f2.txt", "f3.txt", "f4.txt"]);
+    expect(seen).toEqual(files.slice(0, 5)); // paths past the fifth are never opened
+    expect(texts[1]!.text).toBe(["f5.txt", "f6.txt", "f7.txt", "f8.txt"].map((n) => `⚠ Not attached: ${n} (more than 5 files)`).join("\n"));
+  });
+  it("R7 §4.2: line bytes are today's for the split reasons; a refused file never reaches sendDocument", async () => {
+    const { ws, docs, texts, send } = setup();
+    writeFileSync(join(ws, "big.bin"), ""); truncateSync(join(ws, "big.bin"), MAX_ATTACHMENT_BYTES + 1);
+    const r = await send([join(ws, "big.bin"), join(ws, "gone.txt")]);
+    expect(r).toEqual({ provider_message_id: "telegram:1", attach_checks: ["too_large", "not_found"] });
+    expect(docs).toEqual([]);
+    expect(texts[1]!.text).toBe("⚠ Not attached: big.bin (over 20 MB)\n⚠ Not attached: gone.txt (could not be read)");
+  });
+  it("R7 §4.2: no workspace resolver → workspace_unverified, line text 'outside my workspace' byte for byte", async () => {
+    const sent: string[] = [];
+    const adapter = new TelegramNotificationAdapter({ sendMessage: async (i) => { sent.push(i.text); return { message_id: 3 }; }, sendDocument: async () => { throw new Error("must not send"); } });
+    const r = await adapter.send({ ...dispatch("x"), payload: { text: "x", attachments: ["/tmp/whatever.txt"] } });
+    expect(r).toEqual({ provider_message_id: "telegram:3", attach_checks: ["workspace_unverified"] });
+    expect(sent[1]).toBe("⚠ Not attached: whatever.txt (outside my workspace)");
+  });
+  it("R7 §2: send_failed is execution — the check was ok; a client without sendDocument is unsupported", async () => {
+    const root = mkdtempSync(join(tmpdir(), "hna-")); dirs.push(root);
+    const ws = join(root, "workspace", "chat-222"); mkdirSync(ws, { recursive: true }); writeFileSync(join(ws, "a.txt"), "a");
+    const texts: string[] = [];
+    const failing = new TelegramNotificationAdapter({ sendMessage: async (i) => { texts.push(i.text); return { message_id: 4 }; }, sendDocument: async () => { throw new Error("400"); } }, { workspaceFor: () => ws });
+    expect(await failing.send({ ...dispatch("x"), payload: { text: "x", attachments: [join(ws, "a.txt")] } })).toEqual({ provider_message_id: "telegram:4", attach_checks: ["ok"] });
+    expect(texts[1]).toBe("⚠ Not attached: a.txt (Telegram refused the upload)");
+    const noDocs = new TelegramNotificationAdapter({ sendMessage: async () => ({ message_id: 5 }) }, { workspaceFor: () => ws });
+    expect(await noDocs.send({ ...dispatch("x"), payload: { text: "x", attachments: [join(ws, "a.txt")] } })).toEqual({ provider_message_id: "telegram:5", attach_checks: ["unsupported"] });
+  });
+  it("R7 Rev 1.1 (codex B1): without sendDocument the workspace resolver is never called — a throwing resolver still yields unsupported and the delivery resolves", async () => {
+    let calls = 0;
+    const adapter = new TelegramNotificationAdapter({ sendMessage: async () => ({ message_id: 6 }) }, { workspaceFor: () => { calls += 1; throw new Error("resolver down"); } });
+    await expect(adapter.send({ ...dispatch("x"), payload: { text: "x", attachments: ["/tmp/a.txt", "/tmp/b.txt"] } }))
+      .resolves.toEqual({ provider_message_id: "telegram:6", attach_checks: ["unsupported", "unsupported"] });
+    expect(calls).toBe(0);
+  });
+  it("R7 §4.2: an all-accepted payload returns its checks although no follow-up line is sent", async () => {
+    const { ws, texts, send } = setup(); writeFileSync(join(ws, "a.txt"), "a");
+    expect(await send([join(ws, "a.txt")])).toEqual({ provider_message_id: "telegram:1", attach_checks: ["ok"] });
+    expect(texts).toHaveLength(1);
+  });
 });

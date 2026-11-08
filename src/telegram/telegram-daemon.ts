@@ -174,7 +174,7 @@ function isAbortError(err: unknown): boolean {
 
 /** The daemon's one sender: a delivered terminal notice settles that run's sealed trial and standing uses at once (Stage 4A §7); the schedule tick's sweep is the net. */
 export function createOutboxDispatcher(store: RunStore, adapters: NotificationAdapters): NotificationDispatcher {
-  return new NotificationDispatcher(new NotificationOutbox(store), adapters, { onDelivered: (record) => settleDeliveredReport(store, record) });
+  return new NotificationDispatcher(new NotificationOutbox(store), adapters, { onDelivered: (record) => settleDeliveredReport(store, record), recorder: storeRecorder(store) }); // attach.path at send (R7 §4.4)
 }
 
 /**
