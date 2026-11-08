@@ -6,7 +6,7 @@ import { RunStore, type DecisionInsert } from "../../src/run/run-store.js";
 import { createTelegramTurn } from "../helpers/runs.js";
 
 // Spec 2026-11-07 §6: the undo commands Paco already has are the undo of an auto-applied proposal. Each moves it
-// accepted → reverted in the removal's own transaction, so the next tick sees the block (§3.4) and never re-learns it.
+// accepted → reverted in the removal's own transaction; its text stays a repeat candidate for 14 days, so a near-copy is never re-learned.
 const NOW = "2026-10-21T10:00:00.000Z";
 const SINCE = "2026-10-07T10:00:00.000Z";
 const D: DecisionInsert = { entry_id: "improve.route", entry_version: 1, run_id: null, tool_call_id: null, stage: "after_turn", rung: "system_one", verdict: "lesson", p: 0.7, reason_code: "jev_choice",
@@ -23,13 +23,13 @@ function applied(s: RunStore, target: "lesson" | "fact", draft: unknown, scope =
 }
 
 describe("undo of an applied proposal", () => {
-  it("/forget <id> prunes the lesson and reverts its proposal; the pair is blocked for 14 days", () => {
+  it("/forget <id> prunes the lesson and reverts its proposal; its text stays a repeat candidate for 14 days", () => {
     const s = RunStore.openInMemory();
     const { proposal_id, id } = applied(s, "lesson", { scope: "ask", text: "Answer in one line." });
     expect(new Gateway(s).intake(cmd("forget", String(id)))).toMatchObject({ ok: true, status: "forgotten" });
     expect(s.getLesson(id)?.status).toBe("pruned");
     expect(s.getImprovementProposal(proposal_id)?.state).toBe("reverted");
-    expect(s.proposalBlocks("lesson", "answer", SINCE)).toBe(true);
+    expect(s.repeatCandidates("lesson", "answer", SINCE).map((c) => c.proposal_id)).toEqual([proposal_id]);
   });
   it("/forget <scope> reverts the proposal of every lesson it prunes and leaves a lesson with no proposal alone", () => {
     const s = RunStore.openInMemory();
@@ -46,7 +46,7 @@ describe("undo of an applied proposal", () => {
     expect(new Gateway(s).intake(cmd("forget_memory", String(id)))).toMatchObject({ ok: true, status: "memory_forgotten" });
     expect(s.getEpisodicFact(id)?.status).toBe("pruned");
     expect(s.getImprovementProposal(proposal_id)?.state).toBe("reverted");
-    expect(s.proposalBlocks("fact", "answer", SINCE)).toBe(true);
+    expect(s.repeatCandidates("fact", "answer", SINCE).map((c) => c.proposal_id)).toEqual([proposal_id]);
     const s2 = RunStore.openInMemory();
     const other = applied(s2, "fact", { text: "Paco's sister lives in Lima.", evidence: { line: 1, quote: "sister lives in lima" }, source_turn_ids: [] });
     expect(new Gateway(s2).intake(cmd("forget_memory", String(other.id + 100))).ok).toBe(false);

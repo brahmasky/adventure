@@ -5580,10 +5580,16 @@ export class RunStore {
   listOpenProposals(): ImprovementProposalRow[] {
     return this.db.prepare(`SELECT * FROM improvement_proposals WHERE state = 'open' ORDER BY created_at ASC, rowid ASC`).all<ImprovementProposalRow>();
   }
-  /** Final fix D3 + spec 2026-11-07 §3.4: an open proposal on (target, scope), or one dismissed, expired, accepted or reverted after `sinceIso`, blocks a new one (Dismiss sticks; an applied or undone one does not pile up). */
+  /**
+   * Final fix D3 + addendum Rev 2.3.1 A: an open proposal on (target, scope), or one Paco dismissed or that expired after
+   * `sinceIso`, blocks a new one (Dismiss sticks; an `already_known` dismissal never blocks). For skill, schedule, tool gap and
+   * ladder an accepted or reverted one blocks too; a lesson or fact applied or undone does not — the repeat check
+   * (improve/repeat.ts) skips only a near-copy of it.
+   */
   proposalBlocks(target: ProposalTarget, scope: string, sinceIso: string): boolean {
-    return this.db.prepare(`SELECT 1 AS hit FROM improvement_proposals WHERE target = ? AND scope = ? AND (state = 'open' OR (state IN ('dismissed', 'expired', 'accepted', 'reverted') AND resolved_at > ? AND COALESCE(json_extract(result_json, '$.reason'), '') <> 'already_known')) LIMIT 1`)
-      .get<{ hit: number }>(target, scope, sinceIso) !== undefined;
+    const repeatChecked = target === "lesson" || target === "fact" ? 1 : 0;
+    return this.db.prepare(`SELECT 1 AS hit FROM improvement_proposals WHERE target = ? AND scope = ? AND (state = 'open' OR (resolved_at > ? AND COALESCE(json_extract(result_json, '$.reason'), '') <> 'already_known' AND (state IN ('dismissed', 'expired') OR (? = 0 AND state IN ('accepted', 'reverted'))))) LIMIT 1`)
+      .get<{ hit: number }>(target, scope, sinceIso, repeatChecked) !== undefined;
   }
   /** Spec 2026-11-07 §6: the accepted proposal whose save made this lesson or fact (its result_json names the id), for /forget and /forget_memory. */
   proposalBySaved(kind: "lesson" | "fact", id: number): ImprovementProposalRow | undefined {

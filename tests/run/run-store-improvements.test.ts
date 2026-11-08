@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { RunStore, type DecisionInsert } from "../../src/run/run-store.js";
 
-// Spec 2b-ii §5.1–5.2, §5.6: proposals have one open row per (target, scope), expire at 14 days, and an accepted one keeps blocking its pair for 14 days; a job's transitions are
+// Spec 2b-ii §5.1–5.2, §5.6: proposals have one open row per (target, scope), expire at 14 days, an accepted lesson or fact no longer blocks its pair (addendum Rev 2.3.1: the repeat check skips near-copies); a job's transitions are
 // fenced on state and attempt (the race winner's ending is the only one that writes); taps are one row per Telegram callback
 // id; a ladder move ends on Revoke. Every transition leaves an improvement_job ledger event (gate case 9).
 const NOW = "2026-10-21T10:00:00.000Z";
@@ -23,7 +23,8 @@ describe("improvement_proposals", () => {
     expect(s.transitionProposal({ proposal_id: id, from: ["accepted"], to: "reverted", now: NOW })).toBe(false);
     expect(s.transitionProposal({ proposal_id: id, from: ["open"], to: "accepted", now: NOW, result_json: JSON.stringify({ change_id: "lc_1" }) })).toBe(true);
     expect(s.getImprovementProposal(id)).toMatchObject({ state: "accepted", resolved_at: NOW, result_json: JSON.stringify({ change_id: "lc_1" }) });
-    expect(s.proposalBlocks("lesson", "answer", "2026-10-07T10:00:00.000Z")).toBe(true); // accepted blocks its pair for 14 days (spec 2026-11-07 §3.4)
+    expect(s.proposalBlocks("lesson", "answer", "2026-10-07T10:00:00.000Z")).toBe(false); // addendum Rev 2.3.1 A: an applied lesson no longer blocks its category
+    expect(s.repeatCandidates("lesson", "answer", "2026-10-07T10:00:00.000Z").map((c) => c.proposal_id)).toEqual([id]); // its text is a repeat candidate instead
     expect(s.listProposalsResolvedSince("2026-10-21T00:00:00.000Z").map((p) => p.proposal_id)).toEqual([id]);
     expect(s.lastAcceptedImprovement("answer")).toEqual({ target: "lesson", at: NOW });
     expect(s.countProposalsByState("2026-10-01T00:00:00.000Z")).toMatchObject({ open: 0, accepted: 1, dismissed: 0, expired: 0, reverted: 0 });

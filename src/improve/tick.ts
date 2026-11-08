@@ -4,7 +4,8 @@ import { redactForImprove } from "../decisions/egress.js";
 import { autoApplies, type ImproveState, type ImproveTarget } from "../decisions/entries/improve-route.js";
 import { evaluateImproveDegraded } from "./degraded.js";
 import { applyProposal } from "./apply.js";
-import { queueProposalCard } from "./proposal-card.js";
+import { repeatCandidatesFor, repeatCheck, sameIds } from "./repeat.js";
+import { parsed, queueProposalCard, str } from "./proposal-card.js";
 import { OutcomeRejected, outcomeValueOf } from "../decisions/outcomes.js";
 import { storeRecorder } from "../decisions/record.js";
 import type { DecideResult } from "../decisions/types.js";
@@ -16,7 +17,7 @@ import { resolveImproveAt, resolveImproveEnabled } from "./flag.js";
 import { computeAbandonment } from "./abandonment.js";
 import { decideImprove, deferredRecorder, isJevOutage, type RecordPatch, type TickLlm } from "./decide-improve.js";
 import { buildImproveState, groupSignals, RECURRENCE_WINDOW_DAYS, type SignalGroup } from "./groups.js";
-import { DRAFT_SEAT_FAILED, draftFor, PROPOSAL_TTL_DAYS, type Draft } from "./proposals.js";
+import { DRAFT_SEAT_FAILED, draftFor, PROPOSAL_TTL_DAYS, rewriteEvidence, type Draft } from "./proposals.js";
 import { computeRecurrence, recordRecurrenceSignals, resolveRecurrenceGate, type Embedder, type RecurrenceCluster } from "./recurrence.js";
 import { scheduleHints } from "./schedule-shift.js";
 
@@ -158,12 +159,13 @@ async function tickBody(d: ImproveTickDeps, c: TickCounts): Promise<"done" | "st
     if (willStartJob(s) && (queueLeft <= 0 || !resolveSkillsEnabled(d.env))) { c.deferred += 1; continue; }
     let outcome: GroupOutcome;
     try {
-      outcome = await runGroup(d, g, s, { tz, hints, latch }, c);
+      outcome = await runGroup(d, g, s, { tz, hints, latch, overBudget }, c);
     } catch (e) {   // one group's failure (the commit rolled back whole) never costs the next group its turn; its rows stay unconsumed
       console.error(`[improve] group failed: ${errorCode(e)}`);
       c.record_failed += 1;
       continue;
     }
+    if (outcome === "over_budget") return "stopped"; // addendum Rev 2.3.1 A: the repeat check's embeds ran the budget out; unconsumed, the next cycle resumes it
     if (outcome === "record_failed") { c.record_failed += 1; continue; }   // rows stay unconsumed: tomorrow's tick reads them again
     if (outcome === "deferred") { c.deferred += 1; continue; }
     if (outcome === "deferred_outage") { c.deferred_outage += 1; continue; }   // final fix D1: an outage never consumes; the stale rule bounds it
@@ -175,16 +177,16 @@ async function tickBody(d: ImproveTickDeps, c: TickCounts): Promise<"done" | "st
   return "done";
 }
 
-type GroupOutcome = "queued" | "committed" | "record_failed" | "deferred" | "deferred_outage";
+type GroupOutcome = "queued" | "committed" | "record_failed" | "deferred" | "deferred_outage" | "over_budget";
 
 /**
  * One group's model calls, outside any transaction, then its commit. Final fix D1 (narrowed in fix 2): an undecided group
  * whose Jev failure is an outage (isJevOutage), or whose pick or distill seat call failed, writes nothing and consumes
  * nothing; a Jev parse, a throwing rule or the disarm posture records as before. The first outage sets the segment's latch:
  * later groups run the rule rung only, and one the rule cannot decide (or that would need the distill) is deferred with no
- * call. D2/D3: the duplicate check runs before the draft, so a duplicate costs no distill call.
+ * call. D2/D3: the duplicate check runs before the draft, so a duplicate costs no distill call. Addendum Rev 2.3.1 A + R1': after a lesson or fact draft, the repeat check embeds it and its candidates — a repeat records already_proposed, a near-copy of a lesson still held is the rewrite card, the embedder down is an outage (latched), a spent budget stops the tick.
  */
-async function runGroup(d: ImproveTickDeps, g: SignalGroup, s: ImproveState, x: { tz: string; hints: ReturnType<typeof scheduleHints>; latch: { on: boolean } }, c: TickCounts): Promise<GroupOutcome> {
+async function runGroup(d: ImproveTickDeps, g: SignalGroup, s: ImproveState, x: { tz: string; hints: ReturnType<typeof scheduleHints>; latch: { on: boolean }; overBudget: () => boolean }, c: TickCounts): Promise<GroupOutcome> {
   const rec2 = deferredRecorder();
   let pickFailed = false;
   const pick: TickLlm = async (i) => { const a = await d.llm.pick(i); if (!a.ok) pickFailed = true; return a; };
@@ -193,10 +195,20 @@ async function runGroup(d: ImproveTickDeps, g: SignalGroup, s: ImproveState, x: 
   const wantsDraft = r.verdict !== "nothing" && !(r.rung === "rule" && r.verdict === "skill");
   const duplicate = wantsDraft && NEEDS_DRAFT.has(r.verdict) && d.store.proposalBlocks(r.verdict as ProposalTarget, s.scope, ttlSince(d.now));
   if (x.latch.on && !duplicate && (r.verdict === "lesson" || r.verdict === "fact")) return "deferred_outage"; // its draft needs the distill seat
-  const auto = autoApplies(g, s, r.verdict, (id) => d.store.runSource(id) === "telegram"); // spec 2026-11-07 §3: decided before the draft, so the draft can run without a prior; P16: the run's source re-checked here
-  const draft = wantsDraft && !duplicate ? await draftFor(r.verdict, g, s, { noPrior: auto, store: d.store, env: d.env, now: d.now, tz: x.tz, distill: d.llm.distill, redact: (t) => redactForImprove(d.store, t), scheduleHints: x.hints }) : null;
+  const telegram = (id: string): boolean => d.store.runSource(id) === "telegram";
+  const provenance = autoApplies(g, s, r.verdict, telegram, false); // spec 2026-11-07 §3: provenance before the draft, so the draft runs without a prior; P16: the run's source re-checked here
+  const draft = wantsDraft && !duplicate ? await draftFor(r.verdict, g, s, { noPrior: provenance, store: d.store, env: d.env, now: d.now, tz: x.tz, distill: d.llm.distill, redact: (t) => redactForImprove(d.store, t), scheduleHints: x.hints }) : null;
   if (draft === DRAFT_SEAT_FAILED) { x.latch.on = true; return "deferred_outage"; }
-  return commitGroup(d, g, s, r, { draft, duplicate, auto }, rec2.flush, c);
+  // addendum Rev 2.3.1 A + R1': a lesson or fact draft against what was applied or undone on the pair — repeat, rewrite or new
+  const rep = draft !== null && (draft.target === "lesson" || draft.target === "fact")
+    ? await repeatCheck({ store: d.store, embed: d.embed, overBudget: x.overBudget }, draft.target, s.scope, str(parsed(draft.draft_json).text), d.now) : null;
+  if (rep?.kind === "embed_down") { x.latch.on = true; return "deferred_outage"; } // an outage never consumes; the stale rule bounds it
+  if (rep?.kind === "over_budget") return "over_budget";
+  const rewrite = rep !== null && rep.kind === "rewrite";
+  const auto = autoApplies(g, s, r.verdict, telegram, rewrite); // a rewrite is a card, never applied (ADR 0034 10.5)
+  // the card names the accepted proposal it rewrites (`rewrite_of`, audit; the Accept's save reads only scope/text/avoid)
+  const placed = rep !== null && rep.kind === "rewrite" && draft !== null ? { ...draft, draft_json: JSON.stringify({ ...parsed(draft.draft_json), rewrite_of: rep.matched }), evidence: rewriteEvidence(s.count14d, rep.ageDays) } : draft;
+  return commitGroup(d, g, s, r, { draft: placed, duplicate, auto, repeat: rep?.kind === "repeat", repeatIds: rep !== null && "ids" in rep ? rep.ids : null }, rec2.flush, c);
 }
 const ttlSince = (now: string): string => new Date(Date.parse(now) - PROPOSAL_TTL_DAYS * DAY_MS).toISOString();
 /** A rule-rung skill/recurrence row starts a job (ruling 1): the state predicts it so the day's budget can defer before any call. */
@@ -211,16 +223,18 @@ const NEEDS_DRAFT: ReadonlySet<string> = new Set(["lesson", "fact", "skill", "sc
  * consumes nothing: the rows are read again tomorrow. Counts are bumped AFTER the commit (spec 2026-11-07 §5, codex): a
  * rolled-back group bumps nothing.
  */
-function commitGroup(d: ImproveTickDeps, g: SignalGroup, s: ImproveState, r: DecideResult<ImproveTarget, unknown>, pre: { draft: Draft | null; duplicate: boolean; auto: boolean },
+function commitGroup(d: ImproveTickDeps, g: SignalGroup, s: ImproveState, r: DecideResult<ImproveTarget, unknown>, pre: { draft: Draft | null; duplicate: boolean; auto: boolean; repeat: boolean; repeatIds: readonly string[] | null },
   flush: (real: ReturnType<typeof storeRecorder>, patch?: RecordPatch) => string | null, c: TickCounts): GroupOutcome {
   // final fix C5: the backstop of the pre-check — a rule-rung job while skills are disarmed writes nothing and consumes nothing
   if (r.rung === "rule" && r.verdict === "skill" && !resolveSkillsEnabled(d.env)) return "deferred";
   const bumps = zero();
   const outcome = d.store.inTransaction((): GroupOutcome => {
+    // addendum Rev 2.3.1 A: the candidates the repeat check embedded are read again; a card accepted meanwhile changes them — retry next tick, nothing written
+    if (pre.repeatIds !== null && pre.draft !== null && !sameIds(pre.repeatIds, repeatCandidatesFor(d.store, pre.draft.target as "lesson" | "fact", s.scope, d.now).map((x) => x.proposal_id))) return "deferred";
     const job = r.rung === "rule" && r.verdict === "skill" && s.recurrence !== null && d.jobs !== undefined;
     const wantsProposal = !job && NEEDS_DRAFT.has(r.verdict);
     const draft = pre.draft;
-    const duplicate = wantsProposal && (pre.duplicate || (draft !== null && d.store.proposalBlocks(draft.target, s.scope, ttlSince(d.now))));
+    const duplicate = wantsProposal && (pre.duplicate || pre.repeat || (draft !== null && d.store.proposalBlocks(draft.target, s.scope, ttlSince(d.now))));
     const patch: RecordPatch | undefined = duplicate ? { verdict: "nothing", reason: "already_proposed" } : wantsProposal && draft === null ? { verdict: "nothing", reason: "no_text" } : undefined;
     const decision_id = flush(storeRecorder(d.store, { env: d.env, now: () => d.now }), patch);
     if (!decision_id) return "record_failed";

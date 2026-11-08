@@ -1,13 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { RunStore, type DecisionInsert } from "../../src/run/run-store.js";
+import { RunStore, type DecisionInsert, type ProposalTarget } from "../../src/run/run-store.js";
 
-// Spec 2026-11-07 §3.4 and §6: an applied (accepted) or undone (reverted) proposal blocks the same (target, scope) for 14 days —
-// without it the next tick would re-learn the lesson Paco just undid; the undo commands find the proposal by the saved id.
+// Addendum Rev 2.3.1 A: for a lesson or fact only what Paco turned down or let lapse (dismissed, expired) blocks the pair for
+// 14 days — an applied or undone one no longer blocks the category (the repeat check skips near-copies instead). Skill,
+// schedule, tool gap and ladder keep the old rule: an accepted or reverted one blocks its pair 14 days (no text to compare).
 const NOW = "2026-10-21T10:00:00.000Z";
 const SINCE = "2026-10-07T10:00:00.000Z"; // now − 14 d
 const D: DecisionInsert = { entry_id: "improve.route", entry_version: 1, run_id: null, tool_call_id: null, stage: "after_turn", rung: "system_one", verdict: "lesson", p: 0.7, reason_code: "jev_choice",
   fallback_reason: null, fallback_rung: null, armed_mode: "on", latency_ms: 1, created_at: NOW };
-function proposal(s: RunStore, state: "accepted" | "reverted" | "dismissed", resolved_at: string, result_json?: string, target: "lesson" | "fact" = "lesson"): string {
+function proposal(s: RunStore, state: "accepted" | "reverted" | "dismissed", resolved_at: string, result_json?: string, target: ProposalTarget = "lesson"): string {
   const id = s.insertImprovementProposal({ decision_id: s.insertDecision(D), target, scope: "answer", chat_id: "555", draft_json: "{}", evidence: "e", created_at: "2026-09-01T00:00:00.000Z" });
   s.transitionProposal({ proposal_id: id, from: ["open"], to: "accepted", now: resolved_at, ...(result_json ? { result_json } : {}) });
   if (state !== "accepted") s.transitionProposal({ proposal_id: id, from: ["accepted"], to: state === "reverted" ? "reverted" : "dismissed", now: resolved_at });
@@ -15,21 +16,27 @@ function proposal(s: RunStore, state: "accepted" | "reverted" | "dismissed", res
 }
 
 describe("proposalBlocks", () => {
-  it("an accepted or reverted proposal within 14 days blocks its (target, scope); one older than 14 days, or another scope or target, does not", () => {
-    const s = RunStore.openInMemory();
-    proposal(s, "accepted", "2026-10-20T00:00:00.000Z");
-    expect(s.proposalBlocks("lesson", "answer", SINCE)).toBe(true);
-    expect(s.proposalBlocks("lesson", "lookup", SINCE)).toBe(false);
-    expect(s.proposalBlocks("fact", "answer", SINCE)).toBe(false);
-    const s2 = RunStore.openInMemory();
-    proposal(s2, "reverted", "2026-10-15T00:00:00.000Z");
-    expect(s2.proposalBlocks("lesson", "answer", SINCE)).toBe(true);
-    const s3 = RunStore.openInMemory();
-    proposal(s3, "accepted", "2026-10-01T00:00:00.000Z"); proposal(s3, "reverted", "2026-10-02T00:00:00.000Z");
-    expect(s3.proposalBlocks("lesson", "answer", SINCE)).toBe(false);
-    const s4 = RunStore.openInMemory();
-    proposal(s4, "accepted", SINCE); // resolved exactly at the cut: strict >, so it no longer blocks
-    expect(s4.proposalBlocks("lesson", "answer", SINCE)).toBe(false);
+  it("a lesson or fact pair is not blocked by an accepted or reverted proposal; a dismissed one inside the window still blocks", () => {
+    for (const target of ["lesson", "fact"] as const) {
+      const s = RunStore.openInMemory();
+      proposal(s, "accepted", "2026-10-20T00:00:00.000Z", undefined, target); proposal(s, "reverted", "2026-10-15T00:00:00.000Z", undefined, target);
+      expect([target, s.proposalBlocks(target, "answer", SINCE)]).toEqual([target, false]);
+      proposal(s, "dismissed", "2026-10-20T00:00:00.000Z", undefined, target);
+      expect([target, s.proposalBlocks(target, "answer", SINCE)]).toEqual([target, true]);
+    }
+  });
+  it("skill, schedule, tool gap and ladder pairs stay blocked 14 days by an accepted or reverted one (they have no text to compare); not past the window, nor on another scope", () => {
+    for (const target of ["skill", "schedule", "tool_gap", "ladder"] as const) {
+      const s = RunStore.openInMemory();
+      proposal(s, "accepted", "2026-10-20T00:00:00.000Z", undefined, target);
+      expect([target, s.proposalBlocks(target, "answer", SINCE), s.proposalBlocks(target, "lookup", SINCE)]).toEqual([target, true, false]);
+      const s2 = RunStore.openInMemory();
+      proposal(s2, "reverted", "2026-10-15T00:00:00.000Z", undefined, target);
+      expect([target, s2.proposalBlocks(target, "answer", SINCE)]).toEqual([target, true]);
+      const s3 = RunStore.openInMemory();
+      proposal(s3, "accepted", SINCE, undefined, target); // resolved exactly at the cut: strict >, so it no longer blocks
+      expect([target, s3.proposalBlocks(target, "answer", SINCE)]).toEqual([target, false]);
+    }
   });
 });
 
