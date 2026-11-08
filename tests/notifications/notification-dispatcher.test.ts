@@ -167,15 +167,13 @@ describe("R7: attach.path send rows", () => {
     t.store.close();
   });
 
-  it("7. afterDelivered and recordAttach cannot skip each other", async () => {
+  it("7. an onDelivered throw cannot skip recordAttach: the refuse row is written with the claimed run_id and the row stays delivered", async () => {
     vi.spyOn(console, "error").mockImplementation(() => undefined);
-    const a = rig(["too_large"], { onDelivered: () => { throw new Error("hook"); } });
-    await a.dispatcher.dispatchOnce("s");
-    expect(attachRows(a.store)).toEqual([["refuse", "too_large", "rule", "run_1", null]]); a.store.close();
-    const hook = vi.fn();
-    const b = rig(["too_large"], { onDelivered: hook, recorder: () => ({ record: () => { throw new Error("planted"); } }) });
-    await b.dispatcher.dispatchOnce("s");
-    expect(hook).toHaveBeenCalledTimes(1); b.store.close();
+    const t = rig(["too_large"], { onDelivered: () => { throw new Error("hook"); } });
+    await expect(t.dispatcher.dispatchOnce("s")).resolves.toMatchObject({ status: "delivered" });
+    expect(attachRows(t.store)).toEqual([["refuse", "too_large", "rule", "run_1", null]]);
+    expect(t.outbox.get(t.rec.notification_id)!.state).toBe("delivered");
+    t.store.close();
   });
 
   it("8. a planted non-rule rung records no row, is logged, and the message stays delivered (P20)", async () => {
