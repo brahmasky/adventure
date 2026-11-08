@@ -79,6 +79,23 @@ describe("ADR 0034 rule 3.2: settle-stage and delivery rows", () => {
     expect(payload.text).not.toContain("[[attach:");
   });
 
+  it("3b. a turn that loses its finish claim keeps the parse row and enqueues nothing; control: with the claim it does enqueue", async () => {
+    useFakeOmp({ "*": { rpcText: "ok\n[[attach: ../x]]" } }, tmp.dir);
+    let lost = 0; const real = store.finishRun.bind(store);
+    store.finishRun = (i) => { if (i.next === "completed") { lost += 1; return false; } return real(i); };
+    worker = ompWorker(store, tmp.dir);
+    const run = createQueuedTurnRun(store, "send it"); worker.submitTurn(run);
+    await until(() => lost > 0 && attachRows(store, run).length > 0);
+    expect(attachRows(store, run)).toEqual([["refuse", "marker_outside", run]]);
+    expect(store.getRunState(run)).not.toBe("completed");
+    expect(drainOutbox(store).has(`${run}:final_report`)).toBe(false);
+    // control: the same turn with the real claim reaches completed and enqueues the report, so the absence above is the lost claim
+    store.finishRun = real;
+    const ctl = createQueuedTurnRun(store, "send it"); worker.submitTurn(ctl);
+    await until(() => store.getRunState(ctl) === "completed");
+    expect(drainOutbox(store).has(`${ctl}:final_report`)).toBe(true);
+  });
+
   it("4. a send row is written only after markDelivered, with the outbox row's run_id; null for a run-less row", async () => {
     const outbox = new NotificationOutbox(store);
     const enq = (type: "final_report" | "progress", key: string, runId?: string) => outbox.enqueue({
