@@ -191,37 +191,55 @@ events (a resumed date emits several). Evaluated once per tick date, at its end,
 Merge, rebuild, kickstart (Tier A after green gates). The first 21:00 after deploy sends no digest. Paco's `.env` line
 `HOUGE_DECISION_DIGEST_AT=ON` can be deleted at leisure.
 
-## Addendum Rev 2.2 — block only repeats; undo reverses the whole change (Paco, 2026-11-08)
+## Addendum Rev 2.3 — block only repeats; undo reverses the whole change (Paco, 2026-11-08)
 
 Decided by Paco 2026-11-08 after the final review's two questions (options Q1-B and Q2-A). Changes ADR 0034 10.5.
+Rev 2.3 replaces Rev 2.2 after a codex design check against the code (4 blockers: nested transactions, `/forget <scope>`
+order, `reverted` still blocking the whole category, and the false premise that a fact `ADD` reconciles).
 
-**A. The 14-day block covers repeats, not the category.** Today `proposalBlocks(target, scope)` counts an `accepted`
-proposal on the same (target, scope) for 14 days, so after one auto-applied lesson every *different* correction on that
-category is consumed as `already_proposed` with no trace. After this change:
+**A. The 14-day block covers repeats, not the category (lessons and facts alike).**
 
-- **Facts:** `accepted` no longer blocks a `fact` proposal. The fact store's reconciler already merges or skips a fact
-  it knows (`saveReconciledFact`). `open`, `dismissed`, `expired`, `reverted` keep blocking as today.
-- **Lessons:** `accepted` no longer blocks the pair before the draft. After the draft, the new lesson text is compared
-  with the text of every lesson an `accepted` lesson proposal on the same scope saved in the last 14 days (the saved
-  lesson's current text, through `result_json.lesson_id`), using the tick's embedder and `cosineSimilarity`. At or above
-  `LESSON_REPEAT_COSINE` (0.8, a code constant: "near-copy") the group records `nothing` / `already_proposed` as today;
-  below it the lesson is applied (or carded) as any other. A lesson whose saved row is no longer active (forgotten,
-  pruned) is not compared.
-- **Embedder down:** the comparison cannot run, so the group is deferred as an outage (unconsumed, `deferred_outage`,
-  the tick's latch), never applied unchecked and never dropped. The 30-day stale rule bounds it, as today.
-- `reverted` keeps blocking its pair for 14 days (Houge does not re-learn what Paco removed); `already_known` still
-  never blocks.
+- `proposalBlocks(target, scope)` keeps blocking the pair only for an `open` proposal and for `dismissed` / `expired`
+  within 14 days (what Paco turned down or let lapse, as before 2026-11-07). `accepted` and `reverted` no longer block
+  the pair.
+- **Repeat check, after the draft:** the new draft's text is compared with the draft text (`draft_json.text`, stored
+  on the proposal, so it works even after the saved row is gone) of every `accepted` or `reverted` proposal on the same
+  (target, scope) resolved in the last 14 days, newest first, at most 10. Each text is embedded with the tick's embedder
+  and compared with `cosineSimilarity`; at or above `LESSON_REPEAT_COSINE` (a code constant, provisionally 0.8, set from
+  the probe below) the group records `nothing` / `already_proposed` as today. So a near-copy of a lesson or fact Houge
+  already learned, or one Paco undid, is skipped; a different one is applied (or carded).
+- **Embedder down:** the group is deferred as an outage (`deferred_outage`, unconsumed, the tick's latch set). The
+  30-day stale rule later consumes it as `nothing` / `stale`, as for every deferred group today.
+- **Commit-time recheck:** the embed calls run outside the transaction. Inside the commit the candidate set (the ids of
+  those proposals) is read again; if it changed (a card was accepted meanwhile), the group is deferred (unconsumed,
+  counted `deferred`, not an outage) and retried next tick.
+- **Threshold probe (build step, before the constant is fixed):** embed a small set of pairs with the live embedder —
+  English and Chinese near-copies (same rule reworded) and distinct rules in the same category — and record the
+  cosines in the plan; 0.8 stays only if it separates them, else the constant is set between the two groups. No
+  personal text: the pairs are written for the probe.
 
-**B. `/forget` and `/forget_memory` reverse the whole change.** For a lesson or fact the improvement check saved
-(`proposalBySaved` finds an `accepted` proposal with a `change_id`), `/forget <id>` runs `undoLessonChange(change_id)`
-and `/forget_memory <id>` runs `undoMemoryChange(change_id)` — removing the saved row and restoring what that save
-pruned at the cap — and moves the proposal to `reverted`, in one transaction. A row with no improvement proposal keeps
-today's behaviour. `/forget <scope>` keeps the status flip for rows it prunes, but an improvement-saved row in that
-scope is reversed through its change as above. If the change cannot be undone (`undo*Change` refuses: a later change
-superseded it), the command falls back to today's status flip and still reverts the proposal, and says so in its reply.
+**B. `/forget` and `/forget_memory` reverse the whole change.**
 
-**Tests:** a second, different lesson correction in the same category within 14 days is applied; a near-copy is
-`already_proposed`; a second fact correction is applied (or merged by the reconciler); the embedder down defers the
-lesson group; `/forget <id>` on an improvement lesson saved at the cap restores the pruned lesson; `/forget_memory`
-likewise for a fact at its cap; the refused-undo fallback. The live gate's case 4 keeps "undo, then the same
-correction is blocked" (reverted) and gains "a different correction on the same category is applied".
+- New `undoLessonChangeTx(change_id, now)` (the body of `undoLessonChange`, for a caller already in a transaction), as
+  `undoMemoryChangeTx` already exists for facts. The commands call the Tx bodies inside their own single transaction:
+  no nested BEGIN.
+- **`/forget <id>`** on a lesson an improvement proposal saved (`proposalBySaved` with a `change_id`): undo that change
+  (removes the lesson, restores what its save pruned at the cap) and move the proposal to `reverted`, in one
+  transaction. The reply names how many pruned lessons came back. If the undo refuses (`not_found`, `already_undone`,
+  `changed_since`), fall back to today's status flip, still revert the proposal, and say the pruned lessons were not
+  restored. A lesson with no improvement proposal keeps today's behaviour.
+- **`/forget <scope>`:** first, newest first, undo the change of every active improvement-saved lesson in that scope
+  (while each is still active), then prune every lesson still active in the scope, including any the undos restored
+  into it — `/forget <scope>` means the scope ends empty. Each improvement proposal moves to `reverted`.
+- **`/forget_memory <id>`** on a fact an improvement proposal saved: undo that change with `undoMemoryChangeTx` and
+  revert the proposal, in one transaction; the reply is plain text with no Undo button (undoing an undo is not offered;
+  the fact can be taught again, subject to the repeat check). Refusals fall back to today's retire path and say so. A
+  fact with no improvement proposal keeps today's behaviour and card.
+- A partial restore (some pruned rows changed since and stay pruned) is reported as "restored N of M".
+
+**Tests:** a different second lesson and a different second fact on the same category within 14 days are applied; a
+near-copy of an accepted one, and of a reverted one, is `already_proposed`; the embedder down defers the group; a card
+accepted between the embed and the commit defers the group; `/forget <id>` on an improvement lesson saved at the cap
+restores the pruned lesson, the refusal fallback, `/forget <scope>` with improvement lessons ends empty with their
+proposals reverted, `/forget_memory` likewise for a fact at its cap; no nested BEGIN (the commands run on a real
+`RunStore`). The live gate's case 4 becomes: undo, then a near-copy is blocked and a different correction is applied.
