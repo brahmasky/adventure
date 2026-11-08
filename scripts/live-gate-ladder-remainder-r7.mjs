@@ -260,7 +260,17 @@ async function line5() {
   const logged = thrown.seen.filter((l) => l.startsWith(`decisions: ${AP} record threw past the recorder`)).length;
   const thrownOk = thrown.value.status === "delivered" && thrown.value.notification_id === seed2.id && stateOf(G.B, seed2.id) === "delivered" && s3.inc === s2.inc && s3.log === s2.log && s3.opened === s2.opened
     && s3.stub === s2.stub && viewOf(b.log) === viewOf(ref.log) && logged === 6;
-  return { ok: insertOk && thrownOk, detail: `insert fault: attempts ${attempts} incidents +${s1.inc - s0.inc} (want 1, subject ${inc.at(-1)?.subject}) change_log incident_log +${s1.log - s0.log} (want 1) incident_opened events +${s1.opened - s0.opened} (want 1) outbox rows to the stub chat +${s1.stub - s0.stub} (want 0) uploads and follow-up byte-equal to recorder-less ${viewOf(a.log) === viewOf(ref.log)} row delivered ${stateOf(G.B, id) === "delivered"} (dispatch ${res.status}) attach.path rows 0 · thrown recorder: dispatch ${thrown.value.status} row delivered ${stateOf(G.B, seed2.id) === "delivered"} incidents +${s3.inc - s2.inc} (want 0) change_log +${s3.log - s2.log} (want 0) incident_opened +${s3.opened - s2.opened} (want 0) uploads byte-equal ${viewOf(b.log) === viewOf(ref.log)} logged ${logged} (want 6, one per consult: five checks and the overflow, P6)` };
+  // a registry mistake (P20: a non-rule rung, so decideSync throws before any recorder): recordAttach's own catch logs it; the row stays delivered and the dispatch reports delivered
+  const m = mkData("h"); const seed3 = seedReport(G.B, sixFiles(m.data, m.ws)); parkExcept(G.B, seed3.id);
+  const c = mkClient(); const s4 = snap(G.B); const ladder = G.d.ATTACH_PATH.ladder;
+  G.d.ATTACH_PATH.ladder = [{ kind: "system_one", name: "x", questions: [], bars: { kind: "provisional", question: "q", criteriaHash: "h", model: "m", p: 0.5, source: "t" }, timeoutMs: 1 }];
+  let mistake;
+  try { mistake = await captured(() => G.mods.createOutboxDispatcher(G.B, { local: localAdapter(), telegram: G.d.workspaceTelegramAdapter(c.client, m.data) }).dispatchOnce("gate-5c")); }
+  finally { G.d.ATTACH_PATH.ladder = ladder; }
+  const s5 = snap(G.B); const mLogged = mistake.seen.filter((l) => l.startsWith("[notification-dispatcher] attach_path_record_failed for ")).length;
+  const mistakeOk = mistake.value.status === "delivered" && mistake.value.notification_id === seed3.id && stateOf(G.B, seed3.id) === "delivered" && s5.inc === s4.inc && s5.stub === s4.stub
+    && viewOf(c.log) === viewOf(ref.log) && mLogged === 1 && attachRows(G.B, seed3.run).length === 0;
+  return { ok: insertOk && thrownOk && mistakeOk, detail: `insert fault: attempts ${attempts} incidents +${s1.inc - s0.inc} (want 1, subject ${inc.at(-1)?.subject}) change_log incident_log +${s1.log - s0.log} (want 1) incident_opened events +${s1.opened - s0.opened} (want 1) outbox rows to the stub chat +${s1.stub - s0.stub} (want 0) uploads and follow-up byte-equal to recorder-less ${viewOf(a.log) === viewOf(ref.log)} row delivered ${stateOf(G.B, id) === "delivered"} (dispatch ${res.status}) attach.path rows 0 · thrown recorder: dispatch ${thrown.value.status} row delivered ${stateOf(G.B, seed2.id) === "delivered"} incidents +${s3.inc - s2.inc} (want 0) change_log +${s3.log - s2.log} (want 0) incident_opened +${s3.opened - s2.opened} (want 0) uploads byte-equal ${viewOf(b.log) === viewOf(ref.log)} logged ${logged} (want 6, one per consult: five checks and the overflow, P6) · registry mistake: dispatch ${mistake.value.status} (want delivered) row delivered ${stateOf(G.B, seed3.id) === "delivered"} logged ${mLogged} (want 1) incidents +${s5.inc - s4.inc} (want 0) uploads byte-equal ${viewOf(c.log) === viewOf(ref.log)}` };
 }
 
 // ---- line 6 ----
