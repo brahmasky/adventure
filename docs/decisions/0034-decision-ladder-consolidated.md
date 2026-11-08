@@ -2,7 +2,7 @@
 
 - **Status:** accepted 2026-11-05 (signed by Paco, rulings A1–A5 included); consolidates and supersedes
   [ADR 0030](0030-decision-ladder.md) with no change of meaning; amended 2026-11-07 (improvement proposals
-  auto-apply, the digest goes — signed by Paco 2026-11-08); amended 2026-11-08 (remainder R7: `attach.path`; rows after the end signal — awaiting Paco's signature)
+  auto-apply, the digest goes — signed by Paco 2026-11-08); amended 2026-11-08 (remainder R7: `attach.path`; rows after the end signal — signed by Paco 2026-11-09)
 - **Date:** 2026-11-04
 - **Deciders:** Paco
 - **Supersedes:** [0030](0030-decision-ladder.md) (17 amendment sections) and
@@ -551,7 +551,7 @@ write.
 | 2026-11-06 | 6.3: the promise that the digest flags an entry until Paco commits a calibrated row is retired (nothing built it; Paco's decision 2026-11-06) | — | 2026-11-06 |
 | 2026-11-07 | Improvement proposals auto-apply, the digest goes: 2.2, 2.5 (gated allowance), 6.6 (no digest taps), 10.2 (HOUGE_IMPROVE_AT), 10.5 (autoApplies, origin, no prior, cards, reverted blocks), 11.3 and 13.1 (/changes rows, no digest), 13.2 (improve_tick_degraded) | [auto-apply](../superpowers/specs/2026-11-07-improve-auto-apply-design.md) | 2026-11-08 |
 | 2026-11-07 | 13.2: `decision_fallback_streak` pages three failed runs in a row of a tick entry (`improve.route` failed every day unseen); `improve.route`'s Tiny bound 8 s → 30 s | — | 2026-11-07 |
-| 2026-11-08 | R7: `attach.path` (locked) at parse and send; 3.2 adds settle-stage and delivery rows; `attachment-check.ts` protected | [R7](../superpowers/specs/2026-11-08-ladder-remainder-r7-attach-path-design.md) | awaiting Paco's signature |
+| 2026-11-08 | R7: `attach.path` (locked) at parse and send; 3.2 adds settle-stage and delivery rows; `attachment-check.ts` protected | [R7](../superpowers/specs/2026-11-08-ladder-remainder-r7-attach-path-design.md) | signed by Paco 2026-11-09 |
 | 2026-11-08 | 10.5: the 14-day block covers repeats, not the category — a lesson or fact draft is skipped only as a near-copy (`LESSON_REPEAT_COSINE`) of one reverted (or an accepted fact) on the pair, and is the 'lesson did not hold' card only as a near-copy of a lesson accepted within 30 days; `/forget` and `/forget_memory` undo an improvement's whole change (Q1-B, Q2-A; controller ruling R1') | [auto-apply addendum Rev 2.3.1](../superpowers/specs/2026-11-07-improve-auto-apply-design.md) | 2026-11-08 |
 
 ## Reference map
