@@ -33,7 +33,7 @@
 
 - **P1 — merge base and the `r7` old build.** The branch `remainder-r7` is cut from `main` after this plan's commit. `git diff --stat d39e47e2 HEAD -- src scripts tests` is empty at plan time (the spec's line refs hold at HEAD `6ec1f712`). Because `src/` changed a lot after R6's base `b0da208a` (improve auto-apply), the `r7` old build is a **fresh** stamp at this branch's merge base: `MB=$(git merge-base HEAD main)`, `git worktree add .worktrees/base-${MB:0:12} $MB`, there `npm ci && npm run build && node scripts/stamp-dist.mjs <that worktree>`. Provenance file `notifications/telegram-notification-adapter.js`. Post-merge runs pass `--old-base-r7 <full sha>`, and from the main checkout also `--live-db /Users/xiaochuan/Projects/adventure/houge.sqlite`; check the node exit code directly, never through a pipe.
 - **P2 — the adapter is already protected (spec defect D1).** `src/notifications/telegram-notification-adapter.ts` is in `PROTECTED_FILES` (`self-write-guard.ts:128`, pinned by `tests/capabilities/self-write-guard.test.ts:344`). Decision 4-A is still built as approved: the leaf moves and joins `PROTECTED_FILES`; the adapter line **stays**. The spec's "the loop, the upload and the follow-up line stay self-writable" is false — they stay protected; the adapter edits in Task 1 are protected-surface edits under the approved spec (Tier A).
-- **P3 — `checkAttachment`'s `deps.workspace` is the configured path, `string | undefined`** (the spec's literal type), and the leaf calls `verifiedWorkspace` itself. So the whole predicate — including the C2 swap check — is in the protected leaf, and the order of checks is verbatim (`unsupported` before any workspace syscall). Return type is the narrower `CheckRefusal | { bytes: Uint8Array }` (`CheckRefusal = Exclude<AttachmentRefusal, "send_failed">`): `checkAttachment` never returns `send_failed`, so `AttachCheck` needs no cast.
+- **P3 — `checkAttachment`'s `deps.workspace` is a thunk returning the configured path, `() => string | undefined`** (Rev 1.1, codex B1: today `readAttachment` returns `unsupported` at `telegram-notification-adapter.ts:88` **before** calling `workspaceFor` at `:89`; an eagerly evaluated `workspace: this.options.workspaceFor?.(chat_id)` would call it first, and a throwing resolver would then fail the delivery where today it does not). The leaf checks `canUpload`, then calls `deps.workspace()` (outside the try, as today: a throwing resolver with an upload-capable client still throws out of `send()` as today), then `verifiedWorkspace`. So the whole predicate — including the C2 swap check — is in the protected leaf, and the order of calls is verbatim. Return type is the narrower `CheckRefusal | { bytes: Uint8Array }` (`CheckRefusal = Exclude<AttachmentRefusal, "send_failed">`): `checkAttachment` never returns `send_failed`, so `AttachCheck` needs no cast.
 - **P4 — `REFUSAL_TEXT` was not exported (spec said "re-exported").** The leaf exports it; the adapter re-exports it and keeps `attachmentRefusedLine`.
 - **P5 — `attach_checks` shape.** The loop pushes a check for index `i` only when `i <= MAX_ATTACHMENTS`: the first five results, then exactly one `"over_count"` (index 5) however many paths are past the fifth. The loop still pushes one "⚠ Not attached" **line per** overflow path (unchanged). `send()` returns `{ ...sent, attach_checks }` only when the payload carried a non-empty `attachments` array; otherwise exactly `sent`.
 - **P6 — parse consult position and order.** After the merged-runs `outcome.complete` loop (`:1631`), immediately before `recordChatTurn` (`:1632`). One consult per distinct accepted path (`check: "accepted"`, writes nothing under 1-A), then one per distinct refused path (`check: "marker_outside"`), each list in its deduped order. **Tally rule:** `attach.path` recorder calls at parse = |distinct accepted| + |distinct refused| on a success-arm turn; at send, per committed delivery = min(n, 5) + (n > 5 ? 1 : 0) for n string paths. Rows: one per refusal (1-A); under a thrown rule, one `refuse`/`fail` row per consult (accepted ones included: `fail` ≠ default).
@@ -44,7 +44,7 @@
 - **P11 — the delivery fixture builds its adapter by hand** when it needs the swap hook: `workspaceTelegramAdapter` (`telegram-poll-runner.ts:126`) takes no `beforeRecheckForTest`. Same body: `new d.TelegramNotificationAdapter(client, { workspaceFor: (c) => d.chatWorkspace(data, c), beforeRecheckForTest })`. Every other item uses `d.workspaceTelegramAdapter(client, data)`.
 - **P12 — fake omp gains one key.** Wiring (c) and live-gate line 3 use `rpcText: "ok\n[[attach: in.txt]]\n[[attach: ../outside.txt]]"` (`fake-omp.mjs:118` sends `rpcText` verbatim). The fake has no scenario whose turn carries text and is then lost (`rpcErrorText` blanks the text, `:118`; `rpcHangAfterPrompt` sends none; the spec's `rpcPromptError` does not exist). Task 4 adds a per-model `rpcAbortAfterText: true`: `finish()` emits the `message_end` with `rpcText` (stopReason `stop`), then `agent_end` with `aborted: true` — `settle()` maps an omp-reported abort to `planner_exit`/`agent_aborted` (`:889`), so the turn takes `finishFailure` with the marker in its pass. Used by `tests/adr` case 2 and gate line 4.
 - **P13 — `createOutboxDispatcher`'s `NotificationAdapters` needs `local` too** (spec §7 line 1 named only `telegram`): gates pass `{ local: new LocalNotificationAdapter(() => undefined), telegram: … }`.
-- **P14 — forcing `report_write_failed`** (W1, tests/adr and gate line 4): `stageRunReport` does `mkdirSync(join(projectRoot, "runs", run_id), { recursive: true })`; a **regular file** at `<project>/runs` makes it throw ENOTDIR, so `ompComplete` takes `ompFail(… report_write_failed …)` after the parse row was written. Only `report-writer.ts:47` creates `<project>/runs` (grep at plan time); still, write the file after `ompWorker(...)` is constructed and before `submitTurn`, removing any directory there first (`rmSync(p, { recursive: true, force: true })`), so no EISDIR.
+- **P14 — forcing `report_write_failed`** (W1, tests/adr and gate line 4): `stageRunReport` does `mkdirSync(join(projectRoot, "runs", run_id), { recursive: true })`; a **regular file** at `<project>/runs` makes it throw ENOTDIR, so `ompComplete` takes `ompFail(… report_write_failed …)` after the parse row was written. Only `src/report/report-writer.ts:47` creates `<project>/runs` on an omp turn (grep at plan time; `local-project-write-adapter.ts:39` is a write-capability path, not on the turn); `<project>` is `join(tmp.dir, "project")` (`tests/helpers/omp-worker.ts:33`); still, write the file after `ompWorker(...)` is constructed and before `submitTurn`, removing any directory there first (`rmSync(p, { recursive: true, force: true })`), so no EISDIR.
 - **P15 — run-less send item:** `outbox.enqueue({ topic: "reply", target: { kind: "telegram", chat_id: "555" }, intent_type: "progress", idempotency_key: "p:1", correlation_id: "p:1", payload: { text: "x", attachments: [...] } })` (no `run_id`) → `claimed.run_id` null.
 - **P16 — ADR wording** follows `e86a3eda`: rule 3.2, rule 4's row, rule 4.1 and rule 1.5 are amended in place in this branch (the decision lands in code and ADR together); the History row's last column and the `docs/decisions/README.md` index clause read **"awaiting Paco's signature"** until Paco signs after merge. Rule 1.5's `PROTECTED_FILES` list gains `src/notifications/attachment-check.ts` (the R2 3-A precedent named `telegram-auth.ts` there; the spec named only 4.1 — this is a consistency edit, flagged for the reviewer).
 - **P17 — registry literals:** seven `toHaveLength(39)` in `tests/decisions/registry.test.ts` (`:151, :161, :172, :183, :195, :206, :218`) and `scripts/live-gate-ladder-stage4b.mjs:187` (`=== 39`) → 40. The `decision-map.md` row lands in the **same commit** as `ENTRY_IDS` (Task 3): `tests/docs/parity.test.ts:64` (check 4) fails otherwise.
@@ -65,6 +65,9 @@
 - **D7** §4.1 "The two sets are disjoint (one workspace, one predicate, one synchronous call)": each pass is parsed by its own synchronous call; a path accepted in pass 0's parse and refused in pass 1's (another process swapped it between the two calls) lands in both lists. Not a behaviour change (the accepted list is today's); the row then records the observed check. The disjointness test pins it on a static filesystem only.
 - **D9** §7 line 4 "a failing turn (`rpcPromptError`)": `fake-omp.mjs` has no such key, and none of its failing scenarios carries reply text (`rpcErrorText` blanks it), so a failed production turn with a marker in its pass cannot be built today. Ruled P12 (`rpcAbortAfterText`).
 - **D10** §4.0 "If `outcome.complete` itself throws, `finishSuccess` throws before the consult": true, and the throw then propagates out of `settle()` into the turn-crash path — a pre-existing exposure shared by `recordChatTurn`; not changed here (pinned by Task 4 case 9).
+- **D11 (2026-11-08, plan Rev 1.1, Fable B2)** §6 faults "excludes **only those two rows**" (the incident and the `change_log` row): an insert fault writes **three** — `openIncident` also appends an `incident_opened` ledger event (`run-store.ts:6142–6178`). Task 7 excludes and asserts all three.
+- **D12 (2026-11-08, plan Rev 1.1, Fable B1)** §7 line 4 / §4.0 W1 "nothing sent" after `report_write_failed`: a `${run}:final_report` outbox row **is** written — the failure notice (`ompFail` → `plannerFailureText` non-null, `omp-turn-wiring.ts:76–78` → `enqueueFailureNotification`, `run-store.ts:7470–7482`). The true meaning is "no attachment payload, no file sent".
+- **D13 (2026-11-08, plan Rev 1.1, codex B1)** §4.2 `deps = { canUpload: boolean; workspace: string | undefined; … }`: an eagerly passed workspace calls `workspaceFor` before the `unsupported` check, against today's order (`adapter:88–89`). Ruled P3 (a thunk).
 - **D8** §4.0/§6 tally "recorder calls `attach.path` +1 per distinct marker path in `finishSuccess`": exact under P6 — distinct accepted + distinct refused (a path cannot be in both on a static filesystem; D7).
 
 ---
@@ -101,7 +104,7 @@
 - Modify: `src/notifications/telegram-notification-adapter.ts:1–42, 47–58, 65–110, 161–171`, `src/notifications/notification-types.ts:77–79`, `src/capabilities/self-write-guard.ts:128`, `tests/capabilities/self-write-guard.test.ts:115, 344`, `tests/notifications/telegram-notification-adapter.test.ts` (append)
 
 **Interfaces:**
-- Produces: `MAX_ATTACHMENTS = 5`, `MAX_ATTACHMENT_BYTES`; `type AttachmentRefusal` (11 kinds); `type CheckRefusal = Exclude<AttachmentRefusal, "send_failed">`; `type AttachCheck = "ok" | CheckRefusal`; `REFUSAL_TEXT: Readonly<Record<AttachmentRefusal, string>>`; `inside(root: string, p: string): boolean`; `overCount(i: number): boolean`; `interface CheckDeps { canUpload: boolean; workspace: string | undefined; beforeRecheck?: (path: string) => void }`; `checkAttachment(path: string, deps: CheckDeps): CheckRefusal | { bytes: Uint8Array }` — all from `src/notifications/attachment-check.ts`, all re-exported by the adapter. `NotificationSendResult { provider_message_id: string; attach_checks?: readonly AttachCheck[] }`.
+- Produces: `MAX_ATTACHMENTS = 5`, `MAX_ATTACHMENT_BYTES`; `type AttachmentRefusal` (11 kinds); `type CheckRefusal = Exclude<AttachmentRefusal, "send_failed">`; `type AttachCheck = "ok" | CheckRefusal`; `REFUSAL_TEXT: Readonly<Record<AttachmentRefusal, string>>`; `inside(root: string, p: string): boolean`; `overCount(i: number): boolean`; `interface CheckDeps { canUpload: boolean; workspace: () => string | undefined; beforeRecheck?: (path: string) => void }`; `checkAttachment(path: string, deps: CheckDeps): CheckRefusal | { bytes: Uint8Array }` — all from `src/notifications/attachment-check.ts`, all re-exported by the adapter. `NotificationSendResult { provider_message_id: string; attach_checks?: readonly AttachCheck[] }`.
 
 - [ ] **Step 1: failing tests.** `tests/notifications/attachment-check.test.ts`:
   ```ts
@@ -119,7 +122,7 @@
   function layout() {
     const root = mkdtempSync(join(tmpdir(), "hac-")); dirs.push(root);
     const ws = chatWorkspace(join(root, "data"), "1"); mkdirSync(ws, { recursive: true });
-    return { root, ws, deps: { canUpload: true, workspace: ws } };
+    return { root, ws, deps: { canUpload: true, workspace: () => ws } };
   }
 
   describe("attach.path's send predicate (spec R7 §4.2): today's checks, verbatim, two reasons split", () => {
@@ -131,8 +134,9 @@
     });
     it("checks in today's order: unsupported before the workspace, the workspace before the file", () => {
       const { ws } = layout();
-      expect(checkAttachment(join(ws, "missing"), { canUpload: false, workspace: undefined })).toBe("unsupported");
-      expect(checkAttachment(join(ws, "missing"), { canUpload: true, workspace: undefined })).toBe("workspace_unverified");
+      const boom = () => { throw new Error("must not resolve the workspace"); };
+      expect(checkAttachment(join(ws, "missing"), { canUpload: false, workspace: boom })).toBe("unsupported"); // the resolver is never called (adapter :88 before :89)
+      expect(checkAttachment(join(ws, "missing"), { canUpload: true, workspace: () => undefined })).toBe("workspace_unverified");
     });
     it("a workspace replaced by a symlink is workspace_unverified (C2), not outside_workspace", () => {
       const { root, ws, deps } = layout(); writeFileSync(join(ws, "a.txt"), "a");
@@ -157,7 +161,7 @@
     it("a swap between the open and the re-check is changed", () => {
       const { ws } = layout(); writeFileSync(join(ws, "r.txt"), "one");
       const swap = (p: string) => { renameSync(p, join(ws, "old.txt")); writeFileSync(p, "two"); };
-      expect(checkAttachment(join(ws, "r.txt"), { canUpload: true, workspace: ws, beforeRecheck: swap })).toBe("changed");
+      expect(checkAttachment(join(ws, "r.txt"), { canUpload: true, workspace: () => ws, beforeRecheck: swap })).toBe("changed");
     });
     it("overCount is today's i >= MAX_ATTACHMENTS; the split reasons keep Paco's words", () => {
       expect(MAX_ATTACHMENTS).toBe(5); expect(MAX_ATTACHMENT_BYTES).toBe(20 * 1024 * 1024);
@@ -211,6 +215,13 @@
     const noDocs = new TelegramNotificationAdapter({ sendMessage: async () => ({ message_id: 5 }) }, { workspaceFor: () => ws });
     expect(await noDocs.send({ ...dispatch("x"), payload: { text: "x", attachments: [join(ws, "a.txt")] } })).toEqual({ provider_message_id: "telegram:5", attach_checks: ["unsupported"] });
   });
+  it("R7 Rev 1.1 (codex B1): without sendDocument the workspace resolver is never called — a throwing resolver still yields unsupported and the delivery resolves", async () => {
+    let calls = 0;
+    const adapter = new TelegramNotificationAdapter({ sendMessage: async () => ({ message_id: 6 }) }, { workspaceFor: () => { calls += 1; throw new Error("resolver down"); } });
+    await expect(adapter.send({ ...dispatch("x"), payload: { text: "x", attachments: ["/tmp/a.txt", "/tmp/b.txt"] } }))
+      .resolves.toEqual({ provider_message_id: "telegram:6", attach_checks: ["unsupported", "unsupported"] });
+    expect(calls).toBe(0);
+  });
   it("R7 §4.2: an all-accepted payload returns its checks although no follow-up line is sent", async () => {
     const { ws, texts, send } = setup(); writeFileSync(join(ws, "a.txt"), "a");
     expect(await send([join(ws, "a.txt")])).toEqual({ provider_message_id: "telegram:1", attach_checks: ["ok"] });
@@ -258,8 +269,8 @@
   export interface CheckDeps {
     /** The client can upload a document (today's `client.sendDocument` truthiness). */
     canUpload: boolean;
-    /** The chat's configured workspace (unverified); absent → every file is refused. */
-    workspace: string | undefined;
+    /** The chat's configured workspace (unverified), resolved lazily: called only after canUpload, as today; undefined → every file is refused. */
+    workspace: () => string | undefined;
     /** @internal Tests only: runs between opening the file and re-checking its path (simulates a swap in that window). */
     beforeRecheck?: (path: string) => void;
   }
@@ -271,7 +282,8 @@
    */
   export function checkAttachment(path: string, deps: CheckDeps): CheckRefusal | { bytes: Uint8Array } {
     if (!deps.canUpload) return "unsupported";
-    const workspace = deps.workspace ? verifiedWorkspace(deps.workspace) : null; // a swapped workspace is no workspace (C2)
+    const configured = deps.workspace();
+    const workspace = configured ? verifiedWorkspace(configured) : null; // a swapped workspace is no workspace (C2)
     if (!workspace) return "workspace_unverified";
     let fd: number | undefined;
     try {
@@ -343,7 +355,7 @@
 
   /** The protected predicate (attachment-check.ts) over this chat's configured workspace. */
   private readAttachment(chat_id: string, path: string): ReturnType<typeof checkAttachment> {
-    return checkAttachment(path, { canUpload: Boolean(this.client.sendDocument), workspace: this.options.workspaceFor?.(chat_id),
+    return checkAttachment(path, { canUpload: Boolean(this.client.sendDocument), workspace: () => this.options.workspaceFor?.(chat_id),
       ...(this.options.beforeRecheckForTest ? { beforeRecheck: this.options.beforeRecheckForTest } : {}) });
   }
   ```
@@ -577,6 +589,7 @@
   import { ATTACH_PATH_ID } from "./entries/attach-path.js";
   // …
   /** Spec R7 §4.3: attach.path's refusals per seam — a fail-rung row names no seam (failed), marker_outside is parse, every other refusal is send; accepted rows are not counted. */
+  // a fail-rung row's reason_code is null (decide.ts: { failed: "threw" } carries no reason), so `rung !== "fail"` below is belt and braces; kept so a future reason on fail rows cannot leak into parse
   function attachSuffix(rows: readonly DecisionRow[]): string {
     const refused = rows.filter((r) => r.entry_id === ATTACH_PATH_ID && r.verdict === "refuse");
     const failed = refused.filter((r) => r.rung === "fail").length;
@@ -650,8 +663,8 @@
   6. **merged run → no row for the merged id; the parent's row only:** `held()`; parent submitted; while RUNNING submit a second run (steered, `merged_into` parent — as `tests/omp/planner-supervisor.test.ts`'s steer-merge case); finish with `"r\n[[attach: ../x]]"` → rows `[["refuse","marker_outside","rule",parent,null]]`. ("Never `this.turn`" is a review rule here, not a test: `this.turn === t` for the whole of `finishSuccess`; it is cleared at `:549`, after `settle` returns.)
   7. **a lane reply never consults:** `extra.triage = async () => ({ kind: "lane_reply", text: "lane\n[[attach: ../x]]", buttons: [] })` → `attachCalls() === 0`, `rows` `[]`.
   8. **the row precedes `recordChatTurn`:** `vi.spyOn(store, "recordChatTurn").mockImplementation((i) => { if (i.role === "assistant") throw new Error("planted"); return …original… })` (capture `const orig = store.recordChatTurn.bind(store)` first) → the `marker_outside` row exists (catches M5).
-  9. **`outcome.complete` throws → no row** (stated best-effort meaning): `extra.outcome` = the harness sink with `complete: () => { throw new Error("planted"); }` → `rows` `[]`.
-  10. **a registry mistake is caught (P20):** plant the non-rule ladder; `const err = vi.spyOn(console, "error")` → `rows` `[]`; `err` called with a string containing `"attach_path_record_failed"`; the assistant chat turn is stored; `outcome.routeEnds` has one `planner_done` entry; `outcome.incidents` has no `planner_turn_crash` kind (catches M6).
+  9. **`outcome.complete` throws → no row** (stated best-effort meaning): `extra.outcome` = the harness sink with `complete: () => { throw new Error("planted"); }` → `await sup.whenIdle()` resolves (the throw leaves `settle()` and `drain()`'s per-turn catch, `:490–498`, logs it and opens `planner_turn_crashed` — D10, expected); `rows` `[]`.
+  10. **a registry mistake is caught (P20):** plant the non-rule ladder; `const err = vi.spyOn(console, "error")` → `rows` `[]`; `err` called with a string containing `"attach_path_record_failed"`; the assistant chat turn is stored; `outcome.routeEnds` has one `planner_done` entry; `outcome.incidents` does not contain `expect.objectContaining({ k: "planner_turn_crashed" })` (the literal at `planner-supervisor.ts:497`, `:556`; Rev 1.1) — with the stored chat turn and the `planner_done` routeEnd these catch M6.
   11. **a thrown rule (P20):** plant `decide` to throw; text with one inside and one `../` marker → rows `[["refuse", null, "fail", run, null], ["refuse", null, "fail", run, null]]`; `outcome.done[0].attachments` unchanged.
   12. **no recorder → nothing, no throw:** `harness(answering("x\n[[attach: ../x]]"))` without `recorder` → done as usual.
   Wiring (c), append to `tests/core/supervisor-decision-wiring.test.ts`:
@@ -743,7 +756,7 @@
   }
   ```
   Cases:
-  1. **rows after `markDelivered`, the claimed run's id, refusals only:** `rig(["ok", "too_large", "over_count"])` → `dispatchOnce` delivered; `log` equals `["send", "markDelivered", "record:send:checked", "record:refuse:too_large", "record:refuse:over_count"]`; `attachRows` `[["refuse","too_large","rule","run_1",null],["refuse","over_count","rule","run_1",null]]` (M1 fails this).
+  1. **rows after `markDelivered`, the claimed run's id, refusals only:** `rig(["ok", "too_large", "over_count"])` → `dispatchOnce` delivered; `log` equals `["send", "markDelivered", "record:send:checked", "record:refuse:too_large", "record:refuse:over_count"]`; `attachRows` `[["refuse","too_large","rule","run_1",null],["refuse","over_count","rule","run_1",null]]` (M1 fails this). `record:send:checked` is in the log because the wrapper logs every recorder **call**; `shouldRecord` then declines the row — do not make the adapter skip accepted checks.
   2. **run-less row → `run_id` null:** `rig(["not_found"], { run_id: "none" })` → `[["refuse","not_found","rule",null,null]]`.
   3. **no checks / no recorder → nothing:** `rig(undefined)` → no `record:` in `log`; a dispatcher built without `recorder` and checks `["too_large"]` → `attachRows` `[]`, state `delivered`.
   4. **a failed send records nothing:** adapter throws → `markFailed` (`retry_wait`), `attachRows` `[]`.
@@ -751,7 +764,7 @@
   6. **a recorder that throws past itself:** `record: () => { throw new Error("planted"); }` → result `{ status: "delivered" }`; state `delivered`; `console.error` called with a string containing `"attach_path_record_failed"`.
   7. **`afterDelivered` and `recordAttach` cannot skip each other:** `onDelivered` throws → rows still written; recorder throws → `onDelivered` still called (spy).
   8. **a planted non-rule rung (P20)** → no row, logged, delivered.
-  9. **insert fault → `decision_record_failed` as a log, never chat:** `vi.spyOn(store, "insertDecision").mockImplementation(() => { throw new Error("disk"); })`, `process.env.HOUGE_TELEGRAM_CHAT_ID = ""` for the case; `rig(["linked"])` → `db(store).prepare("SELECT kind, subject, detail FROM incidents").all()` maps to `[["decision_record_failed", "attach.path", { entry: "attach.path" }]]` (parse `detail` JSON; check the column names against the incidents DDL first); `db(store).prepare("SELECT topic FROM change_log").all()` equals `[{ topic: "incident_log" }]`; `notification_outbox` row count still 1; state `delivered`.
+  9. **insert fault → `decision_record_failed` as a log, never chat:** `vi.spyOn(store, "insertDecision").mockImplementation(() => { throw new Error("disk"); })`, `process.env.HOUGE_TELEGRAM_CHAT_ID = ""` for the case; `rig(["linked"])` → `db(store).prepare("SELECT kind, subject, detail_json FROM incidents").all()` maps (with `JSON.parse(detail_json)`) to `[["decision_record_failed", "attach.path", { entry: "attach.path" }]]`; exactly one `ledger_events` row with `event_type = 'incident_opened'`; `db(store).prepare("SELECT topic FROM change_log").all()` equals `[{ topic: "incident_log" }]`; `notification_outbox` row count still 1; state `delivered`.
   `tests/telegram/attach-decision-wiring.test.ts` (setup as `tests/telegram/sender-decision-wiring.test.ts:1–20`: `pinOmpEnv`, the `PINNED` env list, `useFakeOmp`):
   ```ts
   /** A verified workspace for chat 555 under `root` and a seeded final_report naming a 21 MiB sparse file there (spec R7 §4.4 wiring). */
@@ -938,7 +951,7 @@
   | `merged` | held turn, a second run steered in, final `"r\n[[attach: ../x]]"` | one row with run `a` (the parent), none for `b` | 1 |
   | `lane_reply` | `extra.triage` → `{ kind: "lane_reply", text: "lane\n[[attach: ../x]]", buttons: [] }` | `[]` | 0 |
   | `chat_turn_throws` | `store.recordChatTurn` wrapped to throw for the assistant role | one `marker_outside` | 1 |
-  | `registry_mistake` | P20 non-rule ladder on the new dist's `ATTACH_PATH` | `[]`; no turn-crash incident; chat turn stored; one `planner_done` routeEnd | 0 recorded (calls throw before the recorder) |
+  | `registry_mistake` | P20 non-rule ladder on the new dist's `ATTACH_PATH` | `[]`; no `planner_turn_crashed` incident; chat turn stored; one `planner_done` routeEnd | 0 recorded (calls throw before the recorder) |
 
 - [ ] **Step 3: items — send (delivery fixture).** Spec §6 verbatim:
 
@@ -966,7 +979,7 @@
   - `write_timing`: three files, the middle `missing` → required from the log: the index of the first `["record", …]` is greater than the index of the last `["sendDocument", …]`, of the follow-up `["sendMessage", …, "⚠ …"]`, and of `["markDelivered"]`. M1 and M2 each fail it once (show the output).
   - `lease` (P10): `insideRecorder: (store) => [store.recoverStaleSendingNotifications(new Date(Date.now() + 31_000).toISOString()).length, new d.NotificationOutbox(store).claimNext("second", 30) === null]` → required `["inside", 0, true]`; outbox `delivered`; one text, one upload. M1 fails it.
   - `rule_throws_parse` / `rule_throws_send`: planted `decide` throw → required one `refuse` row at rung `fail` per consult (parse: `one_each` drive → 2 rows; send: `too_large` + `file` → 2 rows); files, lines and outbox identical to the old side.
-  - `insert_fault_send`: `store.insertDecision` throws on the new side for `attach.path` only → required exact incident row (`kind decision_record_failed`, `subject attach.path`, `detail {"entry":"attach.path"}`) and exactly one `change_log` row (`topic incident_log`); those two rows (and only those) excluded from this item's dump comparison by an `exclude` list naming their tables and ids; outbox `delivered`.
+  - `insert_fault_send`: `store.insertDecision` throws on the new side for `attach.path` only → three rows differ, each required by exact shape and each excluded (and only these) from this item's dump comparison by an `exclude` list naming table and id: the `incidents` row (`kind decision_record_failed`, `subject attach.path`, `detail_json` parsing to `{"entry":"attach.path"}`), the `ledger_events` row (`event_type incident_opened`, payload `{ incident_id: <that row's id>, kind: "decision_record_failed", subject: "attach.path" }`, written by `openIncident`, `run-store.ts:6142–6178`) and the `change_log` row (`topic incident_log`); outbox `delivered` (Rev 1.1, Fable B2).
   - `recorder_throws`: the new side's recorder throws past itself → no row, everything else identical.
   - Planted rule mutation for the corpus (M7): `too_large`/`linked` swapped in the new dist's rule → `too_large` and `hard_link` fail `required` once.
 - [ ] **Step 5: self-tests** — coverage (every reason in `SEND_REASONS` and `marker_outside` is produced by at least one item; `BRANCHES` lists them), determinism (`nine_files` twice on the new build projects identically), the old build holds no `attach.path` row.
@@ -980,11 +993,11 @@
 Pattern: `scripts/live-gate-ladder-remainder-r6.mjs` (read whole). From a worktree, after `npm run build` there: `HOUGE_ENV_FILE=<main checkout>/.env node scripts/live-gate-ladder-remainder-r7.mjs`. Refuses to run outside `.worktrees/`; two `VACUUM INTO` copies of the live DB (A for lines 1, 3 and 7; B, cut from the untouched live DB, for lines 2, 4, 5, 6), each with its temp data dir, deleted on every exit path (pass, FAIL, throw, SIGINT/SIGTERM/SIGHUP/SIGQUIT, uncaught); `HOUGE_TOMBSTONE_PATH`/`HOUGE_DISARM_PATH` under the temp root; `HOUGE_TELEGRAM_CHAT_ID` = a stub; no real omp child (`fake-omp.mjs`), no real Telegram (a fake client), no subscription call. Prints line names, counts, verdicts and closed-set codes only. Before seeding, park every non-final outbox row on each copy (`queued`/`retry_wait`/`sending` → `failed_terminal`, as the R6 rollback's "non-final outbox rows parked" prep) so `dispatchOnce` can only claim the seeded row, and assert after each line that the seeded row is the one delivered; pin the env list of `tests/telegram/sender-decision-wiring.test.ts:11` (scheduler, radar, media flags deleted) so nothing else runs on the copy. Every line compares uploads and line text against a **recorder-less** run of the same seed (a dispatcher built without `recorder` on a second throwaway copy), not just that a row appeared.
 
 - [ ] **Step 1: lines** (exact PASS values):
-  1. **Send, production dispatcher (copy A).** `createOutboxDispatcher(A, { local: new LocalNotificationAdapter(() => undefined), telegram: workspaceTelegramAdapter(fake, dataA) })`; a seeded completed run (`createQueuedTurnRun`-equivalent through `Gateway.intake` on chat 555) whose `final_report` carries six paths `[small.txt (1 KiB), big.bin (21 MiB sparse), notes.txt (hard link), leak.txt (symlink out), f5.txt, f6.txt]` → exactly two `sendDocument` (`small.txt` and `f5.txt`); one follow-up text byte-equal to the recorder-less run's (`"⚠ Not attached: big.bin (over 20 MB)\n⚠ Not attached: notes.txt (a hard-linked file)\n⚠ Not attached: leak.txt (outside my workspace)\n⚠ Not attached: f6.txt (more than 5 files)"`); rows `[refuse/too_large, refuse/linked, refuse/outside_workspace, refuse/over_count]` with the run's id, every row's `created_at` ≥ the outbox row's `updated_at` at delivery; zero rows for the uploads.
+  1. **Send, production dispatcher (copy A).** `createOutboxDispatcher(A, { local: new LocalNotificationAdapter(() => undefined), telegram: workspaceTelegramAdapter(fake, dataA) })`; a seeded completed run (`createQueuedTurnRun`-equivalent through `Gateway.intake` on chat 555) whose `final_report` carries six paths `[small.txt (1 KiB), big.bin (21 MiB sparse), notes.txt (hard link), leak.txt (symlink out), f5.txt, f6.txt]` → exactly two `sendDocument` (`small.txt` and `f5.txt`); one follow-up text byte-equal to the recorder-less run's (`"⚠ Not attached: big.bin (over 20 MB)\n⚠ Not attached: notes.txt (a hard-linked file)\n⚠ Not attached: leak.txt (outside my workspace)\n⚠ Not attached: f6.txt (more than 5 files)"`); rows `[refuse/too_large, refuse/linked, refuse/outside_workspace, refuse/over_count]` with the run's id; zero rows for the uploads. **Ordering (Rev 1.1, codex W):** the store recorder is wrapped so each `record` call first reads the seeded row's state (`store.getNotification(id).state`); required: every read is `delivered` (timestamps cannot prove order: both can share a millisecond). Mutation M1 (record before `markDelivered`) must fail this line once.
   2. **Wiring (copy B).** The same seed through `runTelegramPollOnce` (`getUpdates: [] `) → its rows' `run_id` equals the outbox row's `run_id`.
   3. **Parse, production path (copy A).** `CoreWorker` (as `tests/helpers/omp-worker.ts` builds it, `dataDir` = `dataA`) over `fake-omp.mjs` with `rpcText: "ok\n[[attach: in.txt]]\n[[attach: ../outside.txt]]"`, `in.txt` in the workspace → the outbox payload's `attachments` = [the inside file]; one `refuse/marker_outside` row with the run's id; the stored assistant chat turn has no `[[attach:`.
-  4. **Lost turn and lost run (copy B).** The same text on a turn omp aborts after the text (`rpcAbortAfterText`, P12) → run `failed`, no `attach.path` row. The same text with `<project>/runs` a regular file (P14) → run `failed` `report_write_failed`, the `marker_outside` row present, no `final_report` outbox row (W1, shown).
-  5. **Faults (copy B).** `insertDecision` faulted at send → exactly one `decision_record_failed` incident (subject `attach.path`), exactly one `change_log` row with topic `incident_log`, **no** outbox row to the stub chat, uploads byte-equal to the recorder-less run, the outbox row `delivered`; a recorder that throws past itself → no incident, delivered.
+  4. **Lost turn and lost run (copy B).** The same text on a turn omp aborts after the text (`rpcAbortAfterText`, P12) → run `failed`, no `attach.path` row. The same text with `<project>/runs` a regular file (P14) → run `failed` `report_write_failed`, the `marker_outside` row present, the run's one `final_report` outbox row is the failure notice with **no `attachments`** in its payload, and no `sendDocument` when it is dispatched (W1, shown; Rev 1.1).
+  5. **Faults (copy B).** `insertDecision` faulted at send → exactly one `decision_record_failed` incident (subject `attach.path`), exactly one `change_log` row with topic `incident_log`, **no** outbox row to the stub chat, uploads byte-equal to the recorder-less run, the outbox row `delivered` (plus the one `incident_opened` ledger event the incident writes); a recorder that throws past itself → no incident, delivered.
   6. **Registry.** `ENTRY_IDS.length === 40`; `attach.path` locked with `ladder.map(r => r.kind)` = `["rule"]`; `insertLadderMove` (as the R6 gate calls it) refuses it with `locked_entry`; `entryProblems` empty.
   7. **`/status` (copy A, after lines 1 and 3 only).** The `attach.path` count line from the real `/status` renderer equals `· attach.path 5 — code 5 (parse 1 · send 4 · failed 0)`.
 - [ ] **Step 2: mutations** — show lines 1, 3 and 5 failing once each under a planted mutation (M1; parse consult removed; `recordAttach` without its try), reverted.
@@ -998,7 +1011,7 @@ Pattern: `scripts/live-gate-ladder-remainder-r6.mjs` (read whole). From a worktr
 Pattern: `scripts/check-ladder-remainder-r6-rollback.mjs` (read whole; same header shape, pins, exit codes, provenance via `verifyStampedDist` with file `notifications/telegram-notification-adapter.js`, `--old-dist <base-<sha>/dist>`, `--old-base-r7` post-merge only).
 
 - [ ] **Step 1: script.** Two `VACUUM` copies: A (never seeded) and F (cut from A, then seeded by **this** build through the real paths, dated inside the `/status` 24 h window): parse `refuse/marker_outside` with a run id (the dist supervisor fixture, `script.final` with a `../` marker); send `refuse/too_large`, `workspace_unverified`, `not_found`, `over_count` with a run id (the delivery fixture over this dist); one send `refuse/not_found` with `run_id` null (`progress_runless`); one `refuse` at rung `fail` (planted throw). The old build opens A and F, no migration:
-  - `/status`: every line byte-identical A vs F except the `attach.path` line, which the old build renders **without** the seam suffix — assert it equals `· attach.path <n> — code <n-1> · fallback 1` exactly (n from SQL).
+  - `/status`: every line byte-identical A vs F except the `attach.path` line — the old build prints it because `status-view.ts:29` renders `countLines(rows)` over the 24 h window with no registry filter (as R6's rollback relies on, `check-ladder-remainder-r6-rollback.mjs:102–123`) — which the old build renders **without** the seam suffix — assert it equals `· attach.path <n> — code <n-1> · fallback 1` exactly (n from SQL).
   - digest output identical A vs F.
   - every `attach.path` row read back unchanged (`rung`, `entry_version`, `verdict`, `reason_code`, `run_id`).
   - its `review_ok` writer refuses `attach.path` normally (as R6 asserts per id).
@@ -1024,16 +1037,16 @@ Pattern: `scripts/check-ladder-remainder-r6-rollback.mjs` (read whole; same head
    */
   ```
   Cases (setup as `tests/core/supervisor-decision-wiring.test.ts:1–21`):
-  1. the ADR text contains the 3.2 sentence verbatim (read the file; `expect(adr).toContain("Settle-stage rows (`attach.path` at parse) are best-effort terminal records")` and `toContain("Delivery rows (`attach.path` at send) are written by the outbox dispatcher after the delivery committed")`).
+  1. rule 3.2's text (sliced from `- 3.2 ` to `- 3.3 `, whitespace collapsed to single spaces so the ADR's line wraps do not matter) contains the two R7 sentences verbatim **and** the two qualifications — `"Rows are written only while the turn is live (except the settle-stage and delivery rows below);"` and `"Supervisor rows follow the incoming run's successful claim (settle-stage rows: below)."` — and no longer contains the unqualified `"only while the turn is live; the signal"` or `"successful claim. A lane"` (so 3.2 cannot say both).
   2. **failure arm → none:** `useFakeOmp({ "*": { rpcText: "ok\n[[attach: ../x]]", rpcAbortAfterText: true } }, tmp.dir)` (P12) → run `failed` (`planner_exit`/`agent_aborted`); `attach.path` rows `[]`. The same text without `rpcAbortAfterText` (control) → one `marker_outside` row, so the case cannot pass vacuously.
-  3. **report stage fails → the parse row stays (W1):** `rpcText: "ok\n[[attach: ../x]]"`, `mkdirSync(join(tmp.dir, "project"), { recursive: true }); writeFileSync(join(tmp.dir, "project", "runs"), "")` (P14) → run `failed` with `error_ref` starting `report_write_failed`; rows `[["refuse", "marker_outside", run]]`; no `final_report` outbox row.
-  4. **send row only after `markDelivered`, with the outbox row's `run_id`; null for run-less:** a dispatcher with `storeRecorder`, a fake adapter returning `attach_checks: ["not_found"]`, the store's `markNotificationDelivered` wrapped to throw once → `markFailed`, rows `[]`; second attempt delivers → one row with the row's `run_id`; a run-less `progress` row → `run_id` null.
+  3. **report stage fails → the parse row stays (W1):** `rpcText: "ok\n[[attach: ../x]]"`, `mkdirSync(join(tmp.dir, "project"), { recursive: true }); writeFileSync(join(tmp.dir, "project", "runs"), "")` (P14) → run `failed` with `error_ref` starting `report_write_failed`; rows `[["refuse", "marker_outside", run]]`; the one `${run}:final_report` outbox row is the **failure notice** (`ompFail` → `plannerFailureText("planner_exit", …)` is non-null, `src/core/omp-turn-wiring.ts:76–78` → `enqueueFailureNotification`, `src/run/run-store.ts:7470–7482`): its payload has **no `attachments`** key and its text is not the reply (Rev 1.1, Fable B1).
+  4. **send row only after `markDelivered`, with the outbox row's `run_id`; null for run-less:** a dispatcher with `storeRecorder`, a fake adapter returning `attach_checks: ["not_found"]`, the store's `markNotificationDelivered` wrapped to throw once → `markFailed` (`retry_wait`), rows `[]`; `store.requeueRetryWaitNotifications(new Date(Date.now() + 3_600_000).toISOString())` (a `retry_wait` row is not claimable, `run-store.ts:7700–7703`); second `dispatchOnce` delivers → one row with the row's `run_id`; a run-less `progress` row → `run_id` null.
   5. **rule 4 row:** the table row for `attach.path` contains `refusals (1-A)` and does not contain `` `alwaysRecord` `` (the existing `tests/adr/0034-always-record.test.ts` reads the same table).
 - [ ] **Step 2: run** `npx vitest run tests/adr` → FAIL (sentence absent).
 - [ ] **Step 3: ADR text.**
   - Status: append `; amended 2026-11-08 (remainder R7: \`attach.path\`; rows after the end signal — awaiting Paco's signature)`.
   - Rule 1.5: after `src/triggers/telegram-auth.ts` (…), add `` `src/notifications/attachment-check.ts` (the send-time attachment predicate behind `attach.path`, R7 4-A; the loop, upload and follow-up line stay in the adapter, itself protected), `` .
-  - Rule 3.2: append the two sentences verbatim from spec §9: "Settle-stage rows (`attach.path` at parse) are best-effort terminal records: written when the supervisor reached its success arm, after the end signal, and kept when the run then fails to stage its report or loses its finish claim; a turn that took the failure arm writes none. Delivery rows (`attach.path` at send) are written by the outbox dispatcher after the delivery committed, with the outbox row's `run_id`; a delivery that did not commit writes none."
+  - Rule 3.2 (Rev 1.1, codex B2): qualify the two existing sentences the R7 rows would otherwise contradict — "Rows are written only while the turn is live;" → "Rows are written only while the turn is live (except the settle-stage and delivery rows below);" and "Supervisor rows follow the incoming run's successful claim." → "Supervisor rows follow the incoming run's successful claim (settle-stage rows: below)." — then append the two sentences verbatim from spec §9: "Settle-stage rows (`attach.path` at parse) are best-effort terminal records: written when the supervisor reached its success arm, after the end signal, and kept when the run then fails to stage its report or loses its finish claim; a turn that took the failure arm writes none. Delivery rows (`attach.path` at send) are written by the outbox dispatcher after the delivery committed, with the outbox row's `run_id`; a delivery that did not commit writes none."
   - Rule 4: replace the `attach.path` row with spec §9's row verbatim: `` | `attach.path` | `settle` · `tool` | yes | refusals (1-A): parse `refuse`/`marker_outside`, once per distinct refused path on the success arm; send `refuse`/`over_count` (one for all paths past the fifth), `workspace_unverified`, `outside_workspace`, `not_a_file`, `too_large`, `linked`, `changed`, `not_found`, `unreadable`, `unsupported`, written by the dispatcher after `markDelivered` with the outbox row's `run_id`; rows describe each observed check; `send` default; `fail: "refuse"`; `send_failed` is execution, no row | R7 | ``.
   - Rule 4.1: after the `lookup-predicates.ts` clause add "`attach.path`'s send predicate is `checkAttachment`/`overCount` (`notifications/attachment-check.ts`); its parse predicate is `parseAttachments`' containment conjunction.". Leave 4.1's last sentence (it lists pre-tool entries outside the table; `attach.path` is now in the table).
   - History: `| 2026-11-08 | R7: \`attach.path\` (locked) at parse and send; 3.2 adds settle-stage and delivery rows; \`attachment-check.ts\` protected | [R7](../superpowers/specs/2026-11-08-ladder-remainder-r7-attach-path-design.md) | awaiting Paco's signature |`.
@@ -1051,6 +1064,30 @@ Pattern: `scripts/check-ladder-remainder-r6-rollback.mjs` (read whole; same head
 - [ ] **Step 6: commit** two commits, one concern each: `docs(adr): 0034 R7 — attach.path row, 3.2 settle-stage and delivery rows, 4.1 predicates (awaiting Paco's signature)` (ADR + README index + `tests/adr/0034-settle-delivery-rows.test.ts`), then `docs: R7 docs sync — ROADMAP, ladder §6.1, todo, lessons, sessions`.
 
 ---
+
+## Rev 1.1 changes (plan review: codex + Fable senior; each verified first-hand against HEAD)
+
+Blockers:
+- **codex B1 — workspace resolution order.** `CheckDeps.workspace` is now a thunk `() => string | undefined`; the leaf calls it only after `canUpload` (adapter `:88` before `:89`), outside the try as today. P3, Task 1 Interfaces, leaf code, adapter `readAttachment`, and the `attachment-check` tests updated; new adapter test: no `sendDocument` + a throwing `workspaceFor` → `["unsupported", "unsupported"]`, resolver never called, `send()` resolves. Spec defect D13.
+- **codex B2 — ADR 3.2 would contradict itself.** Task 10 now qualifies "only while the turn is live" (except settle-stage and delivery rows) and "Supervisor rows follow the incoming run's successful claim" (settle-stage rows: below) before appending the R7 sentences. `tests/adr` case 1 asserts both qualifications are present and both unqualified phrasings are gone.
+- **Fable B1 — the failure notice is a `final_report` row.** Task 10 case 3 and Task 8 line 4 now assert that the `${run}:final_report` row is the failure notice and has no `attachments` (and, at the gate, no `sendDocument`). Spec defect D12.
+- **Fable B2 — an insert fault writes three rows.** Task 7 `insert_fault_send` now excludes and asserts the `incidents`, `incident_opened` ledger and `change_log` rows by exact shape. Task 5 case 9 and Task 8 line 5 also assert the ledger event. Spec defect D11.
+
+Warnings:
+- **codex — gate line 1 ordering.** The `created_at ≥ updated_at` check is replaced by a recorder wrapper that reads the seeded row's state on every call (each must be `delivered`). M1 must fail the line.
+- **Fable — incident literal.** `planner_turn_crash` → `planner_turn_crashed` (`planner-supervisor.ts:497`, `:556`), in Task 4 case 10 and the Task 7 `registry_mistake` row.
+- **Fable — ADR case 4 requeue.** `requeueRetryWaitNotifications` runs between attempts (a `retry_wait` row is not claimable, `run-store.ts:7700–7703`).
+- **Fable — `incidents.detail_json`.** Task 5 case 9 selects `detail_json` and parses it; Task 7 likewise.
+- **Fable — path.** P14 names `src/report/report-writer.ts:47` and `<project>` = `join(tmp.dir, "project")`.
+
+Suggestions taken:
+- Task 4 case 9 says to `await sup.whenIdle()` and to expect `planner_turn_crashed` (D10).
+- Task 5 case 1 explains why `record:send:checked` is logged.
+- Task 3 `attachSuffix` notes that a fail-rung row's `reason_code` is null.
+- Task 9 states why the old build prints the `attach.path` line (`status-view.ts:29`, no registry filter).
+
+Suggestion skipped:
+- **P1 worktree name `base-<sha7>`.** R6's plan and its rollback used `base-<12-char sha>`, and both flags take a path, so the post-merge command works either way. Kept 12 to match the most recent slice.
 
 ## After the tasks (orchestrator)
 
