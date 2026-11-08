@@ -375,14 +375,14 @@ async function case8(g, f, now1) {
     ["Plan a three day itinerary for a trip to Kyoto with vegetarian restaurants", "Please plan three days in Kyoto with vegetarian friendly restaurants each day", "Draft a three day Kyoto trip itinerary including vegetarian restaurants"],
     ["Write a regular expression that extracts invoice numbers from these log lines", "Give me a regex to pull the invoice numbers out of these log lines", "I need a regular expression that extracts invoice numbers from log lines"]];
   topics.forEach((texts, i) => texts.forEach((text, k) => plantTurn(g, { text, at: dayAt(g, 1, `20:${String(i * 10 + k * 3).padStart(2, "0")}`), category: "answer" })));
-  const now2 = g.c.at(g.c.addDays(g.c.d1, 2), "22:00"); const runs = await runTick(g, now2); const r = runs.at(-1); const sum = (k) => runs.reduce((n, x) => n + x.counts[k], 0); const groups = sum("groups"); // a budget stop and resume splits the groups across segments
+  const now2 = g.c.at(g.c.addDays(g.c.d1, 2), "22:00"); const runs = await runTick(g, now2); const r = runs.at(-1); const groups = Math.max(...runs.map((x) => x.counts.groups)); // counts are a running total per segment; a resumed segment re-reads the groups, so take the largest, never the sum
   // computed before any early return: case 9 must list the legitimately deferred recurrence rows on every path, INCONCLUSIVE ones too
   const open = g.q.all(`SELECT * FROM improve_signals WHERE signal = 'recurrence' AND consumed_at IS NULL AND signal_id > ?`, g.baseSignalId); const deferred = open.map((s) => s.signal_id);
   if (!r || r.counts.embed_unavailable > 0) { unsure(c, "fresh-date tick", `no tick or embedder unavailable (${r?.counts.embed_unavailable ?? "n/a"})`); return { now2, deferred }; }
   const want = 4 + (g.c4?.ok ? 1 : 0); // R11: case 4's near-copy correction is its own group in this tick
   if (groups !== want) { unsure(c, "four clusters", `the tick formed ${groups} group(s), ${want} expected (four planted topics${g.c4?.ok ? " and case 4's correction" : ""})`); return { now2, deferred }; }
   const made = jobsOf(g).filter((j) => j.created_at === now2);
-  check(c, "exactly 3 jobs created, deferred >= 1, the 4th cluster's row unconsumed", made.length === 3 && sum("deferred") >= 1 && open.length === 1, `jobs=${made.length} deferred=${sum("deferred")} unconsumed=${open.length} queued=${sum("jobs_queued")} started=${sum("jobs_started")}`);
+  check(c, "exactly 3 jobs created, deferred >= 1, the 4th cluster's row unconsumed", made.length === 3 && r.counts.deferred >= 1 && open.length === 1, `jobs=${made.length} deferred=${r.counts.deferred} unconsumed=${open.length} queued=${r.counts.jobs_queued} started=${r.counts.jobs_started}`);
   check(c, "at most one job started while the lane was busy", made.filter((j) => j.started_at !== null).length <= 1, `started=${made.filter((j) => j.started_at !== null).length}`);
   return { now2, deferred };
 }
