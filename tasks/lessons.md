@@ -678,3 +678,7 @@ The clean-room merge rebuilt `dist/` (new `omp/shell-wrapper.sh`) and the kickst
 
 ## 2026-11-07 — Improve auto-apply
 - **A spec's file citation is checked against the tree before the plan.** The spec cited `src/core/standing-approval.ts` for the standing-grant end; the file and the real transaction (`endStandingTx` in the run store) were looked up first, and the plan cites the real ones. A cited path that does not exist is a spec bug caught for free at plan time, expensive in Task 6.
+
+## 2026-11-08 — Block only repeats
+- **A rule removed exposes the rule behind it.** Accepted proposals blocking the pair hid `lessonRewrite`: once the block went, a different second lesson within 30 days would have reached the rewrite rule and become a card, against Paco's intent; the rewrite moved behind the repeat check (near-copies only, ruling R1'). Before planning a removal, trace what the removed gate used to keep from running.
+- **A gate that counts groups counts every planted group.** Case 8's "5 groups from 4 topics" INCONCLUSIVE was case 4's correction sharing the tick, not the embedder.
