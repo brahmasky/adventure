@@ -61,3 +61,62 @@ describe("proposalBySaved", () => {
     expect(s.proposalBySaved("lesson", 214)).toBeUndefined();
   });
 });
+
+// Addendum Rev 2.3.1 A: the repeat check compares a new draft with the text of every lesson or fact Houge applied (accepted) or
+// Paco undid (reverted) on the same pair within 14 days — read from draft_json, so it works after the saved row is gone.
+describe("repeatCandidates", () => {
+  const withText = (s: RunStore, target: "lesson" | "fact", scope: string, text: string, state: "accepted" | "reverted" | "dismissed", resolved_at: string): string => {
+    const id = s.insertImprovementProposal({ decision_id: s.insertDecision(D), target, scope, chat_id: "555", draft_json: JSON.stringify({ scope: "ask", text }), evidence: "e", created_at: "2026-09-01T00:00:00.000Z" });
+    s.transitionProposal({ proposal_id: id, from: ["open"], to: state === "dismissed" ? "dismissed" : "accepted", now: resolved_at });
+    if (state === "reverted") s.transitionProposal({ proposal_id: id, from: ["accepted"], to: "reverted", now: resolved_at });
+    return id;
+  };
+  it("lists accepted and reverted proposals of the pair resolved inside the window with their draft text and state, ordered by id; nothing else", () => {
+    const s = RunStore.openInMemory();
+    const a = withText(s, "lesson", "answer", "Answer in one line.", "accepted", "2026-10-20T00:00:00.000Z");
+    const r = withText(s, "lesson", "answer", "Name the source.", "reverted", "2026-10-15T00:00:00.000Z");
+    withText(s, "lesson", "answer", "Too old.", "accepted", SINCE);                           // resolved exactly at the cut: outside (strict >)
+    withText(s, "lesson", "answer", "Paco said no.", "dismissed", "2026-10-20T00:00:00.000Z"); // dismissed is proposalBlocks' business, not a repeat
+    withText(s, "lesson", "lookup", "Other scope.", "accepted", "2026-10-20T00:00:00.000Z");
+    withText(s, "fact", "answer", "Other target.", "accepted", "2026-10-20T00:00:00.000Z");
+    expect(s.repeatCandidates("lesson", "answer", SINCE)).toEqual([a, r].sort().map((id) => id === a
+      ? { proposal_id: a, text: "Answer in one line.", state: "accepted", resolved_at: "2026-10-20T00:00:00.000Z" }
+      : { proposal_id: r, text: "Name the source.", state: "reverted", resolved_at: "2026-10-15T00:00:00.000Z" }));
+    expect(s.repeatCandidates("fact", "answer", SINCE).map((c) => c.text)).toEqual(["Other target."]);
+  });
+  it("R1': an accepted lesson stays a candidate over the longer rewrite window (30 d); a reverted one only over 14 d", () => {
+    const s = RunStore.openInMemory();
+    const old = withText(s, "lesson", "answer", "Answer in one line.", "accepted", "2026-10-01T00:00:00.000Z");   // 20 days before NOW
+    withText(s, "lesson", "answer", "Name the source.", "reverted", "2026-10-01T00:00:00.000Z");                   // 20 days: past the 14-day window
+    const THIRTY = "2026-09-21T10:00:00.000Z";
+    expect(s.repeatCandidates("lesson", "answer", SINCE, THIRTY).map((c) => [c.proposal_id, c.state])).toEqual([[old, "accepted"]]);
+    expect(s.repeatCandidates("lesson", "answer", SINCE)).toEqual([]); // the default accepted window is the 14-day one
+  });
+  it("still lists a reverted proposal after its lesson row was pruned (the text lives on the proposal)", () => {
+    const s = RunStore.openInMemory();
+    const id = withText(s, "lesson", "answer", "Answer in one line.", "reverted", "2026-10-20T00:00:00.000Z");
+    expect(s.repeatCandidates("lesson", "answer", SINCE)).toEqual([{ proposal_id: id, text: "Answer in one line.", state: "reverted", resolved_at: "2026-10-20T00:00:00.000Z" }]);
+  });
+});
+
+// Addendum Rev 2.3.1 B: /forget <scope> undoes each improvement-saved lesson newest first; this is the list it walks.
+describe("improvementLessonsInScope", () => {
+  it("names active lessons of the lesson scope with an accepted lesson proposal, newest first; pruned, plain and reverted ones are not listed", () => {
+    const s = RunStore.openInMemory();
+    const save = (text: string, state: "accepted" | "reverted"): { lesson_id: number; proposal_id: string } => {
+      const lesson_id = s.addLesson({ scope: "ask", text, source: "improve", created_at: NOW });
+      const proposal_id = s.insertImprovementProposal({ decision_id: s.insertDecision(D), target: "lesson", scope: "answer", chat_id: "555", draft_json: JSON.stringify({ scope: "ask", text }), evidence: "e", created_at: NOW });
+      s.transitionProposal({ proposal_id, from: ["open"], to: "accepted", now: NOW, result_json: JSON.stringify({ change_id: `lc_${text}`, lesson_id }) });
+      if (state === "reverted") s.transitionProposal({ proposal_id, from: ["accepted"], to: "reverted", now: NOW });
+      return { lesson_id, proposal_id };
+    };
+    const older = save("Answer in one line.", "accepted");
+    const newer = save("Name the source.", "accepted");
+    save("Undone already.", "reverted");
+    const gone = save("Pruned since.", "accepted"); s.forgetLesson(gone.lesson_id);
+    s.addLesson({ scope: "ask", text: "plain rule", source: "user_feedback", created_at: NOW });
+    s.addLesson({ scope: "research", text: "other scope", source: "improve", created_at: NOW });
+    expect(s.improvementLessonsInScope("ask")).toEqual([newer, older]);
+    expect(s.improvementLessonsInScope("research")).toEqual([]);
+  });
+});

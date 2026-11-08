@@ -65,3 +65,22 @@ describe("lesson_changes + undo", () => {
     store.close();
   });
 });
+
+// Addendum Rev 2.3.1 B: /forget undoes a lesson change beside the proposal's revert in ONE transaction; the store's own
+// undoLessonChange opens a BEGIN, which would throw inside the caller's (node:sqlite has no nested BEGIN).
+describe("undoLessonChangeTx", () => {
+  it("undoes inside the caller's transaction (no nested BEGIN) and rolls back with it", () => {
+    const store = RunStore.openInMemory();
+    const victim = lesson(store, "weak"); const kept = lesson(store, "new");
+    store.forgetLesson(victim);
+    const change = store.insertLessonChange({ run_id: null, chat_id: "555", new_id: kept, superseded_id: null, pruned_ids: [victim] });
+    expect(() => store.inTransaction(() => store.undoLessonChange(change.change_id, NOW))).toThrow(); // the reason the Tx body exists
+    const r = store.inTransaction(() => store.undoLessonChangeTx(change.change_id, NOW));
+    expect(r).toMatchObject({ status: "undone", restored: [victim], skipped: [] });
+    expect([store.getLesson(kept)?.status, store.getLesson(victim)?.status]).toEqual(["pruned", "active"]);
+    const again = lesson(store, "again"); const c2 = store.insertLessonChange({ run_id: null, chat_id: "555", new_id: again, superseded_id: null, pruned_ids: [] });
+    expect(() => store.inTransaction(() => { store.undoLessonChangeTx(c2.change_id, NOW); throw new Error("caller failed"); })).toThrow("caller failed");
+    expect([store.getLesson(again)?.status, store.getLessonChange(c2.change_id)?.undone_at]).toEqual(["active", null]); // rolled back with the caller
+    store.close();
+  });
+});

@@ -5590,6 +5590,23 @@ export class RunStore {
     return this.db.prepare(`SELECT * FROM improvement_proposals WHERE state = 'accepted' AND target = ? AND json_extract(result_json, ?) = ? LIMIT 1`)
       .get<ImprovementProposalRow>(kind, kind === "lesson" ? "$.lesson_id" : "$.fact_id", id);
   }
+  /**
+   * Addendum Rev 2.3.1 A + ruling R1': the lesson or fact proposals on the pair Paco undid (reverted after `sinceIso`) or Houge
+   * applied (accepted after `acceptedSinceIso` — 30 days for a lesson, the rewrite window), with their draft text (draft_json
+   * keeps it after the saved row is gone), by id — the repeat check's candidates and its commit-time recheck.
+   */
+  repeatCandidates(target: "lesson" | "fact", scope: string, sinceIso: string, acceptedSinceIso: string = sinceIso): Array<{ proposal_id: string; text: string; state: "accepted" | "reverted"; resolved_at: string }> {
+    return this.db.prepare(`SELECT proposal_id, COALESCE(json_extract(draft_json, '$.text'), '') AS text, state, resolved_at FROM improvement_proposals WHERE target = ? AND scope = ? AND ((state = 'reverted' AND resolved_at > ?) OR (state = 'accepted' AND resolved_at > ?)) ORDER BY proposal_id ASC`)
+      .all<{ proposal_id: string; text: string; state: "accepted" | "reverted"; resolved_at: string }>(target, scope, sinceIso, acceptedSinceIso);
+  }
+  /** Addendum Rev 2.3.1 B: active lessons of a lesson scope that an accepted improvement proposal saved (its result_json names the lesson), newest first — what /forget <scope> undoes change by change. */
+  improvementLessonsInScope(scope: string): Array<{ lesson_id: number; proposal_id: string }> {
+    return this.db.prepare(`
+      SELECT l.id AS lesson_id, p.proposal_id FROM lessons l
+      JOIN improvement_proposals p ON p.target = 'lesson' AND p.state = 'accepted' AND json_extract(p.result_json, '$.lesson_id') = l.id
+      WHERE l.scope = ? AND l.status = 'active' ORDER BY l.id DESC, p.proposal_id ASC
+    `).all<{ lesson_id: number; proposal_id: string }>(scope);
+  }
   /** Final fix D4: the improvement proposal whose Accept made this lesson/memory change (its result_json names the change), if any. */
   proposalByChange(change_id: string): ImprovementProposalRow | undefined {
     return this.db.prepare(`SELECT * FROM improvement_proposals WHERE state IN ('accepted', 'reverted') AND json_extract(result_json, '$.change_id') = ? LIMIT 1`).get<ImprovementProposalRow>(change_id);
@@ -5837,20 +5854,23 @@ export class RunStore {
 
   /** Compare-and-set in one transaction: valid only while the new row is still active (spec §5.6). */
   undoLessonChange(change_id: string, now: string = new Date().toISOString()): LessonUndoResult {
-    return this.inTransaction((): LessonUndoResult => {
-      const change = this.getLessonChange(change_id);
-      if (!change) return { status: "not_found" };
-      if (change.undone_at !== null) return { status: "already_undone", change };
-      if (this.getLesson(change.new_id)?.status !== "active") return { status: "changed_since", change };
-      this.db.prepare(`UPDATE lesson_changes SET undone_at = ? WHERE change_id = ?`).run(now, change_id);
-      this.db.prepare(`UPDATE lessons SET status = 'pruned' WHERE id = ? AND status = 'active'`).run(change.new_id);
-      const restored: number[] = []; const skipped: number[] = [];
-      if (change.superseded_id !== null) (this.reactivateLesson(change.superseded_id) ? restored : skipped).push(change.superseded_id);
-      for (const id of change.pruned_ids) (this.unpruneLesson(id) ? restored : skipped).push(id);
-      // the event rides the same transaction as the restore (spec §5.6); recordMemoryEvent opens no transaction of its own
-      this.recordMemoryEvent("lesson_change_undone", { change_id, restored, skipped });
-      return { status: "undone", change: { ...change, undone_at: now }, restored, skipped };
-    });
+    return this.inTransaction(() => this.undoLessonChangeTx(change_id, now));
+  }
+
+  /** {@link undoLessonChange}'s body for a caller already in a transaction (addendum Rev 2.3.1 B: /forget runs it beside the proposal's revert — a nested BEGIN throws). */
+  undoLessonChangeTx(change_id: string, now: string = new Date().toISOString()): LessonUndoResult {
+    const change = this.getLessonChange(change_id);
+    if (!change) return { status: "not_found" };
+    if (change.undone_at !== null) return { status: "already_undone", change };
+    if (this.getLesson(change.new_id)?.status !== "active") return { status: "changed_since", change };
+    this.db.prepare(`UPDATE lesson_changes SET undone_at = ? WHERE change_id = ?`).run(now, change_id);
+    this.db.prepare(`UPDATE lessons SET status = 'pruned' WHERE id = ? AND status = 'active'`).run(change.new_id);
+    const restored: number[] = []; const skipped: number[] = [];
+    if (change.superseded_id !== null) (this.reactivateLesson(change.superseded_id) ? restored : skipped).push(change.superseded_id);
+    for (const id of change.pruned_ids) (this.unpruneLesson(id) ? restored : skipped).push(id);
+    // the event rides the same transaction as the restore (spec §5.6); recordMemoryEvent opens no transaction of its own
+    this.recordMemoryEvent("lesson_change_undone", { change_id, restored, skipped });
+    return { status: "undone", change: { ...change, undone_at: now }, restored, skipped };
   }
 
   // ── small readers for lane 1 ───────────────────────────────────────────────
