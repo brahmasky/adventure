@@ -2,7 +2,7 @@
 
 - **Status:** accepted 2026-11-05 (signed by Paco, rulings A1–A5 included); consolidates and supersedes
   [ADR 0030](0030-decision-ladder.md) with no change of meaning; amended 2026-11-07 (improvement proposals
-  auto-apply, the digest goes — signed by Paco 2026-11-08)
+  auto-apply, the digest goes — signed by Paco 2026-11-08); amended 2026-11-08 (remainder R7: `attach.path`; rows after the end signal — awaiting Paco's signature)
 - **Date:** 2026-11-04
 - **Deciders:** Paco
 - **Supersedes:** [0030](0030-decision-ladder.md) (17 amendment sections) and
@@ -48,7 +48,7 @@ code-owned registry under `src/decisions/`. Everything else stays plain code (me
 - 1.5 **Protected surface.** `src/decisions/` is in `PROTECTED_DIRS` (if the registry decides the gates, editing it can
   open a gate). In `PROTECTED_FILES`: `src/run/store-options.ts` (the only builder of a store with a decision recorder;
   `{ redact }` without a recorder does not compile), `src/triggers/telegram-auth.ts` (the allowlist predicate behind
-  `intake.sender`; the evidence it reads stays in the self-writable adapter, pinned by a test), `src/skills/promote.ts`
+  `intake.sender`; the evidence it reads stays in the self-writable adapter, pinned by a test), `src/notifications/attachment-check.ts` (the send-time attachment predicate behind `attach.path`, R7 4-A; the loop, upload and follow-up line stay in the adapter, itself protected), `src/skills/promote.ts`
   (nothing reaches the active skills tree without Paco's tap), `src/gateway/improvement-commands.ts` (taps chat-bound
   and state-fenced). A gate entry's glue lives under `src/decisions/entries/`; a non-gate entry's may live outside (as
   `turn.handler`'s `src/core/turn-handler-ladder.ts` and `src/jev/tree-policy.ts`).
@@ -104,14 +104,14 @@ code-owned registry under `src/decisions/`. Everything else stays plain code (me
   involved, or the entry always records (`alwaysRecord`). (Rows written before 2026-11-05 may carry `armed_mode = 'shadow'`.) Rows hold ids, closed enums and numbers: no state column,
   never text. `decision_outcomes` holds closed-enum outcome signals, validated at insert. Domain detail stays in the
   entry's table (`jev_verdicts.decision_id`, `jev_decisions.ladder_decision_id`).
-- 3.2 **A turn's row is written with that turn's own records, so a lost turn writes no row.** Rows are written only
-  while the turn is live; the signal is `turn.endSignalled` (true in the tick `done()` resolves `turn.ended`, re-armed
+- 3.2 **A turn's row is written with that turn's own records, so a lost turn writes no row (settle-stage rows, which a later finish failure keeps, and delivery rows: below).** Rows are written only
+  while the turn is live (except the settle-stage and delivery rows below); the signal is `turn.endSignalled` (true in the tick `done()` resolves `turn.ended`, re-armed
   when a retried leg replaces the end signal), not the lagging `finished` (`planner.crash_guard` still reads `finished`:
   a follow-up). The consulting turn is passed in, never read from `this.turn`. Supervisor rows follow the incoming run's
-  successful claim. A lane writes its rows at its end, only while the turn's abort signal is unset. Memory-save rows are
+  successful claim (settle-stage rows: below). A lane writes its rows at its end, only while the turn's abort signal is unset. Memory-save rows are
   held and flushed by `CoreWorker.runMemoryWrite` on a live turn; `memory.kind`'s row stays inside the save transaction.
   Intake rows carry `run_id` null (no run exists yet, as `tool.manifest`). Each in-turn row is a synchronous insert
-  inside the turn deadline (ruled residual).
+  inside the turn deadline (ruled residual). Settle-stage rows (`attach.path` at parse) are best-effort terminal records: written when the supervisor reached its success arm, after the end signal, and kept when the run then fails to stage its report or loses its finish claim; a turn that took the failure arm writes none. Delivery rows (`attach.path` at send) are written by the outbox dispatcher after the delivery committed, with the outbox row's `run_id`; a delivery that did not commit writes none.
 - 3.3 **Move, don't improve** (4B ruling R1, every migration). A migrated check's call site records the code's answer
   where it already decides and branches on the raw answer, never the recorded verdict; results, rows, events, prompt
   bytes and their order stay identical to the merge base, proven by a behavioural differential before the call site
@@ -158,10 +158,10 @@ write.
 | `lookup.rewrite` | `pre_model` · `mixed` | no | `alwaysRecord` per lookup reaching the query step: `rewrite`/`rewritten`; `bare`/`no_recent_line`, `long_message`, `no_time`, `late`, `failed`, `same`, `invalid`; the query selected, not whether it ran | R6 |
 | `lookup.thin` | `pre_model` · `tool` | no | `alwaysRecord` per successful first read: `fetch`/`thin`; `none`/`answered`, `no_url` | R6 |
 | `turn.model` | `pre_model` · `tool` | no | non-default only, once per completed pin walk: `fallback`/`stepped_up`, `refused`, `next_leg`; `held`/`pin_failed` (first leg: the turn answers on the model the child holds); `none`/`pin_failed` (retry leg) or `no_leg`; `head` default | R6 |
-| `attach.path` | — | yes | slice R7, not yet built | R7 |
+| `attach.path` | `settle` · `tool` | yes | refusals (1-A): parse `refuse`/`marker_outside`, once per distinct refused path on the success arm; send `refuse`/`over_count` (one for all paths past the fifth), `workspace_unverified`, `outside_workspace`, `not_a_file`, `too_large`, `linked`, `changed`, `not_found`, `unreadable`, `unsupported`, written by the dispatcher after `markDelivered` with the outbox row's `run_id`; rows describe each observed check; `send` default; `fail: "refuse"`; `send_failed` is execution, no row | R7 |
 
 - 4.1 **Shared predicates and limits.** Code and rule share one predicate where named: `mayRetryOf`, `clarifyCapOf`,
-  `rewriteFilterOf`/`queryCheckOf`/`thinOf` (`core/lanes/lookup-predicates.ts`), `isBareAck` (nothing is approved by an
+  `rewriteFilterOf`/`queryCheckOf`/`thinOf` (`core/lanes/lookup-predicates.ts`; `attach.path`'s send predicate is `checkAttachment`/`overCount` (`notifications/attachment-check.ts`), its parse predicate `parseAttachments`' containment conjunction), `isBareAck` (nothing is approved by an
   ack), `CRASH_LIMIT`/`CRASH_WINDOW_MS` exported from the entry, one clock read for input and guard.
   `intake.rate_limit`'s exemption (`kill` and the three decision-tap prefixes) is code in front of the entry, so no later rung can
   delay `kill`. A crash-guard consult reached after its turn finished writes no row, even when it is the consult that
@@ -551,6 +551,7 @@ write.
 | 2026-11-06 | 6.3: the promise that the digest flags an entry until Paco commits a calibrated row is retired (nothing built it; Paco's decision 2026-11-06) | — | 2026-11-06 |
 | 2026-11-07 | Improvement proposals auto-apply, the digest goes: 2.2, 2.5 (gated allowance), 6.6 (no digest taps), 10.2 (HOUGE_IMPROVE_AT), 10.5 (autoApplies, origin, no prior, cards, reverted blocks), 11.3 and 13.1 (/changes rows, no digest), 13.2 (improve_tick_degraded) | [auto-apply](../superpowers/specs/2026-11-07-improve-auto-apply-design.md) | 2026-11-08 |
 | 2026-11-07 | 13.2: `decision_fallback_streak` pages three failed runs in a row of a tick entry (`improve.route` failed every day unseen); `improve.route`'s Tiny bound 8 s → 30 s | — | 2026-11-07 |
+| 2026-11-08 | R7: `attach.path` (locked) at parse and send; 3.2 adds settle-stage and delivery rows; `attachment-check.ts` protected | [R7](../superpowers/specs/2026-11-08-ladder-remainder-r7-attach-path-design.md) | awaiting Paco's signature |
 | 2026-11-08 | 10.5: the 14-day block covers repeats, not the category — a lesson or fact draft is skipped only as a near-copy (`LESSON_REPEAT_COSINE`) of one reverted (or an accepted fact) on the pair, and is the 'lesson did not hold' card only as a near-copy of a lesson accepted within 30 days; `/forget` and `/forget_memory` undo an improvement's whole change (Q1-B, Q2-A; controller ruling R1') | [auto-apply addendum Rev 2.3.1](../superpowers/specs/2026-11-07-improve-auto-apply-design.md) | 2026-11-08 |
 
 ## Reference map
@@ -577,5 +578,5 @@ write.
 | 4B spec "`:630`" (0030's superseded "`approval.bind` … no module" line) · 2b-ii spec "line 365" | 4 (`approval.bind`), History 2026-10-29 · History 2026-10-22 |
 | loud-degradation spec "(W7)" (the ADR 0030 amendment task) | 8.3–8.5, 13.3 |
 | 2026-10-29 4B (B14, E8) · 2026-10-30 4C (B9, B23) | 4, 1.5, 3.3, 3.4 · 4, 3.2 |
-| slices R1 (A2, A4, A5) · R2 (A1, A7) · R3 (A9, A10) · R4 (D2, D9) · R5 (A23, A25–A27) · R6 (A21, A22) | 4, 4.1, 3.2, 2.5 |
+| slices R1 (A2, A4, A5) · R2 (A1, A7) · R3 (A9, A10) · R4 (D2, D9) · R5 (A23, A25–A27) · R6 (A21, A22) · R7 (E2, E11) | 4, 4.1, 3.2, 2.5 |
 | 2026-11-02 carry with an exit (D2-A, D3-A) · 2026-11-03 chat is for Paco | 8.3–8.5, 13.3 · 13.2, 13.3 |
