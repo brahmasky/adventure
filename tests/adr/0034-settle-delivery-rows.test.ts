@@ -38,7 +38,7 @@ const db = (s: RunStore) => (s as unknown as { db: Db }).db;
 describe("ADR 0034 rule 3.2: settle-stage and delivery rows", () => {
   it("1. the rule text states the R7 sentences and the qualifications, and no longer the bare phrasing", () => {
     const rule = flat(adr.slice(adr.indexOf("- 3.2 "), adr.indexOf("- 3.3 ")));
-    expect(rule).toContain("Settle-stage rows (`attach.path` at parse) are best-effort terminal records: written when the supervisor reached its success arm, after the end signal, and kept when the run then fails to stage its report or loses its finish claim; a turn that took the failure arm writes none.");
+    expect(rule).toContain("Settle-stage rows (`attach.path` at parse) are best-effort terminal records: written when the supervisor reached its success arm on a non-lane turn, after the end signal, and kept when the run then fails to stage its report or loses its finish claim; a turn that took the failure arm writes none.");
     expect(rule).toContain("Delivery rows (`attach.path` at send) are written by the outbox dispatcher after the delivery committed, with the outbox row's `run_id`; a delivery that did not commit writes none.");
     expect(rule).toContain("Rows are written only while the turn is live (except the settle-stage and delivery rows below);");
     expect(rule).toContain("Supervisor rows follow the incoming run's successful claim (settle-stage rows: below).");

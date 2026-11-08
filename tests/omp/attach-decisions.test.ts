@@ -101,10 +101,11 @@ describe("attach.path at parse (spec R7 §4.0)", () => {
     expect(rows(store)).toEqual([[...REFUSE_MARKER, parent, null]]);
   });
   it("7. a lane reply never consults", async () => {
-    const { store, sup, attachCalls } = withRecorder(answering("unused"), { triage: async () => ({ kind: "lane_reply", text: "lane\n[[attach: ../x]]", buttons: [] }) });
+    const { store, sup, outcome, attachCalls } = withRecorder(answering("unused"), { triage: async () => ({ kind: "lane_reply", text: "lane\n[[attach: ../x]]", buttons: [] }) });
     const run = createQueuedTurnRun(store); sup.submit(req(run)); await sup.whenIdle();
     expect(attachCalls()).toBe(0);
     expect(rows(store)).toEqual([]);
+    expect(outcome.done).toHaveLength(1);
   });
   it("8. the row precedes recordChatTurn: a throwing chat-turn write still leaves it", async () => {
     const { store, sup } = withRecorder(answering("x\n[[attach: ../x]]"));

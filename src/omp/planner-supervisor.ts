@@ -439,7 +439,7 @@ export class PlannerSupervisor {
 
   /** attach.path at parse (spec R7 §4.0, 5-A): one consult per distinct marker path on the consulting turn, accepted first, then refused; best-effort terminal records. */
   private recordAttach(t: Turn, d: Delivered): void {
-    if (t.laneEnded) return; // a lane reply is text only (spec R7 §2): sanitizeLaneText strips every marker, so nothing here is Paco-bound
+    if (t.laneEnded) return; // lane replies are out of scope (spec R7 §2): the parse row is for non-lane turns; the status lane is code-rendered and emits no marker
     d.attachments.forEach(() => this.recordSafe(ATTACH_PATH, { seam: "parse", check: "accepted" }, t.req.run_id));
     d.refused.forEach(() => this.recordSafe(ATTACH_PATH, { seam: "parse", check: "marker_outside" }, t.req.run_id));
   }
