@@ -111,6 +111,7 @@ describe("checkSelfWriteDiff — every protected class is hard-denied", () => {
     ["skill promotion (nothing reaches the active skills tree without Paco's tap)", entry({ status: "M", path: "src/skills/promote.ts" })],
     ["improvement taps (chat-bound and state-fenced)", entry({ status: "M", path: "src/gateway/improvement-commands.ts" })],
     ["capability-policy under policy dir", entry({ status: "M", path: "src/policy/capability-policy.ts" })],
+    ["attachment-check (attach.path's send predicate, locked, R7 Decision 4-A)", entry({ status: "M", path: "src/notifications/attachment-check.ts" })],
     ["task-contract", entry({ status: "M", path: "src/contracts/task-contract.ts" })],
     ["telegram-auth (the sender allowlist predicate, locked intake.sender, R2 Decision 3-A)", entry({ status: "M", path: "src/triggers/telegram-auth.ts" })],
     ["capability-runner", entry({ status: "M", path: "src/capabilities/capability-runner.ts" })],
@@ -341,7 +342,7 @@ describe("checkSelfWriteDiff — end-to-end from real raw output shape", () => {
     const files = [
       "src/omp/child-env.ts", "src/omp/planner-session.ts", "src/omp/shell-adapter.ts", "src/omp/omp-config.ts",
       "src/omp/bridge-handler.ts", "src/omp/external-read.ts", "src/omp/gate-path.ts", "src/omp/workspace.ts", "src/omp/new-file.ts",
-      "src/llm/providers/omp.ts", "src/notifications/telegram-notification-adapter.ts", "scripts/copy-omp-assets.mjs", "src/run/git-hardened.ts"
+      "src/llm/providers/omp.ts", "src/notifications/telegram-notification-adapter.ts", "src/notifications/attachment-check.ts", "scripts/copy-omp-assets.mjs", "src/run/git-hardened.ts"
     ];
     for (const path of files) {
       for (const status of ["M", "A", "D"] as const) {

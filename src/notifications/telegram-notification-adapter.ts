@@ -1,6 +1,4 @@
-import { closeSync, constants, fstatSync, openSync, readSync, realpathSync, statSync } from "node:fs";
-import { basename, isAbsolute, relative, sep } from "node:path";
-import { verifiedWorkspace } from "../omp/workspace.js";
+import { basename } from "node:path";
 import { markdownToTelegramHtml } from "../telegram/markdown-to-telegram-html.js";
 import type {
   TelegramInlineKeyboardMarkup,
@@ -13,17 +11,9 @@ import type {
   NotificationPayload,
   NotificationSendResult
 } from "./notification-types.js";
+import { checkAttachment, MAX_ATTACHMENTS, overCount, REFUSAL_TEXT, type AttachCheck, type AttachmentRefusal } from "./attachment-check.js";
+export { checkAttachment, inside, MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS, overCount, REFUSAL_TEXT, type AttachCheck, type AttachmentRefusal, type CheckRefusal } from "./attachment-check.js";
 
-/** omp turn attachments (spec §7): at most 5 files, each at most 20 MB, re-checked at send time. */
-export const MAX_ATTACHMENTS = 5;
-export const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
-export type AttachmentRefusal =
-  | "outside_workspace" | "not_a_file" | "too_large" | "over_count" | "unreadable" | "send_failed" | "unsupported" | "linked" | "changed";
-const REFUSAL_TEXT: Record<AttachmentRefusal, string> = {
-  outside_workspace: "outside my workspace", not_a_file: "not a regular file", too_large: "over 20 MB",
-  over_count: "more than 5 files", unreadable: "could not be read", send_failed: "Telegram refused the upload", unsupported: "this chat cannot take files",
-  linked: "a hard-linked file", changed: "it changed while I was sending it"
-};
 /** The one follow-up line per file that was not sent. Code-owned; exported so tests assert against it. */
 export function attachmentRefusedLine(name: string, why: AttachmentRefusal): string {
   return `⚠ Not attached: ${name} (${REFUSAL_TEXT[why]})`;
@@ -34,11 +24,6 @@ export interface TelegramNotificationAdapterOptions {
   workspaceFor?: (chat_id: string) => string;
   /** @internal Tests only: runs between opening the file and re-checking its path (simulates a swap in that window). */
   beforeRecheckForTest?: (path: string) => void;
-}
-
-function inside(root: string, p: string): boolean {
-  const rel = relative(root, p);
-  return rel !== "" && rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
 }
 
 export class TelegramNotificationAdapter implements NotificationAdapter {
@@ -52,7 +37,8 @@ export class TelegramNotificationAdapter implements NotificationAdapter {
     const sent = await this.sendText(chat_id, notification);
     const attachments = notification.payload.attachments;
     if (Array.isArray(attachments) && attachments.length > 0) {
-      await this.sendAttachments(chat_id, attachments.filter((a): a is string => typeof a === "string"));
+      const attach_checks = await this.sendAttachments(chat_id, attachments.filter((a): a is string => typeof a === "string"));
+      return { ...sent, attach_checks }; // spec R7 §4.2: the checks the loop already made, enums only; the dispatcher records them after markDelivered
     }
     return sent;
   }
@@ -61,12 +47,15 @@ export class TelegramNotificationAdapter implements NotificationAdapter {
    * Attachments go after the text. Each is re-checked NOW (the planner's workspace may have changed
    * since the reply): realpath inside the chat's workspace, a regular file, at most 20 MB, at most 5.
    * A failing file becomes one follow-up line, never a send. An upload failure never re-sends the text.
+   * Returns each check (spec R7 §4.2): the first five, then one over_count for the overflow.
    */
-  private async sendAttachments(chat_id: string, paths: string[]): Promise<void> {
+  private async sendAttachments(chat_id: string, paths: string[]): Promise<AttachCheck[]> {
     const refused: string[] = [];
+    const checks: AttachCheck[] = [];
     for (const [i, path] of paths.entries()) {
       const name = basename(path);
-      const checked = i >= MAX_ATTACHMENTS ? "over_count" : this.readAttachment(chat_id, path);
+      const checked = overCount(i) ? "over_count" : this.readAttachment(chat_id, path);
+      if (i <= MAX_ATTACHMENTS) checks.push(typeof checked === "string" ? checked : "ok");
       if (typeof checked === "string") { refused.push(attachmentRefusedLine(name, checked)); continue; }
       try {
         await this.client.sendDocument?.({ chat_id, filename: name, content: checked.bytes });
@@ -74,39 +63,15 @@ export class TelegramNotificationAdapter implements NotificationAdapter {
         refused.push(attachmentRefusedLine(name, "send_failed"));
       }
     }
-    if (refused.length === 0) return;
+    if (refused.length === 0) return checks;
     await this.sendText(chat_id, { payload: { text: refused.join("\n") } }).catch(() => undefined);
+    return checks;
   }
 
-  /**
-   * Open once, then prove the open file is the one the path names inside the workspace: fstat the fd
-   * (regular, ≤ 20 MB, a single link), re-resolve the path and require the same dev+ino with the
-   * realpath inside the workspace, then read exactly the checked size from that fd. A swap anywhere
-   * in the path between the open and the read can only make the check fail, never redirect the upload.
-   */
-  private readAttachment(chat_id: string, path: string): AttachmentRefusal | { bytes: Uint8Array } {
-    if (!this.client.sendDocument) return "unsupported";
-    const configured = this.options.workspaceFor?.(chat_id);
-    const workspace = configured ? verifiedWorkspace(configured) : null; // a swapped workspace is no workspace (C2)
-    if (!workspace) return "outside_workspace";
-    let fd: number | undefined;
-    try {
-      fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK); // a FIFO must never block the daemon's only thread
-      const st = fstatSync(fd);
-      if (!st.isFile()) return "not_a_file";
-      if (st.size > MAX_ATTACHMENT_BYTES) return "too_large";
-      if (st.nlink > 1) return "linked";
-      this.options.beforeRecheckForTest?.(path);
-      const real = realpathSync(path);
-      if (!inside(workspace, real)) return "outside_workspace";
-      const again = statSync(real);
-      if (again.dev !== st.dev || again.ino !== st.ino) return "changed";
-      return { bytes: readExactly(fd, st.size) };
-    } catch {
-      return "unreadable";
-    } finally {
-      if (fd !== undefined) closeSync(fd);
-    }
+  /** The protected predicate (attachment-check.ts) over this chat's configured workspace. */
+  private readAttachment(chat_id: string, path: string): ReturnType<typeof checkAttachment> {
+    return checkAttachment(path, { canUpload: Boolean(this.client.sendDocument), workspace: () => this.options.workspaceFor?.(chat_id),
+      ...(this.options.beforeRecheckForTest ? { beforeRecheck: this.options.beforeRecheckForTest } : {}) });
   }
 
   private async sendText(chat_id: string, notification: Pick<NotificationDispatchRecord, "payload">): Promise<NotificationSendResult> {
@@ -156,16 +121,4 @@ function buttonRowsOf(v: unknown): NotificationButton[][] | null {
   const ok = v.every((row) => Array.isArray(row) && row.length > 0
     && row.every((b) => typeof (b as NotificationButton)?.text === "string" && typeof (b as NotificationButton)?.data === "string"));
   return ok ? (v as NotificationButton[][]) : null;
-}
-
-/** Read exactly `size` bytes from the start of `fd` (a short read means the file changed: refuse). */
-function readExactly(fd: number, size: number): Uint8Array {
-  const buf = Buffer.alloc(size);
-  let off = 0;
-  while (off < size) {
-    const n = readSync(fd, buf, off, size - off, off);
-    if (n === 0) throw new Error("short read");
-    off += n;
-  }
-  return buf;
 }
