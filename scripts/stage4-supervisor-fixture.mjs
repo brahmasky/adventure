@@ -2,7 +2,7 @@
 // `d` is a loadDist() result (scripts/stage4-diff-lib.mjs). The fake child plays the omp extension against the REAL bridge socket.
 // Real timers only. Not a corpus (the CLI loads scripts/stage4-corpora/*.mjs only). Telegram, omp and Jev are stubbed; nothing leaves the process.
 import { connect } from "node:net";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -48,9 +48,9 @@ export function fakeSession(script = {}) {
       sockets.push(await openManifestClient(o.bridgeSock, o.bridgeToken));
       return { resumed: false, sessionId: "s" };
     },
-    prompt: async (t) => { s.prompts.push(t); s.log.push(["prompt", t]); setTimeout(() => (script.onPrompt ?? ((_t, e) => { e({ type: "turn_start" }); assistant("answer"); e({ type: "agent_end" }); }))(t, emit), 5); },
+    prompt: async (t) => { s.prompts.push(t); s.log.push(["prompt", t]); setTimeout(() => (script.onPrompt ?? ((_t, e) => { e({ type: "turn_start" }); assistant(script.final ?? "answer"); e({ type: "agent_end" }); }))(t, emit), 5); },
     steer: async (t) => { s.steers.push(t); s.log.push(["steer", t]); },
-    getState: async () => ({ todoPhases: [], queuedMessageCount: 0, queuedMessages: { steering: [], followUp: [] } }),
+    getState: async () => (script.getState ? script.getState() : { todoPhases: [], queuedMessageCount: 0, queuedMessages: { steering: [], followUp: [] } }),
     abort: async () => { setTimeout(() => emit({ type: "agent_end", aborted: true }), 5); },
     // R6: `script.setModel(m, k)` runs after the log push and may throw: a refusal is `modelRefusal(d, k)`, a transport failure a plain Error.
     setModel: async (m) => { const k = `${m.provider}/${m.model}`; s.models.push(k); s.log.push(["set_model", k]); if (script.setModel) await script.setModel(m, k); }, newSession: async () => ({ cancelled: false }),
@@ -170,3 +170,13 @@ export function seedLaneRows(d, store, chatId, texts) {
 
 /** Synchronously removes every fixture data dir still present: the last resort of an exit path whose bounded wait for cleanupSettled() expired. */
 export function removeDataDirsSync() { for (const d of [...dataDirs]) { try { rmSync(d, { recursive: true, force: true }); dataDirs.delete(d); } catch { /* best effort at exit */ } } }
+
+/** R7: files in chat 42's workspace before the turn. files: Array<[rel, "file" | "dir" | "symlink", target?]>; a symlink's target is absolute. Returns the workspace path. */
+export function seedWorkspace(d, data, files) {
+  const ws = d.chatWorkspace(data, "42"); mkdirSync(ws, { recursive: true });
+  for (const [rel, kind, target] of files) {
+    const p = join(ws, rel);
+    if (kind === "dir") mkdirSync(p, { recursive: true }); else if (kind === "symlink") symlinkSync(target, p); else writeFileSync(p, `content of ${rel}`);
+  }
+  return ws;
+}
