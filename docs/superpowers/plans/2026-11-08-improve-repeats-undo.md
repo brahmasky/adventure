@@ -1521,3 +1521,28 @@ EOF
 ## After the tasks (controller)
 
 Per-task two-stage review (spec compliance, then code quality) on a model other than the implementer; whole-branch review on the most capable non-orchestrator model plus a codex whole-diff pass (`codex exec … < /dev/null -o <file>`, "run git diff main"); live gate (Task 4 Step 4) green on the final head; merge to `main`, rebuild `dist/`, check `houge.parked` / `houge.kill` and no run in flight, `launchctl kickstart -k gui/$(id -u)/com.houge.daemon`, verify the new pid and the boot migrations (no new migration in this slice). Paco signs the 10.5 amendment (it carries R1').
+
+### Probe results (2026-11-08, embeddinggemma)
+
+```
+near     0.682  en pair 1
+near     0.876  en pair 2
+near     0.851  en pair 3
+near     0.721  en pair 4
+near     0.896  zh pair 5
+near     0.840  zh pair 6
+near     0.807  zh pair 7
+near     0.667  zh pair 8
+distinct 0.356  en pair 1
+distinct 0.333  en pair 2
+distinct 0.407  en pair 3
+distinct 0.479  en pair 4
+distinct 0.276  zh pair 5
+distinct 0.359  zh pair 6
+distinct 0.399  zh pair 7
+distinct 0.339  zh pair 8
+model embeddinggemma: min near 0.667, max distinct 0.479, LESSON_REPEAT_COSINE 0.8
+separates: no at 0.8; a constant between the groups: 0.57
+```
+
+**Ruling (controller, 2026-11-08): `LESSON_REPEAT_COSINE = 0.6`.** Probe (embeddinggemma): max distinct 0.479, min near-copy 0.667, both languages separate between them; 0.8 failed (3 of 8 near pairs below it). A false "repeat" silently loses a different correction (worse); a false "new" only adds a duplicate lesson, so the cut sits closer to the near-copies (0.12 above distinct, 0.067 below near); 0.6 equals the existing recurrence cosine gate.
