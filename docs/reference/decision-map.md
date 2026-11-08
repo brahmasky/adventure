@@ -156,6 +156,7 @@ Rungs run left to right; "code rule" is a single deterministic function. Locked 
 | `lookup.rewrite` | code rule | mixed | search a rewritten query or the bare message | live |
 | `lookup.thin` | code rule | tool | fetch more of the top list when the first read left the objective unanswered | live |
 | `turn.model` | code rule | tool | which leg of the role the planner is pinned to | live |
+| `attach.path` | code rule | tool | refuses an `[[attach:]]` file whose marker resolves outside the chat's workspace (parse), or that fails the send-time re-check (send) | live, locked |
 
 ## Paths that skip the ladder
 
