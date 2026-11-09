@@ -8,6 +8,8 @@
 
 **Tech Stack:** Node + TypeScript, `node:sqlite` (`RunStore`), vitest; zero runtime dependencies.
 
+**Plan Rev 1.1** — each task ends with a "Review amendments" block from the plan reviews (Fable senior: 4 BLOCKER, 11 WARNING; codex: 5 BLOCKER, 4 WARNING); amendments override the task's steps where they differ.
+
 **Spec:** `docs/superpowers/specs/2026-11-09-sp2-mail-triage-design.md` (Rev 1.3, approved by Paco 2026-11-09, including the ADR 0034 rule 2.6 change of meaning). Executors read the spec section each task names.
 
 **Interface facts:** `/private/tmp/claude-501/-Users-xiaochuan-Projects-adventure/63a581ab-8d09-4840-a85b-58b78129f365/scratchpad/sp2/facts.md` — a verified fact sheet of the exact current signatures this plan builds on (sections 1–15). Read the sections a task names before editing.
@@ -220,6 +222,10 @@ git add src/decisions/types.ts src/decisions/registry.ts src/decisions/record.ts
 git commit -m "feat(decisions): ADR 0034 2.6 perItemRouting arm, inbound stage, inbox announce, recordStrict"
 ```
 
+**Review amendments (Rev 1.1, binding over the steps above):**
+- Step 4: also update `tests/decisions/registry.test.ts:111` (and its uses at 117/118/128), which pins the provisional-bar message text; list and commit that file. (Fable B3)
+- Step 6: the result literal must carry `fallbackReason: null, fallbackRung: null, decisionId: null` — `insertDecision` rejects `undefined`. Case 2 must fail on the stage, so assert the error is `DecisionRejected` with `"stage"`. (Fable W1)
+
 ---
 
 ### Task 2: Mail store — tables, migration, store methods
@@ -291,6 +297,11 @@ clearMailSenders(): void
 git add src/run/run-store.ts tests/run/mail-store.test.ts
 git commit -m "feat(run): mail triage tables and store methods (additive migration 2026-11-09-mail-triage)"
 ```
+
+**Review amendments (Rev 1.1):**
+- Drop `offset` from `listUnseenInbox`: signature `listUnseenInbox(limit: number): MailItemRow[]` (the next page is always the remaining unseen rows). (codex B2, Fable W)
+- `mail_state` also gets `enabled_at TEXT` (set when `/mail on` flips it on), used by the stale predicate in Task 8/9. (codex B3)
+- Add `countMailDecisionRungs(sinceIso): { fail: number; system_one: number }` over `decisions` rows with `entry_id='mail.triage'` (for the Jev-outage check, Task 9).
 
 ---
 
@@ -380,6 +391,9 @@ git add src/mail/envelope.ts src/jev/questions/mail.ts src/jev/mail-ask.ts src/j
 git commit -m "feat(mail): code-built redacted envelope, MailJevState, mail_urgency/mail_kind questions, run-less ask"
 ```
 
+**Review amendments (Rev 1.1):**
+- `HOUGE_GMAIL_ADDRESS` is a code constant whose name matches the docs-parity env regex: add an `ENV_NOT_CONFIGURATION` row in `tests/docs/parity.ts` in this task ("a code constant holding Houge's own Gmail address, not an env var"). (Fable B1, codex W2)
+
 ---
 
 ### Task 4: The `mail.triage` entry
@@ -449,6 +463,12 @@ git add src/decisions/entries/mail-triage.ts src/decisions/entry-ids.ts src/deci
 git commit -m "feat(decisions): mail.triage entry (rule floors, Jev mail_urgency, 2.6 routing)"
 ```
 
+**Review amendments (Rev 1.1):**
+- `perItemRouting(s, verdict)` also refuses any state carrying more than the one item: `Object.keys(s)` ⊆ `["item","rule","jev"]` and `s.item` is a single object whose `item_id` is a non-empty string; test a state with an extra `items: [...]` key → false. (codex W1)
+- Add `tests/adr/0034-always-record` expectations: that test pins rule-4 rows; if it fails because `mail.triage` has no ADR row yet, add the rule-4 row to ADR 0034 in this task (marked "to be changed, spec 2026-11-09-sp2-mail-triage") rather than waiting for Task 11. (Fable B1)
+- Test (encodes "one call, one page"): three `rung: "fail"`, `fallbackRung: "system_one"` results for `mail.triage` through `afterStrictRecord` within an hour → no open `decision_fallback` incident for subject `mail.triage`. (Fable W)
+- The decision-map table has 5 columns: match the header row.
+
 ---
 
 ### Task 5: Telegram send path — silent sends and URL buttons; mail topics
@@ -470,6 +490,9 @@ git commit -m "feat(decisions): mail.triage entry (rule floors, Jev mail_urgency
 - [ ] **Step 3: Implement**, keeping every existing payload byte-identical (only add keys when set). If a test pins `TOPIC_ROUTE` size, update it.
 - [ ] **Step 4: Run** `npx vitest run tests/notifications tests/telegram` + typecheck — PASS.
 - [ ] **Step 5: Commit** `feat(notifications): silent sends, URL buttons, mail_card/mail_log topics`.
+
+**Review amendments (Rev 1.1):**
+- `buttonRowsOf` in the adapter drops the whole keyboard when any button lacks `data`; it must accept URL buttons in `button_rows` too. The card uses `button_rows`, so Task 5's test must send **`button_rows`** with a URL button and a callback button and assert both reach `inline_keyboard`. Keep a flat-`buttons` case too. (Fable B2)
 
 ---
 
@@ -504,6 +527,10 @@ export function pacoAddress(env: NodeJS.ProcessEnv): string | undefined       //
 - [ ] **Step 4: Full suite** `npm run typecheck && npm test` — PASS, none skipped. (Docs parity will fail on the new env vars until Task 11 — if so, add the rows to `docs/reference/configuration.md` now, in this task, for every `HOUGE_*` name this task introduces: `HOUGE_MAIL_ENABLED`, `HOUGE_MAIL_POLL_MIN`, `HOUGE_MAIL_QUIET`, `HOUGE_MAIL_TEXT_DAYS`, `HOUGE_PACO_GMAIL_ADDRESS`, `HOUGE_PACO_GMAIL_REFRESH_TOKEN`, with the defaults above.)
 - [ ] **Step 5: Commit** `feat(mail): Paco's Gmail grant — broker getter, per-account auth clients, account:"paco" gated by the mail switch`.
 
+**Review amendments (Rev 1.1):**
+- Update the exact-list tests this task breaks: `tests/config/disarm-posture.test.ts:49` and `tests/config/secret-broker.test.ts:42`. (Fable B1)
+- `CoreWorker` exposes `invalidatePacoGmail(): void` publicly (the daemon passes it to the gateway in Task 10). (codex B4)
+
 ---
 
 ### Task 7: Gmail client for the poller, and the card
@@ -536,6 +563,9 @@ How `googleApiGetJson` reports HTTP status: read `src/capabilities/google-api.ts
 - [ ] **Step 2: Failing card tests:** card text starts with `📧 ` + redacted name + ` · ` + kind (or `mail` when kind null), second line the redacted subject (or `(no subject)`), a third line `(Jev unavailable)` only when set; a thread follow-up item renders the first line as `↪ +1 in this thread · ` + name; buttons row 1: `Open` URL button; row 2: `Wrong urgency` with data `mail:wu:<item_id>`; `silent` true when `quiet` or `item.thread_followup`; no snippet anywhere in the text; every callback ≤ 64 bytes for a 36-char item id; `inQuietHours` true at 23:30 and 06:59 Sydney, false at 07:00 and 22:59 (use fixed UTC instants for a date in November, AEDT = UTC+11).
 - [ ] **Step 3: Run — FAIL.** **Step 4: Implement.** Item ids are `mi_<uuid>`; callback families: `mail:wu:<item_id>`, `mail:never:<item_id>`, `mail:always:<item_id>`, `mail:shp:<item_id>`, `mail:page:<n>` (n ≤ 9999). Escape name and subject through the same escaping the rich renderer expects for untrusted text (find how `digestLine` / `inertLine` in gmail-read do it and reuse).
 - [ ] **Step 5: Run + typecheck — PASS. Step 6: Commit** `feat(mail): poller Gmail client and mail card`.
+
+**Review amendments (Rev 1.1):**
+- `googleApiGetJson` failures gain an optional numeric `status` (existing `error` text unchanged; existing tests untouched); `gmail-client.ts` maps by `status` (401/403 → `auth`, 404 → `not_found`, else `unavailable`) and by the `google auth auth_failed` prefix for mint failures. Test 401, 404, 500 and a mint failure. (codex W4)
 
 ---
 
@@ -600,6 +630,14 @@ The card's `kind` comes from the Jev detail (`r.detail?.kind`), null otherwise.
 - [ ] **Step 3: Run — FAIL. Step 4: Implement. Step 5: Run + typecheck — PASS.**
 - [ ] **Step 6: Commit** `feat(mail): triage write path (one transaction, strict flush) and the poller tick`.
 
+**Review amendments (Rev 1.1):**
+- **Move here from Task 9:** the `mail_auth_lost` and `mail_poll_failing` rows in `INCIDENT_ROUTE` and the size updates in `tests/run/incident-route.test.ts` (56→58, pages 33→35), so `openAlertedIncident` typechecks. (Fable B4)
+- Inside the transaction, `enqueueNotification` must return `queued` or `duplicate`; any other status throws (rolls the item back). The fold card uses `correlation_id: "mail:fold:<bucket>"` (the key) so a second fold in the hour is `duplicate`. Tests: a forced `conflict` rolls back; two folds in one hour → one card, second result `duplicate`. (codex B1, Fable W)
+- Wrap `recordStrict` inside the transaction: `try { id = recordStrict(...) } catch (e) { throw new DecisionFlushFailed(e) }`; outside, only `DecisionFlushFailed` opens `decision_record_failed` (subject exactly `mail.triage`, so `afterRecord` resolves it on the next success); anything else returns `error: "write"`. The `routing_refused` log line is written **inside** the transaction. (Fable W)
+- `known_sender = store.senderRule(address)?.action === "always" || sentCache/sentTo`. (Fable W, spec §3.3)
+- `PollDeps` gains `hasRefreshToken: boolean`; `no_token` test asserts zero Gmail calls. (Fable W)
+- One stale predicate, exported from `src/mail/poller.ts` and used by the poller and the sweep: `export function mailStale(st: MailStateRow, env, now): boolean` = `st.enabled && resolveMailEnabled(env) && minutesSince(st.last_ok_at ?? st.enabled_at) > 120`. The poller opens `mail_poll_failing` only via this predicate (no separate `failing_since` threshold). Test: opened by the poller, then a sweep run with `last_ok_at` null keeps it open (no flap). (Fable W, codex B3)
+
 ---
 
 ### Task 9: Incidents, sweep, retention, daemon wiring
@@ -629,6 +667,12 @@ Daemon wiring (`runSignalPathTick`): a `const mailTick = detachedJob();` created
 - [ ] **Step 1: Failing tests:** route sizes updated (56→58 rows, pages 33→35) and both kinds route `page`; `mail_auth_lost` reminded after 24 h; sweep: enabled + stale `last_ok_at` → one violation, fresh → none, disabled → none; retention: items older than 30 days lose subject/snippet/from_name, `text_cleared_at` set, their outbox payload text becomes `📧 · <kind>` with a recomputed hash, newer items untouched, a second run the same day does nothing; purge clears all and empties `mail_senders`; daemon wiring: with `HOUGE_MAIL_ENABLED=1`, mail on, and a fake Gmail, one poll-loop cycle stores a mail and enqueues one `mail_card`; with the flag off no Gmail call is made.
 - [ ] **Step 2: Run — FAIL. Step 3: Implement. Step 4: Full suite** `npm run typecheck && npm test` — PASS, none skipped.
 - [ ] **Step 5: Commit** `feat(mail): incidents, sweep backstop, retention and daemon wiring`.
+
+**Review amendments (Rev 1.1):**
+- The two incident rows moved to Task 8. This task adds `mail_jev_failing: page("Jev keeps failing on your mail; every mail is pinging you.")` to `INCIDENT_ROUTE` (sizes 58→59, pages 35→36) and to `SWEEP_INCIDENT_KINDS`; `mailViolations` returns it when, over 24 h, `countMailDecisionRungs` shows `fail ≥ 5` and `system_one === 0`. Reason: a Jev timeout opens no Jev incident and mail is in `JEV_PAGED_ELSEWHERE`, so without this a sustained Jev outage on mail pages nowhere (AGENTS.md: every outage reaches Paco). Test it, and that one `system_one` answer clears it. (Fable W — a spec gap, ruled here; the ADR 0033/0034 text in Task 11 says "Jev incidents + the `mail_jev_failing` sweep check", not `jev_skip_rate`.)
+- `mail_poll_failing` uses `mailStale` (Task 8).
+- Update `tests/run/incident-reminder.test.ts:20` (exact `REMIND_KINDS`). (Fable B1)
+- Daemon: `RunTelegramDaemonOptions` gains a test-only `mailDeps?: { gmail?: GoogleApiDeps; auth?: GoogleAuthClient; jevClient?: (r: JevRequest) => Promise<JevResult> }` (like `radarFetch`); thread `mailTick` into `runSignalPathTick` (change its signature); at shutdown `await settledWithin(mailTick.settled(), MAIL_TICK_SHUTDOWN_CAP_MS)` (5 000) beside the roles job; add `"mail"` to the `LlmCallRole` union. (Fable W, codex W3)
 
 ---
 
@@ -664,6 +708,10 @@ export function undoSenderRule(store: RunStore, rule_id: string, now: Date): boo
 - [ ] **Step 2: Run — FAIL. Step 3: Implement** (README: add `/inbox`, `/mail`, `/mail_undo` and `houge mail auth|purge` in the commands section, backticked). **Step 4:** `npm run typecheck && npx vitest run tests/triggers tests/gateway tests/scripts tests/docs` — PASS.
 - [ ] **Step 5: Commit** `feat(mail): /inbox, /mail, /mail_undo, mail taps, houge mail auth|purge`.
 
+**Review amendments (Rev 1.1):**
+- `/inbox` and every `mail:page:<n>` tap render `listUnseenInbox(30)` (the remaining unseen); `n` only labels the page and is capped at 9999. Test: 70 unseen items, `/inbox` then two "next" taps → every item shown exactly once, none skipped. `/inbox all` caps at 50 lines + "and N more". (codex B2, Fable W)
+- `/mail off` must invalidate Paco's cached token: the gateway receives an `onMailOff?: () => void` hook from the daemon (wired to `worker.invalidatePacoGmail()`); test that `/mail off` calls it. `/mail on` sets `enabled_at`. (codex B4)
+
 ---
 
 ### Task 11: ADR amendments, ADR conformance tests, docs sync
@@ -683,6 +731,11 @@ export function undoSenderRule(store: RunStore, rule_id: string, now: Date): boo
 - [ ] **Step 5:** `npm run typecheck && npm test` — PASS, none skipped.
 - [ ] **Step 6: Commit** in two commits: `docs(adr): 0034 2.6, 0033, 0025, 0015, 0031 amendments for SP2 mail (awaiting Paco's signature)` (ADRs + index + ADR tests) and `docs: SP2 mail triage docs sync`.
 
+**Review amendments (Rev 1.1):**
+- Step 4 adds the §8.1 greps, each expected to return nothing: `grep -rnE 'format=full|"full"|"raw"|editMessage' src/mail/`; `grep -rlnE 'mail_items|mail_sender' src/improve src/omp/tools src/core`; and the `0034-2.6` test also asserts a planted subject is absent from `decisions`, `ledger_events` and `change_log`. (Fable W)
+- `0034-2.6` (d) tests a **two-item** state (an extra `items` key), not only an empty id. (codex W1)
+- ADR 0033/0034 outage wording: "Jev incidents, plus the `mail_jev_failing` sweep check" (Task 9).
+
 ---
 
 ### Task 12: Unchanged-behaviour proof, rollback check, live gate script
@@ -698,6 +751,10 @@ export function undoSenderRule(store: RunStore, rule_id: string, now: Date): boo
 - [ ] **Step 3: Live gate script** (template: the R7 gate) implementing spec §10 exactly: refuses unless the live DB's `mail_state.enabled` is 0 or `HOUGE_MAIL_ENABLED` is not set for the daemon (read `.env` via `HOUGE_ENV_FILE` for the flag; read `mail_state` read-only); takes `--token <gate token>`; runs the real poller (`runMailTick`) against the real Gmail (paco auth client from the broker) with a cursor set to "1 day ago" via a first-run on a VACUUM copy; real Jev client; real Telegram via the outbox pump against Paco's chat; matches the three planted mails by token in their redacted subjects; lines 1–8 as in the spec, line 3 INCONCLUSIVE when Jev routes the newsletter `ping`; line 6 wraps `fetchImpl` to return 401 on the next token mint; line 7 runs a second tick; line 8 prints "tap Open on the urgent card and reply y" and reads stdin (skippable with `--no-open-check` → INCONCLUSIVE). Prints ids, counts, verdict codes only; never subject/sender of any mail; `482913` is searched for, never printed.
 - [ ] **Step 4:** `node --check` both scripts; run the rollback check against the stamped base. Expected PASS.
 - [ ] **Step 5: Commit** `test(gate): mail triage rollback check and live gate`.
+
+**Review amendments (Rev 1.1):**
+- The gate keeps the **live daemon's** mail off (refuses otherwise) but enables mail **in its own process env and on its DB copy** (`HOUGE_MAIL_ENABLED=1` in `process.env`, `setMailState({ enabled: true, enabled_at })` on the copy) before calling `runMailTick`. (codex B5)
+- Order: (1) one first-run tick on the copy to set the cursor (count and discard the backfill, never shown); (2) print "send the three mails now, then press Enter"; (3) tick until all three tokens are stored or 10 minutes pass; (4) lines 1–8. (Fable W)
 
 ---
 
