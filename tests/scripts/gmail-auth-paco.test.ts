@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 import { parseEnvText, upsertEnvLine } from "../../scripts/gmail-env.mjs";
 
@@ -29,5 +30,15 @@ describe("upsertEnvLine", () => {
 describe("parseEnvText", () => {
   it("reads KEY=VALUE, strips matching quotes, skips comments, first value wins", () => {
     expect(parseEnvText(`# c\nA=1\nB="two"\nA=3\n  export C='x y'\nbad line\n`)).toEqual({ A: "1", B: "two", C: "x y" });
+  });
+});
+
+describe("gmail-auth.mjs --account paco preflight", () => {
+  it("fails before any consent when the env file does not exist, so a token is never minted with nowhere to go", () => {
+    const r = spawnSync(process.execPath, ["scripts/gmail-auth.mjs", "--account", "paco"], { encoding: "utf8", timeout: 10_000,
+      env: { PATH: process.env.PATH ?? "", HOUGE_ENV_FILE: "/nonexistent/houge.env", HOUGE_PACO_GMAIL_ADDRESS: "paco@example.com" } });
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain("to write the token into");
+    expect(r.stdout).not.toContain("Opening browser");
   });
 });

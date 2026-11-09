@@ -2,8 +2,10 @@ import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import type { TelegramAllowlist, TypedTaskEvent } from "../../src/domain/types.js";
 import { Gateway } from "../../src/gateway/gateway.js";
+import { TAP_FAILED_TEXT } from "../../src/gateway/improvement-commands.js";
+import { handleMailTap } from "../../src/gateway/mail-commands.js";
 import type { GmailMetadata } from "../../src/mail/envelope.js";
-import { applySenderRule, maskAddress } from "../../src/mail/inbox.js";
+import { applySenderRule, maskAddress, undoSenderRule } from "../../src/mail/inbox.js";
 import { triageOne } from "../../src/mail/triage.js";
 import { RunStore, type MailItemInsert } from "../../src/run/run-store.js";
 import { isSelfWriteActionEvent, normalizeTelegramUpdate } from "../../src/triggers/telegram-trigger-adapter.js";
@@ -123,12 +125,27 @@ describe("/inbox", () => {
 });
 
 describe("/mail", () => {
+  it("on refuses, and the switch stays off, when HOUGE_PACO_GMAIL_ADDRESS is unset or invalid", () => {
+    const s = RunStore.openInMemory();
+    const g = new Gateway(s);
+    for (const bad of [undefined, "not-an-address"]) {
+      vi.stubEnv("HOUGE_PACO_GMAIL_ADDRESS", bad as string);
+      if (bad === undefined) vi.stubEnv("HOUGE_PACO_GMAIL_ADDRESS", "");
+      g.intake(msg("/mail on"), NOW);
+      expect(s.mailState().enabled).toBe(false);
+      expect(lastText(s)).toContain("stays off");
+    }
+    vi.unstubAllEnvs();
+    s.close();
+  });
   it("on sets the switch and enabled_at and clears a stored auth pause; off disables and calls onMailOff", () => {
     const s = RunStore.openInMemory();
     s.setMailState({ last_error_code: "auth", failing_since: "2026-11-08T00:00:00.000Z", backoff_n: 4 });
     const onMailOff = vi.fn();
+    vi.stubEnv("HOUGE_PACO_GMAIL_ADDRESS", "paco@example.com");
     const g = new Gateway(s, undefined, undefined, undefined, { onMailOff });
     g.intake(msg("/mail on"), NOW);
+    vi.unstubAllEnvs();
     expect(s.mailState()).toMatchObject({ enabled: true, enabled_at: NOW, last_error_code: null, failing_since: null, backoff_n: 0 });
     expect(onMailOff).not.toHaveBeenCalled();
     g.intake(msg("/mail off"), "2026-11-09T03:00:00.000Z");
@@ -156,6 +173,43 @@ describe("/mail", () => {
     expect(text).toContain("1 unseen");
     expect(text).toContain("Jev: ok");
     expect(text).not.toContain("Secret subject");
+    s.close();
+  });
+});
+
+describe("faults and flips", () => {
+  it("a fault while rendering /inbox or a page tap replies the failed-tap text, not silence", () => {
+    const s = RunStore.openInMemory();
+    const spy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    vi.spyOn(s, "listUnseenInbox").mockImplementation(() => { throw new Error("db fault ann@example.com"); });
+    const g = new Gateway(s);
+    g.intake(msg("/inbox"), NOW);
+    expect(lastText(s)).toBe(TAP_FAILED_TEXT);
+    g.intake(tapOf("mail:page:2"), NOW);
+    expect(lastText(s)).toBe(TAP_FAILED_TEXT);
+    expect(spy.mock.calls.flat().join(" ")).not.toContain("example.com");
+    spy.mockRestore();
+    s.close();
+  });
+  it("an unknown tap action never makes a rule", () => {
+    const s = RunStore.openInMemory();
+    const id = seed(s, randomUUID());
+    const ev = { ...tapOf(`mail:shp:${id}`), metadata: { mail_action: "bogus", item_id: id } } as TypedTaskEvent;
+    handleMailTap(s, ev, new Date(NOW));
+    expect(lastText(s)).toBe(TAP_FAILED_TEXT);
+    expect(s.senderRule("ann@example.com")).toBeUndefined();
+    s.close();
+  });
+  it("never then always on one sender keeps the rule id, so the first undo command still works", () => {
+    const s = RunStore.openInMemory();
+    const id = seed(s, randomUUID());
+    const a = applySenderRule(s, id, "never", new Date(NOW));
+    const b = applySenderRule(s, id, "always", new Date(NOW));
+    if (!a.ok || !b.ok) throw new Error("rule");
+    expect(b.rule_id).toBe(a.rule_id);
+    expect(s.senderRule("ann@example.com")).toEqual({ rule_id: a.rule_id, action: "always" });
+    expect(changeLog(s)).toHaveLength(2);
+    expect(undoSenderRule(s, a.rule_id, new Date(NOW))).toBe(true);
     s.close();
   });
 });

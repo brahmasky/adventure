@@ -66,6 +66,27 @@ describe("runTelegramDaemon: the mail tick", () => {
     store.close();
   });
 
+  it("/mail off through the daemon drops Paco's cached token on the poller's auth client and switches off", async () => {
+    vi.stubEnv("HOUGE_MAIL_ENABLED", ""); vi.stubEnv("HOUGE_PACO_GMAIL_ADDRESS", "paco@example.com");
+    const store = RunStore.openInMemory();
+    store.setMailState({ enabled: true, enabled_at: new Date().toISOString() });
+    const invalidate = vi.fn();
+    const client: GoogleAuthClient = { getAccessToken: async () => "ya29.t", invalidate };
+    const stop = new AbortController();
+    let polls = 0;
+    const root = mkdtempSync(join(tmpdir(), "houge-daemon-mail-")); dirs.push(root);
+    await runTelegramDaemon({ store, projectRoot: root, allowlist: ALLOWLIST, stopSignal: stop.signal, longPollTimeoutSeconds: 0, mailDeps: { gmail: fakeGmail(() => undefined).deps, auth: client },
+      llmAdapter: async (input) => ({ ok: true as const, output: { question: input.question, answer: "A", model: "fake" } }),
+      telegramClient: { getUpdates: async () => {
+        polls += 1;
+        if (polls >= 2) { stop.abort(); return []; }
+        return [{ update_id: 7001, message: { message_id: 9, text: "/mail off", from: { id: 111 }, chat: { id: 222 } } }];
+      }, sendMessage: async () => ({ message_id: 1 }) } });
+    expect(invalidate).toHaveBeenCalledTimes(1);
+    expect(store.mailState().enabled).toBe(false);
+    store.close();
+  });
+
   // The shutdown wait (Rev 1.1): the stop arrives while the tick is parked in messages.get; that call finishes 300 ms after the
   // stop, long after the other shutdown awaits. Without `settledWithin(mailTick.settled(), …)` the daemon returns first and the mail is not stored.
   function shutdownCase(release: boolean) {

@@ -134,7 +134,7 @@ export function applySenderRule(store: RunStore, item_id: string, action: "alway
   const masked = maskAddress(item.from_address);
   const existing = store.senderRule(item.from_address);
   if (existing?.action === action) return { ok: true, rule_id: existing.rule_id, masked };
-  const rule_id = `mr_${randomUUID()}`;
+  const rule_id = existing?.rule_id ?? `mr_${randomUUID()}`; // a flip keeps the id, so the earlier line's undo command still works
   const nowIso = now.toISOString();
   store.inTransaction(() => {
     store.upsertSenderRule({ rule_id, address: item.from_address, action, source_item_id: item_id, created_at: nowIso });

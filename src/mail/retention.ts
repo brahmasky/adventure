@@ -8,6 +8,9 @@ import { mailTextDays } from "./flag.js";
  * kind line so the text is not left behind in a payload. Once a local date; `purgeMail` is the same without the age cut.
  */
 const DAY_MS = 86_400_000;
+/** Idempotency-key prefix of every /inbox reply (they carry redacted subjects); stripped with the items' text. */
+export const INBOX_REPLY_KEY_PREFIX = "mail:inbox:";
+const INBOX_CLEARED = { text: "📧 /inbox page (cleared)", buttons: [] };
 export type RetentionResult = { cleared: number; stripped: number };
 
 /**
@@ -24,11 +27,19 @@ function strip(store: RunStore, ids: readonly string[], now: Date): RetentionRes
   return { cleared: ids.length, stripped };
 }
 
+/** Reduces /inbox replies created before `cutoff` to a bare line (recomputed hash); returns how many. */
+function stripInboxReplies(store: RunStore, cutoffIso: string): number {
+  const ids = store.mailInboxReplyIds(INBOX_REPLY_KEY_PREFIX, cutoffIso);
+  for (const n of ids) store.replaceNotificationPayload(n, INBOX_CLEARED);
+  return ids.length;
+}
+
 export function runMailRetention(store: RunStore, now: Date, env: NodeJS.ProcessEnv): RetentionResult {
   const today = formatInstantInZone(now.toISOString(), resolveDisplayZone(env)).slice(0, 10);
   if (store.mailState().retention_on === today) return { cleared: 0, stripped: 0 };
   const ids = store.mailItemsTextBefore(new Date(now.getTime() - mailTextDays(env) * DAY_MS).toISOString());
   const r = strip(store, ids, now);
+  r.stripped += stripInboxReplies(store, new Date(now.getTime() - mailTextDays(env) * DAY_MS).toISOString());
   store.setMailState({ retention_on: today });
   return r;
 }
@@ -36,6 +47,7 @@ export function runMailRetention(store: RunStore, now: Date, env: NodeJS.Process
 /** `/mail purge`: every item's text and card text now, and the known-sender cache. */
 export function purgeMail(store: RunStore, now: Date): RetentionResult {
   const r = strip(store, store.mailItemsTextBefore(new Date(now.getTime() + DAY_MS).toISOString()), now);
+  r.stripped += stripInboxReplies(store, new Date(now.getTime() + DAY_MS).toISOString());
   store.clearMailSenders();
   return r;
 }

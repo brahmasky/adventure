@@ -77,3 +77,33 @@ describe("purgeMail", () => {
     store.close();
   });
 });
+
+describe("/inbox replies in the outbox", () => {
+  const reply = (store: RunStore, key: string, createdAt: string) => {
+    const n = store.enqueueNotification({ topic: "reply", target: { kind: "telegram", chat_id: "555" }, intent_type: "progress", idempotency_key: key, correlation_id: "t",
+      payload: { text: "📥 Inbox\n1. Ann · Secret subject", button_rows: [[{ text: "🔔 1", data: "mail:shp:mi_x" }]] } });
+    if (n.status !== "queued") throw new Error("not queued");
+    (store as any).db.prepare("UPDATE notification_outbox SET created_at = ? WHERE notification_id = ?").run(createdAt, n.record.notification_id);
+    return n.record.notification_id;
+  };
+  it("retention strips /inbox replies older than the text window to a bare line with a new hash; younger ones and other replies stay", () => {
+    const store = RunStore.openInMemory();
+    const old = reply(store, "mail:inbox:u1:inbox", daysAgo(31));
+    const young = reply(store, "mail:inbox:u2:inbox", daysAgo(2));
+    const other = reply(store, "u3:reply", daysAgo(40));
+    const before = payload(store, old).payload_hash;
+    expect(runMailRetention(store, NOW, ENV).stripped).toBe(1);
+    expect(JSON.parse(payload(store, old).payload_json)).toEqual({ text: "📧 /inbox page (cleared)", buttons: [] });
+    expect(payload(store, old).payload_hash).not.toBe(before);
+    expect(payload(store, young).payload_json).toContain("Secret subject");
+    expect(payload(store, other).payload_json).toContain("Secret subject");
+    store.close();
+  });
+  it("purge strips every /inbox reply whatever its age", () => {
+    const store = RunStore.openInMemory();
+    const young = reply(store, "mail:inbox:u2:mail_page", daysAgo(0));
+    expect(purgeMail(store, NOW).stripped).toBe(1);
+    expect(payload(store, young).payload_json).not.toContain("Secret subject");
+    store.close();
+  });
+});

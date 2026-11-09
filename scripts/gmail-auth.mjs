@@ -53,6 +53,7 @@ const envFile = process.env.HOUGE_ENV_FILE || ".env";
 const envValues = paco ? { ...parseEnvText(existsSync(envFile) ? readFileSync(envFile, "utf8") : ""), ...Object.fromEntries(Object.entries(process.env).filter(([k]) => k.startsWith("HOUGE_"))) } : {};
 const expectedIdentity = paco ? (envValues.HOUGE_PACO_GMAIL_ADDRESS ?? "").trim().toLowerCase() : EXPECTED_IDENTITY;
 if (paco && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(expectedIdentity)) fail(`HOUGE_PACO_GMAIL_ADDRESS is not set in ${envFile}`);
+if (paco && !existsSync(envFile)) fail(`no ${envFile} to write the token into — create it first (the token is never printed)`);
 if (!paco && !secretPath) fail("usage: node scripts/gmail-auth.mjs <path/to/client_secret.json>");
 if (secretPath && !existsSync(secretPath)) fail(`no such file: ${secretPath}`);
 
@@ -158,12 +159,8 @@ console.log(`\n✓ Authorized as ${profile.emailAddress} (${profile.messagesTota
 const mask = (v) => `${v.slice(0, 6)}…(${v.length} chars)`;
 if (paco) {
   const line = "HOUGE_PACO_GMAIL_REFRESH_TOKEN";
-  if (existsSync(envFile)) {
-    writeFileSync(envFile, upsertEnvLine(readFileSync(envFile, "utf8"), line, tokens.refresh_token));
-    console.log(`✓ Wrote ${line}=${mask(tokens.refresh_token)} to ${envFile} (replacing any earlier line).`);
-  } else {
-    console.log(`\nNo ${envFile} here — add this line to the mini's .env yourself:\n${line}=${tokens.refresh_token}`);
-  }
+  writeFileSync(envFile, upsertEnvLine(readFileSync(envFile, "utf8"), line, tokens.refresh_token));
+  console.log(`✓ Wrote ${line}=${mask(tokens.refresh_token)} to ${envFile} (replacing any earlier line).`);
   console.log("Restart the daemon (launchctl kickstart) to load it.");
   process.exit(0);
 }
