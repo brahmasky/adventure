@@ -246,6 +246,8 @@ change of meaning approved with the spec), with amendments to 0033, 0025, 0015, 
 (`scripts/live-gate-mail-triage.mjs`), merge, kickstart, `HOUGE_MAIL_ENABLED=1` + `/mail on` (armed at ship); then SP2's later
 slices (sending `/approve`-gated, Calendar, reminders, files).
 
+**Next SP2 slice (decided 2026-11-09, not specced): Google Workspace MCP in omp.** Toward a Houge on omp that is as capable as Claude Code, on-demand Gmail/Calendar/Drive breadth comes from Google's Workspace MCP servers rather than one hand-built bridge tool per API; the slice-1 poller and `mail.triage` stay, because MCP cannot push new mail. Probe first (omp MCP support under the policy hook, approvals for writes, reader wall on reads), then spec; it needs a new OAuth client marked agentic. Calendar, reminders and files fold into this slice where MCP covers them.
+
 **Delta 2026-10-23: the Jev version check is built** (`feat/jev-version-check`; spec 2026-10-22 Rev 3.4). No version literal decides behaviour: a Jev version move is checked by code against Paco's approved reference turns and labels (about 45 minutes), arms on agreement and pages once with an Accept button on a drift. Live gate PASS: jev-1.14.0 drifted against the 1.13.0 anchor. Next: ADR 0030 cleanup (a separate approved task), then the ladder's stage 3.
 
 **Delta 2026-10-19: the memory write is built** (`feat/memory-write`, not merged; spec 2026-10-15 Rev 3). "Remember this" is
