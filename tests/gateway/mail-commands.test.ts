@@ -208,7 +208,11 @@ describe("faults and flips", () => {
     if (!a.ok || !b.ok) throw new Error("rule");
     expect(b.rule_id).toBe(a.rule_id);
     expect(s.senderRule("ann@example.com")).toEqual({ rule_id: a.rule_id, action: "always" });
-    expect(changeLog(s)).toHaveLength(2);
+    const c = applySenderRule(s, id, "never", new Date("2026-11-09T03:00:00.000Z"));
+    expect(c.ok && c.rule_id).toBe(a.rule_id);
+    expect(changeLog(s)).toHaveLength(3);
+    expect(changeLog(s)[0]).toContain("never ping from"); // newest first: the flip back is logged
+    expect(s.senderRule("ann@example.com")?.action).toBe("never");
     expect(undoSenderRule(s, a.rule_id, new Date(NOW))).toBe(true);
     s.close();
   });

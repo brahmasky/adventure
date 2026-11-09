@@ -153,6 +153,6 @@ export function undoSenderRule(store: RunStore, rule_id: string, now: Date): boo
 }
 
 function logRule(store: RunStore, rule_id: string, key: string, text: string, now: string): void {
-  const res = store.enqueueNotification({ topic: "mail_log", idempotency_key: `mail:rule:${rule_id}:${key}`, correlation_id: rule_id, text, now });
+  const res = store.enqueueNotification({ topic: "mail_log", idempotency_key: `mail:rule:${rule_id}:${key}:${now}`, correlation_id: rule_id, text, now });
   if (res.status !== "logged" && res.status !== "duplicate_log") throw Object.assign(new Error("mail_log line not recorded"), { code: `MAIL_RULE_LOG_${res.status.toUpperCase()}` });
 }

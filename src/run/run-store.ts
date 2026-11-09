@@ -7751,10 +7751,10 @@ export class RunStore {
     return out;
   }
 
-  /** Outbox rows whose key starts with `prefix`, created before `cutoffIso`, not already reduced (literal prefix match, no LIKE wildcards). */
-  mailInboxReplyIds(prefix: string, cutoffIso: string): string[] {
-    return this.db.prepare(`SELECT notification_id FROM notification_outbox WHERE substr(idempotency_key, 1, ?) = ? AND created_at < ? AND payload_json NOT LIKE '%(cleared)%' ORDER BY created_at ASC`)
-      .all<{ notification_id: string }>(prefix.length, prefix, cutoffIso).map((r) => r.notification_id);
+  /** Outbox rows whose key starts with `prefix`, created before `cutoffIso`, not already reduced to `reducedPayload` (compared by hash, never by text). */
+  mailInboxReplyIds(prefix: string, cutoffIso: string, reducedPayload: NotificationPayload): string[] {
+    return this.db.prepare(`SELECT notification_id FROM notification_outbox WHERE substr(idempotency_key, 1, ?) = ? AND created_at < ? AND payload_hash != ? ORDER BY created_at ASC`)
+      .all<{ notification_id: string }>(prefix.length, prefix, cutoffIso, stableHash(reducedPayload)).map((r) => r.notification_id);
   }
 
   replaceNotificationPayload(notification_id: string, payload: NotificationPayload): void {

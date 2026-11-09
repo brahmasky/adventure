@@ -29,7 +29,7 @@ function strip(store: RunStore, ids: readonly string[], now: Date): RetentionRes
 
 /** Reduces /inbox replies created before `cutoff` to a bare line (recomputed hash); returns how many. */
 function stripInboxReplies(store: RunStore, cutoffIso: string): number {
-  const ids = store.mailInboxReplyIds(INBOX_REPLY_KEY_PREFIX, cutoffIso);
+  const ids = store.mailInboxReplyIds(INBOX_REPLY_KEY_PREFIX, cutoffIso, INBOX_CLEARED);
   for (const n of ids) store.replaceNotificationPayload(n, INBOX_CLEARED);
   return ids.length;
 }

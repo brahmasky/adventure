@@ -99,6 +99,16 @@ describe("/inbox replies in the outbox", () => {
     expect(payload(store, other).payload_json).toContain("Secret subject");
     store.close();
   });
+  it("a subject containing (cleared) is still stripped; an already reduced reply is not counted twice", () => {
+    const store = RunStore.openInMemory();
+    const n = store.enqueueNotification({ topic: "reply", target: { kind: "telegram", chat_id: "555" }, intent_type: "progress", idempotency_key: "mail:inbox:u9:inbox",
+      correlation_id: "t", payload: { text: "1. Ann · Invoice (cleared)" } });
+    if (n.status !== "queued") throw new Error("not queued");
+    expect(purgeMail(store, NOW).stripped).toBe(1);
+    expect(payload(store, n.record.notification_id).payload_json).not.toContain("Invoice");
+    expect(purgeMail(store, NOW).stripped).toBe(0);
+    store.close();
+  });
   it("purge strips every /inbox reply whatever its age", () => {
     const store = RunStore.openInMemory();
     const young = reply(store, "mail:inbox:u2:mail_page", daysAgo(0));
