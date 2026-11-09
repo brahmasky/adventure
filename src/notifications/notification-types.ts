@@ -4,15 +4,15 @@ import type { ChatTopic, LogTopic } from "./topics.js";
 
 /**
  * A single inline button on a notification (Phase 3.3). `text` is the visible label;
- * `data` is the Telegram `callback_data` sent back on tap (e.g. `selfwrite:merge:run_x`); `url` instead opens a link.
- * Exactly one of the two. Adapters that support inline keyboards render these; others ignore them.
+ * `data` is the Telegram `callback_data` sent back on tap (e.g. `selfwrite:merge:run_x`). A link button is a
+ * `NotificationUrlButton`. Adapters that support inline keyboards render these; others ignore them.
  */
 export interface NotificationButton {
   text: string;
   data: string;
 }
 
-/** A button that opens a link instead of calling back (the mail card's "Open"). Rendered by the adapter in `button_rows` or `buttons`. */
+/** A button that opens a link instead of calling back (the mail card's "Open"). Typed for `button_rows` only; flat `buttons` tolerates it at runtime (stored JSON) but is not typed for it. */
 export interface NotificationUrlButton {
   text: string;
   url: string;

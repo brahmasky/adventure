@@ -1,6 +1,7 @@
 import { basename } from "node:path";
 import { markdownToTelegramHtml } from "../telegram/markdown-to-telegram-html.js";
 import type {
+  TelegramInlineButton,
   TelegramInlineKeyboardMarkup,
   TelegramSendClient
 } from "../telegram/telegram-client.js";
@@ -19,6 +20,8 @@ export { checkAttachment, inside, MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS, overCou
 export function attachmentRefusedLine(name: string, why: AttachmentRefusal): string {
   return `⚠ Not attached: ${name} (${REFUSAL_TEXT[why]})`;
 }
+
+type AnyButton = NotificationButton | NotificationUrlButton;
 
 export interface TelegramNotificationAdapterOptions {
   /** The chat's omp workspace; an attachment must resolve (realpath) inside it. Absent → every attachment is refused. */
@@ -116,7 +119,13 @@ export class TelegramNotificationAdapter implements NotificationAdapter {
 function toReplyMarkup(payload: NotificationPayload): TelegramInlineKeyboardMarkup | undefined {
   const rows: AnyButton[][] | null = buttonRowsOf(payload.button_rows) ?? (payload.buttons && payload.buttons.length > 0 ? [payload.buttons] : null);
   if (!rows) return undefined;
-  return { inline_keyboard: rows.map((row) => row.map((button) => ("url" in button ? { text: button.text, url: button.url } : { text: button.text, callback_data: button.data }))) };
+  return { inline_keyboard: rows.map((row) => row.map(toInlineButton)) };
+}
+
+/** A string `url` makes a link button; anything else is a callback button (same predicate as `isButton`). */
+function toInlineButton(button: AnyButton): TelegramInlineButton {
+  const { url, data } = button as { url?: unknown; data?: unknown };
+  return typeof url === "string" ? { text: button.text, url } : { text: button.text, callback_data: data as string };
 }
 
 /** Rows only when every row is a non-empty list of {text, data} or {text, url}; anything else falls back to `buttons` (the payload is stored JSON). */
@@ -126,8 +135,6 @@ function buttonRowsOf(v: unknown): AnyButton[][] | null {
     && row.every(isButton));
   return ok ? (v as AnyButton[][]) : null;
 }
-
-type AnyButton = NotificationButton | NotificationUrlButton;
 
 function isButton(b: unknown): b is AnyButton {
   const x = b as { text?: unknown; data?: unknown; url?: unknown } | null;

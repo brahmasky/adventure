@@ -37,6 +37,17 @@ describe("silent sends and URL buttons", () => {
     }
   });
 
+  it("button_rows holding only a URL button renders it", async () => {
+    const [s] = await run({ text: "x", button_rows: [[URL_BTN]] });
+    expect(s?.reply_markup?.inline_keyboard).toEqual([[{ text: "Open", url: URL_BTN.url }]]);
+  });
+
+  it("a button with data and a null url is a callback button", async () => {
+    const [s] = await run({ text: "x", buttons: [{ ...CB_BTN, url: null } as never] });
+    expect(s?.reply_markup?.inline_keyboard).toEqual([[{ text: "Wrong urgency", callback_data: "mail:wu:mi_1" }]]);
+  });
+
+  // Runtime tolerance only: flat `buttons` is typed callback-only, but stored JSON may carry a URL button.
   it("flat buttons with a URL button also render", async () => {
     const [s] = await run({ text: "x", silent: true, buttons: [URL_BTN, CB_BTN] as never });
     expect(s?.disable_notification).toBe(true);
@@ -50,6 +61,13 @@ describe("silent sends and URL buttons", () => {
     expect("disable_notification" in (s as object)).toBe(false);
     const [f] = await run({ text: "x", silent: false });
     expect("disable_notification" in (f as object)).toBe(false);
+  });
+
+  it("the plain-text retry of a callback-only, non-silent payload is today's input too", async () => {
+    const sent = await run({ text: "x", buttons: [CB_BTN] }, true);
+    expect(sent[1]).toEqual({ chat_id: "222", text: "x",
+      reply_markup: { inline_keyboard: [[{ text: "Wrong urgency", callback_data: "mail:wu:mi_1" }]] } });
+    expect("disable_notification" in (sent[1] as object)).toBe(false);
   });
 
   it("a malformed button_rows entry still falls back to buttons", async () => {

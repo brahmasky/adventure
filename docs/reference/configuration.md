@@ -308,6 +308,12 @@ Credentials are produced by `scripts/gmail-auth.mjs`; the two secrets below are 
 | `HOUGE_GMAIL_CLIENT_ID` | — | OAuth client id of the Gmail desktop client. Plain config, not a secret (client ids are public identifiers); read from env at call time. |
 | `HOUGE_GMAIL_CLIENT_SECRET` | — | **Secret — broker-held** (ADR 0015): lifted into the secret broker at boot, stripped from `process.env`, redacted from egress. Written by `scripts/gmail-auth.mjs`. |
 | `HOUGE_GMAIL_REFRESH_TOKEN` | — | **Secret — broker-held** (ADR 0015), same treatment. The long-lived `gmail.readonly` grant; revoking it in the Google console is the remote kill for this surface. |
+| `HOUGE_PACO_GMAIL_REFRESH_TOKEN` | — | **Secret — broker-held** (ADR 0015), same treatment. Paco's own `gmail.readonly` grant (SP2 mail triage); revoking it in the Google console is that account's remote kill. Used only when `account: "paco"` is passed and mail is on. |
+| `HOUGE_PACO_GMAIL_ADDRESS` | — | Paco's Gmail address (not a secret). Lower-cased and shape-checked; unset or malformed reads as absent. |
+| `HOUGE_MAIL_ENABLED` | off | Env switch for mail triage and `account: "paco"` reads; both this and the stored `/mail on` switch must be on. Accepts 1/true/yes/on. In `DISARM_FLAGS`. |
+| `HOUGE_MAIL_POLL_MIN` | 5 | Mail poll interval in minutes; clamped to [2, 60], non-numeric reads as 5. |
+| `HOUGE_MAIL_QUIET` | `23-7` | Quiet window `start-end` (hours 0-23); malformed reads as `23-7`. |
+| `HOUGE_MAIL_TEXT_DAYS` | 30 | Days mail subject/snippet text is kept before clearing; minimum 1. |
 
 **Arming (changed 2026-10).** The old arming couple (`HOUGE_GOOGLE_ENABLED` **and**
 `HOUGE_DUAL_LLM_ENABLED`) is gone. Under omp the reader wall is unconditional for both tools, so
@@ -702,7 +708,7 @@ environment variable. Spec: `docs/superpowers/specs/2026-11-03-chat-is-for-paco-
 
 - **Topics.** Every notification names a closed topic. `TOPIC_ROUTE` (`src/notifications/topics.ts`) maps each topic to `chat` or `log`;
   the topic alone decides. Replies, run reports, approvals, memory cards, improvement cards, urgent cards, self-write cards, incident pages,
-  reminders and summaries are chat. `model_change`, `incident_log`, `jev_notice`, `decision_internal`, `improve_log` and `standing_log` are log. A
+  reminders, summaries and mail cards (`mail_card`) are chat. `model_change`, `incident_log`, `jev_notice`, `decision_internal`, `improve_log`, `standing_log` and `mail_log` are log. A
   `NotificationIntent` is a chat intent or a log intent, and `RunStore.enqueueNotification` sends one to the outbox and the other to
   `logChange` (a log row is deduplicated by its idempotency key).
 - **Incident routes.** `INCIDENT_ROUTE` (`src/run/incident-route.ts`) gives every incident kind one of three routes. A **page** is one
