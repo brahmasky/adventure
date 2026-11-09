@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { decide, message } from "../decisions/decide.js";
+import { decide } from "../decisions/decide.js";
 import { jevMailAnswer, MAIL_TRIAGE, MAIL_TRIAGE_ID, perItemRouting, type MailTriageDetail, type MailTriageState, type MailVerdict } from "../decisions/entries/mail-triage.js";
 import { afterStrictRecord, recordStrict } from "../decisions/record.js";
 import type { AnyDecideResult, AnyEntry, DecideResult, DecisionRecorder } from "../decisions/types.js";
+import { errorCode } from "../domain/error-code.js";
 import type { MailAsk } from "../jev/mail-ask.js";
 import { openAlertedIncident } from "../run/incident-alert.js";
 import type { MailItemInsert, MailLane, MailReason, NotificationQueueResult, RunStore } from "../run/run-store.js";
@@ -32,10 +33,10 @@ const ENTRY = MAIL_TRIAGE as unknown as AnyEntry;
 /** The entry's own reason codes as item reasons; `jev_unavailable` is the runner's `fail` rung, `folded` and `routing_refused` are code's. */
 const ENTRY_REASONS: ReadonlySet<string> = new Set<MailReason>(["own_output", "rule_never", "rule_always", "backfill", "jev_now", "jev_later", "jev_unsure"]);
 
-/** A failed decision insert inside the transaction; the only error that opens decision_record_failed (Rev 1.1). */
+/** A failed decision insert inside the transaction; the only error that opens decision_record_failed (Rev 1.1). Its message carries the cause's code, never its text (a thrown error may quote mail). */
 export class DecisionFlushFailed extends Error {
   constructor(cause: unknown) {
-    super(`mail.triage decision flush failed: ${message(cause)}`, { cause });
+    super(`mail.triage decision flush failed: ${errorCode(cause)}`, { cause });
     this.name = "DecisionFlushFailed";
   }
 }
@@ -147,17 +148,21 @@ function logRefused(store: RunStore, item_id: string, nowIso: string): void {
   if (res.status !== "logged" && res.status !== "duplicate_log") throw new Error(`mail refused log: ${res.status}`);
 }
 
-/** After the rollback: only a failed decision flush is the recorder's incident (subject = entry id, so afterRecord resolves it on the next success); anything else is a write error, retried next tick. */
+/**
+ * After the rollback: only a failed decision flush is the recorder's incident (subject = entry id, so afterRecord resolves it on the
+ * next success); anything else is a write error, retried next tick. Log lines carry codes and the item id only (codex round 1):
+ * an exception message may quote the sender, subject or snippet.
+ */
 function writeFailed(d: TriageDeps, item_id: string, e: unknown, nowIso: string): TriageOutcome {
   if (!(e instanceof DecisionFlushFailed)) {
-    console.error(`mail: item write failed, rolled back: ${message(e)}`);
+    console.error(`mail: item write failed, rolled back: ${errorCode(e)} item=${item_id}`);
     return { stored: false, error: "write" };
   }
-  console.error(`mail: ${e.message}`);
+  console.error(`mail: ${e.message} item=${item_id}`);
   try {
     openAlertedIncident(d.store, { kind: "decision_record_failed", subject: MAIL_TRIAGE_ID, detail: { entry: MAIL_TRIAGE_ID, item: item_id }, chat_id: d.chatId, env: d.env, now: nowIso });
   } catch (e2) {
-    console.error(`mail: decision_record_failed could not open: ${message(e2)}`);
+    console.error(`mail: decision_record_failed could not open: ${errorCode(e2)}`);
   }
   return { stored: false, error: "decision" };
 }

@@ -89,8 +89,11 @@ describe("triageOne: fold and thread (spec §3.4)", () => {
   it("6 pings in the hour → the 7th is inbox/folded with one fold card; the 8th folds too and the fold card stays one", async () => {
     const store = RunStore.openInMemory();
     for (let n = 1; n <= 6; n += 1) expect(await ping(store, `m${n}`)).toMatchObject({ lane: "ping" });
+    const enqueue = vi.spyOn(store, "enqueueNotification");
     expect(await ping(store, "m7")).toEqual({ stored: true, lane: "inbox", reason: "folded", notified: false });
     expect(await ping(store, "m8")).toMatchObject({ lane: "inbox", reason: "folded" });
+    const folds = enqueue.mock.calls.map((c, i) => [c[0]!.idempotency_key, (enqueue.mock.results[i]!.value as { status: string }).status]).filter(([k]) => k!.startsWith("mail:fold:"));
+    expect(folds).toEqual([["mail:fold:2026-11-09T02", "queued"], ["mail:fold:2026-11-09T02", "duplicate"]]); // the 8th DID enqueue, and the outbox folded it
     const keys = [...drainOutbox(store).keys()];
     expect(keys.filter((k) => k.startsWith("mail:fold:"))).toEqual(["mail:fold:2026-11-09T02"]);
     expect(keys.filter((k) => /^mail:m\d$/.test(k))).toHaveLength(6);
@@ -162,6 +165,25 @@ describe("triageOne: one transaction (spec §3.4, §7)", () => {
     expect(await ping(store, "m1")).toEqual({ stored: false, error: "write" });
     expect(items(store)).toEqual([]);
     expect(decisions(store)).toEqual([]);
+    store.close();
+  });
+  it("a thrown error quoting mail text never reaches the daemon log: codes and the item id only (codex round 1)", async () => {
+    const store = RunStore.openInMemory();
+    const from = "zed-planted@example.com";
+    const subject = "Planted-Subject-QX7";
+    const err = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const sqlite = Object.assign(new Error(`cannot store ${subject} from ${from}`), { code: "SQLITE_FULL" });
+    const insertItem = vi.spyOn(store, "insertMailItem").mockImplementation(() => { throw sqlite; });
+    expect(await triageOne(deps(store, answer("now", 0.9)), meta("m1", { from: `Zed <${from}>`, subject }), { known_sender: false, backfill: false })).toEqual({ stored: false, error: "write" });
+    insertItem.mockRestore();
+    vi.spyOn(store, "insertDecision").mockImplementation(() => { throw new Error(`decision for ${subject} <${from}>`); });
+    expect(await triageOne(deps(store, answer("now", 0.9)), meta("m2", { from: `Zed <${from}>`, subject }), { known_sender: false, backfill: false })).toEqual({ stored: false, error: "decision" });
+    const printed = [...err.mock.calls, ...log.mock.calls].flat().map(String).join("\n");
+    expect(err).toHaveBeenCalledTimes(2);
+    expect(printed).toContain("SQLITE_FULL");
+    for (const planted of [from, subject, "Planted", "cannot store", "decision for"]) expect(printed).not.toContain(planted);
+    expect(JSON.stringify(store.listOpenIncidents())).not.toContain("Planted");
     store.close();
   });
   it("the sender address and subject appear in no decisions column and no change_log text (spec §9)", async () => {

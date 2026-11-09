@@ -1,7 +1,7 @@
 import { headerValue } from "../capabilities/gmail-read.js";
 import type { GoogleApiDeps } from "../capabilities/google-api.js";
 import type { GoogleAuthClient } from "../capabilities/google-auth.js";
-import { message } from "../decisions/decide.js";
+import { errorCode } from "../domain/error-code.js";
 import { openAlertedIncident, resolveOpenIncidents } from "../run/incident-alert.js";
 import type { MailStateRow, RunStore } from "../run/run-store.js";
 import { parseFrom, type GmailMetadata } from "./envelope.js";
@@ -93,16 +93,29 @@ async function historyRun(d: PollDeps, cursor: string, now: Date): Promise<Progr
   return advance(d, await processIds(d, h.ids, false, now), h.historyId);
 }
 
-/** §3.2 cursor expired: list since the last received mail (the 24 h query before any), store as backfill (an `always` rule still pings), one mail_log line, cursor := profile id. */
+/**
+ * §3.2 cursor expired: list since the last received mail (the 24 h query before any), store as backfill (an `always` rule still
+ * pings), then ONE transaction resets the cursor to the profile id and writes the mail_log line: the line is the only record that
+ * mail may have been left unlisted, so a cursor reset without it fails the tick (cursor unchanged, retried under backoff).
+ */
 async function resync(d: PollDeps, expired: string, now: Date): Promise<Progress> {
   const g = d.gmail;
   const prof = await profileHistoryId(g.deps, g.auth);
   if (!prof.ok) return failed(prof);
   const list = await listInbox(resyncQuery(d.store), MAIL_RESYNC_CAP, g.deps, g.auth);
   if (!list.ok) return failed(list);
-  const p = advance(d, await processIds(d, list.ids, true, now), prof.historyId);
-  if (p.cursorAdvanced) logResync(d.store, expired, list.ids.length, list.more, now.toISOString());
-  return p;
+  const run = await processIds(d, list.ids, true, now);
+  if (!run.allDone || run.error !== undefined) return { ...run, cursorAdvanced: false };
+  try {
+    d.store.inTransaction(() => {
+      d.store.setMailState({ history_id: prof.historyId });
+      logResync(d.store, expired, list.ids.length, list.more, now.toISOString());
+    });
+  } catch (e) {
+    console.error(`mail: resync cursor reset rolled back: ${errorCode(e)}`);
+    return { ...run, allDone: false, cursorAdvanced: false, error: "unavailable" };
+  }
+  return { ...run, cursorAdvanced: true };
 }
 
 function resyncQuery(store: RunStore): string {
@@ -110,11 +123,11 @@ function resyncQuery(store: RunStore): string {
   return last === null ? FIRST_RUN_QUERY : `in:inbox after:${Math.floor(Date.parse(last) / 1000)}`;
 }
 
-/** Gmail's list reports only that the cap was hit, not how many lie beyond it, so the line says so without a count. */
+/** Gmail's list reports only that the cap was hit, not how many lie beyond it, so the line says so without a count. Inside the caller's transaction: anything but `logged` or `duplicate_log` throws. */
 function logResync(store: RunStore, expired: string, n: number, more: boolean, nowIso: string): void {
   const text = `Mail caught up: ${n} in /inbox${more ? "; list capped, older not listed, see Gmail" : ""}`;
   const res = store.enqueueNotification({ topic: "mail_log", idempotency_key: `mail:resync:${expired}`, correlation_id: "mail-resync", text, now: nowIso });
-  if (res.status === "conflict") console.error(`mail: resync log line not written: ${res.error}`);
+  if (res.status !== "logged" && res.status !== "duplicate_log") throw Object.assign(new Error("mail_log line not recorded"), { code: `MAIL_RESYNC_LOG_${res.status.toUpperCase()}` });
 }
 
 /** The cursor moves only when every id of the range is stored or skipped as deleted, and no Gmail error cut the range short. */
@@ -152,7 +165,7 @@ async function processOne(d: PollDeps, ref: Ref, backfill: boolean, now: Date, r
   const known = await knownSender(d, meta.m, now);
   if (!known.ok) { fail(run, known); return; }
   const t = await triageOne(d, meta.m, { known_sender: known.found, backfill }).catch((e: unknown): TriageOutcome => {
-    console.error(`mail: triage threw: ${message(e)}`);
+    console.error(`mail: triage threw: ${errorCode(e)} id=${ref.id}`); // a code and Gmail's opaque id only: the message may quote mail text
     return { stored: false, error: "write" };
   });
   if (!t.stored) { run.allDone = false; return; }

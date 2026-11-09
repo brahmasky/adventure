@@ -201,6 +201,42 @@ describe("runMailTick: cursor expired (history 404 → resync)", () => {
   });
 });
 
+describe("runMailTick: resync is atomic with its log line (codex round 1)", () => {
+  const dupItems = () => gmail({ profile: "300", history: () => 404, list: () => ({ messages: ["a"].map(ref) }) });
+  it("a conflicting mail_log key fails the tick: items stay stored, cursor unchanged, no half-written line", async () => {
+    const store = RunStore.openInMemory();
+    on(store, { history_id: "5" });
+    store.enqueueNotification({ topic: "mail_log", idempotency_key: "mail:resync:5", correlation_id: "x", text: "an earlier, different line" });
+    const err = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    expect(await runMailTick(pollDeps(store, dupItems()))).toMatchObject({ ran: true, stored: 1, cursorAdvanced: false, error: "unavailable" });
+    expect(store.mailState()).toMatchObject({ history_id: "5", failing_since: NOW.toISOString() });
+    expect(store.listChangeLog(EPOCH, 10).map((r) => r.text)).toEqual(["an earlier, different line"]);
+    expect(err.mock.calls.flat().join(" ")).toContain("MAIL_RESYNC_LOG_CONFLICT");
+    store.close();
+  });
+  it("the same line already written (duplicate_log) is fine: cursor advances", async () => {
+    const store = RunStore.openInMemory();
+    on(store, { history_id: "5" });
+    store.enqueueNotification({ topic: "mail_log", idempotency_key: "mail:resync:5", correlation_id: "x", text: "Mail caught up: 1 in /inbox" });
+    expect(await runMailTick(pollDeps(store, dupItems()))).toMatchObject({ ran: true, stored: 1, cursorAdvanced: true });
+    expect(store.mailState().history_id).toBe("300");
+    expect(store.listChangeLog(EPOCH, 10)).toHaveLength(1);
+    store.close();
+  });
+  it("a thrown error quoting mail text on the poller path is logged as a code and Gmail id only", async () => {
+    const store = RunStore.openInMemory();
+    on(store, { history_id: "5" });
+    const err = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    vi.spyOn(store, "threadPingedSince").mockImplementation(() => { throw new Error("thread lookup failed for Planted-Subject-QX7 <zed-planted@example.com>"); });
+    expect(await runMailTick(pollDeps(store, gmail({ history: () => page(["a"], "10") })))).toMatchObject({ ran: true, stored: 0, cursorAdvanced: false });
+    const printed = err.mock.calls.flat().map(String).join("\n");
+    expect(printed).toContain("id=a");
+    expect(printed).not.toContain("Planted");
+    expect(printed).not.toContain("zed-planted");
+    store.close();
+  });
+});
+
 describe("runMailTick: failures (spec §7)", () => {
   it("auth → last_error_code auth, one mail_auth_lost page; later ticks are paused with no fetch", async () => {
     const store = RunStore.openInMemory();
