@@ -14,12 +14,14 @@ describe("askMail", () => {
     const r = await askMail({ state, client, store: RunStore.openInMemory() });
     expect(r).toMatchObject({ urgency: { choice: "now" }, kind: { choice: "risk" }, model: "jev-1.14.0" });
     const req = client.mock.calls[0]![0];
-    expect(Object.keys(req.state as object).sort()).toEqual(Object.keys(state).sort());
+    expect(Object.keys(req.state as object).sort()).toEqual(["from_address", "from_name", "important", "known_sender", "labels", "snippet", "subject"]);
     expect(Object.keys(req.questions)).toEqual(["mail_urgency", "mail_kind"]);
   });
   it("an outage is a named failure", async () => {
-    const r = await askMail({ state, client: async () => ({ ok: false, reason: "error", detail: "x", error_kind: "transport" }), store: RunStore.openInMemory() });
+    const store = RunStore.openInMemory();
+    const r = await askMail({ state, client: async () => ({ ok: false, reason: "error", detail: "x", error_kind: "transport" }), store });
     expect(r).toMatchObject({ failed: "outage" });
+    expect((store as any).db.prepare("SELECT COUNT(*) AS n FROM jev_decisions").get()).toMatchObject({ n: 0 });
   });
   it("writes no jev_decisions row", async () => {
     const store = RunStore.openInMemory();

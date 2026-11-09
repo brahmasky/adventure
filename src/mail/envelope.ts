@@ -28,7 +28,7 @@ export function redactMailText(text: string | undefined, cap: number, brokerReda
   return redactForJudge(clean, { brokerRedact, codeShapes: true, linkTokens: true });
 }
 
-export function buildItemState(m: GmailMetadata, x: { item_id: string; known_sender: boolean; thread_pinged_6h: boolean; backfill: boolean; brokerRedact: (s: string) => string }): MailItemState {
+export function buildItemState(m: GmailMetadata, x: { item_id: string; known_sender: boolean; thread_pinged_6h: boolean; backfill: boolean; brokerRedact: (s: string) => string; now: Date }): MailItemState {
   const msg = m as unknown as Record<string, unknown>;
   const from = parseFrom(headerValue(msg, "From"));
   const labels = Array.isArray(m.labelIds) ? m.labelIds.filter((l): l is string => typeof l === "string") : [];
@@ -39,7 +39,7 @@ export function buildItemState(m: GmailMetadata, x: { item_id: string; known_sen
     subject: redactMailText(headerValue(msg, "Subject"), HEADER_FIELD_CAP, x.brokerRedact),
     snippet: redactMailText(m.snippet, SNIPPET_CAP, x.brokerRedact),
     labels, important: labels.includes("IMPORTANT"),
-    received_at: new Date(Number.isFinite(ms) && ms > 0 ? ms : 0).toISOString(),
+    received_at: (Number.isFinite(ms) && ms > 0 ? new Date(ms) : x.now).toISOString(),
     thread_pinged_6h: x.thread_pinged_6h, backfill: x.backfill
   };
 }
