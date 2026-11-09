@@ -7675,6 +7675,11 @@ export class RunStore {
     return this.db.prepare(`SELECT 1 AS x FROM mail_items WHERE gmail_thread_id = ? AND lane = 'ping' AND created_at >= ? LIMIT 1`).get(thread_id, sinceIso) !== undefined;
   }
 
+  /** The newest `received_at` across every item (any lane), or null before the first; the resync's `after:` anchor (spec §3.2). */
+  latestMailReceivedAt(): string | null {
+    return this.db.prepare(`SELECT MAX(received_at) AS t FROM mail_items`).get<{ t: string | null }>()?.t ?? null;
+  }
+
   listUnseenInbox(limit: number): MailItemRow[] {
     return this.db.prepare(`SELECT ${MAIL_ITEM_COLUMNS} FROM mail_items WHERE lane = 'inbox' AND seen_at IS NULL ORDER BY received_at ASC, item_id ASC LIMIT ?`)
       .all<MailItemDbRow>(limit).map(toMailItem);
