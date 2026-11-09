@@ -435,3 +435,11 @@ Q3 (`paco_active_30m`) — dropped from the Jev state; quiet hours use the clock
 - Live gate: daemon's mail must be off; step 5 by re-decide; line 2 checks `fallback_reason`; line 8 checks the Open link.
 - Suggestions taken: callback regexes + byte test; Gmail facts pinned; address allowlist before any query;
   `HOUGE_GMAIL_ADDRESS` constant; CHECKs on `kind` and `reason_code`; metered fuse in `/mail status`; parity list.
+
+**Rev 1.3.1 note (2026-11-09, plan review, orchestrator ruling — no change to an approved decision):** the plan review found
+that a sustained Jev *timeout* storm on mail would page nowhere (a timeout opens no Jev incident; mail is in
+`JEV_PAGED_ELSEWHERE`; `jev_skip_rate` reads the front door's point only). A sweep check `mail_jev_failing` (page) is
+added: over 24 h, ≥ 5 `mail.triage` decisions with rung `fail` and none with rung `system_one`. Every mail still pings
+meanwhile (D4); this only makes the outage reach Paco, as AGENTS.md requires. The §7 Jev row and §8.1/§8.2 outage wording
+read "Jev incidents, plus the `mail_jev_failing` sweep check".
+
