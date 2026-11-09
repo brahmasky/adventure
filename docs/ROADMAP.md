@@ -234,6 +234,18 @@ lane question), then Jev judges inside the planner loop (the next spec).
 
 **Delta 2026-11-08: Stage 3 remainder slice R7 shipped (merge `a7f1ea75`) — `attach.path` (locked) on the ladder** (spec Rev 1.2, Decisions 1-A, 2-A, 3-A, 4-A, 5-A). The attachment check is recorded at both places it decides and never steers: a marker the supervisor drops at parse (`marker_outside`, on the success arm, before the chat turn) and a file the send-time re-check refuses (written by the outbox dispatcher after the delivery committed, at most six rows per delivery). The send predicate moved to a protected leaf; two reasons split (`workspace_unverified`, `not_found`) with Paco's lines byte-identical; `/status` splits the count by seam. Rule 3.2 amended (signed by Paco 2026-11-09). Behaviour identical: differential 18 corpora (new `attach`, 36 items), 0 differences on the 16 that ran then (`command` and `path` were blocked by a transcript-count pin, fixed 2026-11-09: all 18 PASS); live gate 7/7; rollback PASS 10/10. Every row of ADR 0034 rule 4 is now built; the remainder is done. **Next:** per the ROADMAP's sequenced builds.
 
+**Delta 2026-11-09: SP2 slice 1 — Paco's Gmail read + inbound triage, built on branch `sp2-mail` (not merged; ADRs awaiting
+Paco's signature)** (spec `2026-11-09-sp2-mail-triage-design.md` Rev 1.3.1, Paco's D1–D5). Jev lane 4 is re-scoped from
+"Houge's own notifications + a digest tick" to **untrusted inbound mail**: a code poller over Paco's own `gmail.readonly`
+grant (`account: "paco"`, a second auth client; `houge mail auth`), the `mail.triage` entry (new stage `inbound`; code floors →
+sender rules → one Jev request `mail_urgency`/`mail_kind`; ping at ≥ 0.6, `/inbox` only at ≥ 0.85, unsure or Jev down pings), one
+card now or a listing in `/inbox` (`/inbox`, `/mail on|off|status`, `/mail_undo`), the Wrong-urgency tap making a sender
+rule with undo, a storm fold, silent thread follow-ups, 30-day text retention, `mail_auth_lost` / `mail_poll_failing` /
+`mail_jev_failing` pages. ADR 0034 gains rule 2.6 (the second named allowance: per-item routing between two delivering lanes, a
+change of meaning approved with the spec), with amendments to 0033, 0025, 0015, 0031. **Next:** live gate on the mini
+(`scripts/live-gate-mail-triage.mjs`), merge, kickstart, `HOUGE_MAIL_ENABLED=1` + `/mail on` (armed at ship); then SP2's later
+slices (sending `/approve`-gated, Calendar, reminders, files).
+
 **Delta 2026-10-23: the Jev version check is built** (`feat/jev-version-check`; spec 2026-10-22 Rev 3.4). No version literal decides behaviour: a Jev version move is checked by code against Paco's approved reference turns and labels (about 45 minutes), arms on agreement and pages once with an Accept button on a drift. Live gate PASS: jev-1.14.0 drifted against the 1.13.0 anchor. Next: ADR 0030 cleanup (a separate approved task), then the ladder's stage 3.
 
 **Delta 2026-10-19: the memory write is built** (`feat/memory-write`, not merged; spec 2026-10-15 Rev 3). "Remember this" is
@@ -257,8 +269,9 @@ stage A decision tree on 2026-10-09, see the delta above):** SP1 is live (boot 7
 memory A1 shipped) → **Jev System One, lane 1** (pre-planner triage → memory + status lanes; the shared decision
 layer: question library, `decide()`, decision rows, replay harness; spec
 `docs/superpowers/specs/2026-10-04-jev-system-one-design.md`, under review) → **Jev lane 2** (model routing:
-trivial/routine → Kimi → Gemini, hard → Opus; Paco's quota ruling) → **Jev lane 4** (inbound triage envelope, digest
-tick, `wrong urgency` label — the gate SP2 plugs into) → **SP2** (Paco's own Gmail with `account: paco` and sends
+trivial/routine → Kimi → Gemini, hard → Opus; Paco's quota ruling) → **Jev lane 4** (as planned: an inbound triage envelope, a digest
+tick and a `wrong urgency` label; re-scoped 2026-11-09 to SP2's first slice, `mail.triage` — the digest is gone and Houge's own
+notifications are code-routed, see the 2026-11-09 delta) → **SP2** (Paco's own Gmail with `account: paco` and sends
 gated, Calendar, reminders, files) → **Jev lane 3** (injection flag on wall output, plain-command risk; shadow
 first, egress needs Paco's approval) → **SP3** (`omp auth-broker` under launchd so no tokens sit on disk, a
 dedicated macOS user for the planner — closes D11 and the dotfile denylist gap — **and for the self-write test gate**

@@ -144,9 +144,13 @@ This file defines domain language for Houge architecture reviews and implementat
 
 **Provenance Strip**: The rule that a run born from a schedule fire (`event.source === "schedule"`) has `schedule_task` removed from its task contract, so replayed schedule text can never be acted on as a fresh instruction to create or mutate schedules. The general principle: a capability is withheld based on how a run was *born*, not on what its text says.
 
-**Google-Auth Client**: The shared OAuth closure that exchanges the broker-held Gmail refresh token for short-lived Google access tokens. The runtime-minted access token lives and dies inside the closure — it never appears in results, errors, digests, or ledger rows.
+**Google-Auth Client**: The OAuth closure that exchanges a broker-held Gmail refresh token for short-lived Google access tokens. The worker holds one per account — Houge's (`HOUGE_GMAIL_ADDRESS`) and Paco's (`account: "paco"`), each its own token cache, so `/mail off` invalidates Paco's alone. The runtime-minted access token lives and dies inside the closure — it never appears in results, errors, digests, or ledger rows.
 
-**Allowlist Registry**: The code-constant table in the google-api transport with exactly one row per granted OAuth scope (host + path prefix ↔ scope, 1:1 — ADR 0025 §3). Widening it is a three-party act: console OAuth grant (Paco) + registry row (code review) + ADR amendment. Path validation rejects rather than normalizes.
+**Allowlist Registry**: The code-constant table in the google-api transport with exactly one row per granted OAuth scope (host + path prefix ↔ scope, 1:1 — ADR 0025 §3). Widening it is a three-party act: console OAuth grant (Paco) + registry row (code review) + ADR amendment. Path validation rejects rather than normalizes. The account picks the token, never the path set.
+
+**Mail item**: One mail from Paco's inbox as Houge stores it (`mail_items`): the Gmail ids, the validated sender address, the redacted sender name, subject and snippet (caps and the judge redactor applied before any store, send or render; raw text is never stored), labels, importance, and its triage — lane `ping` or `inbox`, a reason code, the decision row, the card. Text is cleared after `HOUGE_MAIL_TEXT_DAYS`; the envelope facts stay. Jev sees `MailJevState`, seven fields of it, never the body (ADR 0033 D2).
+
+**Sender rule**: Paco's standing answer for one address (`mail_sender_rules`): `always` ping or `never` ping, made from a card tap (Wrong urgency → never / always; should have pinged → always), announced on a `/changes` line with the masked address and its undo (`/mail_undo <rule id>`), applied from the next mail. It outranks Jev (ADR 0034 2.6 (c)); undoing it deletes the rule, the tap's label stays.
 
 **Verification Extraction (`trusted_extract` side-channel)**: The deterministic regex pass over a raw mail body that extracts OTP codes and verification links, appended *after* the Q-LLM reader digest. Trusted for the same reason as time claims: structured, hygiened, hard-capped, no verb — code built it, so it cannot carry an instruction. Links stay byte-exact and remain attacker-controlled data.
 

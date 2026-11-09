@@ -135,7 +135,7 @@ declaration under `src/omp/tools/` plus a daemon-side adapter:
 |------|--------------|
 | `bash` | A shell command on the mini, run daemon-side under its own Seatbelt profile with resource limits; output capped at 32 KB. Matched external writes and destructive deletes wait for `/approve`. |
 | `web_search` · `http_fetch` | Live web search (Tavily/Firecrawl chain) and an SSRF-hardened single-URL GET ([ADR 0006](docs/decisions/0006-web-read-capability.md)). Both return a reader digest. |
-| `gmail_read` · `google_api` | Houge's own Gmail, read-only ([ADR 0025](docs/decisions/0025-google-api-surface.md)). Both return a reader digest. |
+| `gmail_read` · `google_api` | Gmail, read-only ([ADR 0025](docs/decisions/0025-google-api-surface.md)): Houge's own by default, Paco's with `account: "paco"` while mail triage is on. Both return a reader digest. |
 | `to_local_time` | Deterministic timezone conversion with code-computed today/tomorrow labels. |
 | `lesson_write` | Distil Paco's correction into a durable lesson. |
 | `schedule_task` | Create, list, update or cancel this chat's schedules ([ADR 0017](docs/decisions/0017-scheduler.md)). |
@@ -356,9 +356,20 @@ behind an exact allowlist registry (one row per granted OAuth scope; today `gmai
 Both tools always return through the quarantined reader
 ([ADR 0025](docs/decisions/0025-google-api-surface.md)).
 
+**Paco's own Gmail (mail triage, SP2 slice 1).** A second `gmail.readonly` grant, Paco's account
+(`HOUGE_PACO_GMAIL_ADDRESS`, `houge mail auth`; ADR 0025 §9). While `HOUGE_MAIL_ENABLED` and `/mail on` are
+both on, a poller reads new mail every few minutes (headers and snippet only, never a body) and the
+`mail.triage` entry decides per mail: Paco's sender rules and code floors first, then one Jev question —
+urgent gets one card now (Open link, Wrong urgency tap; silent at night), the rest waits in `/inbox`; Jev
+down means a ping ([ADR 0034 rule 2.6](docs/decisions/0034-decision-ladder-consolidated.md)). The same
+tools read Paco's mail on demand with `account: "paco"`, refused while mail is off. Mail text is kept 30
+days ([configuration](docs/reference/configuration.md#google-identity--gmail_read--google_api-adr-0025)).
+
 **Runbook: Gmail ops fail with `auth_failed`.** The refresh token was revoked (or hit the 7-day
 testing-mode expiry). Re-run `node scripts/gmail-auth.mjs <client_secret.json>` and copy the printed
-lines into the mini's `.env`.
+lines into the mini's `.env`. For Paco's grant the page is `mail_auth_lost` (repeated daily): run
+`npm run houge -- mail auth` (it rewrites the one `HOUGE_PACO_GMAIL_REFRESH_TOKEN` line itself), then restart
+the daemon; `/mail on` clears the pause.
 
 ## Operations
 
