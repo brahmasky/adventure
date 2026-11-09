@@ -686,3 +686,9 @@ The clean-room merge rebuilt `dist/` (new `omp/shell-wrapper.sh`) and the kickst
 ## 2026-11-08 — Remainder R7 (attach.path)
 - **A spec's "not protected" claim is checked against `PROTECTED_FILES`, not assumed.** The R7 spec called the Telegram adapter self-writable; it was already protected since `6ac4b0d2` (defect D1). The plan grepped the guard before touching it.
 - **An ADR sentence that adds an exception is checked against its neighbours.** Appending the settle-stage rows to rule 3.2 would have left "only while the turn is live", "follow the incoming run's successful claim" and the heading "a lost turn writes no row" contradicting it; the plan review found all three, and the ADR test asserts both the qualified wording and the absence of the bare one.
+
+## 2026-11-09 — SP2 mail triage
+- **One implementer at a time on a shared worktree.** Pipelining two implementers let one's full test run fail on the other's half-written code and land its fix (six config rows) in the wrong commit. Reviewers may run beside an implementer; implementers (fix rounds included) never beside each other.
+- **A gate that drives a scheduler must follow the scheduler's own clock rule.** The final fix wave changed the poll cadence to count from the later of two stamps; the gate rewound only one, and its later ticks silently skipped. When a fix changes a predicate, grep the gate/harness scripts for every place that fakes its inputs.
+- **Live-gate instructions name the sender, not just the subject.** Two of three gate runs were spent on mails from the wrong account (Houge's own address hits the `own_output` floor) or with the wrong digits; the gate prompt should print the exact subjects and "send from an address that is not Houge's".
+

@@ -234,7 +234,7 @@ lane question), then Jev judges inside the planner loop (the next spec).
 
 **Delta 2026-11-08: Stage 3 remainder slice R7 shipped (merge `a7f1ea75`) — `attach.path` (locked) on the ladder** (spec Rev 1.2, Decisions 1-A, 2-A, 3-A, 4-A, 5-A). The attachment check is recorded at both places it decides and never steers: a marker the supervisor drops at parse (`marker_outside`, on the success arm, before the chat turn) and a file the send-time re-check refuses (written by the outbox dispatcher after the delivery committed, at most six rows per delivery). The send predicate moved to a protected leaf; two reasons split (`workspace_unverified`, `not_found`) with Paco's lines byte-identical; `/status` splits the count by seam. Rule 3.2 amended (signed by Paco 2026-11-09). Behaviour identical: differential 18 corpora (new `attach`, 36 items), 0 differences on the 16 that ran then (`command` and `path` were blocked by a transcript-count pin, fixed 2026-11-09: all 18 PASS); live gate 7/7; rollback PASS 10/10. Every row of ADR 0034 rule 4 is now built; the remainder is done. **Next:** per the ROADMAP's sequenced builds.
 
-**Delta 2026-11-09: SP2 slice 1 — Paco's Gmail read + inbound triage, built on branch `sp2-mail` (not merged; ADRs awaiting
+**Delta 2026-11-09: SP2 slice 1 — Paco's Gmail read + inbound triage, SHIPPED (merge `e4253fff`; ADRs awaiting
 Paco's signature)** (spec `2026-11-09-sp2-mail-triage-design.md` Rev 1.3.1, Paco's D1–D5). Jev lane 4 is re-scoped from
 "Houge's own notifications + a digest tick" to **untrusted inbound mail**: a code poller over Paco's own `gmail.readonly`
 grant (`account: "paco"`, a second auth client; `houge mail auth`), the `mail.triage` entry (new stage `inbound`; code floors →
