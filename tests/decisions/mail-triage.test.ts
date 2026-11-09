@@ -27,7 +27,7 @@ describe("the mail.triage entry", () => {
     expect(ENTRY_IDS).toContain("mail.triage");
     expect(entryById("mail.triage")).toBe(MAIL_TRIAGE as unknown as AnyEntry);
     expect([MAIL_UP_BAR_P, MAIL_DOWN_BAR]).toEqual([0.6, 0.85]);
-    expect(MAIL_REASONS).toHaveLength(7);
+    expect([...MAIL_REASONS]).toEqual(["own_output", "rule_never", "rule_always", "backfill", "jev_now", "jev_later", "jev_unsure"]);
   });
 });
 
@@ -51,6 +51,10 @@ describe("jevMailAnswer", () => {
   it("later needs 0.85 to file to the inbox; 0.84 pings as unsure", () => {
     expect(jevMailAnswer(ask("later", 0.85))).toMatchObject({ verdict: "inbox", reason: "jev_later", p: 0.85 });
     expect(jevMailAnswer(ask("later", 0.84))).toMatchObject({ verdict: "ping", reason: "jev_unsure", p: 0.84 });
+  });
+  it("p is the chosen option's probability even when the choice is not the argmax", () => {
+    const odd: MailAsk = { urgency: { type: "choice", choice: "later", probabilities: { later: 0.5, now: 0.9 }, confidence: 0.5 } as JevChoiceAnswer, kind: undefined, model: "m" };
+    expect(jevMailAnswer(odd)).toMatchObject({ verdict: "ping", reason: "jev_unsure", p: 0.5 });
   });
   it("carries the kind answer's choice, null when missing, and passes a failure through", () => {
     expect(jevMailAnswer(ask("now", 0.9, "risk"))).toMatchObject({ detail: { kind: "risk" } });
@@ -104,10 +108,22 @@ describe("one call, one page", () => {
     const e = MAIL_TRIAGE as unknown as AnyEntry;
     for (let k = 0; k < 3; k += 1) {
       const now = `2026-11-09T10:0${k}:00.000Z`;
-      store.inTransaction(() => recordStrict(store, e, { ...r, fallbackReason: "outage" }, { run_id: null, tool_call_id: `mi_${k}` }, now));
+      store.inTransaction(() => recordStrict(store, e, r, { run_id: null, tool_call_id: `mi_${k}` }, now));
       afterStrictRecord(store, e, r, now, {});
     }
     expect(store.listOpenIncidents().filter((i) => i.kind === "decision_fallback" && i.subject === "mail.triage")).toEqual([]);
+    store.close();
+  });
+  it("positive control: three non-Jev fallbacks do open the incident", () => {
+    const store = RunStore.openInMemory();
+    const e = MAIL_TRIAGE as unknown as AnyEntry;
+    const r = { verdict: "ping", rung: "fail", reason: null, fallbackReason: "threw", fallbackRung: "rule", armedMode: "on", decisionId: null, walk: [], latencyMs: 1 } as unknown as AnyDecideResult;
+    for (let k = 0; k < 3; k += 1) {
+      const now = `2026-11-09T10:0${k}:00.000Z`;
+      store.inTransaction(() => recordStrict(store, e, r, { run_id: null, tool_call_id: `mi_${k}` }, now));
+      afterStrictRecord(store, e, r, now, {});
+    }
+    expect(store.listOpenIncidents().filter((i) => i.kind === "decision_fallback" && i.subject === "mail.triage")).toHaveLength(1);
     store.close();
   });
 });

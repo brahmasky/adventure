@@ -1,6 +1,6 @@
 import type { MailAsk } from "../../jev/mail-ask.js";
 import { MAIL_KIND, MAIL_URGENCY } from "../../jev/questions/mail.js";
-import { criteriaHash } from "../../jev/questions/types.js";
+import { criteriaHash, optionsOf } from "../../jev/questions/types.js";
 import { HOUGE_GMAIL_ADDRESS, type MailItemState } from "../../mail/envelope.js";
 import type { MailKind } from "../../run/run-store.js";
 import type { Entry, ProvisionalBar, RungAbstain, RungAnswer, RungResult, VerdictEffect } from "../types.js";
@@ -43,14 +43,16 @@ export function mailFloors(s: MailTriageState): FloorResult {
 export function jevMailAnswer(a: MailAsk): RungResult<MailVerdict, MailTriageDetail> {
   if ("failed" in a) return { failed: a.failed };
   const kind = a.kind?.choice as MailKind | undefined;
-  const detail: MailTriageDetail = { kind: kind && (MAIL_KIND.criteria as readonly (readonly [string, string])[]).some(([id]) => id === kind) ? kind : null };
-  const p = Math.max(0, ...Object.values(a.urgency.probabilities));
+  const detail: MailTriageDetail = { kind: kind && optionsOf(MAIL_KIND).includes(kind) ? kind : null };
+  const p = a.urgency.probabilities[a.urgency.choice] ?? 0;
   if (a.urgency.choice === "later" && p + EPS >= MAIL_DOWN_BAR) return { verdict: "inbox", p, reason: "jev_later", detail };
   if (a.urgency.choice === "now" && p + EPS >= MAIL_UP_BAR_P) return { verdict: "ping", p, reason: "jev_now", detail };
   return { verdict: "ping", p, reason: "jev_unsure", detail };
 }
 
-const KEYS: ReadonlySet<string> = new Set(["item", "rule", `jev`]); // backticks: tests/capabilities/panel-judge-providers scans for quoted provider names
+/** The one state shape perItemRouting accepts, typed against MailTriageState so a new field cannot silently make every real state refuse. (`jev` is a field name, not the metered provider the panel-judge scan guards against.) */
+const SHAPE: Readonly<Record<keyof MailTriageState, true>> = { item: true, rule: true, jev: true };
+const KEYS: ReadonlySet<string> = new Set(Object.keys(SHAPE));
 /** ADR 0034 2.6: routing is per item. One call, one item: the state carries nothing past `item`, `rule`, `jev`. */
 export function perItemRouting(s: MailTriageState, verdict: string): boolean {
   if (verdict !== "ping" && verdict !== "inbox") return false;

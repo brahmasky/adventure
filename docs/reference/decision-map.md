@@ -157,7 +157,7 @@ Rungs run left to right; "code rule" is a single deterministic function. Locked 
 | `lookup.thin` | code rule | tool | fetch more of the top list when the first read left the objective unanswered | live |
 | `turn.model` | code rule | tool | which leg of the role the planner is pinned to | live |
 | `attach.path` | code rule | tool | refuses an `[[attach:]]` file whose marker resolves outside the chat's workspace (parse), or that fails the send-time re-check (send) | live, locked |
-| `mail.triage` | rule `mail_floors` → Jev `mail_urgency` (ping ≥ 0.6, inbox ≥ 0.85) | tool | ping: a mail card now; inbox: list the mail in /inbox (reversible) | built, not armed (ADR 0034 2.6, awaiting Paco's signature) |
+| `mail.triage` | rule `mail_floors` → Jev `mail_urgency` (ping ≥ 0.6, inbox ≥ 0.85) | tool | ping: a mail card now; inbox: list the mail in /inbox (reversible) | built; no caller yet (the poller lands in Task 8) |
 
 ## Paths that skip the ladder
 
