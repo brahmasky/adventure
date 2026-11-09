@@ -18,6 +18,7 @@ const FAKE = {
   HOUGE_TELEGRAM_BOT_TOKEN: "111222333:bot-token-secret-value",
   HOUGE_GMAIL_CLIENT_SECRET: "GOCSPX-fake-gmail-client-secret-123",
   HOUGE_GMAIL_REFRESH_TOKEN: "1//fake-gmail-refresh-token-456789",
+  HOUGE_PACO_GMAIL_REFRESH_TOKEN: "1//fake-paco-gmail-refresh-token-789012",
   CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-fake-chair-token-987654",
   TYPESAFE_API_KEY: "ts-fake-typesafe-key-000111222"
 };
@@ -39,7 +40,7 @@ describe("createSecretBroker — typed getters over a private closure", () => {
     expect(b.claudeOauthToken()).toBe(FAKE.CLAUDE_CODE_OAUTH_TOKEN);
   });
 
-  it("SECRET_ENV_NAMES is the exact nine-name list (Jev spec 2026-09-25: eight becomes nine)", () => {
+  it("SECRET_ENV_NAMES is the exact ten-name list (Jev spec 2026-09-25: eight becomes nine; SP2 mail adds Paco's refresh token)", () => {
     expect([...SECRET_ENV_NAMES]).toEqual([
       "KIMI_API_KEY",
       "GEMINI_API_KEY",
@@ -48,6 +49,7 @@ describe("createSecretBroker — typed getters over a private closure", () => {
       "HOUGE_TELEGRAM_BOT_TOKEN",
       "HOUGE_GMAIL_CLIENT_SECRET",
       "HOUGE_GMAIL_REFRESH_TOKEN",
+      "HOUGE_PACO_GMAIL_REFRESH_TOKEN",
       "CLAUDE_CODE_OAUTH_TOKEN",
       "TYPESAFE_API_KEY"
     ]);
@@ -142,7 +144,7 @@ describe("broker.redact — masks secret VALUES only", () => {
 });
 
 describe("stripSecretsFromEnv — empties ambient credentials in place", () => {
-  it("deletes the exact eight secret names", () => {
+  it("deletes every SECRET_ENV_NAMES secret", () => {
     const env = fakeEnv();
     const stripped = stripSecretsFromEnv(env);
     for (const name of SECRET_ENV_NAMES) {

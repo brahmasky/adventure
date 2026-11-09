@@ -26,6 +26,7 @@ export const SECRET_ENV_NAMES = [
   "HOUGE_TELEGRAM_BOT_TOKEN",
   "HOUGE_GMAIL_CLIENT_SECRET",
   "HOUGE_GMAIL_REFRESH_TOKEN",
+  "HOUGE_PACO_GMAIL_REFRESH_TOKEN",
   "CLAUDE_CODE_OAUTH_TOKEN",
   "TYPESAFE_API_KEY"
 ] as const;
@@ -59,6 +60,8 @@ export interface SecretBroker {
   telegramToken(): string | undefined;
   gmailClientSecret(): string | undefined;
   gmailRefreshToken(): string | undefined;
+  /** Paco's own Gmail (read-only) refresh token — SP2 mail triage (spec 2026-11-09 §3.1). */
+  pacoGmailRefreshToken(): string | undefined;
   /**
    * The Claude Code subscription OAuth token (`claude setup-token`) the panel chair injects into
    * its contained child env (ADR 0027). `null` when unset — the chair treats that as
@@ -90,6 +93,7 @@ export function createSecretBroker(env: NodeJS.ProcessEnv): SecretBroker {
   const telegram = env.HOUGE_TELEGRAM_BOT_TOKEN;
   const gmailClientSecret = env.HOUGE_GMAIL_CLIENT_SECRET;
   const gmailRefreshToken = env.HOUGE_GMAIL_REFRESH_TOKEN;
+  const pacoGmailRefreshToken = env.HOUGE_PACO_GMAIL_REFRESH_TOKEN;
   const claudeOauth = env.CLAUDE_CODE_OAUTH_TOKEN;
   const typesafe = env.TYPESAFE_API_KEY;
 
@@ -101,6 +105,7 @@ export function createSecretBroker(env: NodeJS.ProcessEnv): SecretBroker {
     telegram,
     gmailClientSecret,
     gmailRefreshToken,
+    pacoGmailRefreshToken,
     claudeOauth,
     typesafe
   ]
@@ -115,6 +120,7 @@ export function createSecretBroker(env: NodeJS.ProcessEnv): SecretBroker {
     telegramToken: () => telegram,
     gmailClientSecret: () => gmailClientSecret,
     gmailRefreshToken: () => gmailRefreshToken,
+    pacoGmailRefreshToken: () => pacoGmailRefreshToken,
     claudeOauthToken: () => claudeOauth ?? null,
     typesafeKey: () => typesafe,
     redact: (text: string): string => {

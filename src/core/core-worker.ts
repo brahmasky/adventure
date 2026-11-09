@@ -42,6 +42,7 @@ import { createTimeConvertAdapter } from "../capabilities/time-convert.js";
 import { defaultGoogleApiDeps, runGoogleApi } from "../capabilities/google-api.js";
 import type { GoogleApiDeps } from "../capabilities/google-api.js";
 import { GMAIL_OP_DEADLINE_MS, runGmailRead } from "../capabilities/gmail-read.js";
+import { pacoMailReadable } from "../mail/flag.js";
 import { createGoogleAuthClient } from "../capabilities/google-auth.js";
 import type { GoogleAuthClient } from "../capabilities/google-auth.js";
 import type { SecretBroker } from "../config/secret-broker.js";
@@ -562,19 +563,28 @@ export class CoreWorker {
    * The access token lives and dies inside its closure — never in errors, digests, or ledger
    * rows. Secrets arrive as getters: broker-fed when the firewall is armed, env-fallback
    * otherwise (same idiom as llm/registry.ts). */
-  private googleAuth?: GoogleAuthClient;
-  private googleAuthClient(): GoogleAuthClient {
-    if (!this.googleAuth) {
-      this.googleAuth = createGoogleAuthClient(
-        {
-          clientId: process.env.HOUGE_GMAIL_CLIENT_ID,
-          clientSecret: () => (this.broker ? this.broker.gmailClientSecret() : process.env.HOUGE_GMAIL_CLIENT_SECRET),
-          refreshToken: () => (this.broker ? this.broker.gmailRefreshToken() : process.env.HOUGE_GMAIL_REFRESH_TOKEN)
-        },
-        { fetchImpl: this.googleDeps.fetchImpl }
-      );
-    }
-    return this.googleAuth;
+  private readonly googleAuths: { houge?: GoogleAuthClient; paco?: GoogleAuthClient } = {};
+  private googleAuthClient(account: "houge" | "paco" = "houge"): GoogleAuthClient {
+    const existing = this.googleAuths[account];
+    if (existing) return existing;
+    const refreshToken = account === "paco"
+      ? () => (this.broker ? this.broker.pacoGmailRefreshToken() : process.env.HOUGE_PACO_GMAIL_REFRESH_TOKEN)
+      : () => (this.broker ? this.broker.gmailRefreshToken() : process.env.HOUGE_GMAIL_REFRESH_TOKEN);
+    const client = createGoogleAuthClient(
+      {
+        clientId: process.env.HOUGE_GMAIL_CLIENT_ID,
+        clientSecret: () => (this.broker ? this.broker.gmailClientSecret() : process.env.HOUGE_GMAIL_CLIENT_SECRET),
+        refreshToken
+      },
+      { fetchImpl: this.googleDeps.fetchImpl }
+    );
+    this.googleAuths[account] = client;
+    return client;
+  }
+
+  /** Drop Paco's cached Gmail access token (the daemon hands this to the gateway; `/mail` off/on or a revoked grant). */
+  invalidatePacoGmail(): void {
+    this.googleAuths.paco?.invalidate();
   }
 
   async executeOnce(worker_id: string): Promise<CoreWorkerResult> {
@@ -3668,10 +3678,13 @@ export class CoreWorker {
       // line AFTER the reader digest (google_api has no such side-channel).
       return async (input) => {
         // omp quarantines every read tool unconditionally (D3), so the old loop's dual-LLM-off refusal is gone.
+        const paco = input.account === "paco";
+        if (paco && !pacoMailReadable(process.env, this.runStore)) return { ok: false, error: PACO_MAIL_OFF_ERROR };
+        const auth = this.googleAuthClient(paco ? "paco" : "houge");
         const result =
           name === "gmail_read"
-            ? await runGmailRead(input, process.env, this.googleDeps, this.googleAuthClient())
-            : await runGoogleApi(input, process.env, this.googleDeps, this.googleAuthClient());
+            ? await runGmailRead(input, process.env, this.googleDeps, auth)
+            : await runGoogleApi(input, process.env, this.googleDeps, auth);
         if (result.ledger) {
           this.runStore.recordGoogleApiCallCompleted({
             run_id: claim.run_id,
@@ -4725,6 +4738,9 @@ function savedLessonLine(saved: LessonSaveResult | undefined, savedLine: string,
  * launching the pipeline on the background lane — the model relays that work started;
  * the outcome arrives later as the lane's own completion notification.
  */
+/** Tool error for `account: "paco"` while the mail switch is off. */
+const PACO_MAIL_OFF_ERROR = "Paco's mail is off (/mail on to allow)";
+
 export function buildEvolutionKickoffDigest(tool: string): string {
   return `后台开始改代码了（${tool}），完成后我会单独发消息告诉你`;
 }

@@ -299,8 +299,8 @@ Houge's read surface onto his own Google identity (`wukong.houge@gmail.com`, ADR
 extraction for venue registration) and **`google_api`** (generic GET behind an exact allowlist
 registry — one row per granted OAuth scope, 1:1; today `gmail/v1/users/me/*` ↔ `gmail.readonly`).
 The OAuth scope is the hard floor: the refresh token carries `gmail.readonly` and nothing else.
-Credentials are produced by `scripts/gmail-auth.mjs`; the two secrets below are broker-held
-(ADR 0015's "exact five" → seven). See [ADR 0025](../decisions/0025-google-api-surface.md).
+Credentials are produced by `scripts/gmail-auth.mjs`; the three secrets below are broker-held
+(ADR 0015's "exact five" → seven → ten across the whole broker; Paco's own refresh token is the newest). See [ADR 0025](../decisions/0025-google-api-surface.md).
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
