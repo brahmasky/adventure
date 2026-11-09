@@ -4,13 +4,13 @@ import type { NotificationPayload } from "../notifications/notification-types.js
 import type { MailItemRow } from "../run/run-store.js";
 
 /** Untrusted header text rendered inert: hygiene, then markdown-escape (same as gmail-read's inertLine). */
-const inert = (v: string): string => escapeForTelegram(sanitizeVenueText(v, HEADER_FIELD_CAP));
+export const inert = (v: string): string => escapeForTelegram(sanitizeVenueText(v, HEADER_FIELD_CAP));
 
 /**
  * The sender line when no name was given: the validated address in a code span (escapeForTelegram would strip its `_`, and a
  * code span keeps the converter from reading `_x_` as italics); the `invalid` sentinel is never shown as a name.
  */
-function senderLabel(item: Pick<MailItemRow, "from_name" | "from_address">): string {
+export function senderLabel(item: Pick<MailItemRow, "from_name" | "from_address">): string {
   if (item.from_name !== null) return inert(item.from_name);
   return item.from_address === "invalid" ? "(unknown sender)" : `\`${sanitizeVenueText(item.from_address, HEADER_FIELD_CAP)}\``;
 }

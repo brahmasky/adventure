@@ -15,6 +15,10 @@
  *
  * Usage:
  *   node scripts/gmail-auth.mjs <path/to/client_secret.json>
+ *   node scripts/gmail-auth.mjs --account paco [path/to/client_secret.json]
+ *     Paco's own mailbox (SP2 mail triage, read-only): client id/secret from .env (or the optional json), the account from
+ *     HOUGE_PACO_GMAIL_ADDRESS (login hint and identity check), and exactly one HOUGE_PACO_GMAIL_REFRESH_TOKEN line written
+ *     into .env (or $HOUGE_ENV_FILE), replacing an existing one. `houge mail auth` runs this.
  *
  * A browser window opens for the consent tap (must run on a machine with a browser; the
  * resulting .env lines are portable to the mini). On success the three values are appended to
@@ -26,8 +30,9 @@
 
 import { createServer } from "node:http";
 import { createHash, randomBytes } from "node:crypto";
-import { readFileSync, existsSync, appendFileSync } from "node:fs";
+import { readFileSync, existsSync, appendFileSync, writeFileSync } from "node:fs";
 import { execFile } from "node:child_process";
+import { parseEnvText, upsertEnvLine } from "./gmail-env.mjs";
 
 const SCOPE = "https://www.googleapis.com/auth/gmail.readonly";
 const AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth";
@@ -40,12 +45,23 @@ function fail(message) {
   process.exit(1);
 }
 
-const secretPath = process.argv[2];
-if (!secretPath) fail("usage: node scripts/gmail-auth.mjs <path/to/client_secret.json>");
-if (!existsSync(secretPath)) fail(`no such file: ${secretPath}`);
+const accountAt = process.argv.indexOf("--account");
+const paco = accountAt !== -1;
+if (paco && process.argv[accountAt + 1] !== "paco") fail('usage: node scripts/gmail-auth.mjs --account paco [path/to/client_secret.json]');
+const secretPath = paco ? process.argv.slice(2).find((a, i, all) => a !== "--account" && all[i - 1] !== "--account") : process.argv[2];
+const envFile = process.env.HOUGE_ENV_FILE || ".env";
+const envValues = paco ? { ...parseEnvText(existsSync(envFile) ? readFileSync(envFile, "utf8") : ""), ...Object.fromEntries(Object.entries(process.env).filter(([k]) => k.startsWith("HOUGE_"))) } : {};
+const expectedIdentity = paco ? (envValues.HOUGE_PACO_GMAIL_ADDRESS ?? "").trim().toLowerCase() : EXPECTED_IDENTITY;
+if (paco && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(expectedIdentity)) fail(`HOUGE_PACO_GMAIL_ADDRESS is not set in ${envFile}`);
+if (!paco && !secretPath) fail("usage: node scripts/gmail-auth.mjs <path/to/client_secret.json>");
+if (secretPath && !existsSync(secretPath)) fail(`no such file: ${secretPath}`);
 
 let clientId, clientSecret;
-try {
+if (paco && !secretPath) {
+  clientId = envValues.HOUGE_GMAIL_CLIENT_ID;
+  clientSecret = envValues.HOUGE_GMAIL_CLIENT_SECRET;
+  if (!clientId || !clientSecret) fail(`HOUGE_GMAIL_CLIENT_ID / HOUGE_GMAIL_CLIENT_SECRET are not set in ${envFile}`);
+} else try {
   const parsed = JSON.parse(readFileSync(secretPath, "utf8"));
   const conf = parsed.installed ?? parsed.web;
   clientId = conf.client_id;
@@ -97,13 +113,13 @@ const { code, redirectUri } = await new Promise((resolve, reject) => {
       scope: SCOPE,
       access_type: "offline",
       prompt: "consent",
-      login_hint: EXPECTED_IDENTITY,
+      login_hint: expectedIdentity,
       state,
       code_challenge: challenge,
       code_challenge_method: "S256"
     }).toString();
 
-    console.log(`\nOpening browser for consent (sign in as ${EXPECTED_IDENTITY}).`);
+    console.log(`\nOpening browser for consent (sign in as ${expectedIdentity}).`);
     console.log(`If it does not open, visit:\n\n${authUrl}\n`);
     execFile("open", [authUrl.toString()], () => {});
   });
@@ -131,15 +147,27 @@ const profileResponse = await fetch(PROFILE_ENDPOINT, {
 });
 const profile = await profileResponse.json();
 if (!profileResponse.ok) fail(`token works but profile check failed (${profileResponse.status})`);
-if (profile.emailAddress !== EXPECTED_IDENTITY) {
+if ((paco ? String(profile.emailAddress).toLowerCase() : profile.emailAddress) !== expectedIdentity) {
   fail(
-    `authorized as ${profile.emailAddress}, expected ${EXPECTED_IDENTITY} — wrong Google account was signed in. Revoke at myaccount.google.com/permissions and re-run.`
+    `authorized as ${profile.emailAddress}, expected ${expectedIdentity} — wrong Google account was signed in. Revoke at myaccount.google.com/permissions and re-run.`
   );
 }
 
 console.log(`\n✓ Authorized as ${profile.emailAddress} (${profile.messagesTotal} messages, read-only scope).`);
 
 const mask = (v) => `${v.slice(0, 6)}…(${v.length} chars)`;
+if (paco) {
+  const line = "HOUGE_PACO_GMAIL_REFRESH_TOKEN";
+  if (existsSync(envFile)) {
+    writeFileSync(envFile, upsertEnvLine(readFileSync(envFile, "utf8"), line, tokens.refresh_token));
+    console.log(`✓ Wrote ${line}=${mask(tokens.refresh_token)} to ${envFile} (replacing any earlier line).`);
+  } else {
+    console.log(`\nNo ${envFile} here — add this line to the mini's .env yourself:\n${line}=${tokens.refresh_token}`);
+  }
+  console.log("Restart the daemon (launchctl kickstart) to load it.");
+  process.exit(0);
+}
+
 const envLines =
   `\n# Houge Gmail identity (ADR 0008) — written by scripts/gmail-auth.mjs\n` +
   `HOUGE_GMAIL_CLIENT_ID=${clientId}\n` +

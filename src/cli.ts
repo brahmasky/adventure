@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+import { fileURLToPath } from "node:url";
+import { errorCode } from "./domain/error-code.js";
 import { loadHougeEnv } from "./config/load-env.js";
 import {
   createSecretBroker,
@@ -614,6 +616,35 @@ if (command === "run") {
   } finally {
     store.close();
   }
+} else if (command === "mail") {
+  // SP2 mail triage (spec 2026-11-09 §3.1, §4): `auth` runs Paco's one-time consent (browser, operator-side); `purge --yes` clears every mail text now.
+  const sub = rest[0];
+  if ((sub !== "auth" && sub !== "purge") || (sub === "purge" && !rest.includes("--yes"))) {
+    console.error("Usage: houge mail auth | houge mail purge --yes");
+    process.exit(1);
+  }
+  if (readTombstone()) {
+    console.error(formatTombstoneParkedMessage(resolveTombstonePath(process.env)));
+    process.exit(1);
+  }
+  if (sub === "auth") {
+    const { spawnSync } = await import("node:child_process");
+    const script = fileURLToPath(new URL("../scripts/gmail-auth.mjs", import.meta.url));
+    process.exit(spawnSync(process.execPath, [script, "--account", "paco"], { stdio: "inherit" }).status ?? 1);
+  }
+  const { purgeMail } = await import("./mail/retention.js");
+  const store = RunStore.open("houge.sqlite", storeOptions);
+  try {
+    const r = purgeMail(store, new Date());
+    console.log(`mail purge: ${r.cleared} item(s) cleared, ${r.stripped} card(s) reduced; known-sender cache cleared`);
+    process.exitCode = 0;
+  } catch (error) {
+    console.error(`mail purge failed: ${errorCode(error)}`);
+    process.exitCode = 1;
+  } finally {
+    store.close();
+  }
+  process.exit(process.exitCode ?? 0);
 } else {
   console.error(`Unknown command: ${command}`);
   process.exit(1);

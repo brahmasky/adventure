@@ -51,6 +51,7 @@ import { resolveQuietTriageOverrides } from "../jev/jev-incidents.js";
 import { handleDecisionReview } from "./decision-commands.js";
 import { handleImprovementTap } from "./improvement-commands.js";
 import { handleJevAcceptTap } from "./jev-accept-commands.js";
+import { handleInbox, handleMail, handleMailTap, handleMailUndo } from "./mail-commands.js";
 import { handleModelTierTap, type TierTapDeps } from "./model-tier-commands.js";
 import type { ProbeFn } from "../omp/model-probe.js";
 import { decideSync } from "../decisions/decide.js";
@@ -96,6 +97,7 @@ export type GatewayIntakeResult =
   | { ok: true; status: "improvement_tapped"; run_id: string }
   | { ok: true; status: "jev_accept_tapped"; run_id: string }
   | { ok: true; status: "model_tier_tapped"; run_id: string }
+  | { ok: true; status: "inbox_returned" | "mail_switched" | "mail_rule_undone" | "mail_tapped"; run_id: string }
   | { ok: true; status: "memories_returned"; run_id: string }
   | { ok: true; status: "memory_forgotten"; run_id: string }
   | { ok: true; status: "models_returned"; run_id: string }
@@ -137,6 +139,8 @@ interface RatingCommentMarker {
  */
 export interface GatewayHooks {
   requestShutdown?: () => void;
+  /** `/mail off`: drops Paco's cached Gmail access token (the daemon wires the worker's and the poller's clients). Absent in `--once`/tests. */
+  onMailOff?: () => void;
 }
 
 /** The reason line per user-side approval refusal (code-owned). A code absent here gets no reply. */
@@ -157,7 +161,7 @@ const boundedEcho = (text: string): string => (text.length > CONTRACT_REFUSAL_EC
 const LOW_RATING_MAX = 1;
 
 /** ADR 0018 + decision ladder plan ruling 16: commands the per-chat rate limit never delays (kill; old digest review taps). */
-export const RATE_LIMIT_EXEMPT: ReadonlySet<string> = new Set(["kill", "decision_review", "improvement_tap", "jev_accept_tap", "model_tier_tap"]); // + empty-tier card taps (spec 2026-11-02 §4.4)
+export const RATE_LIMIT_EXEMPT: ReadonlySet<string> = new Set(["kill", "decision_review", "improvement_tap", "jev_accept_tap", "model_tier_tap", "mail_tap"]); // + empty-tier card taps (spec 2026-11-02 §4.4)
 
 /** ⓪·3 S2c: the rating signal at a glance — an open ask, or the last capture (local time). */
 function ratingStatusText(
@@ -250,6 +254,7 @@ export class Gateway {
     if (event.type === "decision_review") return this.accepted(event, now, handleDecisionReview(this.runStore, event));
     if (event.type === "improvement_tap") return this.accepted(event, now, handleImprovementTap(this.runStore, this.skillStore, event, now));
     if (event.type === "jev_accept_tap") return this.accepted(event, now, handleJevAcceptTap(this.runStore, event, now));
+    if (event.type === "mail_tap") return this.accepted(event, now, handleMailTap(this.runStore, event, new Date(now)));
     if (event.type === "model_tier_tap") return this.accepted(event, now, handleModelTierTap(this.runStore, this.tierTapDeps(), event, now));
 
     if (event.type === "status") {
@@ -327,6 +332,9 @@ export class Gateway {
     }
 
     if (event.type === "fresh") return this.accepted(event, now, handleFresh(this.runStore, event, now));
+    if (event.type === "inbox") return this.accepted(event, now, handleInbox(this.runStore, event, new Date(now)));
+    if (event.type === "mail") return this.accepted(event, now, handleMail(this.runStore, event, new Date(now), this.hooks));
+    if (event.type === "mail_undo") return this.accepted(event, now, handleMailUndo(this.runStore, event, new Date(now)));
 
     if (memLaneAsk) return this.admitMemLaneAsk(event, memLaneAsk.original_run_id, now);
 
@@ -1689,6 +1697,9 @@ export const HELP_TEXT = [
   "/approve <id> — 批准待处理操作",
   "/deny <id> — 拒绝待处理操作",
   "/approvals — 列出待批准的操作",
+  "/inbox — 未读的低优先级邮件（/inbox all 看最近 7 天）",
+  "/mail — 邮件分诊开关与状态（/mail on · off · status）",
+  "/mail_undo <id> — 撤销一条发件人规则",
   "/kill — 紧急停机（写入 tombstone）",
   "/disarm — 关闭自主/进化开关",
   "/rearm — 重新启用（下次重启生效）",

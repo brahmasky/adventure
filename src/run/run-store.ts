@@ -2748,7 +2748,7 @@ export class RunStore {
       WHERE actor_id = ?
         AND chat_id = ?
         AND decision = 'accepted'
-        AND command NOT IN ('decision_review', 'improvement_tap', 'jev_accept_tap', 'model_tier_tap') -- review, improvement and Jev Accept taps are exempt and never count (ruling 16; 2b-ii §6.3; jev version check §2.6); empty-tier card taps (spec 2026-11-02 §4.4)
+        AND command NOT IN ('decision_review', 'improvement_tap', 'jev_accept_tap', 'model_tier_tap', 'mail_tap') -- review, improvement and Jev Accept taps are exempt and never count (ruling 16; 2b-ii §6.3; jev version check §2.6); empty-tier card taps (spec 2026-11-02 §4.4)
         AND occurred_at > ?
     `).get<{ count: number }>(input.actor_id, input.chat_id, windowStart);
     if ((windowRow?.count ?? 0) >= TELEGRAM_MAX_COMMANDS_PER_WINDOW) {

@@ -234,7 +234,9 @@ export async function runTelegramDaemon(
     undefined,
     options.projectRoot,
     undefined,
-    options.requestShutdown ? { requestShutdown: options.requestShutdown } : {},
+    { ...(options.requestShutdown ? { requestShutdown: options.requestShutdown } : {}),
+      // `/mail off`: both Paco auth clients (the worker's, for on-demand reads, and the poller's) drop their cached access token.
+      onMailOff: () => { worker.invalidatePacoGmail(); pacoAuthClient(options).invalidate(); } },
     { dataDir: options.omp?.dataDir ?? options.projectRoot, roles: worker.modelRoles(),
       modelProbe: options.modelProbe ?? lazyTapProbe(options.store), stopSignal: options.stopSignal }
   );
