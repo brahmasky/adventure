@@ -1,6 +1,6 @@
 # SP2 slice 1 — Paco's Gmail: read + inbound triage (Jev lane 4, re-scoped)
 
-**Rev 1.3 · 2026-11-09 · status: reviewed, for Paco's approval.** Rev 1.0 was reviewed by spec-review-senior (Fable 5.1:
+**Rev 1.3 · 2026-11-09 · status: APPROVED by Paco 2026-11-09 (including the ADR 0034 rule 2.6 change of meaning).** Rev 1.0 was reviewed by spec-review-senior (Fable 5.1:
 2 BLOCKER, 14 WARNING, 9 SUGGESTION) and a codex design pass (6 BLOCKER, 4 WARNING, 1 SUGGESTION), both against the live
 code and ADRs. Every blocker and warning is addressed below; the change log is §13.
 
