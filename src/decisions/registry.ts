@@ -32,6 +32,7 @@ import { TOOL_POLICY } from "./entries/tool-policy.js";
 import { TOOL_SHELL_CLASS } from "./entries/tool-shell-class.js";
 import { TOOL_WALL } from "./entries/tool-wall.js";
 import { MEMORY_KIND } from "./entries/memory-kind.js";
+import { MAIL_TRIAGE } from "./entries/mail-triage.js";
 import { TOOL_SHELL_NETREAD } from "./entries/shell-netread.js";
 import { TOOL_INJECTION } from "./entries/tool-injection.js";
 import { TURN_SETTLE } from "./entries/turn-settle.js";
@@ -54,7 +55,8 @@ export const REGISTRY: readonly AnyEntry[] = [TURN_HANDLER as unknown as AnyEntr
   INTAKE_BARE_ACK as unknown as AnyEntry, INTAKE_STEER_OR_QUEUE as unknown as AnyEntry,
   PLANNER_CRASH_GUARD as unknown as AnyEntry, TURN_RETRY as unknown as AnyEntry,
   CONTEXT_RECALL as unknown as AnyEntry, CONTEXT_CATCH_UP as unknown as AnyEntry, CONTEXT_LESSONS as unknown as AnyEntry, TURN_CLARIFY_CAP as unknown as AnyEntry,
-  LOOKUP_REWRITE as unknown as AnyEntry, LOOKUP_THIN as unknown as AnyEntry, TURN_MODEL as unknown as AnyEntry, ATTACH_PATH as unknown as AnyEntry];
+  LOOKUP_REWRITE as unknown as AnyEntry, LOOKUP_THIN as unknown as AnyEntry, TURN_MODEL as unknown as AnyEntry, ATTACH_PATH as unknown as AnyEntry,
+  MAIL_TRIAGE as unknown as AnyEntry];
 /** Effects a judge may choose over any input (R12): nothing, a tightening, or a proposal for Paco's tap. */
 const PASSIVE: ReadonlySet<EffectKind> = new Set(["none", "tighten", "proposal"]);
 /** How a judge's effect over Paco's message must be announced (Paco 2026-10-12): an allowlist, so a missing or unknown value fails. */
