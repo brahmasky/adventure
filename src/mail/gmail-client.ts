@@ -10,7 +10,8 @@ const MAX_PAGES = 50;
 
 function classify(r: { error: string; status?: number }): GmailErr {
   const status = r.status;
-  const kind = status === 401 || status === 403 || r.error.startsWith("google auth auth_failed") ? "auth" : status === 404 ? "not_found" : "unavailable";
+  // 403 is how Gmail reports its rate limits (userRateLimitExceeded et al.), so it backs off like a 5xx; only 401 and a failed mint pause the grant.
+  const kind = status === 401 || r.error.startsWith("google auth auth_failed") ? "auth" : status === 404 ? "not_found" : "unavailable";
   return status === undefined ? { ok: false, kind } : { ok: false, kind, status };
 }
 
@@ -21,10 +22,16 @@ function ref(v: unknown): Ref | undefined {
   return m && typeof m.id === "string" && m.id !== "" && typeof m.threadId === "string" ? { id: m.id, threadId: m.threadId } : undefined;
 }
 
-export async function historyRange(start: string, deps: GoogleApiDeps, auth: GoogleAuthClient): Promise<{ ok: true; ids: Ref[]; historyId: string } | GmailErr> {
+/**
+ * Every `messagesAdded` id since `start`, de-duplicated. A full read returns the response `historyId` (the mailbox's current id)
+ * with `partial: false`. At the page cap it returns what it consumed with `partial: true` and `historyId` = the last consumed
+ * `history[].id` (a valid `startHistoryId`), so the caller stores those ids, advances to it and the next tick resumes there
+ * (Task 7 review I1: the response id is the mailbox's current id, so a partial read must never advance to it).
+ */
+export async function historyRange(start: string, deps: GoogleApiDeps, auth: GoogleAuthClient): Promise<{ ok: true; ids: Ref[]; historyId: string; partial: boolean } | GmailErr> {
   const ids: Ref[] = [];
   const seen = new Set<string>();
-  let historyId = start;
+  let lastRecordId = start;
   let pageToken: string | undefined;
   for (let page = 0; page < MAX_PAGES; page++) {
     const query: Record<string, string> = { startHistoryId: start, maxResults: "500", historyTypes: "messageAdded", labelId: "INBOX" };
@@ -33,17 +40,21 @@ export async function historyRange(start: string, deps: GoogleApiDeps, auth: Goo
     if (!r.ok) return classify(r);
     const body = rec(r.json);
     for (const h of Array.isArray(body?.history) ? body.history : []) {
-      const added = rec(h)?.messagesAdded;
-      for (const a of Array.isArray(added) ? added : []) {
-        const m = ref(rec(a)?.message);
-        if (m && !seen.has(m.id)) { seen.add(m.id); ids.push(m); }
-      }
+      const record = rec(h);
+      if (typeof record?.id === "string" && record.id !== "") lastRecordId = record.id;
+      for (const m of addedRefs(record)) if (!seen.has(m.id)) { seen.add(m.id); ids.push(m); }
     }
-    if (typeof body?.historyId === "string") historyId = body.historyId;
     pageToken = typeof body?.nextPageToken === "string" && body.nextPageToken !== "" ? body.nextPageToken : undefined;
-    if (!pageToken) return { ok: true, ids, historyId };
+    if (!pageToken) return { ok: true, ids, historyId: typeof body?.historyId === "string" && body.historyId !== "" ? body.historyId : lastRecordId, partial: false };
   }
-  return { ok: false, kind: "unavailable" };
+  return { ok: true, ids, historyId: lastRecordId, partial: true };
+}
+
+function addedRefs(record: Record<string, unknown> | undefined): Ref[] {
+  const added = record?.messagesAdded;
+  const out: Ref[] = [];
+  for (const a of Array.isArray(added) ? added : []) { const m = ref(rec(a)?.message); if (m) out.push(m); }
+  return out;
 }
 
 export async function getMetadata(id: string, deps: GoogleApiDeps, auth: GoogleAuthClient): Promise<{ ok: true; m: GmailMetadata } | GmailErr> {

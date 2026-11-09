@@ -37,12 +37,18 @@ describe("mailCardPayload", () => {
     for (const fam of ["wu", "never", "always", "shp"]) expect(Buffer.byteLength(`mail:${fam}:${ID}`)).toBeLessThanOrEqual(64);
     expect(Buffer.byteLength("mail:page:9999")).toBeLessThanOrEqual(64);
   });
-  it("falls back to the address when the name is null", () => expect(card({ from_name: null }).text.startsWith("📧 ann@example.com")).toBe(true));
+  it("falls back to the address in a code span when the name is null, keeping its underscore", () => {
+    expect(card({ from_name: null, from_address: "first_last@example.com" }).text.startsWith("📧 `first_last@example.com` · action")).toBe(true);
+  });
+  it("never shows the invalid sentinel as a sender", () => expect(card({ from_name: null, from_address: "invalid" }).text.startsWith("📧 (unknown sender) · action")).toBe(true));
 });
 
 describe("openUrl / foldCardPayload", () => {
-  it("encodes the account", () => expect(openUrl("a+b@example.com", "T")).toBe("https://mail.google.com/mail/u/?authuser=a%2Bb%40example.com#inbox/T"));
-  it("fold card is silent text only", () => expect(foldCardPayload()).toEqual({ text: "More urgent mail this hour — see /inbox", silent: true }));
+  it("encodes the account and the thread id", () => expect(openUrl("a+b@example.com", "T#x")).toBe("https://mail.google.com/mail/u/?authuser=a%2Bb%40example.com#inbox/T%23x"));
+  it("fold card is text only, silent exactly in quiet hours like every other mail card", () => {
+    expect(foldCardPayload(false)).toEqual({ text: "More urgent mail this hour — see /inbox", silent: false });
+    expect(foldCardPayload(true)).toEqual({ text: "More urgent mail this hour — see /inbox", silent: true });
+  });
 });
 
 describe("inQuietHours (Sydney AEDT = UTC+11)", () => {

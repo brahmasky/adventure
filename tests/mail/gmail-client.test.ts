@@ -5,10 +5,18 @@ import type { GoogleApiDeps } from "../../src/capabilities/google-api.js";
 
 const auth: GoogleAuthClient = { getAccessToken: async () => "ya29.t", invalidate: () => undefined };
 const json = (b: unknown, status = 200) => new Response(JSON.stringify(b), { status, headers: { "content-type": "application/json" } });
+/** Every request the client makes: a GET under the Gmail user root, never a full or raw body (brief Step 1, hoisted so every function is covered by construction). */
 function setup(responder: (u: URL) => Response) {
   const urls: URL[] = [];
-  const deps: GoogleApiDeps = { fetchImpl: (async (i: RequestInfo | URL) => { const u = new URL(String(i)); urls.push(u); return responder(u); }) as typeof fetch, now: () => new Date() };
-  return { urls, deps };
+  const fetchImpl = (async (i: RequestInfo | URL, init?: RequestInit) => {
+    const u = new URL(String(i));
+    expect(init?.method ?? "GET").toBe("GET");
+    expect(u.pathname.startsWith("/gmail/v1/users/me/")).toBe(true);
+    expect(["full", "raw"]).not.toContain(u.searchParams.get("format"));
+    urls.push(u);
+    return responder(u);
+  }) as typeof fetch;
+  return { urls, deps: { fetchImpl, now: () => new Date() } as GoogleApiDeps };
 }
 
 describe("historyRange", () => {
@@ -17,16 +25,29 @@ describe("historyRange", () => {
       ? json({ history: [{ messagesAdded: [{ message: { id: "a", threadId: "ta" } }, { message: { id: "c", threadId: "tc" } }] }], historyId: "20" })
       : json({ history: [{ messagesAdded: [{ message: { id: "a", threadId: "ta" } }, { message: { id: "b", threadId: "tb" } }] }], historyId: "10", nextPageToken: "p2" }));
     const r = await historyRange("5", deps, auth);
-    expect(r).toEqual({ ok: true, ids: [{ id: "a", threadId: "ta" }, { id: "b", threadId: "tb" }, { id: "c", threadId: "tc" }], historyId: "20" });
+    expect(r).toEqual({ ok: true, ids: [{ id: "a", threadId: "ta" }, { id: "b", threadId: "tb" }, { id: "c", threadId: "tc" }], historyId: "20", partial: false });
     expect(urls).toHaveLength(2);
     for (const u of urls) {
-      expect(u.pathname.startsWith("/gmail/v1/users/me/")).toBe(true);
-      expect(["full", "raw"]).not.toContain(u.searchParams.get("format"));
       expect(u.searchParams.get("maxResults")).toBe("500");
       expect(u.searchParams.get("historyTypes")).toBe("messageAdded");
       expect(u.searchParams.get("labelId")).toBe("INBOX");
       expect(u.searchParams.get("startHistoryId")).toBe("5");
     }
+  });
+  it("at the 50-page cap it returns the consumed ids with the LAST RECORD's id as a resumable cursor, partial: true (review I1)", async () => {
+    // 51 pages of one record each: page n carries record id 100+n; the response historyId (the mailbox's current id) must never be the cursor
+    const { urls, deps } = setup((u) => {
+      const n = Number(u.searchParams.get("pageToken") ?? "0");
+      return json({ history: [{ id: String(100 + n), messagesAdded: [{ message: { id: `m${n}`, threadId: `t${n}` } }] }], historyId: "999999", nextPageToken: String(n + 1) });
+    });
+    const r = await historyRange("5", deps, auth);
+    expect(urls).toHaveLength(50);
+    expect(r).toMatchObject({ ok: true, partial: true, historyId: "149" });
+    expect((r as { ids: unknown[] }).ids).toHaveLength(50);
+  });
+  it("a full read without a response historyId falls back to the last record id", async () => {
+    const { deps } = setup(() => json({ history: [{ id: "77", messagesAdded: [{ message: { id: "a", threadId: "ta" } }] }] }));
+    expect(await historyRange("5", deps, auth)).toMatchObject({ ok: true, historyId: "77", partial: false });
   });
 });
 
@@ -37,8 +58,8 @@ describe("getMetadata", () => {
     expect(urls[0]!.searchParams.get("format")).toBe("metadata");
     expect(urls[0]!.searchParams.getAll("metadataHeaders")).toEqual(["From", "Subject", "Date"]);
   });
-  it("maps 404 to not_found, 401/403 to auth, 500 to unavailable", async () => {
-    for (const [status, kind] of [[404, "not_found"], [401, "auth"], [403, "auth"], [500, "unavailable"]] as const) {
+  it("maps 404 to not_found, 401 to auth, 403 (Gmail's rate-limit status) and 500 to unavailable", async () => {
+    for (const [status, kind] of [[404, "not_found"], [401, "auth"], [403, "unavailable"], [500, "unavailable"]] as const) {
       const { deps } = setup(() => json({}, status));
       expect(await getMetadata("a", deps, auth)).toMatchObject({ ok: false, kind, status });
     }
