@@ -89,6 +89,8 @@ export type LlmCallRole =
   | "media_transcribe"
   // Jev decision points (ADR 0029): one role per point so the per-point rate is readable in llm_attempt
   | "triage"
+  // mail.triage's own Jev request (SP2 mail triage spec §3.5)
+  | "mail"
   // the in-loop injection judge (decision ladder stage 2a): its own role, so its rate and egress are readable apart
   | "injection"
   // memory.kind's own Jev request (spec 2026-10-15 Rev 3 §3)

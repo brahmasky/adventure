@@ -10,6 +10,7 @@ import { resolveApprovalTimeoutMs } from "../omp/omp-config.js";
 import { OMP_LESSON_SCOPES, renderLessonSection } from "./lesson-render.js";
 import { resolveEpisodicCoreCap, TERMINAL_NOTIFICATION_REPORT_MS, type RunStore } from "./run-store.js";
 import { readParkMarker } from "./tombstone.js";
+import { mailStale } from "../mail/poller.js";
 
 /**
  * The invariant sweep (introspection slice A, ADR 0024): Houge's deterministic self-sensing
@@ -88,7 +89,7 @@ export const DISK_FREE_LOW_BYTES = 2 * 1024 ** 3;
 export const SWEEP_INCIDENT_KINDS = [
   "duplicate_schedule", "stuck_run", "undelivered_notification", "overdue_schedule", "failed_schedule",
   "heartbeat_gap", "llm_leg_failing", "disk_free_low", "wall_collapsed", "lesson_dropped", "embeddings_unavailable", "core_overflow",
-  "jev_skip_rate", "lane_fallthrough_rate"
+  "jev_skip_rate", "lane_fallthrough_rate", "mail_poll_failing", "mail_jev_failing"
 ] as const satisfies readonly RoutedIncidentKind[];
 export type IncidentKind = (typeof SWEEP_INCIDENT_KINDS)[number];
 const SWEEP_KINDS: ReadonlySet<string> = new Set(SWEEP_INCIDENT_KINDS);
@@ -279,6 +280,27 @@ function laneViolations(store: RunStore, now: string): InvariantViolation[] {
 }
 
 /** Pure detection: compose the store's seven invariant queries into a flat violation list. */
+/** Mail triage Jev outage window and floor (Rev 1.1): a timeout opens no Jev incident and mail is paged nowhere else. */
+export const MAIL_JEV_FAILING_WINDOW_MS = 24 * 60 * 60 * 1000;
+export const MAIL_JEV_FAILING_MIN_FAILS = 5;
+
+/**
+ * SP2 mail (spec §7): `mail_poll_failing` through the poller's one stale predicate (so the sweep never flaps what the poller opened),
+ * and `mail_jev_failing`: at least 5 `fail`-rung mail.triage decisions in 24 h and not one `system_one` answer (one answer clears it).
+ */
+function mailViolations(store: RunStore, now: string, env: NodeJS.ProcessEnv): InvariantViolation[] {
+  const out: InvariantViolation[] = [];
+  const st = store.mailState();
+  const at = new Date(now);
+  if (mailStale(st, env, at)) {
+    const since = st.last_ok_at ?? st.enabled_at ?? now;
+    out.push({ kind: "mail_poll_failing", subject: "paco", detail: { minutes: Math.floor((at.getTime() - Date.parse(since)) / 60_000) } });
+  }
+  const r = store.countMailDecisionRungs(new Date(at.getTime() - MAIL_JEV_FAILING_WINDOW_MS).toISOString());
+  if (r.fail >= MAIL_JEV_FAILING_MIN_FAILS && r.system_one === 0) out.push({ kind: "mail_jev_failing", subject: "paco", detail: { fail: r.fail } });
+  return out;
+}
+
 export function detectViolations(
   store: RunStore,
   now: string,
@@ -288,7 +310,7 @@ export function detectViolations(
   const violations: InvariantViolation[] = [
     ...detectOmpViolations(store, probe), ...memoryViolations(store, env), ...embeddingsViolations(store, now), ...jevViolations(store, now),
     ...decisionSkipViolations(store, now),
-    ...laneViolations(store, now)
+    ...laneViolations(store, now), ...mailViolations(store, now, env)
   ];
 
   for (const row of store.findDuplicateEnabledSchedules()) {

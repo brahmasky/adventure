@@ -16,10 +16,11 @@ const rows = () => (store as unknown as { db: { prepare(s: string): { all(): unk
   .prepare("SELECT idempotency_key, payload_json FROM notification_outbox").all() as Array<{ idempotency_key: string; payload_json: string }>;
 
 describe("REMIND_KINDS", () => {
-  it("is spec §5.4's set: role_unresolved and planner_session_reset_failed daily, omp_contract_drift weekly", () => {
+  it("is spec §5.4's set: role_unresolved, planner_session_reset_failed and mail_auth_lost daily, omp_contract_drift weekly", () => {
     expect([...REMIND_KINDS]).toEqual([
       ["role_unresolved", { action: "tap the card, or `/models set <key> <pattern>`", after_ms: 24 * 3_600_000 }],
       ["planner_session_reset_failed", { action: "send `/fresh`, or check the omp session dir", after_ms: 24 * 3_600_000 }],
+      ["mail_auth_lost", { action: "run `npm run houge -- mail auth`, then restart the daemon", after_ms: 24 * 3_600_000 }],
       ["omp_contract_drift", { action: "still open after a week: Houge's omp contract check fails; ask Claude to look", after_ms: 7 * 24 * 3_600_000 }]
     ]);
   });

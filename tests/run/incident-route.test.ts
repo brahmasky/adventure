@@ -40,11 +40,11 @@ describe("routes", () => {
   });
   it("every other table row pages, and the table size is pinned (a flipped, added or removed row fails)", () => {
     const keys = Object.keys(INCIDENT_ROUTE);
-    // 58 rows, 35 pages: mail_auth_lost and mail_poll_failing (spec 2026-11-09 §7) are the newest pages
-    expect(keys).toHaveLength(58);
+    // 59 rows, 36 pages: mail_auth_lost, mail_poll_failing and mail_jev_failing (spec 2026-11-09 §7) are the newest pages
+    expect(keys).toHaveLength(59);
     const notPage = new Set([...CARD_KINDS, ...LOG_KINDS]);
     const pages = keys.filter((k) => !notPage.has(k));
-    expect(pages).toHaveLength(35);
+    expect(pages).toHaveLength(36);
     for (const k of pages) { expect(routeOf(k)).toBe("page"); expect(incidentNotice(k, "x")?.topic).toBe("incident_page"); }
   });
   it("the unknown-kind stderr line prints once per kind per process", () => {

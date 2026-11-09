@@ -111,6 +111,7 @@ export function resolveOpenIncidents(store: RunStore, kinds: ReadonlySet<string>
 export const REMIND_KINDS: ReadonlyMap<string, { action: string; after_ms: number }> = new Map([
   ["role_unresolved", { action: "tap the card, or `/models set <key> <pattern>`", after_ms: 24 * 60 * 60_000 }],
   ["planner_session_reset_failed", { action: "send `/fresh`, or check the omp session dir", after_ms: 24 * 60 * 60_000 }],
+  ["mail_auth_lost", { action: "run `npm run houge -- mail auth`, then restart the daemon", after_ms: 24 * 60 * 60_000 }],
   ["omp_contract_drift", { action: "still open after a week: Houge's omp contract check fails; ask Claude to look", after_ms: 7 * 24 * 60 * 60_000 }]
 ]);
 
