@@ -29,7 +29,7 @@ type TriggerSourceMatchesPlan = Expect<Equal<
 >>;
 type TaskEventTypeMatchesPlan = Expect<Equal<
   TaskEventType,
-  "ask" | "run" | "turn" | "approve" | "deny" | "status" | "usage" | "help" | "unknown_command" | "lessons" | "forget" | "skills" | "schedule_admin" | "kill" | "disarm" | "rearm" | "radar" | "idea" | "approvals" | "memory_undo" | "memories" | "forget_memory" | "memlane_undo" | "memlane_ask" | "models" | "decision_review" | "improvement_tap" | "jev_accept_tap" | "model_tier_tap" | "fresh"
+  "ask" | "run" | "turn" | "approve" | "deny" | "status" | "usage" | "help" | "unknown_command" | "lessons" | "forget" | "skills" | "schedule_admin" | "kill" | "disarm" | "rearm" | "radar" | "idea" | "approvals" | "memory_undo" | "memories" | "forget_memory" | "memlane_undo" | "memlane_ask" | "models" | "decision_review" | "improvement_tap" | "jev_accept_tap" | "model_tier_tap" | "fresh" | "inbox" | "mail" | "mail_undo" | "mail_tap"
 >>;
 type IdentityMatchesPlan = Expect<Equal<
   Identity,

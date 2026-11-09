@@ -1,6 +1,7 @@
 import { basename } from "node:path";
 import { markdownToTelegramHtml } from "../telegram/markdown-to-telegram-html.js";
 import type {
+  TelegramInlineButton,
   TelegramInlineKeyboardMarkup,
   TelegramSendClient
 } from "../telegram/telegram-client.js";
@@ -9,6 +10,7 @@ import type {
   NotificationButton,
   NotificationDispatchRecord,
   NotificationPayload,
+  NotificationUrlButton,
   NotificationSendResult
 } from "./notification-types.js";
 import { checkAttachment, MAX_ATTACHMENTS, overCount, REFUSAL_TEXT, type AttachCheck, type AttachmentRefusal } from "./attachment-check.js";
@@ -18,6 +20,8 @@ export { checkAttachment, inside, MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS, overCou
 export function attachmentRefusedLine(name: string, why: AttachmentRefusal): string {
   return `⚠ Not attached: ${name} (${REFUSAL_TEXT[why]})`;
 }
+
+type AnyButton = NotificationButton | NotificationUrlButton;
 
 export interface TelegramNotificationAdapterOptions {
   /** The chat's omp workspace; an attachment must resolve (realpath) inside it. Absent → every attachment is refused. */
@@ -79,6 +83,7 @@ export class TelegramNotificationAdapter implements NotificationAdapter {
     // Inline keyboard (Phase 3.3). Omitted entirely when no buttons → byte-identical
     // to a button-less send (no reply_markup field).
     const reply_markup = toReplyMarkup(notification.payload);
+    const silent = notification.payload.silent === true ? { disable_notification: true as const } : {};
 
     // The model emits CommonMark; render it as Telegram HTML so `**bold**` etc. don't
     // show up literally (ADR 0010 fix). If Telegram rejects the HTML (entity parse
@@ -89,7 +94,8 @@ export class TelegramNotificationAdapter implements NotificationAdapter {
         chat_id,
         text: markdownToTelegramHtml(raw),
         parse_mode: "HTML",
-        ...(reply_markup ? { reply_markup } : {})
+        ...(reply_markup ? { reply_markup } : {}),
+        ...silent
       });
       return { provider_message_id: `telegram:${sent.message_id}` };
     } catch {
@@ -97,7 +103,8 @@ export class TelegramNotificationAdapter implements NotificationAdapter {
       const sent = await this.client.sendMessage({
         chat_id,
         text: raw.replace(/`([^`\n]+)`/g, "$1"),
-        ...(reply_markup ? { reply_markup } : {})
+        ...(reply_markup ? { reply_markup } : {}),
+        ...silent
       });
       return { provider_message_id: `telegram:${sent.message_id}` };
     }
@@ -110,15 +117,26 @@ export class TelegramNotificationAdapter implements NotificationAdapter {
  * button-less notification stays byte-identical to before.
  */
 function toReplyMarkup(payload: NotificationPayload): TelegramInlineKeyboardMarkup | undefined {
-  const rows = buttonRowsOf(payload.button_rows) ?? (payload.buttons && payload.buttons.length > 0 ? [payload.buttons] : null);
+  const rows: AnyButton[][] | null = buttonRowsOf(payload.button_rows) ?? (payload.buttons && payload.buttons.length > 0 ? [payload.buttons] : null);
   if (!rows) return undefined;
-  return { inline_keyboard: rows.map((row) => row.map((button) => ({ text: button.text, callback_data: button.data }))) };
+  return { inline_keyboard: rows.map((row) => row.map(toInlineButton)) };
 }
 
-/** Rows only when every row is a non-empty list of {text, data}; anything else falls back to `buttons` (the payload is stored JSON). */
-function buttonRowsOf(v: unknown): NotificationButton[][] | null {
+/** A string `url` makes a link button; anything else is a callback button (same predicate as `isButton`). */
+function toInlineButton(button: AnyButton): TelegramInlineButton {
+  const { url, data } = button as { url?: unknown; data?: unknown };
+  return typeof url === "string" ? { text: button.text, url } : { text: button.text, callback_data: data as string };
+}
+
+/** Rows only when every row is a non-empty list of {text, data} or {text, url}; anything else falls back to `buttons` (the payload is stored JSON). */
+function buttonRowsOf(v: unknown): AnyButton[][] | null {
   if (!Array.isArray(v) || v.length === 0) return null;
   const ok = v.every((row) => Array.isArray(row) && row.length > 0
-    && row.every((b) => typeof (b as NotificationButton)?.text === "string" && typeof (b as NotificationButton)?.data === "string"));
-  return ok ? (v as NotificationButton[][]) : null;
+    && row.every(isButton));
+  return ok ? (v as AnyButton[][]) : null;
+}
+
+function isButton(b: unknown): b is AnyButton {
+  const x = b as { text?: unknown; data?: unknown; url?: unknown } | null;
+  return typeof x?.text === "string" && (typeof x.data === "string" || typeof x.url === "string");
 }

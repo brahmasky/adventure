@@ -1,8 +1,7 @@
-/** A single inline button: visible `text` + the `callback_data` sent back on tap. */
-export interface TelegramInlineButton {
-  text: string;
-  callback_data: string;
-}
+/** A single inline button: visible `text` + either the `callback_data` sent back on tap or a `url` it opens. */
+export type TelegramInlineButton =
+  | { text: string; callback_data: string }
+  | { text: string; url: string };
 
 /** Telegram `reply_markup` inline keyboard: rows of buttons. */
 export interface TelegramInlineKeyboardMarkup {
@@ -16,6 +15,8 @@ export interface TelegramSendMessageInput {
   parse_mode?: string;
   /** Optional inline keyboard (Phase 3.3). Omitted → no buttons (byte-identical to before). */
   reply_markup?: TelegramInlineKeyboardMarkup;
+  /** Deliver without a sound or vibration (mail card in quiet hours). Omitted unless true → body byte-identical to before. */
+  disable_notification?: boolean;
 }
 
 export interface TelegramSendMessageResult {
@@ -189,7 +190,8 @@ export class TelegramClient implements TelegramSendClient, TelegramPollClient, T
         text: input.text,
         disable_web_page_preview: true,
         ...(input.parse_mode ? { parse_mode: input.parse_mode } : {}),
-        ...(input.reply_markup ? { reply_markup: input.reply_markup } : {})
+        ...(input.reply_markup ? { reply_markup: input.reply_markup } : {}),
+        ...(input.disable_notification ? { disable_notification: true } : {})
       })
     });
 

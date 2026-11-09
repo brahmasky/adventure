@@ -1,13 +1,14 @@
 {
   "name": "gmail_read",
-  "description": "Read Houge's own Gmail inbox (wukong.houge@gmail.com, read-only). Ops: list recent messages, search with Gmail query syntax, or get one message body. get returns an 'extracted' block of verification codes/links found deterministically — use those verbatim for registrations, never retype them from the body.",
+  "description": "Read Houge's own Gmail inbox (wukong.houge@gmail.com, read-only). Ops: list recent messages, search with Gmail query syntax, or get one message body. account \"paco\" reads Paco's own inbox (read-only; refused unless mail is on). get returns an 'extracted' block of verification codes/links found deterministically — use those verbatim for registrations, never retype them from the body.",
   "parameters": {
     "type": "object",
     "properties": {
       "account": {
         "type": "string",
         "enum": [
-          "houge"
+          "houge",
+          "paco"
         ]
       },
       "list": {

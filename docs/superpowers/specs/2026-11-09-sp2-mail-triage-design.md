@@ -277,7 +277,7 @@ subject, kind). Nothing else. Logs, `/status`, decision rows and gate output car
 
 | Failure | Behaviour | Paco sees |
 |---|---|---|
-| `invalid_grant` / 401 after refresh | Poller pauses (`last_error_code`), cursor kept, no retry until a restart or `/mail on` | One `mail_auth_lost` page: "run `houge mail auth`, then restart the daemon"; daily reminder while open |
+| `invalid_grant` / 401 after refresh | Poller pauses (`last_error_code`), cursor kept, no retry until a restart or `/mail on` (a daemon boot with the env switch on clears the stored pause once; `/mail on` clears it too); while paused the stale predicate is off, so no `mail_poll_failing` joins it | One `mail_auth_lost` page: "run `houge mail auth`, then restart the daemon"; daily reminder while open; resolved by the next successful poll |
 | 429 / 5xx / network | Backoff 1, 2, 4 … 30 min; cursor unchanged; `failing_since` stamped | `mail_poll_failing` page when the poller's own tick sees `failing_since` older than 2 h (5-min detection); resolved on the next success |
 | Poller silently dead (a bug: no tick runs) | The invariant sweep reads `mail_state.last_ok_at`; older than 2 h while enabled → `mail_poll_failing`. It reads the poll timestamp, never mail cards (monitors must not observe their own output). Detection within one sweep interval (12 h default) — honest bound | One page |
 | `history.list` 404 | Resync (§3.2) | One `mail_log` line, with the "M older not listed" count if the cap was hit |
@@ -307,7 +307,8 @@ subject, kind). Nothing else. Logs, `/status`, decision rows and gate output car
   (e) the entry names `perItemRouting`, a runtime gate called before any write, true only for one item's state and a
   verdict in the two lanes. Like `pacoWordsOnly`, it is a declaration whose truth the entry's tests carry; the
   `tests/adr/0034-2.6` case asserts behaviour, not shape: an `inbox` item is listed by `/inbox`; an `always` rule beats a
-  Jev `later`; a Jev `ping` writes the same outbox row as no Jev at all; a state with a second item is refused.
+  Jev `later`; a Jev `ping` writes the same outbox row as no Jev answer, apart from the `(Jev unavailable)` line the fail
+  path adds; a state with a second item is refused.
   Reason, restated and tested on today's system (lesson "ADR is a reason, not a rule"): rule 2.1 exists because Jev is
   steerable by injected text; under 2.6 the worst a hostile mail can do is change **its own** lane — delay itself to
   `/inbox` or ping itself — which degrades quality, never safety, and every outcome stays visible to Paco.
@@ -435,3 +436,11 @@ Q3 (`paco_active_30m`) — dropped from the Jev state; quiet hours use the clock
 - Live gate: daemon's mail must be off; step 5 by re-decide; line 2 checks `fallback_reason`; line 8 checks the Open link.
 - Suggestions taken: callback regexes + byte test; Gmail facts pinned; address allowlist before any query;
   `HOUGE_GMAIL_ADDRESS` constant; CHECKs on `kind` and `reason_code`; metered fuse in `/mail status`; parity list.
+
+**Rev 1.3.1 note (2026-11-09, plan review, orchestrator ruling — no change to an approved decision):** the plan review found
+that a sustained Jev *timeout* storm on mail would page nowhere (a timeout opens no Jev incident; mail is in
+`JEV_PAGED_ELSEWHERE`; `jev_skip_rate` reads the front door's point only). A sweep check `mail_jev_failing` (page) is
+added: over 24 h, ≥ 5 `mail.triage` decisions with rung `fail` and none with rung `system_one`. Every mail still pings
+meanwhile (D4); this only makes the outage reach Paco, as AGENTS.md requires. The §7 Jev row and §8.1/§8.2 outage wording
+read "Jev incidents, plus the `mail_jev_failing` sweep check".
+

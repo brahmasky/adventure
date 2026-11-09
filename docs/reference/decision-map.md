@@ -92,7 +92,7 @@ Jev's `category` picks one of eleven paths. Any category with `sets_rule` = yes 
 | `machine_task` | planner (shell, files behind the `tool.*` gates; repeated approved commands run under a standing approval) | never a lane | built, live |
 | `schedule` | planner (`schedule_task`) | schedule lane (one-shot extract, code validates); `improve.route` schedule proposals | specified, stage C, not built |
 | `wiki` | planner (`wiki_build`, `wiki_refine`) | wiki lane; wiki dormant since the omp cutover | specified, stage C, not built |
-| `mail_calendar` | planner (`gmail_read`, `google_api`) | SP2 and Jev lane 4 (inbound triage) define its lane | open, SP2 |
+| `mail_calendar` | planner (`gmail_read`, `google_api`; `account: "paco"` reads Paco's own inbox while mail is on) | SP2's later slices (sending, Calendar) define its lane. Inbound mail is not a category lane: it is the `mail.triage` entry below, driven by the poller, no planner turn | open, SP2 |
 | `status` | status lane | — | built, lane 1 |
 | `other` | planner, Default role | stays the fall-through | final |
 
@@ -157,6 +157,7 @@ Rungs run left to right; "code rule" is a single deterministic function. Locked 
 | `lookup.thin` | code rule | tool | fetch more of the top list when the first read left the objective unanswered | live |
 | `turn.model` | code rule | tool | which leg of the role the planner is pinned to | live |
 | `attach.path` | code rule | tool | refuses an `[[attach:]]` file whose marker resolves outside the chat's workspace (parse), or that fails the send-time re-check (send) | live, locked |
+| `mail.triage` | rule `mail_floors` (own address, sender rules, backfill) → Jev `mail_urgency` (ping ≥ 0.6, inbox ≥ 0.85, else ping) → `fail` = ping | tool (`perItemRouting`, ADR 0034 2.6) | ping: a mail card now; inbox: list the mail in /inbox (reversible); the fold and thread follow-up are code after the verdict | built (branch `sp2-mail`): the mail poller calls it per new mail, stage `inbound`, `alwaysRecord` |
 
 ## Paths that skip the ladder
 

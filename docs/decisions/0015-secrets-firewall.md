@@ -1,6 +1,6 @@
 # ADR 0015: Secrets firewall — the main process holds no ambient credentials
 
-- **Status:** accepted (design; flag-gated build to follow as its own `/goal`); **amended 2026-09-30 by [ADR 0028](0028-omp-runtime.md)** (planner child env allowlist; new secret location — see end)
+- **Status:** accepted (design; flag-gated build to follow as its own `/goal`); **amended 2026-09-30 by [ADR 0028](0028-omp-runtime.md)** (planner child env allowlist; new secret location — see end); amended 2026-11-09 (spec 2026-11-09-sp2-mail-triage: `HOUGE_PACO_GMAIL_REFRESH_TOKEN` joins the broker; the count reads `SECRET_ENV_NAMES`, ten, no change of meaning — see end) — awaiting Paco's signature
 - **Date:** 2026-07-05
 - **Deciders:** Paco
 - **Relates to:** implements the charter's **secrets firewall** (the load-bearing safety-net
@@ -54,7 +54,8 @@ secrets live only inside a `SecretBroker` and the objects it deliberately hands 
 Concretely (Phase 1 — in-process broker; single Node process, no new process boundary):
 
 1. **`SecretBroker` (new, `src/config/secret-broker.ts`).** Constructed at boot from the loaded env;
-   holds the five secrets in a **private closure** with narrow typed getters
+   holds the secrets (`SECRET_ENV_NAMES`: five at the time of writing, ten since 2026-11-09 — see the amendment at the
+   end) in a **private closure** with narrow typed getters
    (`kimiKey()`, `geminiKey()`, `tavilyKey()`, `firecrawlKey()`, `telegramToken()`). It is **not a
    module-level singleton export** — it is *injected* into exactly the factories that need it. There
    is no generic `get(name)` accessor.
@@ -148,3 +149,19 @@ these secrets because **the ambient target is empty**.
   no shell inside the planner process (D12), and the SP3 separate macOS user.
 - `KIMI_API_KEY`, `GEMINI_API_KEY` and `CLAUDE_CODE_OAUTH_TOKEN` have no consumer after the cutover.
   The broker still lifts, strips and redacts them if they are present.
+
+## Amendment (2026-11-09): Paco's Gmail refresh token; the count — awaiting Paco's signature
+
+Spec `2026-11-09-sp2-mail-triage-design.md` (SP2 slice 1), approved by Paco 2026-11-09.
+
+- **New broker-held secret:** `HOUGE_PACO_GMAIL_REFRESH_TOKEN` (Paco's own `gmail.readonly` grant, ADR 0025 §9) joins
+  `SECRET_ENV_NAMES`, gets a **broker getter** and is in the broker's redaction set. (The `*_TOKEN` pattern would strip it
+  anyway; the getter is what makes it reachable.) The daemon reads it only through the broker, for the mail poller and
+  for `account: "paco"` reads; `houge mail auth` writes it to `.env` and never prints it. The mail poller's own log lines,
+  `/mail status`, decision rows and the live gate carry ids, counts and codes only.
+- **The count, corrected with no change of meaning.** This ADR said "exactly five" (the 2026-07-05 survey) and ADR 0025
+  §7 "seven"; the set is whatever `SECRET_ENV_NAMES` holds — ten today: `KIMI_API_KEY`, `GEMINI_API_KEY`,
+  `TAVILY_API_KEY`, `FIRECRAWL_API_KEY`, `HOUGE_TELEGRAM_BOT_TOKEN`, `HOUGE_GMAIL_CLIENT_SECRET`,
+  `HOUGE_GMAIL_REFRESH_TOKEN`, `HOUGE_PACO_GMAIL_REFRESH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, `TYPESAFE_API_KEY`. The
+  property this ADR yields (after boot a secret exists only inside the broker closure and the objects it hands it to;
+  `process.env` is credential-free; every outbound string is redacted) is unchanged by the size of the set.

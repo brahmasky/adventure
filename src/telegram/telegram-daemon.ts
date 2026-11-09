@@ -27,7 +27,13 @@ import { jevJobSettled, jevVersionTick, resolveLegacyGoldenModelIncidents } from
 import { errorCode } from "../domain/error-code.js";
 import { IMPROVE_JEV_MS } from "../decisions/entries/improve-route.js";
 import { runImproveTick } from "../improve/tick.js";
+import { defaultGoogleApiDeps, type GoogleApiDeps } from "../capabilities/google-api.js";
+import { createGoogleAuthClient, type GoogleAuthClient } from "../capabilities/google-auth.js";
 import { createJevClient, type JevRequest, type JevResult } from "../jev/jev-client.js";
+import { askMail } from "../jev/mail-ask.js";
+import { pacoAddress, resolveMailEnabled } from "../mail/flag.js";
+import { clearAuthPauseAtBoot, runMailTick } from "../mail/poller.js";
+import { runMailRetention } from "../mail/retention.js";
 import { evolutionLaneSettled, evolutionLaneSnapshot } from "../core/evolution-lane.js";
 import { reconcileJobsAtBoot, skillJobHooks } from "../core/skill-job.js";
 import type { TelegramAllowlist } from "../domain/types.js";
@@ -123,6 +129,8 @@ export interface RunTelegramDaemonOptions {
   leaseRecoveryMs?: number;
   /** Injectable for tests ONLY: the Jev version check's client (final fix G1). Prod omits it and gets the audited TypeSafe client. */
   jevCheckClient?: () => (req: JevRequest) => Promise<JevResult>;
+  /** Injectable for tests ONLY: the mail tick's Gmail transport, Paco's auth client and Jev client. Prod omits it and gets the real fetch, the broker-backed auth client and the audited TypeSafe client. */
+  mailDeps?: { gmail?: GoogleApiDeps; auth?: GoogleAuthClient; jevClient?: (r: JevRequest) => Promise<JevResult> };
   /** Injectable for tests ONLY: the contract probe runner (spec §5). Prod omits it and gets the real runner. */
   ompProbeRunner?: (d: Parameters<typeof createOmpProbeRunner>[0]) => Pick<OmpProbeRunner, "maybeProbe">;
 }
@@ -226,7 +234,9 @@ export async function runTelegramDaemon(
     undefined,
     options.projectRoot,
     undefined,
-    options.requestShutdown ? { requestShutdown: options.requestShutdown } : {},
+    { ...(options.requestShutdown ? { requestShutdown: options.requestShutdown } : {}),
+      // `/mail off`: both Paco auth clients (the worker's, for on-demand reads, and the poller's) drop their cached access token.
+      onMailOff: () => { worker.invalidatePacoGmail(); pacoAuthClient(options).invalidate(); } },
     { dataDir: options.omp?.dataDir ?? options.projectRoot, roles: worker.modelRoles(),
       modelProbe: options.modelProbe ?? lazyTapProbe(options.store), stopSignal: options.stopSignal }
   );
@@ -297,6 +307,9 @@ export async function runTelegramDaemon(
   let failures = 0;
   let parkMarkerCleared = false;
   const rolesTick = detachedJob();
+  const mailTick = detachedJob();
+  // SP2 mail: the documented recovery from a lost grant is "re-auth, then restart" — the restart clears the stored auth pause (once, env switch on)
+  if (clearAuthPauseAtBoot(options.store, process.env)) console.error("[telegram-daemon] mail: auth pause cleared at boot, polling resumes");
 
   while (!options.stopSignal.aborted) {
     try {
@@ -352,7 +365,7 @@ export async function runTelegramDaemon(
       // ⓪·3 S2: the signal path rides the poll loop (before the outbox flush, so a
       // rating ask enqueued this cycle is delivered this cycle). B10b threads the
       // gateway + worker in so the scheduler tick fires due tasks down the SAME path.
-      await runSignalPathTick(options, gateway, worker, t, rolesTick);
+      await runSignalPathTick(options, gateway, worker, t, rolesTick, mailTick);
       await flushLogged({ retry: true }); // a failed drain is logged + incident'd, never a poll failure: the next flush retries
 
       options.store.recordPollHeartbeat({ now: now(), ok: true });
@@ -387,6 +400,7 @@ export async function runTelegramDaemon(
   clearInterval(recovery);
   await worker.shutdownPlanners();
   await settledWithin(gateway.whenTierTapsSettled(), TIER_TAP_SHUTDOWN_CAP_MS);
+  await settledWithin(mailTick.settled(), MAIL_TICK_SHUTDOWN_CAP_MS); // the stop aborts the tick between mails; the cursor has not moved, the next boot re-reads the range
   await settledWithin(rolesTick.settled(), ROLES_TICK_SHUTDOWN_CAP_MS); // the stop aborts its probe; the 24 h latch re-runs the whole unit next boot
   await settledWithin(jevJobSettled(), JEV_JOB_SHUTDOWN_CAP_MS); // capped: the check resumes from its rows, the flush and the evolution lane must not wait on Jev
   await flushLogged();
@@ -414,6 +428,9 @@ const lazyTapProbe = (store: RunStore): ProbeFn => (selector, signal) => ompProb
 
 /** Shutdown waits at most this long for in-flight empty-tier taps: a probe aborted by the stop settles at once; the cap only bounds a probe that ignores its signal. */
 export const TIER_TAP_SHUTDOWN_CAP_MS = 5_000;
+
+/** Shutdown waits at most this long for the detached mail tick (Gmail calls carry their own 8 s timeout). */
+export const MAIL_TICK_SHUTDOWN_CAP_MS = 5_000;
 
 /** Shutdown waits at most this long for the detached roles tick: its probe takes the stop signal, so the cap only bounds a probe that ignores it. */
 export const ROLES_TICK_SHUTDOWN_CAP_MS = 5_000;
@@ -561,7 +578,8 @@ async function runSignalPathTick(
   gateway: Gateway,
   worker: CoreWorker,
   now: string,
-  rolesTick: DetachedJob
+  rolesTick: DetachedJob,
+  mailTick: DetachedJob
 ): Promise<void> {
   try {
     options.store.runLessonDecayTick(now);
@@ -584,6 +602,7 @@ async function runSignalPathTick(
     // slow or stopped model tick (or a catalog outage) cannot delay that day's reminder. Its own catch.
     runReminderStep(options.store, chatId, now);
     await runModelTicks(options, gateway, worker, now, chatId, rolesTick);
+    runMailSteps(options, chatId, mailTick);
     // ADR 0019: the metered-$ ceiling check — drives the alert-dedupe latch (the chain
     // builder's cheap enforcement read) once per cycle; the 0→1 transition enqueues ONE
     // alert, delivered by the outbox flush right after this tick.
@@ -602,6 +621,55 @@ async function runSignalPathTick(
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[telegram-daemon] signal-path tick failed: ${message}`);
   }
+}
+
+const pacoAuthClients = new WeakMap<object, GoogleAuthClient>();
+
+/** Paco's own Gmail auth client, built as the core worker builds its per-account one (broker first, env when the firewall is off) and kept for the daemon's life so the access token is cached. */
+function pacoAuthClient(options: RunTelegramDaemonOptions): GoogleAuthClient {
+  const cached = options.mailDeps?.auth ?? pacoAuthClients.get(options);
+  if (cached) return cached;
+  const client = createGoogleAuthClient({ clientId: process.env.HOUGE_GMAIL_CLIENT_ID,
+    clientSecret: () => (options.broker ? options.broker.gmailClientSecret() : process.env.HOUGE_GMAIL_CLIENT_SECRET),
+    refreshToken: () => (options.broker ? options.broker.pacoGmailRefreshToken() : process.env.HOUGE_PACO_GMAIL_REFRESH_TOKEN) });
+  pacoAuthClients.set(options, client);
+  return client;
+}
+
+/** SP2 mail (spec 2026-11-09 §3.2, §7): one poll, off unless the env switch, an operator chat and Paco's address are set. Its own catch, logging a code only (an error message may quote mail). */
+async function runMailTickSafe(options: RunTelegramDaemonOptions, chatId: string | null): Promise<void> {
+  if (options.stopSignal.aborted || !resolveMailEnabled(process.env)) return;
+  const pacoAddr = pacoAddress(process.env);
+  if (chatId === null || pacoAddr === undefined) { logMailSkipOnce(chatId === null ? "no_operator_chat" : "no_paco_address"); return; }
+  try {
+    const refresh = options.broker ? options.broker.pacoGmailRefreshToken() : process.env.HOUGE_PACO_GMAIL_REFRESH_TOKEN;
+    const client = options.mailDeps?.jevClient ?? createJevClient({ apiKey: options.broker ? options.broker.typesafeKey() : process.env.TYPESAFE_API_KEY,
+      audit: options.store.llmAuditSink({ correlation_id: "mail-tick", role: "mail" }), meteredBreached: () => options.store.meteredFuseLatched(), retries: 0, timeoutMs: 6_000 });
+    await runMailTick({ store: options.store, chatId, pacoAddress: pacoAddr, env: process.env, now: () => new Date(),
+      brokerRedact: (s) => options.store.redactSecretValues(s), ask: (state) => askMail({ state, client, store: options.store }),
+      gmail: { deps: options.mailDeps?.gmail ?? defaultGoogleApiDeps(), auth: pacoAuthClient(options) }, hasRefreshToken: Boolean(refresh), signal: options.stopSignal });
+  } catch (error) {
+    console.error(`[telegram-daemon] mail tick failed: ${errorCode(error)}`);
+  }
+}
+
+const mailSkipLogged = new Set<string>();
+
+/** Mail is on but cannot poll: one code-only line per process, so the later mail_poll_failing page has a named cause. */
+function logMailSkipOnce(code: string): void {
+  if (mailSkipLogged.has(code)) return;
+  mailSkipLogged.add(code);
+  console.error(`[telegram-daemon] mail tick skipped: ${code}`);
+}
+
+/** SP2 mail triage: the poll rides its own detached job (one Gmail round trip per mail is minutes of work, not a poll-loop step); retention is self-latched to one run a local date and takes no network. */
+function runMailSteps(options: RunTelegramDaemonOptions, chatId: string | null, mailTick: DetachedJob): void {
+  mailTick.start(() => runMailTickSafe(options, chatId));
+  runMailRetentionSafe(options);
+}
+
+function runMailRetentionSafe(options: RunTelegramDaemonOptions): void {
+  try { runMailRetention(options.store, new Date(), process.env); } catch (error) { console.error(`[telegram-daemon] mail retention failed: ${errorCode(error)}`); }
 }
 
 /** 2b-ii §3.1: the daily improvement tick (spec 2026-11-07: it applies, cards and pages on its own; no digest follows). Its own catch: never skips the sweep. */

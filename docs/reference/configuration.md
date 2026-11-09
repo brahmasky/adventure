@@ -170,7 +170,7 @@ For the reader, candidates of a different family from the planner's run first (D
 
 The override's matches serve first, then the catalogued list, so a retired override degrades to the list.
 
-**Daily reminder.** Separately from the tick (so it runs in `static` mode and through a catalog outage, before the model ticks), once a day one message lists every open `role_unresolved` and `planner_session_reset_failed` incident older than 24 h, and every open `omp_contract_drift` older than 7 days, with its age and the action to take (`REMIND_KINDS`, `src/run/incident-alert.ts`). `static_list_stale` and `model_catalog_unavailable` are change-log kinds and are not repeated. No env var.
+**Daily reminder.** Separately from the tick (so it runs in `static` mode and through a catalog outage, before the model ticks), once a day one message lists every open `role_unresolved`, `planner_session_reset_failed` and `mail_auth_lost` incident older than 24 h, and every open `omp_contract_drift` older than 7 days, with its age and the action to take (`REMIND_KINDS`, `src/run/incident-alert.ts`). `static_list_stale` and `model_catalog_unavailable` are change-log kinds and are not repeated. No env var.
 
 **Daily tick.** Once per 24 h (latched on the last `model_roles_resolved` row) the daemon re-reads the catalog and writes one
 `model_change` change-log row per role whose head moved ("Thinking now resolves to X, was Y"); read them with `/changes`, they do not go to chat. A role with no candidate opens the alerted incident
@@ -259,8 +259,10 @@ the module docblock (`src/web/http-fetch.ts`); the URLs read are recorded in the
 
 ## Secrets firewall (ADR 0015, Phase 1)
 
-When armed, the five real secrets (`KIMI_API_KEY`, `GEMINI_API_KEY`, `TAVILY_API_KEY`,
-`FIRECRAWL_API_KEY`, `HOUGE_TELEGRAM_BOT_TOKEN`) are lifted into an in-process
+When armed, the broker-held secrets (`SECRET_ENV_NAMES`, ten today: `KIMI_API_KEY`, `GEMINI_API_KEY`,
+`TAVILY_API_KEY`, `FIRECRAWL_API_KEY`, `HOUGE_TELEGRAM_BOT_TOKEN`, `HOUGE_GMAIL_CLIENT_SECRET`,
+`HOUGE_GMAIL_REFRESH_TOKEN`, `HOUGE_PACO_GMAIL_REFRESH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, `TYPESAFE_API_KEY`;
+ADR 0015's 2026-11-09 amendment) are lifted into an in-process
 `SecretBroker` at boot and then **deleted from `process.env`** — the daemon holds no
 ambient credential, so a self-written `process.env.KIMI_API_KEY` reads `undefined`. The
 broker feeds the provider chain builders (single source of truth: `config.apiKey`, the
@@ -299,8 +301,8 @@ Houge's read surface onto his own Google identity (`wukong.houge@gmail.com`, ADR
 extraction for venue registration) and **`google_api`** (generic GET behind an exact allowlist
 registry — one row per granted OAuth scope, 1:1; today `gmail/v1/users/me/*` ↔ `gmail.readonly`).
 The OAuth scope is the hard floor: the refresh token carries `gmail.readonly` and nothing else.
-Credentials are produced by `scripts/gmail-auth.mjs`; the two secrets below are broker-held
-(ADR 0015's "exact five" → seven). See [ADR 0025](../decisions/0025-google-api-surface.md).
+Credentials are produced by `scripts/gmail-auth.mjs`; the three secrets below are broker-held
+(ADR 0015's "exact five" → seven → ten across the whole broker; Paco's own refresh token is the newest). See [ADR 0025](../decisions/0025-google-api-surface.md).
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
@@ -308,11 +310,44 @@ Credentials are produced by `scripts/gmail-auth.mjs`; the two secrets below are 
 | `HOUGE_GMAIL_CLIENT_ID` | — | OAuth client id of the Gmail desktop client. Plain config, not a secret (client ids are public identifiers); read from env at call time. |
 | `HOUGE_GMAIL_CLIENT_SECRET` | — | **Secret — broker-held** (ADR 0015): lifted into the secret broker at boot, stripped from `process.env`, redacted from egress. Written by `scripts/gmail-auth.mjs`. |
 | `HOUGE_GMAIL_REFRESH_TOKEN` | — | **Secret — broker-held** (ADR 0015), same treatment. The long-lived `gmail.readonly` grant; revoking it in the Google console is the remote kill for this surface. |
+| `HOUGE_PACO_GMAIL_REFRESH_TOKEN` | — | **Secret — broker-held** (ADR 0015), same treatment. Paco's own `gmail.readonly` grant (SP2 mail triage); revoking it in the Google console is that account's remote kill. Used while mail is on: the poller mints Paco's access token from it every tick, and so do `account: "paco"` reads. |
+| `HOUGE_PACO_GMAIL_ADDRESS` | — | Paco's Gmail address (not a secret). Lower-cased and shape-checked; unset or malformed reads as absent. |
+| `HOUGE_MAIL_ENABLED` | off | Env switch for mail triage and `account: "paco"` reads; both this and the stored `/mail on` switch must be on. Accepts 1/true/yes/on. In `DISARM_FLAGS`. |
+| `HOUGE_MAIL_POLL_MIN` | 5 | Mail poll interval in minutes; clamped to [2, 60], non-numeric reads as 5. |
+| `HOUGE_MAIL_QUIET` | `23-7` | Quiet window `start-end` (hours 0-23); malformed reads as `23-7`. |
+| `HOUGE_MAIL_TEXT_DAYS` | 30 | Days mail subject/snippet text is kept before clearing; minimum 1. |
 
 **Arming (changed 2026-10).** The old arming couple (`HOUGE_GOOGLE_ENABLED` **and**
 `HOUGE_DUAL_LLM_ENABLED`) is gone. Under omp the reader wall is unconditional for both tools, so
 un-quarantined mail bytes still never reach the planner, and `HOUGE_GOOGLE_ENABLED` alone decides
 whether the tools appear in the turn's manifest.
+
+**Mail triage — Paco's Gmail (SP2 slice 1; spec `2026-11-09-sp2-mail-triage-design.md`; ADR 0025 §9, ADR 0034 rule 2.6).**
+A second identity, Paco's own account, read-only. `houge mail auth` (Paco runs it; `scripts/gmail-auth.mjs --account paco`)
+takes the client id and secret above from `.env`, refuses any signed-in account other than `HOUGE_PACO_GMAIL_ADDRESS`, writes
+exactly one `HOUGE_PACO_GMAIL_REFRESH_TOKEN=` line and never prints the token; restart the daemon to load it. The poller
+(`src/mail/poller.ts`) runs only while `HOUGE_MAIL_ENABLED` **and** the stored `/mail on` switch are both on, a token is
+present and the daemon is neither killed nor parked: every `HOUGE_MAIL_POLL_MIN` minutes, single-flight, a 90 s tick
+deadline, at most 3 `messages.get` in flight, `format=metadata` only (never a body or attachment), ids from `history.list`
+behind a stored cursor that advances only when every id of the range is stored (a partial history read resumes from the
+last record). Each new mail is triaged by `mail.triage` (code floors → Paco's sender rules → one Jev request, `mail_urgency`
+and `mail_kind`): a ping is one card (`mail_card`, with an Open link and a Wrong urgency tap; silent in the
+`HOUGE_MAIL_QUIET` window and for a thread follow-up; more than 6 pings in 60 min fold into one hourly card), anything else
+waits in `/inbox`. Jev down → the mail pings, the card says `(Jev unavailable)`.
+`/mail on` refuses unless `HOUGE_PACO_GMAIL_ADDRESS` holds a valid address, and clears a paused auth error; `/mail off`
+stops the poller, invalidates Paco's cached access token and makes `account: "paco"` reads refuse at `turn.preflight`
+with `Paco's mail is off (/mail on to allow)`; `/mail status` shows the switches, the last successful poll, the last 24 h
+in counts (items, pings), folded this hour, unseen in `/inbox`, and the Jev state over the last hour (`ok`, `degraded` with
+the fail and answered counts, or `fused` when the ADR 0019 cap has latched). Gmail errors: a 401 or
+`invalid_grant` pauses the poller (cursor kept, no retry until `/mail on` or a restart — a daemon boot with the env switch on clears the stored pause once; while paused, no `mail_poll_failing` is added) and opens one `mail_auth_lost`
+page (in the daily reminder); a 403 is a Gmail rate limit, treated as temporary like a 5xx — backoff 1, 2, 4 … 30 min;
+no successful poll for 2 h while on opens `mail_poll_failing` (poller and sweep share one `mailStale` predicate); a
+Jev outage on mail pages through the Jev incidents plus the sweep's `mail_jev_failing`. Retention, two clocks (`src/mail/retention.ts`): a mail
+item's text (redacted sender name, subject, snippet) and its `mail_card` outbox copy are cleared `HOUGE_MAIL_TEXT_DAYS`
+after the mail's `received_at`; an `/inbox` reply row (key prefix `mail:inbox:`) is stripped `HOUGE_MAIL_TEXT_DAYS` after
+the reply's own `created_at`, so a subject shown in `/inbox` on day 29 persists in that reply row until the reply itself
+is 30 days old. `houge mail purge --yes` does all of the sweep now, for every item, and clears the known-sender cache. Logs, `/status`,
+decision rows and the live gate (`scripts/live-gate-mail-triage.mjs`) carry ids, counts and codes only.
 
 ## Deterministic timezone tool (`to_local_time`, loop tool)
 
@@ -702,7 +737,7 @@ environment variable. Spec: `docs/superpowers/specs/2026-11-03-chat-is-for-paco-
 
 - **Topics.** Every notification names a closed topic. `TOPIC_ROUTE` (`src/notifications/topics.ts`) maps each topic to `chat` or `log`;
   the topic alone decides. Replies, run reports, approvals, memory cards, improvement cards, urgent cards, self-write cards, incident pages,
-  reminders and summaries are chat. `model_change`, `incident_log`, `jev_notice`, `decision_internal`, `improve_log` and `standing_log` are log. A
+  reminders, summaries and mail cards (`mail_card`) are chat. `model_change`, `incident_log`, `jev_notice`, `decision_internal`, `improve_log`, `standing_log` and `mail_log` are log. A
   `NotificationIntent` is a chat intent or a log intent, and `RunStore.enqueueNotification` sends one to the outbox and the other to
   `logChange` (a log row is deduplicated by its idempotency key).
 - **Incident routes.** `INCIDENT_ROUTE` (`src/run/incident-route.ts`) gives every incident kind one of three routes. A **page** is one
@@ -784,7 +819,7 @@ one-shots; the panel no longer spawns `codex`.
 ## Introspection — the invariant sweep (slice A, ADR 0024)
 
 A deterministic, zero-LLM sweep on the daemon signal path: reads Houge's own flight recorder
-(schedules, runs, outbox, heartbeat, LLM attempts), checks seven invariants (plus the Jev rate kinds `jev_skip_rate`, also per decision entry, and `lane_fallthrough_rate`, below), and records violations as
+(schedules, runs, outbox, heartbeat, LLM attempts), checks seven invariants (plus the Jev rate kinds `jev_skip_rate`, also per decision entry, and `lane_fallthrough_rate`, and the mail kinds `mail_poll_failing` and `mail_jev_failing`, below), and records violations as
 **incidents** with an open→resolve lifecycle. Pure SQL reads plus incident bookkeeping — no LLM,
 no capability, no run creation, so it can never act on what it finds.
 
@@ -1078,6 +1113,13 @@ sweep adds two rate kinds:
   `fallthrough:*` or a lane turn closed `planner_done` / `planner_failed`; a status render that throws settles as
   `fallthrough:render_failed` (route outcome `fallback`) so a broken renderer is counted. A killed turn (`fallthrough:aborted`) counts in neither number. It stays open until that lane
   answers a turn itself after the incident opened.
+- `mail_poll_failing` (subject `paco`; pages): mail triage is on (both switches) and `mail_state.last_ok_at` — or the
+  switch-on time when no poll ever succeeded — is older than 2 h. The poller's own tick opens it the same way (one `mailStale`
+  predicate, `src/mail/poller.ts`); the sweep is the backstop for a poller that silently stopped ticking, so detection is
+  within one sweep interval. It reads the poll timestamp, never mail cards. The next successful poll resolves it.
+- `mail_jev_failing` (subject `paco`; pages): at least 5 `mail.triage` decisions with rung `fail` and none with rung
+  `system_one` in 24 h — a Jev timeout storm opens no per-call Jev incident and `jev_skip_rate` reads the front door's point
+  only. Every mail still pings meanwhile. One answered mail decision resolves it.
 
 Jev is excluded from `llm_leg_failing`; its failures surface as these instead. `LlmErrorKind` gains `rate_limited`,
 `overloaded`, `malformed_question`. The cascade's `llm_attempt` rows use `role` `cascade` and count toward

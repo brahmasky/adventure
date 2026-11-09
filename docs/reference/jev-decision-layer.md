@@ -126,6 +126,13 @@ provisional bar, never by a calibration row. The golden set has no `fix` items: 
 bias toward `other`; live gate 2026-10-18, 3 of 3 runs), so a fix request falls below the bar to the distill and the
 planner (`memory_correct`). A golden item the armed rung never clears would page every day.
 
+`mail_urgency` (`later`, `now`; escape first) and `mail_kind` (`fyi`, `action`, `risk`, `noise`) are asked together in
+their **own** request (decision point `mail`, run-less, `src/jev/mail-ask.ts`) by the `mail.triage` entry for each new
+mail in Paco's inbox (spec 2026-11-09-sp2-mail-triage). The state is `MailJevState`: redacted sender name, sender address,
+known-sender flag, redacted subject and snippet, labels, importance — never the body, a time, a thread or an id
+(ADR 0033 D2, Paco's D3). No `jev_decisions` row; the `mail.triage` decision row carries the p. `mail_kind` labels the card
+and groups `/inbox`; it never changes the lane.
+
 ## Bars
 
 All bars are code (`TREE_BAR_DEFAULTS`, `src/jev/tree-policy.ts`), stamped on every decision row as the threshold
@@ -142,6 +149,7 @@ version. There is no env override.
 | gear | the highest score: up to 1.2 Fast, below 2.5 Default, otherwise Thinking |
 | `rule_scope` | overrides its category's default scope (`research` for research, else `ask`) only at 0.6 or more |
 | `memory_kind` | 0.85, provisional (`memory.kind`) | on the memory lane a confident `fix` or `other` hands the turn to the planner; `rule`, `fact` or `both` save; below the bar the distill decides |
+| `mail_urgency` | `now` at 0.6 pings, `later` at 0.85 lists in `/inbox`; anything else pings (`jev_unsure`); provisional (`mail.triage`, ADR 0034 2.6, Paco's D4) | asymmetric by design: the only thing Jev can cause is a listed delay of one mail's own delivery; Paco's sender rules and the code floors answer before Jev |
 
 Role floors per category: `answer` and `lookup` Fast, `research` Thinking, `self_change`, `machine_task`, `schedule`, `wiki`,
 `mail_calendar` and `other` Default. The route takes the higher of the gear and the floor. `think harder`, `认真想` or
@@ -363,7 +371,7 @@ read with `/changes`. The kinds named here:
 
 | Kind | Route |
 |---|---|
-| `jev_auth`, `jev_rate_limited`, `jev_overloaded`, `jev_question_invalid`, `jev_no_key`, `jev_skip_rate`, `lane_fallthrough_rate`, `role_unresolved`, `decision_fallback_streak` | page |
+| `jev_auth`, `jev_rate_limited`, `jev_overloaded`, `jev_question_invalid`, `jev_no_key`, `jev_skip_rate`, `lane_fallthrough_rate`, `role_unresolved`, `decision_fallback_streak`, `mail_jev_failing` | page |
 | `jev_model_drifted`, `jev_model_check_stalled` | card |
 | `decision_fallback`, `decision_record_failed`, `decision_golden_drift`, `triage_overrides`, `model_catalog_unavailable` | log |
 
@@ -377,7 +385,11 @@ read with `/changes`. The kinds named here:
 - `decision_fallback_streak`: a tick entry (stage `after_turn`, `alwaysRecord`, a judge rung; today only `improve.route`) whose
   last three runs, however far apart, ended only in counted fallbacks (one or two groups a day seldom make three in an hour); one page;
   the next answer from a counting rung clears it.
-- `decision_record_failed`: a `decisions` write failed; the routing stood (the verdict row then has `decision_id` null).
+- `mail_jev_failing` (subject `paco`): at least 5 `mail.triage` decisions with rung `fail` and none answered by Jev in 24 h — a
+  timeout storm on mail opens no per-call incident and `jev_skip_rate` counts the front door only (`mail.triage` is in
+  `JEV_PAGED_ELSEWHERE`); every mail pings meanwhile; one answered mail decision clears it.
+- `decision_record_failed`: a `decisions` write failed; the routing stood (the verdict row then has `decision_id` null; for
+  `mail.triage` the item rolls back with its row and is retried next tick).
 - `role_unresolved` and `model_catalog_unavailable` (the model-role side, [configuration.md](configuration.md#model-roles)).
 
 ## User-visible gaps

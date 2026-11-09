@@ -3,8 +3,8 @@ import { buildTypedTaskEvent } from "../domain/types.js";
 import { MEDIA_MIME, MEDIA_PLACEHOLDER, type TelegramMediaRef } from "../media/media-config.js";
 import { authorizeTelegramUpdate } from "./telegram-auth.js";
 import type { ApprovalCallback, SelfWriteCallbackAction, TelegramCommand } from "./telegram-command-parser.js";
-import type { ImprovementTap } from "./telegram-command-parser.js";
-import { parseApprovalCallback, parseDecisionReviewCallback, parseImprovementCallback, parseJevAcceptCallback, parseMemLaneCallback, parseMemoryUndoCallback, parseModelTierCallback, parseSelfWriteCallback, parseTelegramCommand } from "./telegram-command-parser.js";
+import type { ImprovementTap, MailTap } from "./telegram-command-parser.js";
+import { parseApprovalCallback, parseDecisionReviewCallback, parseImprovementCallback, parseJevAcceptCallback, parseMailCallback, parseMemLaneCallback, parseMemoryUndoCallback, parseModelTierCallback, parseSelfWriteCallback, parseTelegramCommand } from "./telegram-command-parser.js";
 import { decideSync } from "../decisions/decide.js";
 import { INTAKE_SENDER, type SenderDenialReason } from "../decisions/entries/intake-sender.js";
 import type { DecisionRecorder } from "../decisions/types.js";
@@ -281,6 +281,8 @@ function normalizeCallbackQuery(
   if (improvement) return { ok: true, event: buildImprovementTapEvent(update, callback, message.chat.id, auth.identity, improvement) };
   const jevAccept = parseJevAcceptCallback(callback.data);
   if (jevAccept) return { ok: true, event: buildJevAcceptTapEvent(update, callback, message.chat.id, auth.identity, jevAccept) };
+  const mailTap = parseMailCallback(callback.data);
+  if (mailTap) return { ok: true, event: buildMailTapEvent(update, callback, message.chat.id, auth.identity, mailTap) };
   const tierTap = parseModelTierCallback(callback.data);
   if (tierTap) return { ok: true, event: buildModelTierTapEvent(update, callback, message.chat.id, auth.identity, tierTap) };
 
@@ -400,6 +402,20 @@ function buildJevAcceptTapEvent(update: TelegramUpdate, callback: TelegramCallba
   });
 }
 
+/** A mail card, /inbox line or rule-offer tap (spec 2026-11-09 §3.6): the action and the item id (or page label) ride in metadata. */
+function buildMailTapEvent(update: TelegramUpdate, callback: TelegramCallbackQuery, chat_id: number, identity: Identity, tap: MailTap): TypedTaskEvent {
+  return buildTypedTaskEvent({
+    source: "telegram",
+    type: "mail_tap",
+    requested_by: identity,
+    notify: { kind: "telegram", chat_id: String(chat_id) },
+    idempotency_key: `telegram:${update.update_id}:callback:${callback.id}`,
+    source_reference: `telegram:update:${update.update_id}:callback:${callback.id}`,
+    metadata: { telegram_update_id: update.update_id, telegram_callback_id: callback.id, mail_action: tap.action,
+      ...(tap.action === "page" ? { mail_page: tap.page } : { item_id: tap.item_id }) }
+  });
+}
+
 /** An empty-tier card's tap (spec 2026-11-02 §4.4): the tier and, for a Use button, the proposal's hash ride in metadata. */
 function buildModelTierTapEvent(update: TelegramUpdate, callback: TelegramCallbackQuery, chat_id: number, identity: Identity, tap: { tier: string; hash: string | null }): TypedTaskEvent {
   return buildTypedTaskEvent({
@@ -516,6 +532,12 @@ function buildTelegramEvent(command: TelegramCommand, base: TelegramEventBase): 
     case "approvals":
     case "fresh":
       return buildTypedTaskEvent({ ...base, type: command.type });
+    case "inbox":
+      return buildTypedTaskEvent({ ...base, type: "inbox", metadata: { ...base.metadata, inbox_all: command.all } });
+    case "mail":
+      return buildTypedTaskEvent({ ...base, type: "mail", program: command.action });
+    case "mail_undo":
+      return buildTypedTaskEvent({ ...base, type: "mail_undo", program: command.rule_id });
     case "memories":
       // The optional query rides `program` (the /lessons scope precedent).
       return buildTypedTaskEvent({ ...base, type: "memories", ...(command.query ? { program: command.query } : {}) });

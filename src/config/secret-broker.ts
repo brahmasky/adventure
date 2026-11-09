@@ -1,7 +1,7 @@
 /**
  * The secrets firewall (ADR 0015, Phase 1 — in-process broker).
  *
- * After boot loads `.env` into `process.env`, the nine real secrets are lifted into a
+ * After boot loads `.env` into `process.env`, the ten real secrets are lifted into a
  * {@link SecretBroker} — a PRIVATE closure with narrow typed getters — and then DELETED from
  * `process.env` (see {@link stripSecretsFromEnv}). For the rest of the process lifetime the
  * ambient environment holds no credential, so a self-written `process.env.KIMI_API_KEY` reads
@@ -14,9 +14,9 @@
  */
 
 /**
- * The exact nine real secrets the daemon holds (ADR 0015 §Context; ADR 0027 "seven becomes
+ * The exact ten real secrets the daemon holds (ADR 0015 §Context; ADR 0027 "seven becomes
  * eight" — `CLAUDE_CODE_OAUTH_TOKEN` funds the panel chair's contained claude CLI spawn; Jev spec
- * 2026-09-25 "eight becomes nine" — `TYPESAFE_API_KEY` funds the Jev intent-shadow replay).
+ * 2026-09-25 "eight becomes nine" — `TYPESAFE_API_KEY` funds the Jev intent-shadow replay; SP2 mail spec 2026-11-09 "nine becomes ten" — `HOUGE_PACO_GMAIL_REFRESH_TOKEN` is Paco's own read-only Gmail grant).
  */
 export const SECRET_ENV_NAMES = [
   "KIMI_API_KEY",
@@ -26,6 +26,7 @@ export const SECRET_ENV_NAMES = [
   "HOUGE_TELEGRAM_BOT_TOKEN",
   "HOUGE_GMAIL_CLIENT_SECRET",
   "HOUGE_GMAIL_REFRESH_TOKEN",
+  "HOUGE_PACO_GMAIL_REFRESH_TOKEN",
   "CLAUDE_CODE_OAUTH_TOKEN",
   "TYPESAFE_API_KEY"
 ] as const;
@@ -59,6 +60,8 @@ export interface SecretBroker {
   telegramToken(): string | undefined;
   gmailClientSecret(): string | undefined;
   gmailRefreshToken(): string | undefined;
+  /** Paco's own Gmail (read-only) refresh token — SP2 mail triage (spec 2026-11-09 §3.1). */
+  pacoGmailRefreshToken(): string | undefined;
   /**
    * The Claude Code subscription OAuth token (`claude setup-token`) the panel chair injects into
    * its contained child env (ADR 0027). `null` when unset — the chair treats that as
@@ -77,7 +80,7 @@ export interface SecretBroker {
 }
 
 /**
- * Build the broker from a snapshot of the loaded env. The nine values are captured into a private
+ * Build the broker from a snapshot of the loaded env. The ten values are captured into a private
  * closure at construction; the getters return those captured values, so the broker keeps working
  * after the env is stripped. `redact` masks the captured values (longest-first, so a value that is
  * a substring of another is handled after the longer one).
@@ -90,6 +93,7 @@ export function createSecretBroker(env: NodeJS.ProcessEnv): SecretBroker {
   const telegram = env.HOUGE_TELEGRAM_BOT_TOKEN;
   const gmailClientSecret = env.HOUGE_GMAIL_CLIENT_SECRET;
   const gmailRefreshToken = env.HOUGE_GMAIL_REFRESH_TOKEN;
+  const pacoGmailRefreshToken = env.HOUGE_PACO_GMAIL_REFRESH_TOKEN;
   const claudeOauth = env.CLAUDE_CODE_OAUTH_TOKEN;
   const typesafe = env.TYPESAFE_API_KEY;
 
@@ -101,6 +105,7 @@ export function createSecretBroker(env: NodeJS.ProcessEnv): SecretBroker {
     telegram,
     gmailClientSecret,
     gmailRefreshToken,
+    pacoGmailRefreshToken,
     claudeOauth,
     typesafe
   ]
@@ -115,6 +120,7 @@ export function createSecretBroker(env: NodeJS.ProcessEnv): SecretBroker {
     telegramToken: () => telegram,
     gmailClientSecret: () => gmailClientSecret,
     gmailRefreshToken: () => gmailRefreshToken,
+    pacoGmailRefreshToken: () => pacoGmailRefreshToken,
     claudeOauthToken: () => claudeOauth ?? null,
     typesafeKey: () => typesafe,
     redact: (text: string): string => {

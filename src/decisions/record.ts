@@ -1,5 +1,6 @@
 import { openAlertedIncident, resolveOpenIncidents } from "../run/incident-alert.js";
 import type { DecisionInsert, RunStore } from "../run/run-store.js";
+import { MAIL_TRIAGE_ID } from "./entries/mail-triage.js";
 import { TOOL_INJECTION_ID } from "./entries/tool-injection.js";
 import { TOOL_POLICY } from "./entries/tool-policy.js";
 import { TURN_SETTLE_ID } from "./entries/turn-settle.js";
@@ -27,8 +28,9 @@ const STREAK_ROWS = 3 * 40 + 1;
  * turn's trust rise is the safety answer, and 429/auth still page through the Jev incidents. turn.settle joins them
  * (2b-i ruling 14): a Jev failure settles the turn as today and the Jev incident is the page; its own budget,
  * todo_unavailable and pass_errored rows page through decision_health (settle-judge.ts).
+ * mail.triage (spec 2026-11-09 §3.4): its Jev failures page through the Jev client's incidents; one call, one page.
  */
-const JEV_PAGED_ELSEWHERE: ReadonlySet<string> = new Set([...FRONT_DOOR_ENTRIES, TOOL_INJECTION_ID, TURN_SETTLE_ID]);
+const JEV_PAGED_ELSEWHERE: ReadonlySet<string> = new Set([...FRONT_DOOR_ENTRIES, TOOL_INJECTION_ID, TURN_SETTLE_ID, MAIL_TRIAGE_ID]);
 const RECORD_FAILED: ReadonlySet<string> = new Set(["decision_record_failed"]);
 const FALLBACK_KINDS = ["decision_fallback", "decision_fallback_streak"] as const;
 const RUNNER_CODES: ReadonlySet<string> = new Set(RUNNER_REASON_CODES);
@@ -68,6 +70,18 @@ export function storeRecorder(store: RunStore, o: RecorderOptions = {}): Decisio
       return id;
     }
   };
+}
+
+/** Spec 2026-11-09 §3.4: the mail write path's flush. Same row as storeRecorder, but it throws on a failed insert so the caller's transaction rolls back. Bookkeeping runs after commit via afterStrictRecord. */
+export function recordStrict(store: RunStore, entry: AnyEntry, r: AnyDecideResult, ctx: { run_id: string | null; tool_call_id: string | null }, now: string): string | null {
+  if (!shouldRecord(entry, r)) return null;
+  return store.insertDecision(rowOf(entry, r, ctx, now));
+}
+
+/** The bookkeeping storeRecorder does around its insert, for a row recordStrict wrote; call it after the commit. */
+export function afterStrictRecord(store: RunStore, entry: AnyEntry, r: AnyDecideResult, now: string, env?: NodeJS.ProcessEnv): void {
+  if (clears(entry.id, r)) clearFallback(store, entry.id, now);
+  afterRecord(store, entry, r, now, env);
 }
 
 function rowOf(entry: AnyEntry, r: AnyDecideResult, ctx: { run_id: string | null; tool_call_id: string | null }, now: string): DecisionInsert {

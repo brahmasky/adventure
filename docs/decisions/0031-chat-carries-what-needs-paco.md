@@ -1,6 +1,6 @@
 # ADR 0031: Chat carries what needs Paco; the change log carries the rest
 
-- **Status:** accepted 2026-11-04, signed off by Paco (scope and decisions 1-A, 2-A, 3-A, 4-A approved by Paco 2026-11-03; spec approved 2026-11-03); amended 2026-11-07 (the digest leaves chat; improvement cards and two log topics join — signed by Paco 2026-11-08)
+- **Status:** accepted 2026-11-04, signed off by Paco (scope and decisions 1-A, 2-A, 3-A, 4-A approved by Paco 2026-11-03; spec approved 2026-11-03); amended 2026-11-07 (the digest leaves chat; improvement cards and two log topics join — signed by Paco 2026-11-08); amended 2026-11-09 (spec 2026-11-09-sp2-mail-triage: `mail_card` chat and `mail_log` log join the topic set; silent sends and URL buttons; three mail incident kinds; retention strips the outbox) — awaiting Paco's signature
 - **Date:** 2026-11-03
 - **Deciders:** Paco
 - **Amends:** [0024](0024-introspection-invariant-sweep.md) (sweep alerts), [0028](0028-omp-runtime.md) (model tiers, omp
@@ -45,6 +45,19 @@ in ledger rows but nothing read it back in plain words.
   `via: "set"` so it is never read as a card tap; `/changes` collapses consecutive identical entries (`×N`).
   2026-11-07 (spec improve-auto-apply, signed by Paco 2026-11-08): the digest leaves the chat list; applied improvements
   (`improve_log`) and standing-grant ends (`standing_log`) are change-log rows; `improve_tick_degraded` pages.
+  2026-11-09 (spec sp2-mail-triage, awaiting Paco's signature): **`mail_card`** (chat: the one card a mail judged urgent
+  gets, and the hourly fold card; `/inbox` pages and the `/mail` replies are answers to his commands, topic `reply`) and **`mail_log`** (log: a cursor resync's "Mail caught
+  up" line, sender-rule changes with their masked address and `/mail_undo <rule id>`) join the closed topic set; the rule
+  holds — a mail Jev judged `later` is listed in `/inbox`, never pushed. The send path gains two additive fields: a
+  **silent send** (`disable_notification`; mail cards in quiet hours 23:00–07:00 Sydney, `HOUGE_MAIL_QUIET`, and thread
+  follow-ups send silently, never held) and a **URL button** (the card's Open link into Gmail; every other button still
+  carries callback data). Three incident kinds in `INCIDENT_ROUTE`, all **page**: `mail_auth_lost` (the grant is dead;
+  also in `REMIND_KINDS`, daily until `houge mail auth` and a restart), `mail_poll_failing` (no successful poll for 2 h
+  while on; the poller and the sweep share one `mailStale` predicate) and `mail_jev_failing` (the sweep: at least 5
+  `fail`-rung `mail.triage` decisions and no answer in 24 h). **Retention touches the outbox**, on two clocks (`src/mail/retention.ts`): a mail item's text
+  and its `mail_card` outbox copy are cleared `HOUGE_MAIL_TEXT_DAYS` (30) after the mail's `received_at`; an `/inbox` reply row
+  (key prefix `mail:inbox:`) is stripped `HOUGE_MAIL_TEXT_DAYS` after the reply's own `created_at`, so a subject shown in
+  `/inbox` on day 29 persists in that reply row until the reply itself is 30 days old; `payload_hash` is recomputed.
 - Residuals Paco accepts: background is visible only when he looks; a catalog outage and a stale static list left the daily
   reminder; an omp contract drift that degrades answers without failing spawns shows in `/status` and, after 7 days, in the
   reminder; rating asks stay in chat.

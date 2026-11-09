@@ -70,7 +70,9 @@ describe("DISARM_FLAGS", () => {
       // Jev System One master (ADR 0029): /disarm switches every Jev lane off in one write.
       "HOUGE_JEV_ENABLED",
       // 2b-ii follow-up: the improvement tick turns Paco's taps into proposals and skill jobs — an evolution surface.
-      "HOUGE_IMPROVE_ENABLED"
+      "HOUGE_IMPROVE_ENABLED",
+      // SP2 mail triage: polls Paco's inbox unattended.
+      "HOUGE_MAIL_ENABLED"
     ]);
     expect(DISARM_FLAGS).not.toContain("HOUGE_EPISODIC_ENABLED");
   });

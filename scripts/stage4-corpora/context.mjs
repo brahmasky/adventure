@@ -235,7 +235,9 @@ const ITEMS = [
 const BRANCHES = ITEMS.map((i) => i.tags[0]);
 
 const all = (store, sql) => store.db.prepare(sql).all().map((r) => ({ ...r }));
-const isClockKey = (k) => /(_at|_since|^since|^now)$/.test(k);
+// valid_from / valid_until (episodic_facts, memory A1) are instants too, relabelled by rank like the rest (SP2 mail triage, Task 12 ruling): the
+// mail-triage migration's one `new Date()` at store open advances the counting clock by a tick on the new side, and a raw instant would show it.
+const isClockKey = (k) => /(_at|_since|^since|^now|^valid_from|^valid_until)$/.test(k);
 const TOUCHED = ["lessons", "episodic_facts", "wiki_pages"]; const TOUCH_KEYS = ["last_used", "last_seen"];
 /**
  * Touch times exactly (codex fix 1): each touched row's last_used/last_seen becomes "<ledger event>@<run label>+<ms>", the latest ledger event at or

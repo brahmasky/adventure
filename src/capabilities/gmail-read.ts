@@ -29,8 +29,8 @@ export const GMAIL_TRUSTED_EXTRACT_CHAR_CAP = 600;
 // Digest cap: GOOGLE_RESULT_CHAR_CAP is reused from google-api.ts (single 6k constant).
 
 const MESSAGES_PATH = "/gmail/v1/users/me/messages";
-const HEADER_FIELD_CAP = 200;
-const SNIPPET_CAP = 300;
+export const HEADER_FIELD_CAP = 200;
+export const SNIPPET_CAP = 300;
 // {list} is forced to the inbox (excludes Sent/Drafts; Spam/Trash already excluded by the API).
 // {search} is NEVER touched — the user's query is passed verbatim (may target Sent, a label, etc.).
 const LIST_INBOX_QUERY = "in:inbox";
@@ -212,7 +212,7 @@ function capResultText(text: string): string {
     : text;
 }
 
-function headerValue(message: Record<string, unknown> | undefined, name: string): string {
+export function headerValue(message: Record<string, unknown> | undefined, name: string): string {
   const payload = asRecord(message?.payload);
   const headers = payload?.headers;
   if (!Array.isArray(headers)) return "";

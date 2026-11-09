@@ -108,7 +108,7 @@ describe("entryProblems (R12 as data: a judged entry over Paco's message must be
   // on a fail-open entry that causes no direct effect (none or tighten only), or on an entry over Paco's own message whose
   // every effect is reversible and announced. memory.kind is fail-open but saves, so only the amended clause admits it.
   const ladder = HANDLER.ladder.map((r) => (r.kind === "system_one" ? { ...r, bars: { kind: "provisional" as const, question: "q", criteriaHash: "h", model: "m", p: 0.5, source: "mu" } } : r));
-  const msg = "provisional bar on an entry that is not monotone, not fail-open without direct effects, not over Paco's words with every effect reversible and announced, and not gated by pacoWordsOnly";
+  const msg = "provisional bar on an entry that is not monotone, not fail-open without direct effects, not over Paco's words with every effect reversible and announced, and not gated by pacoWordsOnly, and not a perItemRouting entry (ADR 0034 2.6)";
   const passive = Object.fromEntries(HANDLER.verdicts.map((v) => [v, fx("none", true, "none")]));
   it("admits paco input with every effect reversible and announced (turn.handler's shape), even when not fail-open", () => {
     expect(entryProblems(base({ ladder, fail: "answer" }))).not.toContain(msg);
@@ -148,7 +148,7 @@ describe("entryProblems (R12 as data: a judged entry over Paco's message must be
       expect(e.ladder[0]?.kind).toBe("rule");
       expect(LOCKED_ENTRY_IDS).toContain(id);
     }
-    expect(ENTRY_IDS).toHaveLength(40);
+    expect(ENTRY_IDS).toHaveLength(41);
   });
   it("memory.lesson_admit, schedule.admit and memory.correct_preflight are registered, unlocked and rule-only (Stage 4C)", () => {
     for (const id of ["memory.lesson_admit", "schedule.admit", "memory.correct_preflight"] as const) {
@@ -158,7 +158,7 @@ describe("entryProblems (R12 as data: a judged entry over Paco's message must be
       expect(e.ladder.map((r) => r.kind)).toEqual(["rule"]);
       expect(LOCKED_ENTRY_IDS).not.toContain(id);
     }
-    expect(ENTRY_IDS).toHaveLength(40);
+    expect(ENTRY_IDS).toHaveLength(41);
   });
   it("intake.rate_limit, intake.rating_reply (unlocked) and intake.budget_fuse (locked) are registered rule-only intake entries (remainder R1)", () => {
     for (const [id, locked] of [["intake.rate_limit", false], ["intake.rating_reply", false], ["intake.budget_fuse", true]] as const) {
@@ -169,7 +169,7 @@ describe("entryProblems (R12 as data: a judged entry over Paco's message must be
       expect(e.ladder.map((r) => r.kind)).toEqual(["rule"]);
       expect((LOCKED_ENTRY_IDS as readonly string[]).includes(id)).toBe(locked);
     }
-    expect(ENTRY_IDS).toHaveLength(40);
+    expect(ENTRY_IDS).toHaveLength(41);
   });
   it("intake.sender (locked, intake) and turn.contract (unlocked, pre_model) are registered rule-only entries (remainder R2)", () => {
     for (const [id, locked, stage] of [["intake.sender", true, "intake"], ["turn.contract", false, "pre_model"]] as const) {
@@ -180,7 +180,7 @@ describe("entryProblems (R12 as data: a judged entry over Paco's message must be
       expect(e.ladder.map((r) => r.kind)).toEqual(["rule"]);
       expect((LOCKED_ENTRY_IDS as readonly string[]).includes(id)).toBe(locked);
     }
-    expect(ENTRY_IDS).toHaveLength(40);
+    expect(ENTRY_IDS).toHaveLength(41);
   });
 
   it("intake.bare_ack (locked) and intake.steer_or_queue (unlocked) are registered rule-only intake entries (remainder R3)", () => {
@@ -192,7 +192,7 @@ describe("entryProblems (R12 as data: a judged entry over Paco's message must be
       expect(e.ladder.map((r) => r.kind)).toEqual(["rule"]);
       expect((LOCKED_ENTRY_IDS as readonly string[]).includes(id)).toBe(locked);
     }
-    expect(ENTRY_IDS).toHaveLength(40);
+    expect(ENTRY_IDS).toHaveLength(41);
   });
 
   it("planner.crash_guard and turn.retry are registered, unlocked rule-only entries (remainder R4)", () => {
@@ -203,7 +203,7 @@ describe("entryProblems (R12 as data: a judged entry over Paco's message must be
       expect(e.ladder.map((r) => r.kind)).toEqual(["rule"]);
       expect((LOCKED_ENTRY_IDS as readonly string[]).includes(id)).toBe(false);
     }
-    expect(ENTRY_IDS).toHaveLength(40);
+    expect(ENTRY_IDS).toHaveLength(41);
   });
 
   it("lookup.rewrite, lookup.thin and turn.model are registered, unlocked, rule-only and sound (remainder R6)", () => {
@@ -215,12 +215,12 @@ describe("entryProblems (R12 as data: a judged entry over Paco's message must be
       expect((LOCKED_ENTRY_IDS as readonly string[]).includes(id)).toBe(false);
       expect(entryProblems(e)).toEqual([]);
     }
-    expect(ENTRY_IDS).toHaveLength(40);
+    expect(ENTRY_IDS).toHaveLength(41);
   });
   it("attach.path is registered, locked and rule-only (remainder R7); every locked id is now registered", () => {
     const e = entryById("attach.path") as AnyEntry;
     expect(e.locked).toBe(true); expect(e.ladder.map((r) => r.kind)).toEqual(["rule"]); expect(entryProblems(e)).toEqual([]);
     for (const id of LOCKED_ENTRY_IDS) expect(entryById(id), id).toBeDefined();
-    expect(ENTRY_IDS).toHaveLength(40);
+    expect(ENTRY_IDS).toHaveLength(41);
   });
 });

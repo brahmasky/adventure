@@ -42,6 +42,7 @@ import { createTimeConvertAdapter } from "../capabilities/time-convert.js";
 import { defaultGoogleApiDeps, runGoogleApi } from "../capabilities/google-api.js";
 import type { GoogleApiDeps } from "../capabilities/google-api.js";
 import { GMAIL_OP_DEADLINE_MS, runGmailRead } from "../capabilities/gmail-read.js";
+import { pacoMailReadable } from "../mail/flag.js";
 import { createGoogleAuthClient } from "../capabilities/google-auth.js";
 import type { GoogleAuthClient } from "../capabilities/google-auth.js";
 import type { SecretBroker } from "../config/secret-broker.js";
@@ -562,19 +563,36 @@ export class CoreWorker {
    * The access token lives and dies inside its closure — never in errors, digests, or ledger
    * rows. Secrets arrive as getters: broker-fed when the firewall is armed, env-fallback
    * otherwise (same idiom as llm/registry.ts). */
-  private googleAuth?: GoogleAuthClient;
-  private googleAuthClient(): GoogleAuthClient {
-    if (!this.googleAuth) {
-      this.googleAuth = createGoogleAuthClient(
-        {
-          clientId: process.env.HOUGE_GMAIL_CLIENT_ID,
-          clientSecret: () => (this.broker ? this.broker.gmailClientSecret() : process.env.HOUGE_GMAIL_CLIENT_SECRET),
-          refreshToken: () => (this.broker ? this.broker.gmailRefreshToken() : process.env.HOUGE_GMAIL_REFRESH_TOKEN)
-        },
-        { fetchImpl: this.googleDeps.fetchImpl }
-      );
+  private readonly googleAuths: { houge?: GoogleAuthClient; paco?: GoogleAuthClient } = {};
+  private googleAuthClient(account: "houge" | "paco" = "houge"): GoogleAuthClient {
+    const existing = this.googleAuths[account];
+    if (existing) return existing;
+    const refreshToken = account === "paco"
+      ? () => (this.broker ? this.broker.pacoGmailRefreshToken() : process.env.HOUGE_PACO_GMAIL_REFRESH_TOKEN)
+      : () => (this.broker ? this.broker.gmailRefreshToken() : process.env.HOUGE_GMAIL_REFRESH_TOKEN);
+    const client = createGoogleAuthClient(
+      {
+        clientId: process.env.HOUGE_GMAIL_CLIENT_ID,
+        clientSecret: () => (this.broker ? this.broker.gmailClientSecret() : process.env.HOUGE_GMAIL_CLIENT_SECRET),
+        refreshToken
+      },
+      { fetchImpl: this.googleDeps.fetchImpl }
+    );
+    this.googleAuths[account] = client;
+    return client;
+  }
+
+  /** Drop Paco's cached Gmail access token (the daemon hands this to the gateway; `/mail` off/on or a revoked grant). */
+  invalidatePacoGmail(): void {
+    this.googleAuths.paco?.invalidate();
+  }
+
+  /** Code-owned refusals before any execution: Paco's mail off (the text reaches the planner), memory-write trust limits. */
+  private ompPreflight(claim: ClaimedRun, state: { turnCtx: LoopTurnContext }, entry: string, input: Record<string, unknown>): ReturnType<NonNullable<ActiveTurn["preflight"]>> {
+    if ((entry === "gmail_read" || entry === "google_api") && input.account === "paco" && !pacoMailReadable(process.env, this.runStore)) {
+      return { refused: { reason: "mail_off", text: PACO_MAIL_OFF_ERROR } };
     }
-    return this.googleAuth;
+    return entry === "memory_correct_write" ? memoryWritePreflight(this.memoryDeps(claim, state.turnCtx), input) : null;
   }
 
   async executeOnce(worker_id: string): Promise<CoreWorkerResult> {
@@ -2496,7 +2514,7 @@ export class CoreWorker {
     return {
       registry, quarantine: (tool, output) => this.ompQuarantine(claim, state, tool, output),
       // memory_correct writes: the trust limits refuse before any card, else the card shows exactly what changes
-      preflight: (entry, input) => (entry === "memory_correct_write" ? memoryWritePreflight(this.memoryDeps(claim, state.turnCtx), input) : null),
+      preflight: (entry, input) => this.ompPreflight(claim, state, entry, input),
       // tool.injection (spec §7.1): every shell and wall result of this turn is judged before a model reads it
       judge: createInjectionJudge({ store: this.runStore, client: this.injectionClient(claim.run_id), home: this.ompPathContext().home })
     };
@@ -3668,10 +3686,13 @@ export class CoreWorker {
       // line AFTER the reader digest (google_api has no such side-channel).
       return async (input) => {
         // omp quarantines every read tool unconditionally (D3), so the old loop's dual-LLM-off refusal is gone.
+        const paco = input.account === "paco";
+        if (paco && !pacoMailReadable(process.env, this.runStore)) return { ok: false, error: PACO_MAIL_OFF_ERROR };
+        const auth = this.googleAuthClient(paco ? "paco" : "houge");
         const result =
           name === "gmail_read"
-            ? await runGmailRead(input, process.env, this.googleDeps, this.googleAuthClient())
-            : await runGoogleApi(input, process.env, this.googleDeps, this.googleAuthClient());
+            ? await runGmailRead(input, process.env, this.googleDeps, auth)
+            : await runGoogleApi(input, process.env, this.googleDeps, auth);
         if (result.ledger) {
           this.runStore.recordGoogleApiCallCompleted({
             run_id: claim.run_id,
@@ -4719,6 +4740,9 @@ function savedLessonLine(saved: LessonSaveResult | undefined, savedLine: string,
   if (!saved) return nothingLine;
   return saved.verb === "capped" ? `→ Lesson NOT saved: ${LESSON_CAPPED_HINT}` : savedLine;
 }
+
+/** Tool error for `account: "paco"` while the mail switch is off. */
+const PACO_MAIL_OFF_ERROR = "Paco's mail is off (/mail on to allow)";
 
 /**
  * ⓪·3g: the kickoff digest the evolution tool adapter returns IMMEDIATELY after

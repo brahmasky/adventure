@@ -135,7 +135,7 @@ declaration under `src/omp/tools/` plus a daemon-side adapter:
 |------|--------------|
 | `bash` | A shell command on the mini, run daemon-side under its own Seatbelt profile with resource limits; output capped at 32 KB. Matched external writes and destructive deletes wait for `/approve`. |
 | `web_search` · `http_fetch` | Live web search (Tavily/Firecrawl chain) and an SSRF-hardened single-URL GET ([ADR 0006](docs/decisions/0006-web-read-capability.md)). Both return a reader digest. |
-| `gmail_read` · `google_api` | Houge's own Gmail, read-only ([ADR 0025](docs/decisions/0025-google-api-surface.md)). Both return a reader digest. |
+| `gmail_read` · `google_api` | Gmail, read-only ([ADR 0025](docs/decisions/0025-google-api-surface.md)): Houge's own by default, Paco's with `account: "paco"` while mail triage is on. Both return a reader digest. |
 | `to_local_time` | Deterministic timezone conversion with code-computed today/tomorrow labels. |
 | `lesson_write` | Distil Paco's correction into a durable lesson. |
 | `schedule_task` | Create, list, update or cancel this chat's schedules ([ADR 0017](docs/decisions/0017-scheduler.md)). |
@@ -204,6 +204,7 @@ Slash commands keep it inspectable (idempotent, no run, no budget unless noted):
 - `/status` health digest (with a `Jev front door: armed` or `off (cause)` line, plus 24 h decision counts, the settle health line, per-entry Jev skips when there were any, and the Improvement (7 d) line) · `/status decisions` the last 10 decisions · `/changes` background changes of the last 30 days in plain words (model switches, internal self-checks, routine Jev notices — what no longer comes to chat) · `/usage` token use per model (omp rows show "sub", never dollars).
 - `/memories [query]` view what Houge remembers about Paco · `/forget_memory <id>` retire one fact (with an Undo card; one the improvement check saved has its whole change undone, with no card).
 - `/models` which model each role resolves to; `/models set` and `/models reset` override or restore one · `/fresh` a new planner conversation at the next message.
+- `/inbox` the unseen mail that was filed rather than pinged (30 a page, grouped by kind, "next" taps for the rest; `/inbox all` the last 7 days) · `/mail on|off|status` the mail triage switch and its status line · `/mail_undo <rule id>` undo a sender rule made from a card tap. CLI: `houge mail auth` runs Paco's one-time Gmail consent (then restart the daemon), `houge mail purge --yes` clears every stored mail text now.
 - `/run <program> <goal>` start a named program run by hand.
 - Improvements learned from your own corrections apply on their own and show in `/changes` with their undo command; anything else arrives as one card with Accept / Dismiss; `/forget <id>` and `/forget_memory <id>` undo an applied one
   ([configuration](docs/reference/configuration.md#decision-ladder-adr-0034)).
@@ -355,9 +356,21 @@ behind an exact allowlist registry (one row per granted OAuth scope; today `gmai
 Both tools always return through the quarantined reader
 ([ADR 0025](docs/decisions/0025-google-api-surface.md)).
 
+**Paco's own Gmail (mail triage, SP2 slice 1).** A second `gmail.readonly` grant, Paco's account
+(`HOUGE_PACO_GMAIL_ADDRESS`, `houge mail auth`; ADR 0025 §9). While `HOUGE_MAIL_ENABLED` and `/mail on` are
+both on, a poller reads new mail every few minutes (headers and snippet only, never a body) and the
+`mail.triage` entry decides per mail: Paco's sender rules and code floors first, then one Jev request asking
+`mail_urgency` and `mail_kind` — urgent gets one card now (Open link, Wrong urgency tap; silent at night and for
+a follow-up in a thread that already pinged; past 6 pings in an hour the rest fold into `/inbox` behind one
+hourly card), everything else waits in `/inbox`; Jev down means a ping ([ADR 0034 rule 2.6](docs/decisions/0034-decision-ladder-consolidated.md)). The same
+tools read Paco's mail on demand with `account: "paco"`, refused while mail is off. Mail text is kept 30
+days ([configuration](docs/reference/configuration.md#google-identity--gmail_read--google_api-adr-0025)).
+
 **Runbook: Gmail ops fail with `auth_failed`.** The refresh token was revoked (or hit the 7-day
 testing-mode expiry). Re-run `node scripts/gmail-auth.mjs <client_secret.json>` and copy the printed
-lines into the mini's `.env`.
+lines into the mini's `.env`. For Paco's grant the page is `mail_auth_lost` (repeated daily): run
+`npm run houge -- mail auth` (it rewrites the one `HOUGE_PACO_GMAIL_REFRESH_TOKEN` line itself), then restart
+the daemon: the restart clears the pause (so does `/mail on`), and the next successful poll closes the page.
 
 ## Operations
 

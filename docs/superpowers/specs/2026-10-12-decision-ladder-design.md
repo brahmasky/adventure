@@ -379,6 +379,7 @@ mechanics and stays plain code.
 | supervision | D2 `planner.crash_guard` · D9 `turn.retry` |
 | settle | new `turn.settle` (§7.3) · E2+E11 `attach.path` L · E8 redactor `secret.redact` L · E12 `notify.page` |
 | after_turn | new `improve.route` (§7.4) · new `turn.trust` lives across stages (§7.2) |
+| inbound (added 2026-11-09) | `mail.triage` (spec 2026-11-09-sp2-mail-triage §3.4; ADR 0034 rule 2.6) — an item from outside, no planner turn |
 
 **Mechanics** (stay code): A3 command dispatch · A6 idempotency · A8 dispatch refusals · A11 media ingest · A20 and
 A21 lane bodies (handlers, not decisions) · A23 restart-on-fingerprint · A24 session reset · A27 seed, restart note,
@@ -405,6 +406,13 @@ entry, not a locked rule inside it. Remainder order and slices: spec `2026-10-30
 **Note (2026-11-03, remainder R6, Paco's Decisions 1-A, 2-A; ADR 0030 amendment):** A21 `lookup.rewrite` and `lookup.thin` (the lane's two decisions; the lane bodies stay mechanics) and A22 `turn.model` (the planner pin only; resolution, effort clamp, the spawn model and other seats stay mechanics) are registered (stage `pre_model`), rule-only. Spec `2026-11-03-ladder-remainder-r6-lookup-model-design.md`.
 
 **Note (2026-11-08, remainder R7, Paco's Decisions 1-A, 2-A, 3-A, 4-A, 5-A; ADR 0034 amendment):** E2+E11 `attach.path` (locked) is registered (stage `settle`), rule-only: refusals at parse (`marker_outside`) and at send (ten reasons, written by the dispatcher after `markDelivered`); the send predicate in the protected `notifications/attachment-check.ts`. Every §6.1 row now has an entry. Spec `2026-11-08-ladder-remainder-r7-attach-path-design.md`.
+
+**Note (2026-11-09, SP2 mail triage, Paco's D1–D5; ADR 0034 amendment — awaiting signature):** a new stage `inbound` and its one
+entry `mail.triage` (unlocked, rule `mail_floors` → Jev `mail_urgency`, `alwaysRecord`, `run_id` null, `tool_call_id` = the mail
+item id): Paco's own inbound mail routed between a card now and `/inbox`. It is the parked `notify.routing` (lane 4) point
+re-scoped to untrusted inbound mail; Houge's own notifications stay code-routed per topic (ADR 0031) and get no entry. Its Jev
+rung is the second named allowance to R12's tool-input rule (ADR 0034 2.6, `perItemRouting`). Spec
+`2026-11-09-sp2-mail-triage-design.md`.
 
 ### 6.2 Move, don't improve
 
@@ -1134,7 +1142,7 @@ When this spec lands, `tasks/todo.md` and `docs/ROADMAP.md` gain these entries, 
   - a typed stop word denying a waiting approval card;
   - refusing a re-request of an action Paco denied this turn;
   - a cap on the supervisor queue.
-- **mu parked points** (stage A spec Appendix A, plus research `00-`): `notify.routing` (lane 4), `tool.admission`,
+- **mu parked points** (stage A spec Appendix A, plus research `00-`): `notify.routing` (lane 4 — became `mail.triage` on 2026-11-09, §6.1 note; Houge's own notifications stay `TOPIC_ROUTE`), `tool.admission`,
   `turn.drift`, `task.frame`, `input.interjection`, `tool.constraint`.
 - **ADR backfill** (§10.3).
 

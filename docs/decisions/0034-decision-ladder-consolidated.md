@@ -2,7 +2,7 @@
 
 - **Status:** accepted 2026-11-05 (signed by Paco, rulings A1–A5 included); consolidates and supersedes
   [ADR 0030](0030-decision-ladder.md) with no change of meaning; amended 2026-11-07 (improvement proposals
-  auto-apply, the digest goes — signed by Paco 2026-11-08); amended 2026-11-08 (remainder R7: `attach.path`; rows after the end signal — signed by Paco 2026-11-09)
+  auto-apply, the digest goes — signed by Paco 2026-11-08); amended 2026-11-08 (remainder R7: `attach.path`; rows after the end signal — signed by Paco 2026-11-09); amended 2026-11-09 (spec 2026-11-09-sp2-mail-triage: rule 2.6, the second named allowance; `mail.triage`; stage `inbound`; a change of meaning, Tier C, approved by Paco's spec approval 2026-11-09) — awaiting Paco's signature
 - **Date:** 2026-11-04
 - **Deciders:** Paco
 - **Supersedes:** [0030](0030-decision-ladder.md) (17 amendment sections) and
@@ -29,7 +29,9 @@ code-owned registry under `src/decisions/`. Everything else stays plain code (me
 
 ### 1. Entries and the ladder
 
-- 1.1 **Entry.** A stable id; a version bumped on any wording, rung or bar change; a stage; the input its judges read
+- 1.1 **Entry.** A stable id; a version bumped on any wording, rung or bar change; a stage (`DECISION_STAGES`: `intake`,
+  `pre_model`, `pre_tool`, `post_tool`, `supervision`, `settle`, `after_turn`, and since 2026-11-09 `inbound` — a decision
+  about an item that arrived from outside, made with no planner turn; `after_turn` would enrol it in the streak pager); the input its judges read
   (`paco`, `tool` or `mixed`; `mixed` is treated as `tool`); a closed verdict set that always includes an escape value;
   a `fail` verdict used when no rung answers; a default verdict; the outcome signals that can show it wrong; and per
   verdict what it causes (`none`, `reply`, `tighten`, `proposal`, `effect`), whether that is reversible and how it is
@@ -69,7 +71,8 @@ code-owned registry under `src/decisions/`. Everything else stays plain code (me
 - 2.1 ADR 0029's accepted risk stands: Jev is steerable by injected text, so its labels stay advisory or monotone and
   steering degrades quality, never safety. Over **tool-derived input** (web, mail, calendar, shell output, files, tool
   results) a verdict may only tighten — withhold a passage, add a tap, send the planner back once — and any lasting
-  change it suggests (lesson, fact, skill, wiki page) is a proposal for Paco's tap.
+  change it suggests (lesson, fact, skill, wiki page) is a proposal for Paco's tap. One named allowance: rule 2.6
+  (routing one inbound mail between two lanes that both deliver it to Paco).
 - 2.2 Over **Paco's own message** a verdict may cause an effect directly if reversible and announced: a `turn.handler`
   lane reply (Dig deeper); the memory shortcut's instant lesson save (permanent; Undo on its card). Every automatic
   lesson save, whatever the route, is announced: on the memory card with Undo, or — for a lesson or fact `improve.route`
@@ -95,7 +98,37 @@ code-owned registry under `src/decisions/`. Everything else stays plain code (me
   reversible, announced `effect` when the entry names a code-owned provenance predicate (`pacoWordsOnly`; today
   `improve.route`'s `autoApplies`) that holds by construction — the state the stored text comes from is Paco's own
   message plus code-built fields. The provisional-bar rule (6.1) extends to that gated case. Every other mixed-input
-  effect still fails `entryProblems`.
+  effect still fails `entryProblems`. A second arm (spec 2026-11-09 §8.1; `routedPerItem`, `src/decisions/registry.ts`),
+  consulted by both `shapeProblems`' provisional-bar clause and `effectProblems`' R12 loop: `input === "tool"`, a function-valued `perItemRouting`, exactly two verdicts,
+  each an `effect` announced in `ROUTED_ANNOUNCED` (`card` for the up lane; `inbox`, reversible, for the down lane), and
+  `defaultVerdict === fail ===` the `card` lane (rule 2.6). `ANNOUNCED` and `GATED_ANNOUNCED` do not change. Any other
+  tool-input entry with a non-tightening Jev effect still fails; `tests/decisions/registry-routed.test.ts` and
+  `tests/adr/0034-2.6-mail-routing.test.ts` pin both sides (pass `mail.triage`; fail a copy without the predicate, one
+  with a third verdict, one whose default is the `inbox` lane).
+- 2.6 **The second named allowance: per-item routing of inbound mail.** `mail.triage`'s Jev rung routes an untrusted
+  mail between two code-owned lanes that both deliver the item to Paco: a card now (`ping`), or a listing in `/inbox`
+  (`inbox`). It allows exactly that and nothing wider: (a) `defaultVerdict === fail ===` the card lane, so a Jev `ping`
+  is indistinguishable from Jev being absent — **the only difference the Jev rung can cause is `inbox`, a reversible,
+  listed delay of that item's own delivery**; (b) the down bar is ≥ 0.85 (`MAIL_DOWN_BAR`, a Jev `later`), the up bar
+  ≥ 0.6 (`MAIL_UP_BAR_P`, a Jev `now`), and anything unsure routes up; (c) Paco's sender rules (`always`, `never`) and
+  the code floors (Houge's own address, backfill) outrank the rung; (d) every `inbox` item carries a "should have
+  pinged" tap; (e) the entry names `perItemRouting`, a runtime gate the poller calls before any write, true only for one
+  item's state (`item`, `rule`, `jev`; the item has an id) and a verdict in the two lanes — a refusal stores the item
+  `inbox`/`routing_refused` with a `decision_internal` line. Like `pacoWordsOnly`, it is a declaration whose truth the
+  entry's tests carry; `tests/adr/0034-2.6-mail-routing.test.ts` asserts behaviour, not shape: an `inbox` item is listed
+  by `/inbox`; an `always` rule beats a Jev `later`; a Jev `ping` writes the same outbox row as no Jev answer, apart from
+  the `(Jev unavailable)` line the fail path adds; a state
+  with a second item is refused. The fold (more than 6 pings in 60 min → `inbox`/`folded`, one fold card an hour) and
+  the thread follow-up (a silent card) are code after the verdict, not the rung's. Reason, restated and tested on today's
+  system: rule 2.1 exists because Jev is steerable by injected text; under 2.6 the worst a hostile mail can do is change
+  **its own** lane — delay itself to `/inbox` or ping itself — which degrades quality, never safety, and every outcome
+  stays visible to Paco. A Jev outage on mail pings every mail (`fail` = `ping`) and reaches Paco through the Jev
+  incidents, plus the `mail_jev_failing` sweep check (≥ 5 `fail`-rung `mail.triage` rows and no `system_one` answer in
+  24 h); `mail.triage` is in `JEV_PAGED_ELSEWHERE`, so no `decision_fallback` page (one call, one page). What 2.6
+  forbids, grepped at the final review: no mail text in `decisions`, `ledger_events`, `change_log` (beyond masked
+  addresses), logs, `jev_verdicts` or `jev_decisions`; no planner tool or `improve.route` signal reads `mail_items`; no
+  `format=full|raw` in `src/mail/`; no message edit on the mail path. A second inbound source wanting this allowance
+  needs its own amendment (Revisit when).
 
 ### 3. Recording: decide, then record
 
@@ -111,13 +144,20 @@ code-owned registry under `src/decisions/`. Everything else stays plain code (me
   successful claim (settle-stage rows: below). A lane writes its rows at its end, only while the turn's abort signal is unset. Memory-save rows are
   held and flushed by `CoreWorker.runMemoryWrite` on a live turn; `memory.kind`'s row stays inside the save transaction.
   Intake rows carry `run_id` null (no run exists yet, as `tool.manifest`). Each in-turn row is a synchronous insert
-  inside the turn deadline (ruled residual). Settle-stage rows (`attach.path` at parse) are best-effort terminal records: written when the supervisor reached its success arm on a non-lane turn, after the end signal, and kept when the run then fails to stage its report or loses its finish claim; a turn that took the failure arm writes none. Delivery rows (`attach.path` at send) are written by the outbox dispatcher after the delivery committed, with the outbox row's `run_id`; a delivery that did not commit writes none.
+  inside the turn deadline (ruled residual). **Queuing recorder, flushed in the caller's transaction** (the front door's
+  `deferredRecorder`/`flushLadder` pattern, named): `mail.triage` decides with a recorder that only queues (the async Jev
+  call completes before any write), then the poller's one `BEGIN IMMEDIATE` inserts the `mail_items` row, flushes the
+  queued decision row with `recordStrict` (returns the id or throws — never swallows) and, for a `ping`, enqueues the
+  card (key `mail:<gmail message id>`); a throw rolls the whole item back and the next tick re-decides it. Rows carry
+  `run_id` null and the `mail_items.item_id` in `tool_call_id`. Settle-stage rows (`attach.path` at parse) are best-effort terminal records: written when the supervisor reached its success arm on a non-lane turn, after the end signal, and kept when the run then fails to stage its report or loses its finish claim; a turn that took the failure arm writes none. Delivery rows (`attach.path` at send) are written by the outbox dispatcher after the delivery committed, with the outbox row's `run_id`; a delivery that did not commit writes none.
 - 3.3 **Move, don't improve** (4B ruling R1, every migration). A migrated check's call site records the code's answer
   where it already decides and branches on the raw answer, never the recorded verdict; results, rows, events, prompt
   bytes and their order stay identical to the merge base, proven by a behavioural differential before the call site
   moves.
 - 3.4 **Faults and visibility.** A failed decision write opens `decision_record_failed` (one per entry; routed per ADR
-  0031); the result stands; a recorder that throws past itself is logged; nothing reaches a denied sender's chat.
+  0031); the result stands (under the strict flush of 3.2 the item rolls back with its row and is retried next tick —
+  a mail is never stored without its decision row, nor pinged without it; the incident still opens, after the
+  rollback); a recorder that throws past itself is logged; nothing reaches a denied sender's chat.
   `/status` shows a count line per entry id once rows exist (`secret.redact`'s says "final, failure and evolution
   reports only"). `review_ok` may name any id in `ENTRY_IDS` (the digest that wrote it is retired).
 
@@ -159,6 +199,7 @@ write.
 | `lookup.thin` | `pre_model` · `tool` | no | `alwaysRecord` per successful first read: `fetch`/`thin`; `none`/`answered`, `no_url` | R6 |
 | `turn.model` | `pre_model` · `tool` | no | non-default only, once per completed pin walk: `fallback`/`stepped_up`, `refused`, `next_leg`; `held`/`pin_failed` (first leg: the turn answers on the model the child holds); `none`/`pin_failed` (retry leg) or `no_leg`; `head` default | R6 |
 | `attach.path` | `settle` · `tool` | yes | refusals (1-A): parse `refuse`/`marker_outside`, once per distinct refused path on the success arm of a non-lane turn; send `refuse`/`over_count` (one for all paths past the fifth), `workspace_unverified`, `outside_workspace`, `not_a_file`, `too_large`, `linked`, `changed`, `not_found`, `unreadable`, `unsupported`, written by the dispatcher after `markDelivered` with the outbox row's `run_id`; rows describe each observed check; `send` default; `fail: "refuse"`; `send_failed` is execution, no row | R7 |
+| `mail.triage` | `inbound` · `tool` | no | `alwaysRecord` per mail (rule `mail_floors` → system_one `mail_urgency`, `mail_kind` beside it): `inbox`/`own_output`, `rule_never`, `backfill`, `jev_later`; `ping`/`rule_always`, `jev_now`, `jev_unsure`; `fail: "ping"` on a Jev failure (the item's own code `jev_unavailable`; pages via the Jev incidents plus `mail_jev_failing`, not `decision_fallback`); the fold (`folded`) and a refused routing (`routing_refused`) are the item's codes, not the row's; `run_id` null, `tool_call_id` = the `mail_items` id; flushed strictly inside the item's transaction (rule 3.2) | 2.6 (spec 2026-11-09-sp2-mail-triage §3.4/§8.1) |
 
 - 4.1 **Shared predicates and limits.** Code and rule share one predicate where named: `mayRetryOf`, `clarifyCapOf`,
   `rewriteFilterOf`/`queryCheckOf`/`thinOf` (`core/lanes/lookup-predicates.ts`), `attach.path`'s send predicate `checkAttachment`/`overCount` (`notifications/attachment-check.ts`) and its parse predicate (`parseAttachments`' containment conjunction), `isBareAck` (nothing is approved by an
@@ -191,7 +232,8 @@ write.
 - 6.1 **Bars.** A Jev rung arms on calibrated rows (ADR 0033) or on a **provisional bar** from an external measurement,
   kept in the entry's registry code, allowed only on a monotone or fail-open entry or on a `paco`-input entry whose
   every effect is reversible and announced (`none` or `proposal` qualifies); a judge that can only propose
-  (`noDirectEffect`) may carry one on a fail-open entry. The registry test fails any other. A calibrated row may replace
+  (`noDirectEffect`) may carry one on a fail-open entry; the gated cases of 2.5 (`pacoWordsOnly`) and 2.6
+  (`perItemRouting`) carry one too. The registry test fails any other. A calibrated row may replace
   it when Paco commits one.
 - 6.2 **Golden sets.** Provisional bars are covered by golden sets that run as daily ticks (`tool.injection`,
   `memory.kind`, `turn.settle`) and in the Jev version check (those three and `improve.route`), never in the invariant
@@ -208,7 +250,9 @@ write.
 - 6.5 **Provisional bars in force.** `tool.injection` (held-out measurement against a 1 % false-positive bar);
   `memory.kind` p ≥ 0.85 (golden items per verdict in zh and en except `fix`, which Jev does not clear: a fix request
   falls to the distill and `memory_correct`); `turn.settle` 0.6/0.8/0.7/0.7 (rule 9.2); `improve.route` 0.67
-  (`IMPROVE_BAR_P`, Paco 2026-10-22). `memory.kind`'s ladder: a Jev rung (`memory_kind`, own request, only when a save
+  (`IMPROVE_BAR_P`, Paco 2026-10-22); `mail.triage` 0.6 up (`MAIL_UP_BAR_P`, the `ProvisionalBar` on `mail_urgency`)
+  with the 0.85 down bar applied inside the rung (`MAIL_DOWN_BAR`; Paco D4 2026-11-09, armed at ship, no golden set yet).
+  `memory.kind`'s ladder: a Jev rung (`memory_kind`, own request, only when a save
   is about to run), then the distill (which writes the text); `rule`/`fact`/`both` save first with an Undo card per
   item, `fix`/`other` go to the planner. It runs on the memory lane, on any lane's `sets_rule` save-first (a Jev
   `other`/`fix` there abstains, never suppressing the save), and inside the planner's `lesson_write` tool (where the Jev
@@ -461,7 +505,8 @@ write.
   embedder up resolves.
 - 13.3 **Daily reminder.** A tick-loop step, independent of `HOUGE_MODEL_ROLES` and catalog outages, before the model
   ticks: one message a day (`incident_remind:<Sydney date>`) listing open `REMIND_KINDS` incidents older than 24 h, with
-  ages and a code-owned action line — `role_unresolved`, `planner_session_reset_failed`, `omp_contract_drift` (at 7
+  ages and a code-owned action line — `role_unresolved`, `planner_session_reset_failed`, `mail_auth_lost` (run
+  `houge mail auth`, then restart the daemon), `omp_contract_drift` (at 7
   days). Left out: undelivered and delivery-health kinds, `trust_tap_budget`, `planner_no_leg`. Kinds, subjects and ages
   only.
 
@@ -489,6 +534,15 @@ write.
   dir is outside text) is reachable only as defence in depth, since the gate already denies planner reads there; a malformed
   `get_state` turns the steer guard off (`todo_unavailable`); a blocked read still sends a refused `judge_read`; slice
   R6's `tool.wall`/`reader.family` pair writes mid-lane, its second read unguarded.
+- Retention (`mail.triage`, spec 2026-11-09 §4; `src/mail/retention.ts`), two clocks: a mail item's text (redacted sender
+  name, subject, snippet) and its `mail_card` outbox copy are cleared by the daily sweep `HOUGE_MAIL_TEXT_DAYS` (30) after
+  the mail's `received_at`; an `/inbox` reply row (key prefix `mail:inbox:`) is stripped `HOUGE_MAIL_TEXT_DAYS` after the
+  reply's own `created_at` — so a subject shown in `/inbox` on day 29 persists in that reply row until the reply itself
+  is 30 days old. The stripped forms carry no text (`📧 · <kind>`, `📧 /inbox page (cleared)`), `payload_hash` recomputed;
+  `mail_sender_rules` and `mail_senders` hold addresses by design; `houge mail purge --yes` does all of the sweep now.
+  A silently dead poller is detected within one sweep interval (12 h default) through `mail_state.last_ok_at`, never through
+  mail cards; a cursor resync capped at 500 can leave older mail unlisted, reported in one `mail_log` line; a hostile subject
+  reaches Jev as data in one typed question (worst case: its own lane).
 
 ## Alternatives considered
 
@@ -523,6 +577,9 @@ write.
   gate (outcomes only: no review labels).
 - A locked entry needs a judgment code cannot make; a stage needs a non-additive migration (R13 needs Paco again); any
   assumption fails its check.
+- A second inbound source (calendar, files) wants the 2.6 allowance — it needs its own amendment; `mail.triage`'s bars
+  have 14 days of rows for a golden set or a calibrated row; mail sending arrives (read+send is a different trifecta,
+  ADR 0025 §6).
 
 ## History
 
@@ -553,6 +610,7 @@ write.
 | 2026-11-07 | 13.2: `decision_fallback_streak` pages three failed runs in a row of a tick entry (`improve.route` failed every day unseen); `improve.route`'s Tiny bound 8 s → 30 s | — | 2026-11-07 |
 | 2026-11-08 | R7: `attach.path` (locked) at parse and send; 3.2 adds settle-stage and delivery rows; `attachment-check.ts` protected | [R7](../superpowers/specs/2026-11-08-ladder-remainder-r7-attach-path-design.md) | signed by Paco 2026-11-09 |
 | 2026-11-08 | 10.5: the 14-day block covers repeats, not the category — a lesson or fact draft is skipped only as a near-copy (`LESSON_REPEAT_COSINE`) of one reverted (or an accepted fact) on the pair, and is the 'lesson did not hold' card only as a near-copy of a lesson accepted within 30 days; `/forget` and `/forget_memory` undo an improvement's whole change (Q1-B, Q2-A; controller ruling R1') | [auto-apply addendum Rev 2.3.1](../superpowers/specs/2026-11-07-improve-auto-apply-design.md) | 2026-11-08 |
+| 2026-11-09 | SP2 mail triage (Jev lane 4 re-scoped; D1–D5): rule 2.6, the second named allowance (per-item routing of inbound mail between two delivering lanes; a change of meaning, Tier C, approved with the spec); 2.1 names it; 2.5 gains the `perItemRouting` arm; 1.1 the stage list with `inbound`; 3.2 the queuing recorder flushed strictly in the caller's transaction, 3.4 its rollback; rule 4 row `mail.triage`; 6.1 and 6.5 the mail bars; 13.3 `mail_auth_lost`; Consequences the retention gaps; Revisit when a second inbound source | [sp2-mail-triage](../superpowers/specs/2026-11-09-sp2-mail-triage-design.md) (Rev 1.3.1) | awaiting Paco's signature |
 
 ## Reference map
 
@@ -580,3 +638,4 @@ write.
 | 2026-10-29 4B (B14, E8) · 2026-10-30 4C (B9, B23) | 4, 1.5, 3.3, 3.4 · 4, 3.2 |
 | slices R1 (A2, A4, A5) · R2 (A1, A7) · R3 (A9, A10) · R4 (D2, D9) · R5 (A23, A25–A27) · R6 (A21, A22) · R7 (E2, E11) | 4, 4.1, 3.2, 2.5 |
 | 2026-11-02 carry with an exit (D2-A, D3-A) · 2026-11-03 chat is for Paco | 8.3–8.5, 13.3 · 13.2, 13.3 |
+| 2026-11-09 SP2 mail triage spec §3.4 (`mail.triage`, write path) · §8.1 (rule 2.6, the 2.5 arm) · "Jev lane 4" (2026-10-04 spec §6.3) | 4, 3.2, 3.4 · 2.6, 2.5, 6.1 · 2.6 (ADR 0033 K) |

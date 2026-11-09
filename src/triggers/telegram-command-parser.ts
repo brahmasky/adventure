@@ -24,6 +24,9 @@ export type TelegramCommand =
   | { type: "rearm" }
   | { type: "fresh" }
   | { type: "approvals" }
+  | { type: "inbox"; all: boolean }
+  | { type: "mail"; action: "on" | "off" | "status" }
+  | { type: "mail_undo"; rule_id: string }
   | { type: "memories"; query?: string }
   | { type: "forget_memory"; id: number }
   | { type: "models"; action: "list" }
@@ -69,6 +72,10 @@ export function parseTelegramCommand(text: string): TelegramCommandParseResult {
   if (command === "/approve") return requiredApproval("approve", rest);
   if (command === "/deny") return requiredApproval("deny", rest);
   if (command === "/approvals") return parseNoArgs("approvals", rest);
+  // SP2 mail triage (spec 2026-11-09 §3.6): the inbox view, the switch, and the undo of a sender rule.
+  if (command === "/inbox") return parseInbox(rest);
+  if (command === "/mail") return parseMail(rest);
+  if (command === "/mail_undo") return parseMailUndo(rest);
   // Paco's own memory (2026-10-02): view what Houge remembers, retire one fact (with an Undo card).
   if (command === "/memories") return parseMemories(rest);
   // L2: /forget_memory is the name (a Telegram command allows no hyphen); /forget-memory stays a typed alias.
@@ -92,6 +99,22 @@ export function parseTelegramCommand(text: string): TelegramCommandParseResult {
     return { ok: true, command: { type: "unknown_command", attempted: command } };
   }
   return { ok: true, command: { type: "turn", goal: trimmed } };
+}
+
+function parseInbox(words: string[]): TelegramCommandParseResult {
+  if (words.length === 0) return { ok: true, command: { type: "inbox", all: false } };
+  return words.length === 1 && words[0]?.toLowerCase() === "all" ? { ok: true, command: { type: "inbox", all: true } } : invalid("/inbox takes no argument, or `all`");
+}
+
+function parseMail(words: string[]): TelegramCommandParseResult {
+  if (words.length === 0) return { ok: true, command: { type: "mail", action: "status" } };
+  const a = words[0]?.toLowerCase();
+  return words.length === 1 && (a === "on" || a === "off" || a === "status") ? { ok: true, command: { type: "mail", action: a } } : invalid("/mail takes on, off or status");
+}
+
+function parseMailUndo(words: string[]): TelegramCommandParseResult {
+  const id = words[0] ?? "";
+  return words.length === 1 && MAIL_RULE_ID.test(id) ? { ok: true, command: { type: "mail_undo", rule_id: id } } : invalid("/mail_undo requires a rule id (mr_…)");
 }
 
 function parseRun(words: string[]): TelegramCommandParseResult {
@@ -379,6 +402,20 @@ export function parseJevAcceptCallback(data: unknown): { model_hash: string; gen
   if (typeof data !== "string") return null;
   const m = DEC_JEV_ACCEPT.exec(data);
   return m ? { model_hash: m[1]!, generation: Number(m[2]) } : null;
+}
+
+const MAIL_RULE_ID = new RegExp(`^mr_${LC_UUID}$`);
+const MAIL_ITEM_CB = new RegExp(`^mail:(wu|never|always|shp):(mi_${LC_UUID})$`);
+const MAIL_PAGE_CB = /^mail:page:([1-9]\d{0,3})$/;
+export type MailTap = { action: "wu" | "never" | "always" | "shp"; item_id: string } | { action: "page"; page: number };
+
+/** SP2 mail (spec 2026-11-09 §3.6): `mail:<wu|never|always|shp>:<mi_uuid>` (at most 48 bytes) and `mail:page:<n>` (at most 14); anything else is null. */
+export function parseMailCallback(data: unknown): MailTap | null {
+  if (typeof data !== "string") return null;
+  const item = MAIL_ITEM_CB.exec(data);
+  if (item) return { action: item[1] as "wu" | "never" | "always" | "shp", item_id: item[2]! };
+  const page = MAIL_PAGE_CB.exec(data);
+  return page ? { action: "page", page: Number(page[1]) } : null;
 }
 
 const MODEL_TIER_CB = /^mt:([a-z@-]{1,24}):(?:([0-9a-f]{12}):use|no)$/;
