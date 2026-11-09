@@ -110,6 +110,22 @@ describe("triageOne: fold and thread (spec §3.4)", () => {
   });
 });
 
+describe("triageOne: thread race", () => {
+  it("two mails of one thread decided together: the second to commit is the silent follow-up (one sound per thread per 6 h)", async () => {
+    const store = RunStore.openInMemory();
+    let release!: () => void;
+    const gate = new Promise<void>((res) => { release = res; });
+    const ask: TriageDeps["ask"] = async () => { await gate; return answer("now", 0.9); };
+    const both = Promise.all([triageOne(deps(store, ask), meta("m1", { thread: "T" }), { known_sender: true, backfill: false }),
+      triageOne(deps(store, ask), meta("m2", { thread: "T" }), { known_sender: true, backfill: false })]);
+    release();
+    expect((await both).map((r) => r.stored && r.lane)).toEqual(["ping", "ping"]);
+    expect(items(store).map((r) => r.thread_followup).sort()).toEqual([0, 1]);
+    expect([...drainOutbox(store).values()].filter((p) => p.silent === true)).toHaveLength(1);
+    store.close();
+  });
+});
+
 describe("triageOne: one transaction (spec §3.4, §7)", () => {
   it("a failing insertDecision rolls the item back, opens decision_record_failed once; the retry pings once and resolves it", async () => {
     const store = RunStore.openInMemory();

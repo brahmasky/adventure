@@ -74,7 +74,8 @@ function routeOf(store: RunStore, s: MailTriageState, r: Decision, now: Date): R
   if (reason === null) return refused;
   if (r.verdict === "inbox") return { ...base, lane: "inbox", reason };
   if (store.countMailPingsSince(ago(now, FOLD_WINDOW_MS)) >= MAIL_FOLD_LIMIT) return { ...base, lane: "inbox", reason: "folded", foldDue: true };
-  return { ...base, lane: "ping", reason, thread_followup: s.item.thread_pinged_6h };
+  // re-read after the Jev await: two mails of one thread in flight together must not both sound (one sound per thread per 6 h, §7)
+  return { ...base, lane: "ping", reason, thread_followup: s.item.thread_pinged_6h || store.threadPingedSince(s.item.thread_id, ago(now, THREAD_WINDOW_MS)) };
 }
 
 /** A `fail` rung is `jev_unavailable`; otherwise the row's reason must be one of the entry's own, or the item is refused (a code bug, never a cast). */

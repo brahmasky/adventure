@@ -34,7 +34,8 @@ export const MAIL_FIRST_RUN_CAP = 200;
 export const MAIL_RESYNC_CAP = 500;
 export const FIRST_RUN_QUERY = "in:inbox newer_than:1d";
 const SENT_CACHE_MS = 30 * 86_400_000;
-const POLL_FAILING: ReadonlySet<string> = new Set(["mail_poll_failing"]);
+/** The mail conditions a successful poll clears: a stale poller, and a lost grant once Paco re-authed and the tick resumed. */
+const CLEARED_BY_SUCCESS: ReadonlySet<string> = new Set(["mail_poll_failing", "mail_auth_lost"]);
 
 type Ref = { id: string; threadId: string };
 type Run = { stored: number; pinged: number; allDone: boolean; error?: "auth" | "unavailable" };
@@ -181,7 +182,7 @@ function settle(d: PollDeps, st: MailStateRow, p: Progress, now: Date): void {
   const nowIso = now.toISOString();
   if (p.error === undefined) {
     d.store.setMailState({ last_ok_at: nowIso, last_error_code: null, failing_since: null, backoff_n: 0 });
-    resolveOpenIncidents(d.store, POLL_FAILING, undefined, nowIso);
+    resolveOpenIncidents(d.store, CLEARED_BY_SUCCESS, undefined, nowIso);
     return;
   }
   if (p.error === "auth") {

@@ -213,6 +213,9 @@ describe("runMailTick: failures (spec §7)", () => {
     expect(await runMailTick(pollDeps(store, g))).toEqual({ ran: false, why: "paused" });
     expect(g.urls).toHaveLength(n);
     expect([...drainOutbox(store).keys()].filter((k) => k.startsWith("incident_opened:"))).toHaveLength(1);
+    store.setMailState({ last_error_code: null }); // what `/mail on` or a restart does after `houge mail auth`
+    expect(await runMailTick(pollDeps(store, gmail({ history: () => page([], "10") })))).toMatchObject({ ran: true, cursorAdvanced: true });
+    expect(open(store)).toEqual([]); // the condition cleared: the grant works again
     store.close();
   });
   it("unavailable backs off 1, 2, 4 … min and stamps failing_since; mail_poll_failing opens once past two hours; a success resolves it and resets", async () => {
