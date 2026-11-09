@@ -335,7 +335,8 @@ waits in `/inbox`. Jev down → the mail pings, the card says `(Jev unavailable)
 `/mail on` refuses unless `HOUGE_PACO_GMAIL_ADDRESS` holds a valid address, and clears a paused auth error; `/mail off`
 stops the poller, invalidates Paco's cached access token and makes `account: "paco"` reads refuse at `turn.preflight`
 with `Paco's mail is off (/mail on to allow)`; `/mail status` shows the switches, the last successful poll, the last 24 h
-in counts (items, pings, folded) and the Jev state (`fused` when the ADR 0019 cap has latched). Gmail errors: a 401 or
+in counts (items, pings), folded this hour, unseen in `/inbox`, and the Jev state over the last hour (`ok`, `degraded` with
+the fail and answered counts, or `fused` when the ADR 0019 cap has latched). Gmail errors: a 401 or
 `invalid_grant` pauses the poller (cursor kept, no retry until `/mail on` or a restart) and opens one `mail_auth_lost`
 page (in the daily reminder); a 403 is a Gmail rate limit, treated as temporary like a 5xx — backoff 1, 2, 4 … 30 min;
 no successful poll for 2 h while on opens `mail_poll_failing` (poller and sweep share one `mailStale` predicate); a
