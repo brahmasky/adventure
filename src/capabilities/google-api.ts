@@ -80,7 +80,7 @@ export interface GoogleApiResult {
 type CoreOutcome =
   | { kind: "ok"; status: number; json: unknown }
   | { kind: "truncated"; status: number; bodyText: string }
-  | { kind: "failure"; error: string; fetched: boolean };
+  | { kind: "failure"; error: string; fetched: boolean; status?: number };
 
 function describeError(error: unknown): string {
   return error instanceof Error ? sanitizeVenueText(error.message, 200) : "unknown error";
@@ -173,15 +173,15 @@ async function performGet(
       return { kind: "failure", error: `google api request failed: ${describeError(error)}`, fetched: true };
     }
     if (response.status === 401) {
-      return { kind: "failure", error: "google api auth rejected (HTTP 401 after token refresh)", fetched: true };
+      return { kind: "failure", error: "google api auth rejected (HTTP 401 after token refresh)", fetched: true, status: 401 };
     }
   }
 
   if (response.status >= 300 && response.status < 400) {
-    return { kind: "failure", error: `redirect refused (HTTP ${response.status})`, fetched: true };
+    return { kind: "failure", error: `redirect refused (HTTP ${response.status})`, fetched: true, status: response.status };
   }
   if (response.status < 200 || response.status >= 300) {
-    return { kind: "failure", error: `google api returned HTTP ${response.status}`, fetched: true };
+    return { kind: "failure", error: `google api returned HTTP ${response.status}`, fetched: true, status: response.status };
   }
 
   const contentType = (response.headers.get("content-type") ?? "").toLowerCase();
@@ -234,7 +234,7 @@ export async function googleApiGetJson(
   query: GoogleApiQuery | undefined,
   deps: GoogleApiDeps,
   auth: GoogleAuthClient
-): Promise<{ ok: true; json: unknown } | { ok: false; error: string }> {
+): Promise<{ ok: true; json: unknown } | { ok: false; error: string; status?: number }> {
   const validated = validateGoogleApiPath(path);
   if (!validated.ok) return { ok: false, error: validated.error };
   const row = findRegistryRow(validated.path);
@@ -244,7 +244,7 @@ export async function googleApiGetJson(
   if (outcome.kind === "truncated") {
     return { ok: false, error: `google api response truncated at ${GOOGLE_API_MAX_BYTES} bytes` };
   }
-  return { ok: false, error: outcome.error };
+  return outcome.status === undefined ? { ok: false, error: outcome.error } : { ok: false, error: outcome.error, status: outcome.status };
 }
 
 export async function runGoogleApi(
