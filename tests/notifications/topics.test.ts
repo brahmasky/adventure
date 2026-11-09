@@ -2,9 +2,9 @@ import { describe, expect, it } from "vitest";
 import { TOPIC_ROUTE, isLogTopic } from "../../src/notifications/topics.js";
 
 describe("TOPIC_ROUTE (spec 2026-11-03 §4.1)", () => {
-  it("routes exactly the four background topics to the log", () => {
+  it("routes exactly the background topics to the log", () => {
     const log = Object.entries(TOPIC_ROUTE).filter(([, r]) => r === "log").map(([t]) => t).sort();
-    expect(log).toEqual(["decision_internal", "improve_log", "incident_log", "jev_notice", "model_change", "standing_log"]);
+    expect(log).toEqual(["decision_internal", "improve_log", "incident_log", "jev_notice", "mail_log", "model_change", "standing_log"]);
   });
   it("has no digest topic", () => {
     expect("digest" in TOPIC_ROUTE).toBe(false); // spec 2026-11-07: no digest topic
