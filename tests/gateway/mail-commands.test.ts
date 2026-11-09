@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { TelegramAllowlist, TypedTaskEvent } from "../../src/domain/types.js";
 import { Gateway } from "../../src/gateway/gateway.js";
 import { TAP_FAILED_TEXT } from "../../src/gateway/improvement-commands.js";
-import { handleMailTap } from "../../src/gateway/mail-commands.js";
+import { handleInbox, handleMailTap } from "../../src/gateway/mail-commands.js";
 import type { GmailMetadata } from "../../src/mail/envelope.js";
 import { applySenderRule, maskAddress, undoSenderRule } from "../../src/mail/inbox.js";
 import { triageOne } from "../../src/mail/triage.js";
@@ -178,6 +178,20 @@ describe("/mail", () => {
 });
 
 describe("faults and flips", () => {
+  it("/inbox marks nothing seen when its reply is not queued (codex W2)", () => {
+    const s = RunStore.openInMemory();
+    const ids = [seed(s, randomUUID(), { n: 1 }), seed(s, randomUUID(), { n: 2 })];
+    const real = s.enqueueNotification.bind(s);
+    vi.spyOn(s, "enqueueNotification").mockImplementation((i) => (i.topic === "reply" ? { status: "conflict", error: "NOTIFICATION_IDEMPOTENCY_CONFLICT" } : real(i)));
+    const err = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    expect(handleInbox(s, msg("/inbox"), new Date(NOW)).ok).toBe(true);
+    expect(ids.every((id) => s.getMailItem(id)!.seen_at === null)).toBe(true);
+    expect(err.mock.calls.flat().join(" ")).toContain("nothing marked seen");
+    vi.restoreAllMocks();
+    expect(handleInbox(s, msg("/inbox"), new Date(NOW)).ok).toBe(true);
+    expect(ids.every((id) => s.getMailItem(id)!.seen_at !== null)).toBe(true);
+    s.close();
+  });
   it("a fault while rendering /inbox or a page tap replies the failed-tap text, not silence", () => {
     const s = RunStore.openInMemory();
     const spy = vi.spyOn(console, "error").mockImplementation(() => undefined);
@@ -247,6 +261,20 @@ describe("taps and sender rules", () => {
     s.close();
   });
 
+  it("undo is one transaction: a /changes line that cannot be recorded keeps the rule (codex W1)", () => {
+    const s = RunStore.openInMemory();
+    const a = applySenderRule(s, seed(s, randomUUID()), "never", new Date(NOW));
+    if (!a.ok) throw new Error("rule expected");
+    const real = s.enqueueNotification.bind(s);
+    const spy = vi.spyOn(s, "enqueueNotification").mockImplementation((i) => (i.topic === "mail_log" && i.idempotency_key.includes(":undo:") ? { status: "conflict", error: "CHANGE_LOG_IDEMPOTENCY_CONFLICT" } : real(i)));
+    expect(() => undoSenderRule(s, a.rule_id, new Date(NOW))).toThrow();
+    expect(s.senderRule("ann@example.com")?.rule_id).toBe(a.rule_id);
+    expect(changeLog(s).filter((t) => t.includes("removed"))).toEqual([]);
+    spy.mockRestore();
+    expect(undoSenderRule(s, a.rule_id, new Date(NOW))).toBe(true);
+    expect(s.senderRule("ann@example.com")).toBeUndefined();
+    s.close();
+  });
   it("/mail_undo removes the rule and logs it; a second undo says there is none", () => {
     const s = RunStore.openInMemory();
     const id = seed(s, randomUUID());

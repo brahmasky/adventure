@@ -20,11 +20,12 @@ export const MAIL_NO_RULE_FOUND_TEXT = "No such rule (it may already be undone).
 
 const done = (status: "inbox_returned" | "mail_switched" | "mail_rule_undone" | "mail_tapped"): GatewayIntakeResult => ({ ok: true, status, run_id: "" });
 
-/** A reply carrying keyboard rows (replyTo carries only a flat button list). Keyed on the event, so a redelivery never replies twice. */
-function replyPayload(store: RunStore, event: TypedTaskEvent, suffix: string, payload: NotificationPayload): void {
+/** A reply carrying keyboard rows (replyTo carries only a flat button list). Keyed on the event, so a redelivery never replies twice. True when the outbox holds it (queued, or the same row from a redelivery). */
+function replyPayload(store: RunStore, event: TypedTaskEvent, suffix: string, payload: NotificationPayload): boolean {
   // The `mail:inbox:` prefix marks a reply that carries redacted subjects; retention strips it with the items' text (retention.ts).
-  store.enqueueNotification({ topic: "reply", target: event.notify, intent_type: "progress", idempotency_key: `${INBOX_REPLY_KEY_PREFIX}${event.idempotency_key}:${suffix}`,
+  const r = store.enqueueNotification({ topic: "reply", target: event.notify, intent_type: "progress", idempotency_key: `${INBOX_REPLY_KEY_PREFIX}${event.idempotency_key}:${suffix}`,
     correlation_id: event.source_reference, payload });
+  return r.status === "queued" || r.status === "duplicate";
 }
 
 /** Runs `fn`; a fault is logged by code only and answers false. */

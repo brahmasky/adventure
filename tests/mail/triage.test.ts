@@ -101,6 +101,23 @@ describe("triageOne: fold and thread (spec §3.4)", () => {
     expect(decisions(store)).toHaveLength(8);
     store.close();
   });
+  it("the fold card's payload is fixed per hour bucket (quiet read at the bucket start) and a conflict on its key never rolls a folded item back (codex B2)", async () => {
+    const store = RunStore.openInMemory();
+    // 12:xx UTC = 23:xx Sydney: quiet from 23:00. Six pings fill the fold; two folds in the same UTC-hour bucket, the second with HOUGE_MAIL_QUIET moved so quietNow(now) flips
+    const t = (iso: string) => new Date(iso);
+    const d = (now: Date, env: Record<string, string> = {}) => ({ ...deps(store, answer("now", 0.9), now), env: { HOUGE_TELEGRAM_CHAT_ID: "555", ...env } });
+    for (let n = 1; n <= 6; n += 1) await triageOne(d(t("2026-11-09T12:10:00.000Z")), meta(`m${n}`), { known_sender: true, backfill: false });
+    expect(await triageOne(d(t("2026-11-09T12:20:00.000Z"), { HOUGE_MAIL_QUIET: "23-7" }), meta("m7"), { known_sender: true, backfill: false })).toMatchObject({ lane: "inbox", reason: "folded" });
+    expect(await triageOne(d(t("2026-11-09T12:50:00.000Z"), { HOUGE_MAIL_QUIET: "1-2" }), meta("m8"), { known_sender: true, backfill: false })).toMatchObject({ lane: "inbox", reason: "folded" });
+    expect(items(store).filter((r) => r.reason_code === "folded")).toHaveLength(2);
+    const spy = vi.spyOn(store, "enqueueNotification").mockReturnValue({ status: "conflict", error: "NOTIFICATION_IDEMPOTENCY_CONFLICT" });
+    expect(await triageOne(d(t("2026-11-09T12:55:00.000Z")), meta("m9"), { known_sender: true, backfill: false })).toEqual({ stored: true, lane: "inbox", reason: "folded", notified: false });
+    spy.mockRestore();
+    expect(items(store).filter((r) => r.reason_code === "folded")).toHaveLength(3);
+    const folds = [...drainOutbox(store).entries()].filter(([k]) => k.startsWith("mail:fold:"));
+    expect(folds).toEqual([["mail:fold:2026-11-09T12", { text: "More urgent mail this hour — see /inbox", silent: true }]]);
+    store.close();
+  });
   it("a pinged thread's next ping is stored thread_followup = 1 with a silent ↪ card", async () => {
     const store = RunStore.openInMemory();
     await ping(store, "m1", { thread: "T" });

@@ -133,11 +133,18 @@ function enqueueCard(d: TriageDeps, row: MailItemInsert, jevUnavailable: boolean
   d.store.setMailItemNotification(row.item_id, res.record.notification_id);
 }
 
-/** One fold card per UTC hour bucket; the key doubles as correlation id so the second fold in the hour is `duplicate`, not `conflict`. */
+/**
+ * One fold card per UTC hour bucket; the key doubles as correlation id and the payload is fixed for the bucket (`quiet` is read
+ * at the bucket's first instant, so a quiet-hours edge inside the hour cannot change it), so the second fold is `duplicate`. A
+ * `conflict` (a card for this hour already exists with another build's text) also means "already sent": the item is kept
+ * (codex B2); the fold card is a courtesy, never a reason to roll a folded item back.
+ */
 function enqueueFold(d: TriageDeps, now: Date): void {
-  const key = `mail:fold:${now.toISOString().slice(0, 13)}`;
-  chatQueued(d.store.enqueueNotification({ topic: "mail_card", target: { kind: "telegram", chat_id: d.chatId }, intent_type: "progress",
-    idempotency_key: key, correlation_id: key, payload: foldCardPayload(quietNow(d, now)) }), "fold card");
+  const bucket = now.toISOString().slice(0, 13);
+  const key = `mail:fold:${bucket}`;
+  const res = d.store.enqueueNotification({ topic: "mail_card", target: { kind: "telegram", chat_id: d.chatId }, intent_type: "progress",
+    idempotency_key: key, correlation_id: key, payload: foldCardPayload(quietNow(d, new Date(`${bucket}:00:00.000Z`))) });
+  if (res.status !== "queued" && res.status !== "duplicate" && res.status !== "conflict") throw new Error(`mail fold card enqueue: ${res.status}`);
 }
 
 const quietNow = (d: TriageDeps, now: Date): boolean => inQuietHours(now, mailQuietWindow(d.env), "Australia/Sydney");

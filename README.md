@@ -370,7 +370,7 @@ days ([configuration](docs/reference/configuration.md#google-identity--gmail_rea
 testing-mode expiry). Re-run `node scripts/gmail-auth.mjs <client_secret.json>` and copy the printed
 lines into the mini's `.env`. For Paco's grant the page is `mail_auth_lost` (repeated daily): run
 `npm run houge -- mail auth` (it rewrites the one `HOUGE_PACO_GMAIL_REFRESH_TOKEN` line itself), then restart
-the daemon; `/mail on` clears the pause.
+the daemon: the restart clears the pause (so does `/mail on`), and the next successful poll closes the page.
 
 ## Operations
 

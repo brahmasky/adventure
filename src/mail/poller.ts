@@ -38,15 +38,26 @@ const SENT_CACHE_MS = 30 * 86_400_000;
 const CLEARED_BY_SUCCESS: ReadonlySet<string> = new Set(["mail_poll_failing", "mail_auth_lost"]);
 
 type Ref = { id: string; threadId: string };
-type Run = { stored: number; pinged: number; allDone: boolean; error?: "auth" | "unavailable" };
+type Run = { stored: number; pinged: number; failed: number; allDone: boolean; error?: "auth" | "unavailable" };
 type Progress = Run & { cursorAdvanced: boolean };
 const minutesSince = (iso: string, now: Date): number => (now.getTime() - Date.parse(iso)) / 60_000;
 
-/** The one stale predicate (Rev 1.1), used by the poller and the invariant sweep: enabled by both switches and no success for MAIL_STALE_MINUTES since the last ok, or since the switch-on when none ever succeeded. */
+/**
+ * The one stale predicate (Rev 1.1), used by the poller and the invariant sweep: enabled by both switches and no success for
+ * MAIL_STALE_MINUTES since the last ok, or since the switch-on when none ever succeeded. Never while paused on a lost grant: that
+ * fault has its own page and reminder (one page per fault, final review I2-b).
+ */
 export function mailStale(st: MailStateRow, env: NodeJS.ProcessEnv, now: Date): boolean {
-  if (!st.enabled || !resolveMailEnabled(env)) return false;
+  if (!st.enabled || !resolveMailEnabled(env) || st.last_error_code === "auth") return false;
   const since = st.last_ok_at ?? st.enabled_at;
   return since !== null && minutesSince(since, now) > MAIL_STALE_MINUTES;
+}
+
+/** Final review I1: a daemon restart clears a stored auth pause once, so "re-auth, then restart" is the whole recovery; a disarmed daemon leaves it. True when cleared. */
+export function clearAuthPauseAtBoot(store: RunStore, env: NodeJS.ProcessEnv): boolean {
+  if (!resolveMailEnabled(env) || store.mailState().last_error_code !== "auth") return false;
+  store.setMailState({ last_error_code: null, backoff_n: 0, failing_since: null });
+  return true;
 }
 
 export async function runMailTick(d: PollDeps): Promise<PollResult> {
@@ -55,10 +66,19 @@ export async function runMailTick(d: PollDeps): Promise<PollResult> {
   const why = gate(d, st, now);
   if (why !== null) return { ran: false, why };
   d.store.setMailState({ last_attempt_at: now.toISOString() });
-  const p = st.history_id === null ? await firstRun(d, now) : await historyRun(d, st.history_id, now);
+  let p: Progress;
+  try {
+    p = st.history_id === null ? await firstRun(d, now) : await historyRun(d, st.history_id, now);
+  } catch (e) {
+    settle(d, st, { ...NOTHING, allDone: false, cursorAdvanced: false, error: "unavailable" }, now); // a throw is a failed poll: it backs off like a 5xx, not retried every loop iteration (I3)
+    throw e;
+  }
   settle(d, st, p, now);
   return { ran: true, stored: p.stored, pinged: p.pinged, cursorAdvanced: p.cursorAdvanced, ...(p.error ? { error: p.error } : {}) };
 }
+
+const NOTHING = { stored: 0, pinged: 0, failed: 0 } as const;
+const latest = (a: string | null, b: string | null): string | null => (a === null ? b : b === null ? a : a > b ? a : b);
 
 /** §3.2 gates in order: both switches, a token, no auth pause, then the cadence (or the backoff while failing). */
 function gate(d: PollDeps, st: MailStateRow, now: Date): Exclude<PollResult, { ran: true }>["why"] | null {
@@ -68,13 +88,18 @@ function gate(d: PollDeps, st: MailStateRow, now: Date): Exclude<PollResult, { r
   return due(d, st, now) ? null : "not_due";
 }
 
-/** §7: while failing, retry 1, 2, 4 … MAIL_BACKOFF_CAP_MIN minutes after the last attempt (checked instead of the cadence, since last_ok_at stays old). */
+/**
+ * §7: while failing, retry 1, 2, 4 … MAIL_BACKOFF_CAP_MIN minutes after the last attempt (checked instead of the cadence, since
+ * last_ok_at stays old). Otherwise the cadence counts from the latest of the last success and the last attempt, so an incomplete
+ * tick (deadline, a failed item write) is never re-run more often than the cadence (final review I2/I3).
+ */
 function due(d: PollDeps, st: MailStateRow, now: Date): boolean {
   if (st.failing_since !== null) {
     const wait = Math.min(MAIL_BACKOFF_CAP_MIN, 2 ** Math.max(0, st.backoff_n - 1));
     return st.last_attempt_at === null || minutesSince(st.last_attempt_at, now) >= wait;
   }
-  return st.last_ok_at === null || minutesSince(st.last_ok_at, now) >= mailPollMinutes(d.env);
+  const since = latest(st.last_ok_at, st.last_attempt_at);
+  return since === null || minutesSince(since, now) >= mailPollMinutes(d.env);
 }
 
 /** No cursor: the profile's id is read first (so anything arriving during the list is in history after it), then the 24 h backfill. */
@@ -138,14 +163,14 @@ function advance(d: PollDeps, run: Run, historyId: string): Progress {
 }
 
 function failed(e: GmailErr): Progress {
-  return { stored: 0, pinged: 0, allDone: false, cursorAdvanced: false, error: e.kind === "auth" ? "auth" : "unavailable" };
+  return { ...NOTHING, allDone: false, cursorAdvanced: false, error: e.kind === "auth" ? "auth" : "unavailable" };
 }
 
 /** Ids not yet stored (each once, whatever the listing repeated), at most MAIL_IN_FLIGHT at a time. The first id always dispatches; every later one is held back once the deadline passed or the daemon is stopping. */
 async function processIds(d: PollDeps, ids: readonly Ref[], backfill: boolean, now: Date): Promise<Run> {
   const seen = new Set<string>();
   const pending = ids.filter((x) => !seen.has(x.id) && seen.add(x.id) && !d.store.hasMailItem(x.id));
-  const run: Run = { stored: 0, pinged: 0, allDone: true };
+  const run: Run = { ...NOTHING, allDone: true };
   const deadline = d.deadlineMs ?? MAIL_TICK_DEADLINE_MS;
   let next = 0;
   const take = (): Ref | undefined => {
@@ -168,7 +193,7 @@ async function processOne(d: PollDeps, ref: Ref, backfill: boolean, now: Date, r
     console.error(`mail: triage threw: ${errorCode(e)} id=${ref.id}`); // a code and Gmail's opaque id only: the message may quote mail text
     return { stored: false, error: "write" };
   });
-  if (!t.stored) { run.allDone = false; return; }
+  if (!t.stored) { run.allDone = false; run.failed += 1; return; }
   run.stored += 1;
   if (t.notified) run.pinged += 1;
 }
@@ -190,12 +215,20 @@ async function knownSender(d: PollDeps, m: GmailMetadata, now: Date): Promise<{ 
   return r;
 }
 
-/** §7 after the range: success stamps last_ok_at and clears the failure state; auth pauses and pages once; unavailable backs off and pages through mailStale. */
+/**
+ * §7 after the range: a COMPLETE poll (every id stored or skipped, no Gmail error) stamps last_ok_at and clears the failure state;
+ * an incomplete one (deadline, a failed item write) stamps nothing and pages mail_poll_failing once stale (codex B1, I2-a); auth
+ * pauses and pages once; unavailable backs off and pages through mailStale.
+ */
 function settle(d: PollDeps, st: MailStateRow, p: Progress, now: Date): void {
   const nowIso = now.toISOString();
-  if (p.error === undefined) {
+  if (p.error === undefined && p.allDone) {
     d.store.setMailState({ last_ok_at: nowIso, last_error_code: null, failing_since: null, backoff_n: 0 });
     resolveOpenIncidents(d.store, CLEARED_BY_SUCCESS, undefined, nowIso);
+    return;
+  }
+  if (p.error === undefined) {
+    if (mailStale(d.store.mailState(), d.env, now)) pagePollFailing(d, { last_ok_at: st.last_ok_at, failed_items: p.failed }, nowIso);
     return;
   }
   if (p.error === "auth") {
@@ -204,7 +237,9 @@ function settle(d: PollDeps, st: MailStateRow, p: Progress, now: Date): void {
     return;
   }
   d.store.setMailState({ last_error_code: "unavailable", failing_since: st.failing_since ?? nowIso, backoff_n: st.backoff_n + 1 });
-  if (mailStale(d.store.mailState(), d.env, now)) {
-    openAlertedIncident(d.store, { kind: "mail_poll_failing", subject: "paco", detail: { last_ok_at: st.last_ok_at, failing_since: st.failing_since ?? nowIso }, chat_id: d.chatId, env: d.env, now: nowIso });
-  }
+  if (mailStale(d.store.mailState(), d.env, now)) pagePollFailing(d, { last_ok_at: st.last_ok_at, failing_since: st.failing_since ?? nowIso }, nowIso);
+}
+
+function pagePollFailing(d: PollDeps, detail: Record<string, unknown>, nowIso: string): void {
+  openAlertedIncident(d.store, { kind: "mail_poll_failing", subject: "paco", detail, chat_id: d.chatId, env: d.env, now: nowIso });
 }

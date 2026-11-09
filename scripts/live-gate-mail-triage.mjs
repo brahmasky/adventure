@@ -5,7 +5,7 @@
 // Eight lines on stdout, each `PASS`/`FAIL`/`INCONCLUSIVE <n> <name> — <detail>`; exit 0 when no line FAILs (1 FAIL, 2 setup error). Everything else is on stderr, `# `-prefixed.
 //
 // Before anything else the gate refuses to run while the LIVE daemon's mail is on: it reads `mail_state.enabled` from the live DB (read-only; a DB
-// without the table, the pre-slice build's, counts as off) and HOUGE_MAIL_ENABLED from the daemon's env FILE; both on = refuse (Paco must not be
+// without the table, the pre-slice build's, counts as off) and HOUGE_MAIL_ENABLED from the daemon's env FILE; the DB switch on = refuse whatever the file says (Paco must not be
 // pinged twice). The gate then enables mail in ITS OWN process env and on ITS copy of the DB (Rev 1.1 amendment), never the daemon's.
 //
 // What is real: Gmail (read-only, Paco's grant through the broker when the firewall is on, else the env), Jev (the daemon's client config: no retry,
@@ -299,7 +299,8 @@ async function setup() {
   if (!G.token || !TOKEN_RE.test(G.token)) throw new SetupError("--token must be 6-12 lowercase letters (digits would be masked by the redactor)");
   const sw = liveMailSwitches(liveDb, envFile);
   note(`live daemon mail: switch ${sw.dbOn ? "on" : "off"} · env file flag ${sw.fileOn ? "on" : "off"}`);
-  if (sw.dbOn && sw.fileOn) throw new SetupError("the live daemon's mail is ON (switch and env flag): run `/mail off` or unset HOUGE_MAIL_ENABLED first, so Paco is not pinged twice");
+  // the DB switch alone decides (codex B3): the running daemon's effective env may differ from the file, so a live `/mail on` is a refusal whatever the file says
+  if (sw.dbOn) throw new SetupError(`the live daemon's mail switch is ON in the live DB (env file flag ${sw.fileOn ? "on" : "off"}): run \`/mail off\` first, so Paco is not pinged twice`);
   await loadMods();
   const root = initTemp(false); G.root = root;
   const broker = loadEnv(root);

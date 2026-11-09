@@ -310,7 +310,7 @@ Credentials are produced by `scripts/gmail-auth.mjs`; the three secrets below ar
 | `HOUGE_GMAIL_CLIENT_ID` | — | OAuth client id of the Gmail desktop client. Plain config, not a secret (client ids are public identifiers); read from env at call time. |
 | `HOUGE_GMAIL_CLIENT_SECRET` | — | **Secret — broker-held** (ADR 0015): lifted into the secret broker at boot, stripped from `process.env`, redacted from egress. Written by `scripts/gmail-auth.mjs`. |
 | `HOUGE_GMAIL_REFRESH_TOKEN` | — | **Secret — broker-held** (ADR 0015), same treatment. The long-lived `gmail.readonly` grant; revoking it in the Google console is the remote kill for this surface. |
-| `HOUGE_PACO_GMAIL_REFRESH_TOKEN` | — | **Secret — broker-held** (ADR 0015), same treatment. Paco's own `gmail.readonly` grant (SP2 mail triage); revoking it in the Google console is that account's remote kill. Used only when `account: "paco"` is passed and mail is on. |
+| `HOUGE_PACO_GMAIL_REFRESH_TOKEN` | — | **Secret — broker-held** (ADR 0015), same treatment. Paco's own `gmail.readonly` grant (SP2 mail triage); revoking it in the Google console is that account's remote kill. Used while mail is on: the poller mints Paco's access token from it every tick, and so do `account: "paco"` reads. |
 | `HOUGE_PACO_GMAIL_ADDRESS` | — | Paco's Gmail address (not a secret). Lower-cased and shape-checked; unset or malformed reads as absent. |
 | `HOUGE_MAIL_ENABLED` | off | Env switch for mail triage and `account: "paco"` reads; both this and the stored `/mail on` switch must be on. Accepts 1/true/yes/on. In `DISARM_FLAGS`. |
 | `HOUGE_MAIL_POLL_MIN` | 5 | Mail poll interval in minutes; clamped to [2, 60], non-numeric reads as 5. |
@@ -339,7 +339,7 @@ stops the poller, invalidates Paco's cached access token and makes `account: "pa
 with `Paco's mail is off (/mail on to allow)`; `/mail status` shows the switches, the last successful poll, the last 24 h
 in counts (items, pings), folded this hour, unseen in `/inbox`, and the Jev state over the last hour (`ok`, `degraded` with
 the fail and answered counts, or `fused` when the ADR 0019 cap has latched). Gmail errors: a 401 or
-`invalid_grant` pauses the poller (cursor kept, no retry until `/mail on` or a restart) and opens one `mail_auth_lost`
+`invalid_grant` pauses the poller (cursor kept, no retry until `/mail on` or a restart — a daemon boot with the env switch on clears the stored pause once; while paused, no `mail_poll_failing` is added) and opens one `mail_auth_lost`
 page (in the daily reminder); a 403 is a Gmail rate limit, treated as temporary like a 5xx — backoff 1, 2, 4 … 30 min;
 no successful poll for 2 h while on opens `mail_poll_failing` (poller and sweep share one `mailStale` predicate); a
 Jev outage on mail pages through the Jev incidents plus the sweep's `mail_jev_failing`. Retention, two clocks (`src/mail/retention.ts`): a mail

@@ -3,7 +3,7 @@ import type { GoogleApiDeps } from "../../src/capabilities/google-api.js";
 import type { GoogleAuthClient } from "../../src/capabilities/google-auth.js";
 import type { MailAsk } from "../../src/jev/mail-ask.js";
 import type { GmailMetadata } from "../../src/mail/envelope.js";
-import { FIRST_RUN_QUERY, mailStale, runMailTick, type PollDeps } from "../../src/mail/poller.js";
+import { clearAuthPauseAtBoot, FIRST_RUN_QUERY, mailStale, runMailTick, type PollDeps } from "../../src/mail/poller.js";
 import { RunStore } from "../../src/run/run-store.js";
 import { drainOutbox } from "../helpers/omp-worker.js";
 
@@ -96,8 +96,7 @@ describe("runMailTick: first run and history", () => {
     expect(await runMailTick(pollDeps(store, g, { ask }))).toEqual({ ran: true, stored: 3, pinged: 3, cursorAdvanced: true });
     expect(store.mailState().history_id).toBe("20");
     expect(items(store).map((r) => r.lane)).toEqual(["ping", "ping", "ping"]);
-    store.setMailState({ last_ok_at: null });
-    expect(await runMailTick(pollDeps(store, g, { ask }))).toEqual({ ran: true, stored: 0, pinged: 0, cursorAdvanced: true });
+    expect(await runMailTick(pollDeps(store, g, { ask, now: at("2026-11-09T02:05:00.000Z") }))).toEqual({ ran: true, stored: 0, pinged: 0, cursorAdvanced: true });
     expect(ask).toHaveBeenCalledTimes(3);
     expect([...drainOutbox(store).keys()].sort()).toEqual(["mail:a", "mail:b", "mail:c"]);
     expect(g.paths().filter((p) => p.startsWith("messages/"))).toHaveLength(3);
@@ -108,12 +107,12 @@ describe("runMailTick: first run and history", () => {
     on(store, { history_id: "5" });
     const g = gmail({ history: () => page(["a", "b", "c"], "10") });
     expect(await runMailTick(pollDeps(store, g, { deadlineMs: 0 }))).toEqual({ ran: true, stored: 1, pinged: 1, cursorAdvanced: false });
-    expect(store.mailState().history_id).toBe("5");
+    expect(store.mailState()).toMatchObject({ history_id: "5", last_ok_at: null, last_attempt_at: NOW.toISOString() }); // incomplete: not a successful poll (codex B1)
     expect(items(store)).toHaveLength(1);
-    store.setMailState({ last_ok_at: null });
-    expect(await runMailTick(pollDeps(store, g))).toEqual({ ran: true, stored: 2, pinged: 2, cursorAdvanced: true });
+    expect(await runMailTick(pollDeps(store, g, { now: at("2026-11-09T02:04:00.000Z") }))).toEqual({ ran: false, why: "not_due" }); // the cadence counts from the attempt
+    expect(await runMailTick(pollDeps(store, g, { now: at("2026-11-09T02:05:00.000Z") }))).toEqual({ ran: true, stored: 2, pinged: 2, cursorAdvanced: true });
     expect(items(store).map((r) => r.gmail_message_id)).toEqual(["a", "b", "c"]);
-    expect(store.mailState().history_id).toBe("10");
+    expect(store.mailState()).toMatchObject({ history_id: "10", last_ok_at: "2026-11-09T02:05:00.000Z" });
     store.close();
   });
   it("an aborted signal stops new work after the first item and leaves the cursor", async () => {
@@ -142,13 +141,40 @@ describe("runMailTick: first run and history", () => {
     expect(store.mailState().history_id).toBe("149");
     store.close();
   });
-  it("a write failure inside triage leaves the cursor for the next tick", async () => {
+  it("a write failure inside triage leaves the cursor and stamps no success; persisting past 2 h it pages mail_poll_failing once; a clean tick resolves it (I2-a)", async () => {
+    const store = RunStore.openInMemory();
+    on(store, { history_id: "5", last_ok_at: NOW.toISOString() });
+    const spy = vi.spyOn(store, "insertMailItem").mockImplementation(() => { throw new Error("SQLITE_FULL"); });
+    const g = gmail({ history: () => page(["a"], "10") });
+    const t = (min: number) => at(new Date(NOW.getTime() + min * 60_000).toISOString());
+    expect(await runMailTick(pollDeps(store, g, { now: t(5) }))).toEqual({ ran: true, stored: 0, pinged: 0, cursorAdvanced: false });
+    expect(store.mailState()).toMatchObject({ history_id: "5", last_ok_at: NOW.toISOString(), failing_since: null, backoff_n: 0 }); // no success stamped, no backoff either (one poison mail must not slow all mail)
+    expect(await runMailTick(pollDeps(store, g, { now: t(6) }))).toEqual({ ran: false, why: "not_due" });
+    for (const m of [10, 15, 60]) expect(await runMailTick(pollDeps(store, g, { now: t(m) }))).toMatchObject({ ran: true, cursorAdvanced: false });
+    expect(open(store)).toEqual([]);
+    expect(await runMailTick(pollDeps(store, g, { now: t(125) }))).toMatchObject({ ran: true, cursorAdvanced: false });
+    expect(open(store)).toEqual(["mail_poll_failing"]);
+    expect(JSON.parse(store.listOpenIncidents()[0]!.detail_json)).toMatchObject({ failed_items: 1 });
+    expect(await runMailTick(pollDeps(store, g, { now: t(130) }))).toMatchObject({ ran: true, cursorAdvanced: false });
+    expect(open(store)).toEqual(["mail_poll_failing"]);
+    spy.mockRestore();
+    expect(await runMailTick(pollDeps(store, g, { now: t(135) }))).toMatchObject({ ran: true, stored: 1, cursorAdvanced: true });
+    expect(open(store)).toEqual([]);
+    expect(store.mailState().last_ok_at).toBe(t(135)().toISOString());
+    store.close();
+  });
+  it("a throw escaping the tick is a failed poll: backoff state set, the next loop iteration is not_due (I3)", async () => {
     const store = RunStore.openInMemory();
     on(store, { history_id: "5" });
-    vi.spyOn(store, "insertMailItem").mockImplementation(() => { throw new Error("SQLITE_FULL"); });
+    vi.spyOn(store, "hasMailItem").mockImplementation(() => { throw new Error("SQLITE_IOERR"); });
     const g = gmail({ history: () => page(["a"], "10") });
-    expect(await runMailTick(pollDeps(store, g))).toEqual({ ran: true, stored: 0, pinged: 0, cursorAdvanced: false });
-    expect(store.mailState().history_id).toBe("5");
+    await expect(runMailTick(pollDeps(store, g))).rejects.toThrow("SQLITE_IOERR");
+    expect(store.mailState()).toMatchObject({ last_attempt_at: NOW.toISOString(), failing_since: NOW.toISOString(), backoff_n: 1, last_error_code: "unavailable", history_id: "5" });
+    const n = g.urls.length;
+    expect(await runMailTick(pollDeps(store, g, { now: at("2026-11-09T02:00:30.000Z") }))).toEqual({ ran: false, why: "not_due" });
+    expect(g.urls).toHaveLength(n);
+    await expect(runMailTick(pollDeps(store, g, { now: at("2026-11-09T02:01:00.000Z") }))).rejects.toThrow();
+    expect(store.mailState().backoff_n).toBe(2);
     store.close();
   });
 });
@@ -193,9 +219,9 @@ describe("runMailTick: cursor expired (history 404 → resync)", () => {
     const [line] = store.listChangeLog(EPOCH, 10);
     expect(line!.text).toContain("Mail caught up: 50 in /inbox");
     expect(line!.text).toContain("older not listed");
-    store.setMailState({ last_ok_at: null, history_id: "6" });
+    store.setMailState({ history_id: "6" });
     const dup = gmail({ profile: "400", history: () => 404, list: () => ({ messages: [ref("a"), ref("a"), ref("a")] }) }); // a listing that repeats an id is processed once
-    expect(await runMailTick(pollDeps(store, dup))).toMatchObject({ stored: 1, cursorAdvanced: true });
+    expect(await runMailTick(pollDeps(store, dup, { now: at("2026-11-09T02:05:00.000Z") }))).toMatchObject({ stored: 1, cursorAdvanced: true });
     expect(store.mailState().history_id).toBe("400");
     store.close();
   });
@@ -249,8 +275,12 @@ describe("runMailTick: failures (spec §7)", () => {
     expect(await runMailTick(pollDeps(store, g))).toEqual({ ran: false, why: "paused" });
     expect(g.urls).toHaveLength(n);
     expect([...drainOutbox(store).keys()].filter((k) => k.startsWith("incident_opened:"))).toHaveLength(1);
-    store.setMailState({ last_error_code: null }); // what `/mail on` or a restart does after `houge mail auth`
-    expect(await runMailTick(pollDeps(store, gmail({ history: () => page([], "10") })))).toMatchObject({ ran: true, cursorAdvanced: true });
+    expect(mailStale(store.mailState(), ENV, new Date(NOW.getTime() + 3 * 3_600_000))).toBe(false); // paused: one fault, one page (I2-b)
+    expect(clearAuthPauseAtBoot(store, {})).toBe(false); // a disarmed daemon leaves the pause
+    expect(clearAuthPauseAtBoot(store, ENV)).toBe(true); // what a daemon restart does after `houge mail auth`
+    expect(store.mailState()).toMatchObject({ last_error_code: null, backoff_n: 0, failing_since: null });
+    expect(clearAuthPauseAtBoot(store, ENV)).toBe(false);
+    expect(await runMailTick(pollDeps(store, gmail({ history: () => page([], "10") }), { now: at("2026-11-09T02:05:00.000Z") }))).toMatchObject({ ran: true, cursorAdvanced: true });
     expect(open(store)).toEqual([]); // the condition cleared: the grant works again
     store.close();
   });
@@ -300,5 +330,9 @@ describe("mailStale (the one predicate the poller and the sweep share)", () => {
     expect(mailStale(st({ last_ok_at: h(3) }), ENV, NOW)).toBe(true);
     expect(mailStale(st({ enabled_at: h(3) }), ENV, NOW)).toBe(true);
     expect(mailStale(st({ enabled_at: h(1) }), ENV, NOW)).toBe(false);
+  });
+  it("is false while paused on a lost grant, however old the last success (the pause has its own page)", () => {
+    expect(mailStale(st({ last_ok_at: h(30), last_error_code: "auth" }), ENV, NOW)).toBe(false);
+    expect(mailStale(st({ last_ok_at: h(30), last_error_code: "unavailable" }), ENV, NOW)).toBe(true);
   });
 });

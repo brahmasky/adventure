@@ -7710,8 +7710,9 @@ export class RunStore {
     return this.db.prepare(`SELECT rule_id, action FROM mail_sender_rules WHERE address = ?`).get<{ rule_id: string; action: "always" | "never" }>(address);
   }
 
+  /** Joins the caller's transaction when one is open (undoSenderRule logs the deletion in the same one), else runs its own. */
   deleteSenderRule(rule_id: string): { address: string; action: "always" | "never" } | undefined {
-    return this.inTransaction(() => {
+    return this.joinTransaction(() => {
       const row = this.db.prepare(`SELECT address, action FROM mail_sender_rules WHERE rule_id = ?`).get<{ address: string; action: "always" | "never" }>(rule_id);
       if (row) this.db.prepare(`DELETE FROM mail_sender_rules WHERE rule_id = ?`).run(rule_id);
       return row;

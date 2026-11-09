@@ -152,7 +152,8 @@ Spec `2026-11-09-sp2-mail-triage-design.md` (SP2 slice 1), approved by Paco 2026
   §3's three-party rule is untouched — this amendment adds no scope and no row.
 - **`account: "paco"` is gated by the mail switch.** Refused in code at `turn.preflight` with
   `Paco's mail is off (/mail on to allow)` unless `HOUGE_MAIL_ENABLED` (in `DISARM_FLAGS`) and the stored `/mail on`
-  switch are both on; `/mail on` refuses without a valid `HOUGE_PACO_GMAIL_ADDRESS` and clears a paused auth error;
+  switch are both on; `/mail on` refuses without a valid `HOUGE_PACO_GMAIL_ADDRESS` and clears a paused auth error (so
+  does a daemon boot with the env switch on, once: "re-auth, then restart" is the whole recovery);
   `/mail off` stops the poller and invalidates Paco's cached access token. Results go through the reader wall and
   `tool.injection` exactly as Houge's own do (§4). Houge never sends from either identity in this slice; sending is a
   later `/approve`-gated slice, and §6's revisit ("read+send is a materially different trifecta") stands.
@@ -161,8 +162,10 @@ Spec `2026-11-09-sp2-mail-triage-design.md` (SP2 slice 1), approved by Paco 2026
   with at most 3 `messages.get` in flight, `format=metadata` only (never `full` or `raw`; a test pins every request URL),
   ids-only `history.list` pages from a stored cursor that advances only when every id of the range is stored, a 200-mail
   first-run backfill and a 500-mail resync cap (reported, never silent), exponential backoff 1–30 min on 429/5xx/network,
-  and a pause (no retry until `/mail on` or a restart) on 401/`invalid_grant` with one `mail_auth_lost` page and a daily
-  reminder. A Gmail 403 is a rate limit, not a lost grant: it backs off like a 5xx. A partial history read resumes from
+  and a pause (no retry until `/mail on` or a restart; the pause suspends the stale predicate, so one fault is one page)
+  on 401/`invalid_grant` with one `mail_auth_lost` page and a daily reminder, resolved by the next successful poll. An
+  incomplete tick (deadline hit, an item that failed to store) is not a successful poll: it stamps no success and, after
+  2 h, pages `mail_poll_failing`; a tick that throws backs off like a 5xx. A Gmail 403 is a rate limit, not a lost grant: it backs off like a 5xx. A partial history read resumes from
   the last record. A silently dead poller is caught by the invariant sweep (`mail_poll_failing`, through
   `mail_state.last_ok_at`, never through mail cards). The ceiling is the cadence and the caps, not a turn contract.
 - **Broker.** `HOUGE_PACO_GMAIL_REFRESH_TOKEN` joins `SECRET_ENV_NAMES` with a getter and redaction (ADR 0015's 2026-11-09

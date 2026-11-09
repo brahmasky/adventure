@@ -32,7 +32,7 @@ import { createGoogleAuthClient, type GoogleAuthClient } from "../capabilities/g
 import { createJevClient, type JevRequest, type JevResult } from "../jev/jev-client.js";
 import { askMail } from "../jev/mail-ask.js";
 import { pacoAddress, resolveMailEnabled } from "../mail/flag.js";
-import { runMailTick } from "../mail/poller.js";
+import { clearAuthPauseAtBoot, runMailTick } from "../mail/poller.js";
 import { runMailRetention } from "../mail/retention.js";
 import { evolutionLaneSettled, evolutionLaneSnapshot } from "../core/evolution-lane.js";
 import { reconcileJobsAtBoot, skillJobHooks } from "../core/skill-job.js";
@@ -308,6 +308,8 @@ export async function runTelegramDaemon(
   let parkMarkerCleared = false;
   const rolesTick = detachedJob();
   const mailTick = detachedJob();
+  // SP2 mail: the documented recovery from a lost grant is "re-auth, then restart" — the restart clears the stored auth pause (once, env switch on)
+  if (clearAuthPauseAtBoot(options.store, process.env)) console.error("[telegram-daemon] mail: auth pause cleared at boot, polling resumes");
 
   while (!options.stopSignal.aborted) {
     try {

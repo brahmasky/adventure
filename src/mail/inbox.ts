@@ -68,7 +68,7 @@ function tapRows(shown: readonly MailItemRow[]): Array<Array<{ text: string; dat
  * the first, is "the remaining unseen", so a page tapped twice or out of order skips nothing. The reply is queued before the
  * items are marked seen: a crash between replays the same reply (same key and text) and marks them on the retry.
  */
-export function inboxView(store: RunStore, page: number, now: Date, enqueue?: (p: NotificationPayload) => void): NotificationPayload {
+export function inboxView(store: RunStore, page: number, now: Date, enqueue?: (p: NotificationPayload) => boolean): NotificationPayload {
   const label = Math.min(Math.max(1, Math.floor(page)), 9999);
   const unseen = store.listUnseenInbox(INBOX_PAGE);
   if (unseen.length === 0) {
@@ -81,8 +81,9 @@ export function inboxView(store: RunStore, page: number, now: Date, enqueue?: (p
   const rows = tapRows(shown);
   if (left > 0 && label < 9999) rows.push([{ text: `Next (${left} more)`, data: `mail:page:${label + 1}` }]);
   const payload: NotificationPayload = { text: [`📥 **Inbox** · page ${label} · ${shown.length} unseen`, ...lines].join("\n"), button_rows: rows };
-  enqueue?.(payload);
-  store.markMailSeen(shown.map((i) => i.item_id), now.toISOString());
+  // items are marked seen only once the page is queued for delivery (codex W2): a rejected enqueue hides nothing
+  if (enqueue === undefined || enqueue(payload)) store.markMailSeen(shown.map((i) => i.item_id), now.toISOString());
+  else console.error("[mail] inbox page not queued: nothing marked seen");
   return payload;
 }
 
@@ -144,12 +145,14 @@ export function applySenderRule(store: RunStore, item_id: string, action: "alway
   return { ok: true, rule_id, masked };
 }
 
-/** Removes a rule and logs it; false when there was no such rule (already undone). */
+/** Removes a rule and logs it in one transaction (codex W1: a deletion is never left unannounced); false when there was no such rule (already undone). */
 export function undoSenderRule(store: RunStore, rule_id: string, now: Date): boolean {
-  const gone = store.deleteSenderRule(rule_id);
-  if (!gone) return false;
-  logRule(store, rule_id, "undo", `Mail rule ${rule_id} removed — ${maskAddress(gone.address)} is triaged normally again.`, now.toISOString());
-  return true;
+  return store.inTransaction(() => {
+    const gone = store.deleteSenderRule(rule_id);
+    if (!gone) return false;
+    logRule(store, rule_id, "undo", `Mail rule ${rule_id} removed — ${maskAddress(gone.address)} is triaged normally again.`, now.toISOString());
+    return true;
+  });
 }
 
 function logRule(store: RunStore, rule_id: string, key: string, text: string, now: string): void {

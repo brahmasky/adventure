@@ -55,6 +55,18 @@ describe("runTelegramDaemon: the mail tick", () => {
     expect(store.mailState().history_id).toBe("100");
     store.close();
   });
+  it("boot clears a stored auth pause (re-auth, then restart): the first cycle polls Gmail again (final review I1)", async () => {
+    vi.stubEnv("HOUGE_MAIL_ENABLED", "1"); vi.stubEnv("HOUGE_PACO_GMAIL_ADDRESS", "paco@example.com"); vi.stubEnv("HOUGE_PACO_GMAIL_REFRESH_TOKEN", "1//rt-example");
+    const store = RunStore.openInMemory();
+    store.setMailState({ enabled: true, enabled_at: new Date().toISOString(), last_error_code: "auth", backoff_n: 3, failing_since: new Date().toISOString() });
+    const stop = new AbortController();
+    const g = fakeGmail(() => stop.abort());
+    await runOnce(store, { gmail: g.deps, auth }, stop, { n: 0 });
+    expect(g.paths).toContain("profile");
+    expect(store.mailState()).toMatchObject({ last_error_code: null, backoff_n: 0, failing_since: null });
+    expect(store.hasMailItem("m1")).toBe(true);
+    store.close();
+  });
   it("off (the env switch unset): no Gmail call is made", async () => {
     vi.stubEnv("HOUGE_MAIL_ENABLED", ""); vi.stubEnv("HOUGE_PACO_GMAIL_ADDRESS", "paco@example.com"); vi.stubEnv("HOUGE_PACO_GMAIL_REFRESH_TOKEN", "1//rt-example");
     const store = RunStore.openInMemory();

@@ -116,7 +116,8 @@ code-owned registry under `src/decisions/`. Everything else stays plain code (me
   item's state (`item`, `rule`, `jev`; the item has an id) and a verdict in the two lanes — a refusal stores the item
   `inbox`/`routing_refused` with a `decision_internal` line. Like `pacoWordsOnly`, it is a declaration whose truth the
   entry's tests carry; `tests/adr/0034-2.6-mail-routing.test.ts` asserts behaviour, not shape: an `inbox` item is listed
-  by `/inbox`; an `always` rule beats a Jev `later`; a Jev `ping` writes the same outbox row as no Jev at all; a state
+  by `/inbox`; an `always` rule beats a Jev `later`; a Jev `ping` writes the same outbox row as no Jev answer, apart from
+  the `(Jev unavailable)` line the fail path adds; a state
   with a second item is refused. The fold (more than 6 pings in 60 min → `inbox`/`folded`, one fold card an hour) and
   the thread follow-up (a silent card) are code after the verdict, not the rung's. Reason, restated and tested on today's
   system: rule 2.1 exists because Jev is steerable by injected text; under 2.6 the worst a hostile mail can do is change
