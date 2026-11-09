@@ -61,6 +61,18 @@ const PASSIVE: ReadonlySet<EffectKind> = new Set(["none", "tighten", "proposal"]
 const ANNOUNCED: ReadonlySet<Announce> = new Set(["card"]);
 /** Spec 2026-11-07 §4: the gated effect over mixed input is announced on a card or on a `/changes` line naming its undo. */
 const GATED_ANNOUNCED: ReadonlySet<Announce> = new Set(["card", "changes"]);
+const ROUTED_ANNOUNCED: ReadonlySet<Announce> = new Set(["card", "inbox"]);
+
+/** ADR 0034 2.6: a tool-input entry that only routes one item between a card now (default and fail) and a reversible /inbox listing. */
+export function routedPerItem(e: AnyEntry): boolean {
+  if (e.input !== "tool" || typeof e.perItemRouting !== "function" || e.verdicts.length !== 2) return false;
+  if (e.defaultVerdict !== e.fail) return false;
+  const up = e.effects[e.defaultVerdict];
+  const down = e.verdicts.find((v) => v !== e.defaultVerdict);
+  const dn = down === undefined ? undefined : e.effects[down];
+  if (!up || !dn || up.kind !== "effect" || dn.kind !== "effect") return false;
+  return up.announced === "card" && dn.announced === "inbox" && dn.reversible && ROUTED_ANNOUNCED.has(up.announced);
+}
 const LOCKED_IDS: ReadonlySet<string> = new Set(LOCKED_ENTRY_IDS);
 
 export function entryById(id: string): AnyEntry | undefined {
@@ -84,8 +96,8 @@ function shapeProblems(e: AnyEntry): string[] {
   if (e.locked && !LOCKED_IDS.has(e.id)) p.push("locked entry whose id is not in LOCKED_ENTRY_IDS");
   const provisional = e.ladder.some((r) => r.kind === "system_one" && r.bars.kind === "provisional");
   const failOpen = e.fail === e.defaultVerdict && noDirectEffect(e);
-  if (provisional && !e.monotone && !failOpen && !reversibleOverPaco(e) && !gatedPacoWords(e)) {
-    p.push("provisional bar on an entry that is not monotone, not fail-open without direct effects, not over Paco's words with every effect reversible and announced, and not gated by pacoWordsOnly");
+  if (provisional && !e.monotone && !failOpen && !reversibleOverPaco(e) && !gatedPacoWords(e) && !routedPerItem(e)) {
+    p.push("provisional bar on an entry that is not monotone, not fail-open without direct effects, not over Paco's words with every effect reversible and announced, and not gated by pacoWordsOnly, and not a perItemRouting entry (ADR 0034 2.6)");
   }
   return p;
 }
@@ -127,6 +139,8 @@ function effectProblems(e: AnyEntry): string[] {
     if (e.input === "paco") { if (!fx.reversible || !ANNOUNCED.has(fx.announced)) p.push(`a jev/model rung can choose ${v}, an effect not reversible or not announced on a card`); continue; }
     // spec 2026-11-07 §4 (ADR 0034 2.5): over mixed input one allowance — a reversible, announced `effect` behind a code-owned provenance predicate
     if (e.input === "mixed" && fx.kind === "effect" && typeof e.pacoWordsOnly === "function" && fx.reversible && GATED_ANNOUNCED.has(fx.announced)) continue;
+    // ADR 0034 2.6: one item routed between a card now and a reversible /inbox listing
+    if (routedPerItem(e)) continue;
     p.push(`a jev/model rung over ${e.input} input can choose ${v}, which is not tightening`);
   }
   return p;

@@ -70,6 +70,18 @@ export function storeRecorder(store: RunStore, o: RecorderOptions = {}): Decisio
   };
 }
 
+/** Spec 2026-11-09 §3.4: the mail write path's flush. Same row as storeRecorder, but it throws on a failed insert so the caller's transaction rolls back. Bookkeeping runs after commit via afterStrictRecord. */
+export function recordStrict(store: RunStore, entry: AnyEntry, r: AnyDecideResult, ctx: { run_id: string | null; tool_call_id: string | null }, now: string): string | null {
+  if (!shouldRecord(entry, r)) return null;
+  return store.insertDecision(rowOf(entry, r, ctx, now));
+}
+
+/** The bookkeeping storeRecorder does around its insert, for a row recordStrict wrote; call it after the commit. */
+export function afterStrictRecord(store: RunStore, entry: AnyEntry, r: AnyDecideResult, now: string, env?: NodeJS.ProcessEnv): void {
+  if (clears(entry.id, r)) clearFallback(store, entry.id, now);
+  afterRecord(store, entry, r, now, env);
+}
+
 function rowOf(entry: AnyEntry, r: AnyDecideResult, ctx: { run_id: string | null; tool_call_id: string | null }, now: string): DecisionInsert {
   const known = r.reason !== null && (entry.reasonCodes.includes(r.reason) || RUNNER_CODES.has(r.reason));
   return {

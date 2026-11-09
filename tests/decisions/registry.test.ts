@@ -108,7 +108,7 @@ describe("entryProblems (R12 as data: a judged entry over Paco's message must be
   // on a fail-open entry that causes no direct effect (none or tighten only), or on an entry over Paco's own message whose
   // every effect is reversible and announced. memory.kind is fail-open but saves, so only the amended clause admits it.
   const ladder = HANDLER.ladder.map((r) => (r.kind === "system_one" ? { ...r, bars: { kind: "provisional" as const, question: "q", criteriaHash: "h", model: "m", p: 0.5, source: "mu" } } : r));
-  const msg = "provisional bar on an entry that is not monotone, not fail-open without direct effects, not over Paco's words with every effect reversible and announced, and not gated by pacoWordsOnly";
+  const msg = "provisional bar on an entry that is not monotone, not fail-open without direct effects, not over Paco's words with every effect reversible and announced, and not gated by pacoWordsOnly, and not a perItemRouting entry (ADR 0034 2.6)";
   const passive = Object.fromEntries(HANDLER.verdicts.map((v) => [v, fx("none", true, "none")]));
   it("admits paco input with every effect reversible and announced (turn.handler's shape), even when not fail-open", () => {
     expect(entryProblems(base({ ladder, fail: "answer" }))).not.toContain(msg);

@@ -4,7 +4,7 @@ import type { Question } from "../jev/questions/types.js";
  * The decision ladder's shapes (ADR 0030, spec §4). One entry per decision; a ladder of deciders tried in order
  * (code rule → Jev → model → Paco); the runner decides, then records. Ids, closed enums and numbers only reach the ledger.
  */
-export const DECISION_STAGES = ["intake", "pre_model", "pre_tool", "post_tool", "supervision", "settle", "after_turn"] as const;
+export const DECISION_STAGES = ["intake", "pre_model", "pre_tool", "post_tool", "supervision", "settle", "after_turn", "inbound"] as const;
 export type DecisionStage = (typeof DECISION_STAGES)[number];
 export const RUNG_KINDS = ["rule", "system_one", "model", "paco"] as const;
 export type RungKind = (typeof RUNG_KINDS)[number];
@@ -27,8 +27,8 @@ export const RUNNER_REASON_CODES = ["no_executor", "floor_held"] as const;
 export type InputSource = "paco" | "tool" | "mixed";
 /** What a verdict causes: nothing, a reply, a tightening (withhold, add a tap, send back once), a proposal for Paco's tap, or an effect. */
 export type EffectKind = "none" | "reply" | "tighten" | "proposal" | "effect";
-/** How Paco learns of it: a code-built card (with its Undo / Dig deeper), a `/changes` row naming the undo command (spec 2026-11-07 §4), or not at all. The turn's reply is not an announcement (Paco 2026-10-12). */
-export type Announce = "card" | "changes" | "none";
+/** How Paco learns of it: a code-built card (with its Undo / Dig deeper), a `/changes` row naming the undo command (spec 2026-11-07 §4), a listing in `/inbox` with a should-have-pinged tap (a pull surface, accepted only under ADR 0034 rule 2.6), or not at all. The turn's reply is not an announcement (Paco 2026-10-12). */
+export type Announce = "card" | "changes" | "inbox" | "none";
 /**
  * Spec §4.1 (R12): each verdict's effect, declared. registry.ts `entryProblems` fails a Jev or model rung that can cause an
  * effect that is not reversible or not announced, and anything but `none` / `tighten` / `proposal` over tool input.
@@ -88,6 +88,8 @@ export interface Entry<S, V extends string, D = never> {
    * `entryProblems` refuses such an effect without it.
    */
   pacoWordsOnly?: (...args: never[]) => boolean;
+  /** ADR 0034 2.6: a runtime gate the caller runs before writing; true only for one item's state and a verdict in the two lanes. */
+  perItemRouting?: (...args: never[]) => boolean;
   /** The code-owned reason codes a row may carry (plus RUNNER_REASON_CODES); anything else is recorded as null. */
   reasonCodes: readonly string[];
 }
