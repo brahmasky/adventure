@@ -1,6 +1,6 @@
 # SP2 slice 1 — Paco's Gmail: read + inbound triage (Jev lane 4, re-scoped)
 
-**Rev 1.2 · 2026-11-09 · status: reviewed, for Paco's approval.** Rev 1.0 was reviewed by spec-review-senior (Fable 5.1:
+**Rev 1.3 · 2026-11-09 · status: reviewed, for Paco's approval.** Rev 1.0 was reviewed by spec-review-senior (Fable 5.1:
 2 BLOCKER, 14 WARNING, 9 SUGGESTION) and a codex design pass (6 BLOCKER, 4 WARNING, 1 SUGGESTION), both against the live
 code and ADRs. Every blocker and warning is addressed below; the change log is §13.
 
@@ -167,8 +167,11 @@ the envelope; it reads mail only on demand through the reader wall (§3.6).
   (counted from `mail_items`, not the outbox), the item is stored `lane='inbox'`, reason `folded`, and — once per hour
   bucket — one card is enqueued: "More urgent mail this hour — see /inbox" (key `mail:fold:<YYYY-MM-DDTHH>`). No message
   is ever edited. Kill/park outrank the fold; nothing else does.
-- **Thread**: a mail whose thread pinged in the last 6 h is stored `lane='inbox'`, reason `thread_pinged`, with no card.
-  Folded and thread items are therefore always reachable in `/inbox`.
+- **Thread** (Paco, 2026-11-09): a mail whose thread pinged in the last 6 h is judged like any other. If its verdict is
+  `ping`, it is stored `lane='ping'` with `thread_followup = 1` and its card is a **new, silent** card
+  (`disable_notification`) headed "↪ +1 in this thread", with its own Open and Wrong urgency taps; it counts toward the
+  fold. If its verdict is `inbox`, it goes to `/inbox` as usual. No message is edited. Folded items are always reachable
+  in `/inbox`.
 
 ### 3.5 Jev question (`src/jev/questions/mail.ts`, new)
 `MAIL_URGENCY` choice, options in order `later` (escape first: jev-1.13 leans to the first option), `now`; criteria:
@@ -195,7 +198,7 @@ carries the p. The Jev request state is `MailJevState` only.
   rule is keyed by the item's validated address, applies from the next mail, and is announced as a `/changes` line
   carrying the rule id and a masked address (`maskSubject` precedent, `incident-route.ts:94`) with its undo command
   `/mail_undo <rule id>`. A tap also writes a `mail_labels` row.
-- `/inbox`: unseen items with `lane='inbox'` (any reason: `jev_later`, `folded`, `thread_pinged`, `backfill`, rules),
+- `/inbox`: unseen items with `lane='inbox'` (any reason: `jev_later`, `folded`, `backfill`, rules),
   grouped by kind, oldest first, **30 per page with a "next" tap** (`mail:page:<n>`); an item is marked seen
   (`mail_items.seen_at`) when its page renders, so nothing unseen is skipped. `/inbox all` shows the last 7 days, seen or
   not. Each line carries a "should have pinged" tap (`mail:shp:<item_id>`: label + offer of an `always` rule). Items past
@@ -218,7 +221,8 @@ CREATE TABLE mail_items (
   lane TEXT NOT NULL CHECK (lane IN ('ping','inbox')),
   kind TEXT CHECK (kind IS NULL OR kind IN ('fyi','action','risk','noise')),
   reason_code TEXT NOT NULL CHECK (reason_code IN ('jev_now','jev_later','jev_unsure','jev_unavailable','rule_always',
-    'rule_never','own_output','backfill','folded','thread_pinged','routing_refused')),
+    'rule_never','own_output','backfill','folded','routing_refused')),
+  thread_followup INTEGER NOT NULL DEFAULT 0,
   decision_id TEXT, notification_id TEXT, seen_at TEXT, text_cleared_at TEXT, created_at TEXT NOT NULL);
 CREATE INDEX mail_items_lane_seen ON mail_items(lane, seen_at, received_at);
 CREATE TABLE mail_sender_rules (rule_id TEXT PRIMARY KEY, address TEXT NOT NULL UNIQUE,
@@ -281,7 +285,7 @@ subject, kind). Nothing else. Logs, `/status`, decision rows and gate output car
 | Tick hits 90 s | Stored items stay; cursor kept; next tick continues | — |
 | Jev down / timeout / malformed / metered fuse | `rung fail` → `ping`; card says "(Jev unavailable)" | Jev client's `jev_*` incident (one call, one page; `JEV_PAGED_ELSEWHERE`); `/mail status` shows "fused" for the fuse |
 | > 6 pings / 60 min | 7th onward → `/inbox` (`folded`); one fold card per hour | ≤ 7 mail messages an hour |
-| Thread burst | Later mail in a pinged thread (6 h) → `/inbox` (`thread_pinged`) | One card per thread |
+| Thread burst | A follow-up Jev judges `ping` in a thread pinged within 6 h → a new silent card; fold still applies | One sound per thread per 6 h; follow-ups arrive silently |
 | Crash between Jev and the commit | Nothing of the item stored; cursor not advanced; next tick re-decides it | No loss; at most one extra Jev call |
 | Crash after the commit, before the outbox sends | The outbox retries its own row (key `mail:<id>`) | One ping |
 | Decision flush fails inside the transaction | Whole item rolls back, retried next tick | — |
@@ -360,7 +364,8 @@ the rule id (2.6 behaviour, the 2.5 arm, 7.2 redaction of every envelope text fi
   `perItemRouting` refuses a two-item state.
 - Registry: `entryProblems` passes `mail.triage` and fails the three mutants of §8.1.
 - Fold and thread: the 7th ping in 60 min is stored `inbox`/`folded` with one fold card per hour bucket and no edits; a
-  second mail in a pinged thread is `inbox`/`thread_pinged`; both are listed by `/inbox`.
+  second mail Jev judges `ping` in a pinged thread is `ping` with `thread_followup = 1` and a silent "↪ +1 in this thread"
+  card, counted by the fold; a folded item is listed by `/inbox`.
 - `/inbox`: pages of 30, oldest first, nothing unseen skipped across pages; `seen_at` set on render; `/inbox all`.
 - Taps: callback shapes match their regexes and are ≤ 64 bytes; never ⇄ always rules; `/changes` line with masked address
   and rule id; `/mail_undo` → next mail back on Jev.
@@ -409,7 +414,8 @@ Q3 (`paco_active_30m`) — dropped from the Jev state; quiet hours use the clock
 - Jev state limited to D3's set as `MailJevState`; rule-side fields stay local (Fable blocker); every untrusted text
   field redacted, including the sender name (codex blocker); exact redactor call (`codeShapes`).
 - Cursor advances only after the whole history range is stored; deadline and resync cap reported (codex blocker).
-- Fold and thread items stored as `inbox` with their own reasons; no message edits; `/inbox` paged with per-item
+- Folded items stored as `inbox` (`folded`); thread follow-ups that Jev judges `ping` send a new silent card (Paco's
+  choice 2026-11-09, replacing Rev 1.1's thread → `/inbox`, which could hide an awaited reply); no message edits; `/inbox` paged with per-item
   `seen_at` (codex blocker, Fable warnings).
 - Retention also strips every past-retention outbox payload, queued included; remaining gaps named (codex blocker and
   re-review, Fable warning).
