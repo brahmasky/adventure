@@ -279,7 +279,6 @@ function laneViolations(store: RunStore, now: string): InvariantViolation[] {
     .map((r) => ({ kind: "lane_fallthrough_rate" as const, subject: r.lane, detail: { turns: r.turns, fallthroughs: r.fallthroughs } }));
 }
 
-/** Pure detection: compose the store's seven invariant queries into a flat violation list. */
 /** Mail triage Jev outage window and floor (Rev 1.1): a timeout opens no Jev incident and mail is paged nowhere else. */
 export const MAIL_JEV_FAILING_WINDOW_MS = 24 * 60 * 60 * 1000;
 export const MAIL_JEV_FAILING_MIN_FAILS = 5;
@@ -301,6 +300,7 @@ function mailViolations(store: RunStore, now: string, env: NodeJS.ProcessEnv): I
   return out;
 }
 
+/** Pure detection: compose the store's seven invariant queries into a flat violation list. */
 export function detectViolations(
   store: RunStore,
   now: string,

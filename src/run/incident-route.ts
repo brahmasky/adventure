@@ -68,7 +68,7 @@ export const INCIDENT_ROUTE = {
   model_catalog_unavailable: log("I couldn't read omp's model list; using the last good one."),
   triage_overrides: log("You asked to dig deeper three times on one lane this week."),
   hostile_schedule_turn: log("A scheduled task read hostile content; you got a card."),
-  mail_auth_lost: page("My access to Paco's Gmail was lost; mail triage is paused.", "run `houge mail auth`, then restart the daemon"),
+  mail_auth_lost: page("My access to Paco's Gmail was lost; mail triage is paused.", "run `npm run houge -- mail auth`, then restart the daemon"),
   mail_poll_failing: page("Mail polling has been failing for over two hours; new mail isn't being triaged."),
   mail_jev_failing: page("Jev keeps failing on your mail; every mail is pinging you.")
 } as const satisfies Record<string, IncidentRule>;

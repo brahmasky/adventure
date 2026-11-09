@@ -27,6 +27,8 @@ describe("REMIND_KINDS", () => {
   it("lists role_unresolved at 25 h; log kinds (static_list_stale) never; omp_contract_drift only past a week", () => {
     const row = (kind: string, h: number) => ({ incident_id: `i_${kind}`, kind, subject: "s", first_seen_at: ago(h) });
     expect(reminderText([row("role_unresolved", 25)], NOW)).toContain("role_unresolved");
+    expect(reminderText([row("mail_auth_lost", 25)], NOW)).toContain("— run `npm run houge -- mail auth`, then restart the daemon");
+    expect(reminderText([row("mail_auth_lost", 23)], NOW)).toBeNull();
     expect(reminderText([row("static_list_stale", 25)], NOW)).toBeNull();
     expect(reminderText([row("omp_contract_drift", 6 * 24)], NOW)).toBeNull();
     expect(reminderText([row("omp_contract_drift", 8 * 24)], NOW)).toContain("— still open after a week: Houge's omp contract check fails; ask Claude to look");

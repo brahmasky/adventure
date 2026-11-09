@@ -600,10 +600,7 @@ async function runSignalPathTick(
     // slow or stopped model tick (or a catalog outage) cannot delay that day's reminder. Its own catch.
     runReminderStep(options.store, chatId, now);
     await runModelTicks(options, gateway, worker, now, chatId, rolesTick);
-    // SP2 mail triage: the poll rides its own detached job (one Gmail round trip per mail is minutes of work, not a poll-loop
-    // step); retention is self-latched to one run a local date and takes no network.
-    mailTick.start(() => runMailTickSafe(options, chatId));
-    runMailRetentionSafe(options);
+    runMailSteps(options, chatId, mailTick);
     // ADR 0019: the metered-$ ceiling check — drives the alert-dedupe latch (the chain
     // builder's cheap enforcement read) once per cycle; the 0→1 transition enqueues ONE
     // alert, delivered by the outbox flush right after this tick.
@@ -638,9 +635,10 @@ function pacoAuthClient(options: RunTelegramDaemonOptions): GoogleAuthClient {
 }
 
 /** SP2 mail (spec 2026-11-09 §3.2, §7): one poll, off unless the env switch, an operator chat and Paco's address are set. Its own catch, logging a code only (an error message may quote mail). */
-export async function runMailTickSafe(options: RunTelegramDaemonOptions, chatId: string | null): Promise<void> {
+async function runMailTickSafe(options: RunTelegramDaemonOptions, chatId: string | null): Promise<void> {
+  if (options.stopSignal.aborted || !resolveMailEnabled(process.env)) return;
   const pacoAddr = pacoAddress(process.env);
-  if (options.stopSignal.aborted || !resolveMailEnabled(process.env) || chatId === null || pacoAddr === undefined) return;
+  if (chatId === null || pacoAddr === undefined) { logMailSkipOnce(chatId === null ? "no_operator_chat" : "no_paco_address"); return; }
   try {
     const refresh = options.broker ? options.broker.pacoGmailRefreshToken() : process.env.HOUGE_PACO_GMAIL_REFRESH_TOKEN;
     const client = options.mailDeps?.jevClient ?? createJevClient({ apiKey: options.broker ? options.broker.typesafeKey() : process.env.TYPESAFE_API_KEY,
@@ -651,6 +649,21 @@ export async function runMailTickSafe(options: RunTelegramDaemonOptions, chatId:
   } catch (error) {
     console.error(`[telegram-daemon] mail tick failed: ${errorCode(error)}`);
   }
+}
+
+const mailSkipLogged = new Set<string>();
+
+/** Mail is on but cannot poll: one code-only line per process, so the later mail_poll_failing page has a named cause. */
+function logMailSkipOnce(code: string): void {
+  if (mailSkipLogged.has(code)) return;
+  mailSkipLogged.add(code);
+  console.error(`[telegram-daemon] mail tick skipped: ${code}`);
+}
+
+/** SP2 mail triage: the poll rides its own detached job (one Gmail round trip per mail is minutes of work, not a poll-loop step); retention is self-latched to one run a local date and takes no network. */
+function runMailSteps(options: RunTelegramDaemonOptions, chatId: string | null, mailTick: DetachedJob): void {
+  mailTick.start(() => runMailTickSafe(options, chatId));
+  runMailRetentionSafe(options);
 }
 
 function runMailRetentionSafe(options: RunTelegramDaemonOptions): void {

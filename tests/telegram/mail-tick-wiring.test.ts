@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { GoogleApiDeps } from "../../src/capabilities/google-api.js";
 import type { GoogleAuthClient } from "../../src/capabilities/google-auth.js";
 import { RunStore } from "../../src/run/run-store.js";
-import { runTelegramDaemon } from "../../src/telegram/telegram-daemon.js";
+import { MAIL_TICK_SHUTDOWN_CAP_MS, runTelegramDaemon } from "../../src/telegram/telegram-daemon.js";
 import { pinOmpEnv } from "../helpers/omp-env.js";
 
 // SP2 mail wiring (spec 2026-11-09 §7): the poll loop runs the mail tick on its own detached job. With the env switch and the
@@ -19,14 +19,14 @@ const json = (b: unknown) => new Response(JSON.stringify(b), { status: 200, head
 const auth: GoogleAuthClient = { getAccessToken: async () => "ya29.t", invalidate: () => undefined };
 const cards = (store: RunStore) => (store as any).db.prepare("SELECT idempotency_key FROM notification_outbox WHERE idempotency_key LIKE 'mail:%'").all() as Array<{ idempotency_key: string }>;
 
-function fakeGmail(onMessage: () => void) {
+function fakeGmail(onMessage: (signal?: AbortSignal | null) => Promise<void> | void) {
   const paths: string[] = [];
-  const fetchImpl = (async (i: RequestInfo | URL) => {
+  const fetchImpl = (async (i: RequestInfo | URL, init?: RequestInit) => {
     const p = new URL(String(i)).pathname.slice("/gmail/v1/users/me/".length);
     paths.push(p);
     if (p === "profile") return json({ historyId: "100" });
     if (p === "messages") return json({ messages: [{ id: "m1", threadId: "t1" }] });
-    onMessage();
+    await onMessage(init?.signal);
     return json({ id: "m1", threadId: "t1", snippet: "s", labelIds: ["INBOX"], internalDate: String(Date.now() - 3_600_000),
       payload: { headers: [{ name: "From", value: "Ann <ann@example.com>" }, { name: "Subject", value: "Hello" }] } });
   }) as typeof fetch;
@@ -47,7 +47,7 @@ describe("runTelegramDaemon: the mail tick", () => {
     store.setMailState({ enabled: true, enabled_at: new Date().toISOString() });
     store.upsertSenderRule({ rule_id: "r1", address: "ann@example.com", action: "always", source_item_id: null, created_at: new Date().toISOString() });
     const stop = new AbortController();
-    const g = fakeGmail(() => stop.abort()); // the stop arrives mid-tick: shutdown must wait for the job, not abandon it
+    const g = fakeGmail(() => stop.abort());
     await runOnce(store, { gmail: g.deps, auth }, stop, { n: 0 });
     expect(g.paths).toContain("profile");
     expect(store.hasMailItem("m1")).toBe(true);
@@ -64,5 +64,66 @@ describe("runTelegramDaemon: the mail tick", () => {
     expect(g.paths).toEqual([]);
     expect(store.mailState().last_attempt_at).toBeNull();
     store.close();
+  });
+
+  // The shutdown wait (Rev 1.1): the stop arrives while the tick is parked in messages.get; that call finishes 300 ms after the
+  // stop, long after the other shutdown awaits. Without `settledWithin(mailTick.settled(), …)` the daemon returns first and the mail is not stored.
+  function shutdownCase(release: boolean) {
+    vi.stubEnv("HOUGE_MAIL_ENABLED", "1"); vi.stubEnv("HOUGE_PACO_GMAIL_ADDRESS", "paco@example.com"); vi.stubEnv("HOUGE_PACO_GMAIL_REFRESH_TOKEN", "1//rt-example");
+    const store = RunStore.openInMemory();
+    store.setMailState({ enabled: true, enabled_at: new Date().toISOString() });
+    store.upsertSenderRule({ rule_id: "r1", address: "ann@example.com", action: "always", source_item_id: null, created_at: new Date().toISOString() });
+    const stop = new AbortController();
+    let parked = false;
+    const g = fakeGmail(() => new Promise<void>((resolve) => {
+      parked = true;
+      if (release) stop.signal.addEventListener("abort", () => setTimeout(resolve, 300), { once: true });
+    }));
+    return { store, stop, g, parked: () => parked };
+  }
+  it("shutdown waits for an in-flight tick: the mail is stored and the stop returns within the cap", async () => {
+    const { store, stop, g, parked } = shutdownCase(true);
+    let polls = 0; let stoppedAt = 0;
+    const root = mkdtempSync(join(tmpdir(), "houge-daemon-mail-")); dirs.push(root);
+    const stall = setTimeout(() => stop.abort(), 8_000);
+    try {
+      await runTelegramDaemon({ store, projectRoot: root, allowlist: ALLOWLIST, stopSignal: stop.signal, longPollTimeoutSeconds: 0, mailDeps: { gmail: g.deps, auth },
+        llmAdapter: async (input) => ({ ok: true as const, output: { question: input.question, answer: "A", model: "fake" } }),
+        telegramClient: { getUpdates: async () => {
+          polls += 1;
+          if (polls >= 2) { for (let i = 0; i < 200 && !parked(); i++) await new Promise((r) => setTimeout(r, 10)); stoppedAt = Date.now(); stop.abort(); }
+          return [];
+        }, sendMessage: async () => ({ message_id: 1 }) } });
+      expect(parked()).toBe(true);
+      expect(store.hasMailItem("m1")).toBe(true);
+      expect(Date.now() - stoppedAt).toBeLessThan(MAIL_TICK_SHUTDOWN_CAP_MS + 1_000);
+    } finally { clearTimeout(stall); store.close(); }
+  });
+  it("a tick that never settles is abandoned at the cap, not waited for", async () => {
+    const { store, stop, g, parked } = shutdownCase(false);
+    let polls = 0; let stoppedAt = 0;
+    const root = mkdtempSync(join(tmpdir(), "houge-daemon-mail-")); dirs.push(root);
+    try {
+      await runTelegramDaemon({ store, projectRoot: root, allowlist: ALLOWLIST, stopSignal: stop.signal, longPollTimeoutSeconds: 0, mailDeps: { gmail: g.deps, auth },
+        llmAdapter: async (input) => ({ ok: true as const, output: { question: input.question, answer: "A", model: "fake" } }),
+        telegramClient: { getUpdates: async () => {
+          polls += 1;
+          if (polls >= 2) { for (let i = 0; i < 200 && !parked(); i++) await new Promise((r) => setTimeout(r, 10)); stoppedAt = Date.now(); stop.abort(); }
+          return [];
+        }, sendMessage: async () => ({ message_id: 1 }) } });
+      expect(store.hasMailItem("m1")).toBe(false);
+      expect(Date.now() - stoppedAt).toBeLessThan(MAIL_TICK_SHUTDOWN_CAP_MS + 1_000);
+    } finally { store.close(); }
+  }, 20_000);
+  it("mail on but no Paco address: one latched code-only line, no Gmail call", async () => {
+    vi.stubEnv("HOUGE_MAIL_ENABLED", "1"); vi.stubEnv("HOUGE_PACO_GMAIL_ADDRESS", ""); vi.stubEnv("HOUGE_PACO_GMAIL_REFRESH_TOKEN", "1//rt-example");
+    const err = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const store = RunStore.openInMemory();
+    store.setMailState({ enabled: true, enabled_at: new Date().toISOString() });
+    const g = fakeGmail(() => undefined);
+    await runOnce(store, { gmail: g.deps, auth }, new AbortController(), { n: 0 });
+    expect(g.paths).toEqual([]);
+    expect(err.mock.calls.map((c) => String(c[0])).filter((l) => l.includes("mail tick skipped"))).toEqual(["[telegram-daemon] mail tick skipped: no_paco_address"]);
+    err.mockRestore(); store.close();
   });
 });
