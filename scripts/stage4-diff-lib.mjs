@@ -190,8 +190,8 @@ export function regularTables(store) {
   const virtual = t.filter((x) => /^CREATE VIRTUAL/i.test(x.sql ?? "")).map((x) => x.name);
   return t.filter((x) => !virtual.some((v) => x.name === v || x.name.startsWith(`${v}_`)) && !LOUD_DEGRADATION_NEW.tables.includes(x.name));
 }
-/** The SQL filter a coverage count adds for the loud-degradation migration rows dumpDb drops (a table with no named drop gets ""). */
-export const extraDropFilter = (name) => (name === "schema_migrations" ? ` WHERE version NOT IN (${LOUD_DEGRADATION_NEW.migrations.map((v) => `'${v}'`).join(",")})` : "");
+/** The SQL filter a coverage count adds for the migration rows dumpDb drops by name (loud degradation, mail triage); a table with no named drop gets "". */
+export const extraDropFilter = (name) => (name === "schema_migrations" ? ` WHERE version NOT IN (${DROPPED_MIGRATIONS.map((v) => `'${v}'`).join(",")})` : "");
 
 /**
  * Loud-degradation (2026-11-02) schema the merge-base builds never had, dropped BY NAME from every dump (P32; never a pattern): the table, the two
@@ -202,6 +202,14 @@ export const LOUD_DEGRADATION_NEW = {
   migrations: ["2026-11-02-loud-degradation", "2026-11-02-hostile-schedule-event"],
   plannerSessionStateKeys: ["fresh_requested_at", "transcript_trust_at"]
 };
+/**
+ * SP2 mail triage (spec 2026-11-09, Task 12 ruling): the one schema_migrations row the merge-base builds never write, dropped BY NAME (P32). Its
+ * five mail_* tables stay empty in every corpus (dumpDb omits an empty table) and are not named here. The row's applied_at also occupied a clock
+ * rank, shifting every later t#N label on the new side; dropping the row restores the ranks. Its one `new Date()` at store open is handled by the
+ * context corpus (valid_from / valid_until relabelled as clocks), not here.
+ */
+export const MAIL_TRIAGE_NEW = { migrations: ["2026-11-09-mail-triage"] };
+const DROPPED_MIGRATIONS = [...LOUD_DEGRADATION_NEW.migrations, ...MAIL_TRIAGE_NEW.migrations];
 
 /** auto-apply 2026-11-07 (8ff30da6) column the r1–r6 merge-base builds never had; R7 does not touch improve_signals. Dropped BY NAME from every dump (P32; never a pattern). No schema_migrations row came with it. */
 export const IMPROVE_AUTO_APPLY_NEW = { improveSignalsKeys: ["origin"] };
@@ -219,7 +227,7 @@ export function dumpDb(store, { dropDecisionIds = [] } = {}) {
     if (/WITHOUT\s+ROWID/i.test(sql ?? "")) throw new Error(`dumpDb: ${name} is WITHOUT ROWID; order it by its primary key first`);
     let rows = store.db.prepare(`SELECT * FROM "${name.replace(/"/g, '""')}" ORDER BY rowid`).all();
     if (name === "decisions") rows = rows.filter((r) => !drop.has(r.entry_id));
-    if (name === "schema_migrations") rows = rows.filter((r) => !LOUD_DEGRADATION_NEW.migrations.includes(r.version));
+    if (name === "schema_migrations") rows = rows.filter((r) => !DROPPED_MIGRATIONS.includes(r.version));
     if (name === "planner_session_state") rows = rows.map((r) => Object.fromEntries(Object.entries(r).filter(([k]) => !LOUD_DEGRADATION_NEW.plannerSessionStateKeys.includes(k))));
     if (name === "improve_signals") rows = rows.map((r) => Object.fromEntries(Object.entries(r).filter(([k]) => !IMPROVE_AUTO_APPLY_NEW.improveSignalsKeys.includes(k))));
     if (rows.length) out[name] = rows.map((r) => ({ ...r }));
