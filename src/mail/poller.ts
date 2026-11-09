@@ -217,8 +217,9 @@ async function knownSender(d: PollDeps, m: GmailMetadata, now: Date): Promise<{ 
 
 /**
  * §7 after the range: a COMPLETE poll (every id stored or skipped, no Gmail error) stamps last_ok_at and clears the failure state;
- * an incomplete one (deadline, a failed item write) stamps nothing and pages mail_poll_failing once stale (codex B1, I2-a); auth
- * pauses and pages once; unavailable backs off and pages through mailStale.
+ * an incomplete one (deadline, a failed item write) saw Gmail healthy, so it clears the Gmail-fault state (backoff, code) but stamps
+ * no success, and pages mail_poll_failing once stale (codex B1, I2-a; orchestrator ruling 2026-11-09); auth pauses and pages once;
+ * unavailable backs off and pages through mailStale.
  */
 function settle(d: PollDeps, st: MailStateRow, p: Progress, now: Date): void {
   const nowIso = now.toISOString();
@@ -228,6 +229,7 @@ function settle(d: PollDeps, st: MailStateRow, p: Progress, now: Date): void {
     return;
   }
   if (p.error === undefined) {
+    d.store.setMailState({ last_error_code: null, failing_since: null, backoff_n: 0 }); // Gmail answered: the backoff is over, the cadence resumes; last_ok_at waits for a complete poll
     if (mailStale(d.store.mailState(), d.env, now)) pagePollFailing(d, { last_ok_at: st.last_ok_at, failed_items: p.failed }, nowIso);
     return;
   }

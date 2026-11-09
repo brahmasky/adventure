@@ -163,6 +163,22 @@ describe("runMailTick: first run and history", () => {
     expect(store.mailState().last_ok_at).toBe(t(135)().toISOString());
     store.close();
   });
+  it("a 503 then an incomplete-but-Gmail-healthy tick: backoff state cleared, last_ok_at unchanged, cadence back to the poll interval (ruling on concern 1)", async () => {
+    const store = RunStore.openInMemory();
+    on(store, { history_id: "5", last_ok_at: NOW.toISOString() });
+    const t = (min: number) => at(new Date(NOW.getTime() + min * 60_000).toISOString());
+    expect(await runMailTick(pollDeps(store, gmail({ history: () => 503 }), { now: t(5) }))).toMatchObject({ ran: true, error: "unavailable" });
+    expect(store.mailState()).toMatchObject({ failing_since: t(5)().toISOString(), backoff_n: 1, last_error_code: "unavailable" });
+    const spy = vi.spyOn(store, "insertMailItem").mockImplementation(() => { throw new Error("SQLITE_FULL"); });
+    const healthy = gmail({ history: () => page(["a"], "10") });
+    expect(await runMailTick(pollDeps(store, healthy, { now: t(6) }))).toEqual({ ran: true, stored: 0, pinged: 0, cursorAdvanced: false });
+    expect(store.mailState()).toMatchObject({ failing_since: null, backoff_n: 0, last_error_code: null, last_ok_at: NOW.toISOString(), last_attempt_at: t(6)().toISOString(), history_id: "5" });
+    expect(await runMailTick(pollDeps(store, healthy, { now: t(7) }))).toEqual({ ran: false, why: "not_due" }); // not the 1-min backoff arm any more
+    expect(await runMailTick(pollDeps(store, healthy, { now: t(10) }))).toEqual({ ran: false, why: "not_due" });
+    expect(await runMailTick(pollDeps(store, healthy, { now: t(11) }))).toMatchObject({ ran: true, cursorAdvanced: false });
+    spy.mockRestore();
+    store.close();
+  });
   it("a throw escaping the tick is a failed poll: backoff state set, the next loop iteration is not_due (I3)", async () => {
     const store = RunStore.openInMemory();
     on(store, { history_id: "5" });
