@@ -9,6 +9,7 @@ export const COMMAND_ALIASES_NOT_DOCUMENTED = new Map<string, string>([
 /** HOUGE_* names in src that are not configuration (each with its reason). */
 export const ENV_NOT_CONFIGURATION: Record<string, string> = {
   HOUGE_STATUS_MAX_CHARS: "a TypeScript constant, not an environment variable",
+  HOUGE_GMAIL_ADDRESS: "a code constant holding Houge's own Gmail address, not an env var",
   HOUGE_SHELL_CLEANROOM: "set by the shell wrapper for its own child, never by Paco",
   HOUGE_SHELL_SANDBOX: "set by the shell wrapper for its own child, never by Paco",
   HOUGE_NEEDS_LOCKED: "the sentinel FILE name HOUGE_NEEDS_LOCKED.md the self-write writer leaves, not a variable",
