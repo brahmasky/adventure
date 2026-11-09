@@ -54,12 +54,10 @@ in ledger rows but nothing read it back in plain words.
   carries callback data). Three incident kinds in `INCIDENT_ROUTE`, all **page**: `mail_auth_lost` (the grant is dead;
   also in `REMIND_KINDS`, daily until `houge mail auth` and a restart), `mail_poll_failing` (no successful poll for 2 h
   while on; the poller and the sweep share one `mailStale` predicate) and `mail_jev_failing` (the sweep: at least 5
-  `fail`-rung `mail.triage` decisions and no answer in 24 h). **Retention touches the outbox:** mail item text is cleared
-  `HOUGE_MAIL_TEXT_DAYS` (30) after the mail was received; outbox copies are stripped to a textless form
-  `HOUGE_MAIL_TEXT_DAYS` after they were written — a `mail_card` row with its item's text, an `/inbox` reply row (key prefix
-  `mail:inbox:`) by the reply's own `created_at`, so a subject shown in `/inbox` on day 29 can persist in that reply row about
-  30 more days; `payload_hash` is recomputed. Accepted: Paco's own Telegram history keeps what was sent, the nightly DB
-  snapshots keep older text until they rotate out, and the `/changes` lines keep masked addresses.
+  `fail`-rung `mail.triage` decisions and no answer in 24 h). **Retention touches the outbox**, on two clocks (`src/mail/retention.ts`): a mail item's text
+  and its `mail_card` outbox copy are cleared `HOUGE_MAIL_TEXT_DAYS` (30) after the mail's `received_at`; an `/inbox` reply row
+  (key prefix `mail:inbox:`) is stripped `HOUGE_MAIL_TEXT_DAYS` after the reply's own `created_at`, so a subject shown in
+  `/inbox` on day 29 persists in that reply row until the reply itself is 30 days old; `payload_hash` is recomputed.
 - Residuals Paco accepts: background is visible only when he looks; a catalog outage and a stale static list left the daily
   reminder; an omp contract drift that degrades answers without failing spawns shows in `/status` and, after 7 days, in the
   reminder; rating asks stay in chat.

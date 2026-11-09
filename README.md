@@ -359,9 +359,10 @@ Both tools always return through the quarantined reader
 **Paco's own Gmail (mail triage, SP2 slice 1).** A second `gmail.readonly` grant, Paco's account
 (`HOUGE_PACO_GMAIL_ADDRESS`, `houge mail auth`; ADR 0025 §9). While `HOUGE_MAIL_ENABLED` and `/mail on` are
 both on, a poller reads new mail every few minutes (headers and snippet only, never a body) and the
-`mail.triage` entry decides per mail: Paco's sender rules and code floors first, then one Jev question —
-urgent gets one card now (Open link, Wrong urgency tap; silent at night), the rest waits in `/inbox`; Jev
-down means a ping ([ADR 0034 rule 2.6](docs/decisions/0034-decision-ladder-consolidated.md)). The same
+`mail.triage` entry decides per mail: Paco's sender rules and code floors first, then one Jev request asking
+`mail_urgency` and `mail_kind` — urgent gets one card now (Open link, Wrong urgency tap; silent at night and for
+a follow-up in a thread that already pinged; past 6 pings in an hour the rest fold into `/inbox` behind one
+hourly card), everything else waits in `/inbox`; Jev down means a ping ([ADR 0034 rule 2.6](docs/decisions/0034-decision-ladder-consolidated.md)). The same
 tools read Paco's mail on demand with `account: "paco"`, refused while mail is off. Mail text is kept 30
 days ([configuration](docs/reference/configuration.md#google-identity--gmail_read--google_api-adr-0025)).
 

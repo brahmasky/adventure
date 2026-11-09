@@ -259,8 +259,10 @@ the module docblock (`src/web/http-fetch.ts`); the URLs read are recorded in the
 
 ## Secrets firewall (ADR 0015, Phase 1)
 
-When armed, the five real secrets (`KIMI_API_KEY`, `GEMINI_API_KEY`, `TAVILY_API_KEY`,
-`FIRECRAWL_API_KEY`, `HOUGE_TELEGRAM_BOT_TOKEN`) are lifted into an in-process
+When armed, the broker-held secrets (`SECRET_ENV_NAMES`, ten today: `KIMI_API_KEY`, `GEMINI_API_KEY`,
+`TAVILY_API_KEY`, `FIRECRAWL_API_KEY`, `HOUGE_TELEGRAM_BOT_TOKEN`, `HOUGE_GMAIL_CLIENT_SECRET`,
+`HOUGE_GMAIL_REFRESH_TOKEN`, `HOUGE_PACO_GMAIL_REFRESH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, `TYPESAFE_API_KEY`;
+ADR 0015's 2026-11-09 amendment) are lifted into an in-process
 `SecretBroker` at boot and then **deleted from `process.env`** — the daemon holds no
 ambient credential, so a self-written `process.env.KIMI_API_KEY` reads `undefined`. The
 broker feeds the provider chain builders (single source of truth: `config.apiKey`, the
@@ -340,13 +342,11 @@ the fail and answered counts, or `fused` when the ADR 0019 cap has latched). Gma
 `invalid_grant` pauses the poller (cursor kept, no retry until `/mail on` or a restart) and opens one `mail_auth_lost`
 page (in the daily reminder); a 403 is a Gmail rate limit, treated as temporary like a 5xx — backoff 1, 2, 4 … 30 min;
 no successful poll for 2 h while on opens `mail_poll_failing` (poller and sweep share one `mailStale` predicate); a
-Jev outage on mail pages through the Jev incidents plus the sweep's `mail_jev_failing`. Retention: mail item text
-(redacted sender name, subject, snippet) is cleared `HOUGE_MAIL_TEXT_DAYS` after the mail was received; outbox copies
-are stripped to a textless form `HOUGE_MAIL_TEXT_DAYS` after they were written — a `mail_card` row with its item's text,
-an `/inbox` reply row (key prefix `mail:inbox:`) by the reply's own `created_at`, so a subject shown in `/inbox` on day 29
-can persist in that reply row about 30 more days. Accepted gaps: the nightly DB snapshots keep older text until they
-rotate out, Paco's own Telegram history keeps what was sent, and the `/changes` lines keep masked addresses.
-`houge mail purge --yes` does all of the sweep now, for every item, and clears the known-sender cache. Logs, `/status`,
+Jev outage on mail pages through the Jev incidents plus the sweep's `mail_jev_failing`. Retention, two clocks (`src/mail/retention.ts`): a mail
+item's text (redacted sender name, subject, snippet) and its `mail_card` outbox copy are cleared `HOUGE_MAIL_TEXT_DAYS`
+after the mail's `received_at`; an `/inbox` reply row (key prefix `mail:inbox:`) is stripped `HOUGE_MAIL_TEXT_DAYS` after
+the reply's own `created_at`, so a subject shown in `/inbox` on day 29 persists in that reply row until the reply itself
+is 30 days old. `houge mail purge --yes` does all of the sweep now, for every item, and clears the known-sender cache. Logs, `/status`,
 decision rows and the live gate (`scripts/live-gate-mail-triage.mjs`) carry ids, counts and codes only.
 
 ## Deterministic timezone tool (`to_local_time`, loop tool)

@@ -533,17 +533,15 @@ write.
   dir is outside text) is reachable only as defence in depth, since the gate already denies planner reads there; a malformed
   `get_state` turns the steer guard off (`todo_unavailable`); a blocked read still sends a refused `judge_read`; slice
   R6's `tool.wall`/`reader.family` pair writes mid-lane, its second read unguarded.
-- Accepted (`mail.triage`, spec 2026-11-09 §4, §7): mail text (redacted sender name, subject, snippet) is cleared from
-  `mail_items` by the daily sweep `HOUGE_MAIL_TEXT_DAYS` (30) after the mail was received; outbox copies are stripped to a
-  textless form `HOUGE_MAIL_TEXT_DAYS` after they were written — a `mail_card` row with its item's text (the card is written
-  by the poll that stored the item), an `/inbox` reply row (key prefix `mail:inbox:`) by the reply's own `created_at` — so a
-  subject shown in `/inbox` on day 29 can persist in that reply row about 30 more days. The nightly DB snapshots keep older
-  text until they rotate out, Paco's own Telegram history keeps what was sent, and the `/changes` lines keep masked
-  addresses; `mail_sender_rules` and `mail_senders` hold addresses by design; `houge mail purge --yes` does all of the
-  sweep now. A silently dead poller is detected within one sweep
-  interval (12 h default) through `mail_state.last_ok_at`, never through mail cards; a cursor resync capped at 500 can leave
-  older mail unlisted, reported in one `mail_log` line; a hostile subject reaches Jev as data in one typed question (worst
-  case: its own lane). The Open button's Gmail deep-link format is unverified outside the live gate.
+- Retention (`mail.triage`, spec 2026-11-09 §4; `src/mail/retention.ts`), two clocks: a mail item's text (redacted sender
+  name, subject, snippet) and its `mail_card` outbox copy are cleared by the daily sweep `HOUGE_MAIL_TEXT_DAYS` (30) after
+  the mail's `received_at`; an `/inbox` reply row (key prefix `mail:inbox:`) is stripped `HOUGE_MAIL_TEXT_DAYS` after the
+  reply's own `created_at` — so a subject shown in `/inbox` on day 29 persists in that reply row until the reply itself
+  is 30 days old. The stripped forms carry no text (`📧 · <kind>`, `📧 /inbox page (cleared)`), `payload_hash` recomputed;
+  `mail_sender_rules` and `mail_senders` hold addresses by design; `houge mail purge --yes` does all of the sweep now.
+  A silently dead poller is detected within one sweep interval (12 h default) through `mail_state.last_ok_at`, never through
+  mail cards; a cursor resync capped at 500 can leave older mail unlisted, reported in one `mail_log` line; a hostile subject
+  reaches Jev as data in one typed question (worst case: its own lane).
 
 ## Alternatives considered
 
