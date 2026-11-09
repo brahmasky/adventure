@@ -13,7 +13,7 @@
 // triage, ladder, store. What is a copy: the DB (VACUUM INTO under /tmp/hg-s4d-*, removed on every exit path; every pre-existing undelivered outbox
 // row parked so nothing old is resent). The only seams: the auth client's fetchImpl (line 6 answers one token mint with 401), the Jev client wrapped
 // to capture request bodies (line 4 searches them), and the poller's deadline widened to 5 min (a first run over a day of mail takes more than the
-// daemon's 90 s). The cadence gate is passed by rewinding `last_ok_at` on the copy before each tick (HOUGE_MAIL_POLL_MIN clamps to >= 2 min).
+// daemon's 90 s). The cadence gate is passed by rewinding `last_ok_at` and `last_attempt_at` on the copy before each tick (HOUGE_MAIL_POLL_MIN clamps to >= 2 min).
 //
 // Order (Rev 1.1): (1) one first-run tick sets the cursor (the 24 h backfill is counted, never shown); (2) "send the three mails now, then press
 // Enter"; (3) ticks until all three tokens are stored or --wait-min pass, delivering only the planted mails' cards; (4) lines 1–8. The planted
@@ -109,7 +109,8 @@ async function pumpPlanted() {
 }
 
 // ---- the poller, as the daemon wires it ----
-const rewind = () => G.store.setMailState({ last_ok_at: new Date(Date.now() - 3_600_000).toISOString() });
+// Both stamps: the poller's cadence counts from the later of last_ok_at and last_attempt_at (final fix wave, 4d8c9bdd).
+const rewind = () => { const t = new Date(Date.now() - 3_600_000).toISOString(); G.store.setMailState({ last_ok_at: t, last_attempt_at: t }); };
 function pollDeps() {
   return { store: G.store, chatId: G.chatId, pacoAddress: G.pacoAddr, env: process.env, now: () => new Date(), brokerRedact: (s) => G.store.redactSecretValues(s),
     ask: (state) => G.m.askMail({ state, client: G.jev, store: G.store }), gmail: { deps: { fetchImpl: fetch, now: () => new Date() }, auth: G.auth },
