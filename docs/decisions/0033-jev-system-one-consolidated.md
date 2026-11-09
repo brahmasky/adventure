@@ -1,7 +1,10 @@
 # ADR 0033: Jev as System One — a typed decision layer in front of the models (consolidated)
 
 - **Status:** accepted 2026-11-05 (signed by Paco, rulings A1–A5 included); consolidates and supersedes
-  [ADR 0029](0029-jev-system-one.md) with no change of meaning
+  [ADR 0029](0029-jev-system-one.md) with no change of meaning; amended 2026-11-05 (no off switch, no shadow — signed by
+  Paco 2026-11-06); amended 2026-11-06 (drift rewording — signed by Paco 2026-11-06); amended 2026-11-09 (spec
+  2026-11-09-sp2-mail-triage: lane 4 is `mail.triage`; the mail egress class `MailJevState` approved, D3; mail outages
+  page through the Jev incidents plus `mail_jev_failing`) — awaiting Paco's signature
 - **Date:** 2026-11-04
 - **Deciders:** Paco
 - **Supersedes:** [0029](0029-jev-system-one.md), with every amendment to it (in 0029, [0030](0030-decision-ladder.md),
@@ -31,7 +34,8 @@ fall-through; **System Two (omp seats)** composes inside the lane code picked. J
 - **A1.** One Jev request per decision point, carrying every question that point may need; code ignores answers it does
   not use. **A2.** Questions come from a frozen library, each with a `criteria_hash`; thresholds are keyed by
   `(question, criteria_hash, language)`.
-- **A3.** Every answer writes a `jev_decisions` row: ids, probabilities, thresholds, outcome — never text. A generic
+- **A3.** Every answer writes a `jev_decisions` row: ids, probabilities, thresholds, outcome — never text (a run-less ladder
+  entry's own request — `improve.route`, `memory.kind`, `mail.triage` — writes none: its `decisions` row carries the p). A generic
   replay harness comes with the library; golden sets run as daily ticks and in the version check (ADR 0034 6.2). State parity: answered rows record
   `thread_cut_at` (the claim, when live read the thread) and `state_built_at` (when it computed
   `last_houge_turn.age_s`); the replay rebuilds from both, reading the thread through the cut's own millisecond, and its
@@ -66,7 +70,13 @@ fall-through; **System Two (omp seats)** composes inside the lane code picked. J
   links from `trusted_extract` never enter a state. A state never carries a model-authored justification.
 - **D2.** Approved egress: Paco's Telegram text under the 2026-09-25 caps, and, by Paco's ruling R11 (every new class,
   after redaction — ADR 0034 rule 7.2, which also holds the judge redactor and the residual), the classes it was
-  recorded against: web, mail and calendar content, shell output, files and replies.
+  recorded against: web, mail and calendar content, shell output, files and replies. **Paco's inbound mail** (2026-11-09,
+  D3): the mail egress class for Jev is `MailJevState` (`src/mail/envelope.ts`) — redacted sender name, sender address,
+  known flag, redacted subject and snippet, labels, importance — built by code, never by a model; no time, presence,
+  thread, id or language field, never the body or an attachment. Every untrusted text field passes the gmail-read caps and
+  the judge redactor (ADR 0034 7.2, `codeShapes` and `linkTokens`) before it is stored, sent or shown; the address passes an
+  addr-spec allowlist and is sent as is (it is the sender-rule key). `tests/adr/0033-mail-egress.test.ts` pins the key set
+  and the masking on the real request.
 
 ### E. The metered leg and outages (old decision 6; ADR 0019 amendment)
 - **E1.** Jev is a free, non-generative leg outside the flat-rate chains, metered under the ADR 0019 ceiling and fuse,
@@ -80,7 +90,10 @@ fall-through; **System Two (omp seats)** composes inside the lane code picked. J
 - **E4.** Timeout, parse, transport and `error` skips open no incident per call. The sweep opens `jev_skip_rate` when
   they are at least half of 3 or more triage calls in 24 h, holds it until an answered call lands, and it pages.
 - **E5.** A lane that fails pages: the sweep's `lane_fallthrough_rate` opens per lane when, of at least 3 settled turns
-  in 24 h, half or more fell through to the planner.
+  in 24 h, half or more fell through to the planner. **Mail** (2026-11-09): `mail.triage` is in `JEV_PAGED_ELSEWHERE`, so
+  a Jev outage on mail reaches Paco through the Jev incidents, plus the `mail_jev_failing` sweep check (page: at least 5
+  `fail`-rung `mail.triage` decisions and no `system_one` answer in 24 h — a timeout storm opens no per-call incident and
+  `jev_skip_rate` reads the front door's point only); every mail still pings meanwhile (`fail` = `ping`, D4).
 - **E6.** AGENTS.md carries the invariant line for this ADR, as it reads today: Jev, a non-generative typed decider, is
   one rung of the decision ladder; what it may cause depends on what it read (ADR 0034 R12); it never gates an action
   (with the one named exception, B4); every outage reaches Paco.
@@ -188,8 +201,12 @@ fall-through; **System Two (omp seats)** composes inside the lane code picked. J
 
 ### K. Planned lanes (old decision 7)
 Each is its own spec → review → plan → build → live gate: (3) `injection_suspected` on reader-wall output (partly
-delivered by ADR 0034's `tool.injection`), then a `risk` score on plain shell commands, both monotone; (4) an inbound
-triage envelope, a digest tick and a `wrong urgency` label, before SP2; (5) context relevance, driving lesson
+delivered by ADR 0034's `tool.injection`), then a `risk` score on plain shell commands, both monotone; (4) **redefined
+2026-11-09 as `mail.triage`** (spec 2026-11-09-sp2-mail-triage, SP2 slice 1): inbound mail from Paco's own Gmail, triaged
+by code floors, his sender rules and one Jev request (`mail_urgency`, `mail_kind`; decision point `mail`, run-less) into
+a card now or `/inbox` — the 2026-10-04 lane 4 premises moved (the digest is gone, Houge's own notifications are routed
+by code per topic, ADR 0031, and are out of scope; nothing is pushed on a timer; the `wrong urgency` tap makes a sender
+rule, announced with undo). What its verdict may cause is ADR 0034 rule 2.6; (5) context relevance, driving lesson
 credit (ships armed, ADR 0034 1.6). Lane 1 is I–J; lane 2 (model routing by
 judged complexity) is H2 on ADR 0032's roles, and resolving the reader cross-family is ADR 0032's D10.
 
@@ -202,7 +219,7 @@ judged complexity) is H2 on ADR 0032's roles, and resolving the reader cross-fam
 ## Consequences
 
 - Easier: a judgment call is a question plus a threshold row, not a branch; every decision is replayable from its row;
-  Opus quota goes to turns that need it; SP2's inflow lands in an existing triage lane.
+  Opus quota goes to turns that need it; SP2's inflow lands on the ladder as `mail.triage` (K).
 - Harder: thresholds are a maintained artefact (per question, hash, language); a criteria edit is a calibration event;
   CJK needs its own evidence per question; one more provider in the audit, one more secret in the broker's use.
 - Accepted risks: Jev is steerable by injected text (labels stay advisory or monotone, so steering degrades quality,
@@ -244,6 +261,7 @@ judged complexity) is H2 on ADR 0032's roles, and resolving the reader cross-fam
 | 2026-11-04 | Version-drift wording (F3–F4): ADR 0029 decision 5 said a drift "disarms only the drifting triage questions"; ADR 0030 decision 9 said it "disarms the failing questions and their dependents, pages once with Accept, and arms again on Paco's tap". This ADR states 0030's form, with Accept making the new answers the reference | [version-check](../superpowers/specs/2026-10-22-jev-version-check-design.md) | 2026-11-05 |
 | 2026-11-05 | No off switch, no shadow: front-door shadow, HOUGE_JEV_LANES_OFF and HOUGE_JEV_TRIAGE_ENABLED removed; HOUGE_JEV_ENABLED is the front door's STOP flag; F7's live-shadow-stats clause named a reader no code had | [no off switch](../superpowers/specs/2026-11-05-jev-no-off-switch-no-shadow-design.md) | 2026-11-06 |
 | 2026-11-06 | Drift rewording, no change of meaning: golden sets run as ticks, not in the sweep (A3); `TREE_THRESHOLD_VERSION` no longer pinned to a stage-B value (I8) | — | 2026-11-06 |
+| 2026-11-09 | SP2 mail triage: lane 4 redefined as `mail.triage` (K); the mail egress class `MailJevState` approved by Paco (D2, his D3); mail outages page through the Jev incidents plus `mail_jev_failing` (E5); run-less entries write no `jev_decisions` row (A3) | [sp2-mail-triage](../superpowers/specs/2026-11-09-sp2-mail-triage-design.md) (Rev 1.3.1) | awaiting Paco's signature |
 
 ## Reference map
 

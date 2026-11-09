@@ -1,6 +1,8 @@
 # ADR 0025: Google API surface + Gmail read — Houge reads his own inbox
 
-- **Status:** accepted
+- **Status:** accepted; amended 2026-11-09 (spec 2026-11-09-sp2-mail-triage: a second identity, Paco's, `gmail.readonly`;
+  the account picks the token, never the allowlist; the §8 revisit condition met by a bounded poller — §9) — awaiting
+  Paco's signature
 - **Date:** 2026-07-22
 - **Deciders:** Paco (2026-07-22 session)
 - **Relates to:** amends [ADR 0008](0008-houge-identity-authenticated-read.md) (identity
@@ -133,6 +135,38 @@ bounds are judged sufficient: `max_tool_calls` 14 per turn, at most 26 sequentia
 A read-only GET against Houge's own mailbox has no spend and no side effects to meter; the
 turn contract is the ceiling. **Revisit if Gmail polling ever becomes a schedule cadence** — a
 scheduler-driven poller changes the calculus from "bounded by the turn" to "unbounded over time."
+
+### 9. Amendment (2026-11-09): two identities, one scope, one allowlist — awaiting Paco's signature
+
+Spec `2026-11-09-sp2-mail-triage-design.md` (SP2 slice 1), approved by Paco 2026-11-09.
+
+- **Two identities.** Houge's (`HOUGE_GMAIL_ADDRESS`, `wukong.houge@gmail.com`, now an exported constant in
+  `src/mail/envelope.ts`) and Paco's (`HOUGE_PACO_GMAIL_ADDRESS`, plain config), each under its own refresh token and
+  both `gmail.readonly` — the hard floor of §2 stands for both. `scripts/gmail-auth.mjs --account paco` (also
+  `houge mail auth`) takes the client id and secret from `.env`, refuses any signed-in account other than Paco's,
+  writes exactly one `HOUGE_PACO_GMAIL_REFRESH_TOKEN=` line (replacing an existing one) and never prints the token.
+  Without `--account` the script is Houge's grant, unchanged.
+- **The account picks the token, never the path set.** `gmail_read` and `google_api` take `account: "houge" | "paco"`
+  (default `houge`; today's calls are byte-identical). The worker holds two auth clients keyed by account, each its own
+  token cache, so `/mail off` invalidates Paco's alone. The allowlist registry (§2, §3) stays one row per granted scope;
+  §3's three-party rule is untouched — this amendment adds no scope and no row.
+- **`account: "paco"` is gated by the mail switch.** Refused in code at `turn.preflight` with
+  `Paco's mail is off (/mail on to allow)` unless `HOUGE_MAIL_ENABLED` (in `DISARM_FLAGS`) and the stored `/mail on`
+  switch are both on; `/mail on` refuses without a valid `HOUGE_PACO_GMAIL_ADDRESS` and clears a paused auth error;
+  `/mail off` stops the poller and invalidates Paco's cached access token. Results go through the reader wall and
+  `tool.injection` exactly as Houge's own do (§4). Houge never sends from either identity in this slice; sending is a
+  later `/approve`-gated slice, and §6's revisit ("read+send is a materially different trifecta") stands.
+- **§8's revisit condition is met, and decided.** Gmail polling is now a cadence: the mail poller (`src/mail/poller.ts`)
+  reads Paco's inbox every `HOUGE_MAIL_POLL_MIN` (5, clamped 2–60) minutes, single-flight, under a 90 s tick deadline
+  with at most 3 `messages.get` in flight, `format=metadata` only (never `full` or `raw`; a test pins every request URL),
+  ids-only `history.list` pages from a stored cursor that advances only when every id of the range is stored, a 200-mail
+  first-run backfill and a 500-mail resync cap (reported, never silent), exponential backoff 1–30 min on 429/5xx/network,
+  and a pause (no retry until `/mail on` or a restart) on 401/`invalid_grant` with one `mail_auth_lost` page and a daily
+  reminder. A Gmail 403 is a rate limit, not a lost grant: it backs off like a 5xx. A partial history read resumes from
+  the last record. A silently dead poller is caught by the invariant sweep (`mail_poll_failing`, through
+  `mail_state.last_ok_at`, never through mail cards). The ceiling is the cadence and the caps, not a turn contract.
+- **Broker.** `HOUGE_PACO_GMAIL_REFRESH_TOKEN` joins `SECRET_ENV_NAMES` with a getter and redaction (ADR 0015's 2026-11-09
+  amendment; §7's count, "seven", is now ten across the whole broker).
 
 ## Consequences
 
