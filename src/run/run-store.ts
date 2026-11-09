@@ -25,7 +25,7 @@ import {
   type GlobalBudgetHeadroom,
   type GlobalBudgetKind
 } from "../budget/global-budget-ledger.js";
-import { NOTIFICATION_MAX_ATTEMPTS, type ChatIntent, type LogIntent, type NotificationButton, type NotificationIntent } from "../notifications/notification-types.js";
+import { NOTIFICATION_MAX_ATTEMPTS, type ChatIntent, type LogIntent, type NotificationButton, type NotificationIntent, type NotificationPayload } from "../notifications/notification-types.js";
 import { isLogTopic, TOPIC_ROUTE } from "../notifications/topics.js";
 import {
   appendLedgerEvent,
@@ -1221,6 +1221,49 @@ const STANDING_APPROVAL_DDL = `
   CREATE UNIQUE INDEX IF NOT EXISTS standing_key_live ON standing_approvals(schedule_id, chat_id, action_fingerprint) WHERE state <> 'ended';
   CREATE INDEX IF NOT EXISTS standing_deny_idx ON standing_approvals(chat_id, action_fingerprint, denied_until);
   CREATE TABLE IF NOT EXISTS standing_uses (standing_id TEXT NOT NULL, run_id TEXT NOT NULL, tool_call_id TEXT NOT NULL, used_at TEXT NOT NULL, PRIMARY KEY (standing_id, run_id));`;
+
+/** SP2 mail triage spec §4 (+ plan: thread_followup, enabled_at, last_attempt_at, backoff_n, retention_on). Additive; the previous build never reads these. */
+const MAIL_TRIAGE_DDL = `
+  CREATE TABLE IF NOT EXISTS mail_items (
+    item_id TEXT PRIMARY KEY, gmail_message_id TEXT NOT NULL UNIQUE, gmail_thread_id TEXT NOT NULL,
+    from_address TEXT NOT NULL, from_name TEXT, known_sender INTEGER NOT NULL, labels_json TEXT NOT NULL,
+    important INTEGER NOT NULL, received_at TEXT NOT NULL, subject TEXT, snippet TEXT,
+    lane TEXT NOT NULL CHECK (lane IN ('ping','inbox')),
+    kind TEXT CHECK (kind IS NULL OR kind IN ('fyi','action','risk','noise')),
+    reason_code TEXT NOT NULL CHECK (reason_code IN ('jev_now','jev_later','jev_unsure','jev_unavailable','rule_always',
+      'rule_never','own_output','backfill','folded','routing_refused')),
+    thread_followup INTEGER NOT NULL DEFAULT 0,
+    decision_id TEXT, notification_id TEXT, seen_at TEXT, text_cleared_at TEXT, created_at TEXT NOT NULL);
+  CREATE INDEX IF NOT EXISTS mail_items_lane_seen ON mail_items(lane, seen_at, received_at);
+  CREATE TABLE IF NOT EXISTS mail_sender_rules (rule_id TEXT PRIMARY KEY, address TEXT NOT NULL UNIQUE,
+    action TEXT NOT NULL CHECK (action IN ('always','never')), source_item_id TEXT, created_at TEXT NOT NULL);
+  CREATE TABLE IF NOT EXISTS mail_labels (label_id TEXT PRIMARY KEY, item_id TEXT NOT NULL,
+    label TEXT NOT NULL CHECK (label IN ('wrong_urgency','should_have_pinged')), created_at TEXT NOT NULL);
+  CREATE TABLE IF NOT EXISTS mail_senders (address TEXT PRIMARY KEY, in_sent INTEGER NOT NULL, checked_at TEXT NOT NULL);
+  CREATE TABLE IF NOT EXISTS mail_state (id INTEGER PRIMARY KEY CHECK (id = 1), enabled INTEGER NOT NULL, enabled_at TEXT, history_id TEXT,
+    last_ok_at TEXT, last_error_code TEXT, failing_since TEXT, last_attempt_at TEXT, backoff_n INTEGER NOT NULL DEFAULT 0, retention_on TEXT);`;
+
+export type MailLane = "ping" | "inbox";
+export type MailKind = "fyi" | "action" | "risk" | "noise";
+export type MailReason = "jev_now" | "jev_later" | "jev_unsure" | "jev_unavailable" | "rule_always" | "rule_never" | "own_output" | "backfill" | "folded" | "routing_refused";
+export interface MailItemInsert {
+  item_id: string; gmail_message_id: string; gmail_thread_id: string; from_address: string; from_name: string | null;
+  known_sender: boolean; labels: readonly string[]; important: boolean; received_at: string; subject: string | null; snippet: string | null;
+  lane: MailLane; kind: MailKind | null; reason_code: MailReason; thread_followup: boolean; decision_id: string | null; notification_id: string | null; created_at: string;
+}
+export interface MailItemRow extends MailItemInsert { seen_at: string | null; text_cleared_at: string | null }
+export interface MailStateRow {
+  enabled: boolean; enabled_at: string | null; history_id: string | null; last_ok_at: string | null; last_error_code: string | null; failing_since: string | null;
+  last_attempt_at: string | null; backoff_n: number; retention_on: string | null;
+}
+type MailItemDbRow = Omit<MailItemRow, "known_sender" | "labels" | "important" | "thread_followup"> & { known_sender: number; labels_json: string; important: number; thread_followup: number };
+const MAIL_ITEM_COLUMNS = `item_id, gmail_message_id, gmail_thread_id, from_address, from_name, known_sender, labels_json, important, received_at, subject, snippet,
+  lane, kind, reason_code, thread_followup, decision_id, notification_id, seen_at, text_cleared_at, created_at`;
+const toMailItem = (r: MailItemDbRow): MailItemRow => {
+  const { labels_json, known_sender, important, thread_followup, ...rest } = r;
+  return { ...rest, known_sender: known_sender === 1, important: important === 1, thread_followup: thread_followup === 1, labels: JSON.parse(labels_json) as string[] };
+};
+const MAIL_STATE_COLUMNS: readonly (keyof MailStateRow)[] = ["enabled", "enabled_at", "history_id", "last_ok_at", "last_error_code", "failing_since", "last_attempt_at", "backoff_n", "retention_on"];
 
 /** Spec 2026-10-15 §11: memory_changes with `add` (an explicit fact save's Undo row): the 2026-10-02 columns plus `pruned_ids`. */
 const MEMORY_CHANGES_ADD_DDL = `
@@ -7588,6 +7631,137 @@ export class RunStore {
     return this.db.prepare(`SELECT COUNT(*) AS n FROM change_log WHERE created_at >= ?`).get<{ n: number }>(sinceIso)?.n ?? 0;
   }
 
+  // --- SP2 mail triage (spec 2026-11-09 §4). Text columns hold redacted text only; never log them. ---
+
+  insertMailItem(i: MailItemInsert): void {
+    this.db.prepare(`INSERT INTO mail_items (${MAIL_ITEM_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?)`)
+      .run(i.item_id, i.gmail_message_id, i.gmail_thread_id, i.from_address, i.from_name, i.known_sender ? 1 : 0, JSON.stringify(i.labels), i.important ? 1 : 0,
+        i.received_at, i.subject, i.snippet, i.lane, i.kind, i.reason_code, i.thread_followup ? 1 : 0, i.decision_id, i.notification_id, i.created_at);
+  }
+
+  hasMailItem(gmail_message_id: string): boolean {
+    return this.db.prepare(`SELECT 1 AS x FROM mail_items WHERE gmail_message_id = ?`).get(gmail_message_id) !== undefined;
+  }
+
+  getMailItem(item_id: string): MailItemRow | undefined {
+    const r = this.db.prepare(`SELECT ${MAIL_ITEM_COLUMNS} FROM mail_items WHERE item_id = ?`).get<MailItemDbRow>(item_id);
+    return r ? toMailItem(r) : undefined;
+  }
+
+  setMailItemNotification(item_id: string, notification_id: string): void {
+    this.db.prepare(`UPDATE mail_items SET notification_id = ? WHERE item_id = ?`).run(notification_id, item_id);
+  }
+
+  mailState(): MailStateRow {
+    this.db.prepare(`INSERT OR IGNORE INTO mail_state (id, enabled) VALUES (1, 0)`).run();
+    const r = this.db.prepare(`SELECT ${MAIL_STATE_COLUMNS.join(", ")} FROM mail_state WHERE id = 1`).get<Omit<MailStateRow, "enabled"> & { enabled: number }>();
+    if (!r) throw new Error("mail_state row missing");
+    return { ...r, enabled: r.enabled === 1 };
+  }
+
+  setMailState(patch: Partial<MailStateRow>): void {
+    this.mailState();
+    const keys = MAIL_STATE_COLUMNS.filter((k) => k in patch && patch[k] !== undefined);
+    if (keys.length === 0) return;
+    const values = keys.map((k) => (k === "enabled" ? (patch.enabled ? 1 : 0) : (patch[k] as string | number | null)));
+    this.db.prepare(`UPDATE mail_state SET ${keys.map((k) => `${k} = ?`).join(", ")} WHERE id = 1`).run(...values);
+  }
+
+  countMailPingsSince(sinceIso: string): number {
+    return this.db.prepare(`SELECT COUNT(*) AS n FROM mail_items WHERE lane = 'ping' AND created_at >= ?`).get<{ n: number }>(sinceIso)?.n ?? 0;
+  }
+
+  threadPingedSince(thread_id: string, sinceIso: string): boolean {
+    return this.db.prepare(`SELECT 1 AS x FROM mail_items WHERE gmail_thread_id = ? AND lane = 'ping' AND created_at >= ? LIMIT 1`).get(thread_id, sinceIso) !== undefined;
+  }
+
+  listUnseenInbox(limit: number): MailItemRow[] {
+    return this.db.prepare(`SELECT ${MAIL_ITEM_COLUMNS} FROM mail_items WHERE lane = 'inbox' AND seen_at IS NULL ORDER BY received_at ASC, item_id ASC LIMIT ?`)
+      .all<MailItemDbRow>(limit).map(toMailItem);
+  }
+
+  countUnseenInbox(): number {
+    return this.db.prepare(`SELECT COUNT(*) AS n FROM mail_items WHERE lane = 'inbox' AND seen_at IS NULL`).get<{ n: number }>()?.n ?? 0;
+  }
+
+  listInboxSince(sinceIso: string, limit: number): MailItemRow[] {
+    return this.db.prepare(`SELECT ${MAIL_ITEM_COLUMNS} FROM mail_items WHERE lane = 'inbox' AND received_at >= ? ORDER BY received_at DESC, item_id DESC LIMIT ?`)
+      .all<MailItemDbRow>(sinceIso, limit).map(toMailItem);
+  }
+
+  markMailSeen(item_ids: readonly string[], now: string): void {
+    const upd = this.db.prepare(`UPDATE mail_items SET seen_at = ? WHERE item_id = ? AND seen_at IS NULL`);
+    this.inTransaction(() => { for (const id of item_ids) upd.run(now, id); });
+  }
+
+  upsertSenderRule(r: { rule_id: string; address: string; action: "always" | "never"; source_item_id: string | null; created_at: string }): void {
+    this.db.prepare(`INSERT OR REPLACE INTO mail_sender_rules (rule_id, address, action, source_item_id, created_at) VALUES (?, ?, ?, ?, ?)`)
+      .run(r.rule_id, r.address, r.action, r.source_item_id, r.created_at);
+  }
+
+  senderRule(address: string): { rule_id: string; action: "always" | "never" } | undefined {
+    return this.db.prepare(`SELECT rule_id, action FROM mail_sender_rules WHERE address = ?`).get<{ rule_id: string; action: "always" | "never" }>(address);
+  }
+
+  deleteSenderRule(rule_id: string): { address: string; action: "always" | "never" } | undefined {
+    return this.inTransaction(() => {
+      const row = this.db.prepare(`SELECT address, action FROM mail_sender_rules WHERE rule_id = ?`).get<{ address: string; action: "always" | "never" }>(rule_id);
+      if (row) this.db.prepare(`DELETE FROM mail_sender_rules WHERE rule_id = ?`).run(rule_id);
+      return row;
+    });
+  }
+
+  insertMailLabel(l: { label_id: string; item_id: string; label: "wrong_urgency" | "should_have_pinged"; created_at: string }): void {
+    this.db.prepare(`INSERT INTO mail_labels (label_id, item_id, label, created_at) VALUES (?, ?, ?, ?)`).run(l.label_id, l.item_id, l.label, l.created_at);
+  }
+
+  senderInSent(address: string, sinceIso: string): boolean | undefined {
+    const r = this.db.prepare(`SELECT in_sent FROM mail_senders WHERE address = ? AND checked_at >= ?`).get<{ in_sent: number }>(address, sinceIso);
+    return r ? r.in_sent === 1 : undefined;
+  }
+
+  cacheSenderInSent(address: string, in_sent: boolean, now: string): void {
+    this.db.prepare(`INSERT OR REPLACE INTO mail_senders (address, in_sent, checked_at) VALUES (?, ?, ?)`).run(address, in_sent ? 1 : 0, now);
+  }
+
+  mailItemsTextBefore(cutoffIso: string): string[] {
+    return this.db.prepare(`SELECT item_id FROM mail_items WHERE text_cleared_at IS NULL AND received_at < ? ORDER BY received_at ASC`)
+      .all<{ item_id: string }>(cutoffIso).map((r) => r.item_id);
+  }
+
+  clearMailItemText(item_ids: readonly string[], now: string): void {
+    const upd = this.db.prepare(`UPDATE mail_items SET subject = NULL, snippet = NULL, from_name = NULL, text_cleared_at = ? WHERE item_id = ?`);
+    this.inTransaction(() => { for (const id of item_ids) upd.run(now, id); });
+  }
+
+  mailCardNotificationIds(item_ids: readonly string[]): string[] {
+    const sel = this.db.prepare(`SELECT notification_id FROM mail_items WHERE item_id = ?`);
+    const out: string[] = [];
+    for (const id of item_ids) {
+      const n = sel.get<{ notification_id: string | null }>(id)?.notification_id;
+      if (n) out.push(n);
+    }
+    return out;
+  }
+
+  replaceNotificationPayload(notification_id: string, payload: NotificationPayload): void {
+    this.db.prepare(`UPDATE notification_outbox SET payload_json = ?, payload_hash = ?, updated_at = ? WHERE notification_id = ?`)
+      .run(JSON.stringify(payload), stableHash(payload), new Date().toISOString(), notification_id);
+  }
+
+  clearMailSenders(): void {
+    this.db.prepare(`DELETE FROM mail_senders`).run();
+  }
+
+  /** Jev-outage check (Task 9): `mail.triage` decisions by rung since the cutoff. */
+  countMailDecisionRungs(sinceIso: string): { fail: number; system_one: number } {
+    const rows = this.db.prepare(`SELECT rung, COUNT(*) AS n FROM decisions WHERE entry_id = 'mail.triage' AND created_at >= ? AND rung IN ('fail', 'system_one') GROUP BY rung`)
+      .all<{ rung: "fail" | "system_one"; n: number }>(sinceIso);
+    const out = { fail: 0, system_one: 0 };
+    for (const r of rows) out[r.rung] = r.n;
+    return out;
+  }
+
   private enqueueChat(intent: ChatIntent): NotificationQueueResult {
     const target_key = this.notificationTargetKey(intent.target);
     const payload_hash = stableHash(intent.payload);
@@ -8631,6 +8805,17 @@ export class RunStore {
     this.applyStandingApprovalMigration();
     this.applyLoudDegradationMigration();
     this.applyHostileScheduleEventMigration();
+    this.applyMailTriageMigration();
+  }
+
+  /** SP2 mail triage: five additive tables, guarded by IF NOT EXISTS like the standing-approval migration. */
+  private applyMailTriageMigration(): void {
+    const version = "2026-11-09-mail-triage";
+    this.inTransaction(() => {
+      const applied = this.db.prepare(`SELECT version FROM schema_migrations WHERE version = ?`).get<{ version: string }>(version);
+      this.db.exec(MAIL_TRIAGE_DDL);
+      if (!applied) this.db.prepare(`INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)`).run(version, new Date().toISOString());
+    });
   }
 
   /** Spec 2026-11-02 §5 (plan P22): hostile_schedule_turn became an event; the rows a previous build left open are resolved once. */
