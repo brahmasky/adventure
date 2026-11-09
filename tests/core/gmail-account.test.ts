@@ -51,49 +51,50 @@ function newRun(): string {
   if (!intake.ok) throw new Error(`intake failed: ${JSON.stringify(intake)}`);
   return intake.run_id;
 }
-async function call(spy: ReturnType<typeof spyFetch>, input: Record<string, unknown>, tool = "gmail_read") {
-  const run_id = newRun();
-  const worker = ompWorker(store, tmp.dir, { llm, project: join(tmp.dir, "project"), google: { fetchImpl: spy.fetchImpl, now: () => new Date() } });
-  return { worker, r: await bridgeTurn(store, worker, run_id, tmp.dir).call(tool, input) };
+function makeWorker(spy: ReturnType<typeof spyFetch>) {
+  return ompWorker(store, tmp.dir, { llm, project: join(tmp.dir, "project"), google: { fetchImpl: spy.fetchImpl, now: () => new Date() } });
 }
+/** One more run on the SAME worker (each bridge turn needs its own claimed run). */
+function callOn(worker: ReturnType<typeof makeWorker>, input: Record<string, unknown>, tool = "gmail_read") {
+  return bridgeTurn(store, worker, newRun(), tmp.dir).call(tool, input);
+}
+const OFF_TEXT = "Paco's mail is off (/mail on to allow)";
 
 describe("gmail_read / google_api account:\"paco\" is gated by the mail switch", () => {
-  it("refuses with no fetch when mail is off (env off)", async () => {
+  it("refuses with the code-owned text and no fetch when the env switch is off", async () => {
     store.setMailState({ enabled: true });
     const spy = spyFetch();
-    const { r } = await call(spy, { account: "paco", get: "m1" });
+    const r = await callOn(makeWorker(spy), { account: "paco", get: "m1" });
     expect(r.isError).toBe(true);
-    // The read-tool wall withholds every failed read's error text from the planner; the refusal is still a failed tool call.
-    expect(r.content).toContain("Status: failed");
+    expect(r.content).toBe(OFF_TEXT);
     expect(spy.urls).toHaveLength(0);
   });
-  it("refuses with no fetch when the stored switch is off (env on)", async () => {
+  it("refuses google_api too when only the stored switch is off", async () => {
     process.env.HOUGE_MAIL_ENABLED = "1";
     const spy = spyFetch();
-    const { r } = await call(spy, { account: "paco", get: "m1" }, "google_api");
+    const r = await callOn(makeWorker(spy), { account: "paco", path: "gmail/v1/users/me/messages" }, "google_api");
     expect(r.isError).toBe(true);
+    expect(r.content).toBe(OFF_TEXT);
     expect(spy.urls).toHaveLength(0);
   });
-  it("with mail on, mints from the paco refresh token", async () => {
-    process.env.HOUGE_MAIL_ENABLED = "1"; store.setMailState({ enabled: true });
+  it("ledgers the refusal as denied/mail_off before any execution", async () => {
     const spy = spyFetch();
-    const { r } = await call(spy, { account: "paco", get: "m1" });
-    expect(r.isError).toBe(false);
-    expect(spy.refreshTokens).toEqual(["paco-refresh"]);
-  });
-  it("no account (or houge) keeps today's path: houge refresh token, even with mail off", async () => {
-    const spy = spyFetch();
-    await call(spy, { get: "m1" });
-    await call(spy, { account: "houge", get: "m1" });
-    expect(new Set(spy.refreshTokens)).toEqual(new Set(["houge-refresh"]));
-  });
-  it("invalidatePacoGmail drops the cached paco token so the next read re-mints", async () => {
-    process.env.HOUGE_MAIL_ENABLED = "1"; store.setMailState({ enabled: true });
-    const spy = spyFetch();
-    const { worker } = await call(spy, { account: "paco", get: "m1" });
-    worker.invalidatePacoGmail();
     const run_id = newRun();
-    await bridgeTurn(store, worker, run_id, tmp.dir).call("gmail_read", { account: "paco", get: "m1" });
-    expect(spy.refreshTokens).toEqual(["paco-refresh", "paco-refresh"]);
+    await bridgeTurn(store, makeWorker(spy), run_id, tmp.dir).call("gmail_read", { account: "paco", get: "m1" });
+    const ev = JSON.stringify(store.getLedgerEvents(run_id));
+    expect(ev).toContain("mail_off");
+    expect(ev).toContain("denied");
+  });
+  it("one worker: houge -> paco -> paco(cached) -> invalidate -> houge(cached) -> paco(re-mint)", async () => {
+    process.env.HOUGE_MAIL_ENABLED = "1"; store.setMailState({ enabled: true });
+    const spy = spyFetch();
+    const w = makeWorker(spy);
+    expect((await callOn(w, { get: "m1" })).isError).toBe(false);
+    expect((await callOn(w, { account: "paco", get: "m1" })).isError).toBe(false);
+    expect((await callOn(w, { account: "paco", get: "m1" })).isError).toBe(false);
+    w.invalidatePacoGmail();
+    expect((await callOn(w, { account: "houge", get: "m1" })).isError).toBe(false);
+    expect((await callOn(w, { account: "paco", get: "m1" })).isError).toBe(false);
+    expect(spy.refreshTokens).toEqual(["houge-refresh", "paco-refresh", "paco-refresh"]);
   });
 });

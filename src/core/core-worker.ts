@@ -587,6 +587,14 @@ export class CoreWorker {
     this.googleAuths.paco?.invalidate();
   }
 
+  /** Code-owned refusals before any execution: Paco's mail off (the text reaches the planner), memory-write trust limits. */
+  private ompPreflight(claim: ClaimedRun, state: { turnCtx: LoopTurnContext }, entry: string, input: Record<string, unknown>): ReturnType<NonNullable<ActiveTurn["preflight"]>> {
+    if ((entry === "gmail_read" || entry === "google_api") && input.account === "paco" && !pacoMailReadable(process.env, this.runStore)) {
+      return { refused: { reason: "mail_off", text: PACO_MAIL_OFF_ERROR } };
+    }
+    return entry === "memory_correct_write" ? memoryWritePreflight(this.memoryDeps(claim, state.turnCtx), input) : null;
+  }
+
   async executeOnce(worker_id: string): Promise<CoreWorkerResult> {
     const claim = this.runStore.claimNext(worker_id, 30);
     if (!claim) {
@@ -2506,7 +2514,7 @@ export class CoreWorker {
     return {
       registry, quarantine: (tool, output) => this.ompQuarantine(claim, state, tool, output),
       // memory_correct writes: the trust limits refuse before any card, else the card shows exactly what changes
-      preflight: (entry, input) => (entry === "memory_correct_write" ? memoryWritePreflight(this.memoryDeps(claim, state.turnCtx), input) : null),
+      preflight: (entry, input) => this.ompPreflight(claim, state, entry, input),
       // tool.injection (spec §7.1): every shell and wall result of this turn is judged before a model reads it
       judge: createInjectionJudge({ store: this.runStore, client: this.injectionClient(claim.run_id), home: this.ompPathContext().home })
     };
@@ -4733,14 +4741,14 @@ function savedLessonLine(saved: LessonSaveResult | undefined, savedLine: string,
   return saved.verb === "capped" ? `→ Lesson NOT saved: ${LESSON_CAPPED_HINT}` : savedLine;
 }
 
+/** Tool error for `account: "paco"` while the mail switch is off. */
+const PACO_MAIL_OFF_ERROR = "Paco's mail is off (/mail on to allow)";
+
 /**
  * ⓪·3g: the kickoff digest the evolution tool adapter returns IMMEDIATELY after
  * launching the pipeline on the background lane — the model relays that work started;
  * the outcome arrives later as the lane's own completion notification.
  */
-/** Tool error for `account: "paco"` while the mail switch is off. */
-const PACO_MAIL_OFF_ERROR = "Paco's mail is off (/mail on to allow)";
-
 export function buildEvolutionKickoffDigest(tool: string): string {
   return `后台开始改代码了（${tool}），完成后我会单独发消息告诉你`;
 }
