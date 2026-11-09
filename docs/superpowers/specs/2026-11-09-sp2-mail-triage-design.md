@@ -1,6 +1,6 @@
 # SP2 slice 1 — Paco's Gmail: read + inbound triage (Jev lane 4, re-scoped)
 
-**Rev 1.1 · 2026-11-09 · status: reviewed, for Paco's approval.** Rev 1.0 was reviewed by spec-review-senior (Fable 5.1:
+**Rev 1.2 · 2026-11-09 · status: reviewed, for Paco's approval.** Rev 1.0 was reviewed by spec-review-senior (Fable 5.1:
 2 BLOCKER, 14 WARNING, 9 SUGGESTION) and a codex design pass (6 BLOCKER, 4 WARNING, 1 SUGGESTION), both against the live
 code and ADRs. Every blocker and warning is addressed below; the change log is §13.
 
@@ -153,11 +153,16 @@ the envelope; it reads mail only on demand through the reader wall (§3.6).
 - **Write path** (closes both reviews' transaction blocker): (1) build the envelope; (2) `decide(MAIL_TRIAGE, …)` with a
   **queuing recorder** (the front door's `deferredRecorder` / `flushLadder` pattern, `core-worker.ts:3015–3035`), so the
   async Jev call happens before any write; (3) `perItemRouting`; (4) the fold and thread rules (code, below); (5) **one
-  synchronous `BEGIN IMMEDIATE`** that inserts `mail_items`, flushes the queued decision row through `storeRecorder`, and,
-  for lane `ping`, enqueues the card with outbox key `mail:<gmail message id>`. The recorder's incident bookkeeping
-  (`afterRecord`) runs after the commit, as `flushLadder` notes. If the transaction throws, nothing of the item is stored
-  and the next tick retries it (the cursor has not moved). If only the decision flush fails inside it, the whole item
-  rolls back and retries — a mail is never stored without its decision row, nor pinged without its row.
+  synchronous `BEGIN IMMEDIATE`** that inserts `mail_items`, writes the queued decision row with a **strict flush**, and,
+  for lane `ping`, enqueues the card with outbox key `mail:<gmail message id>`. The strict flush is a new export of
+  `src/decisions/record.ts`, `recordStrict(store, entry, r, ctx, now): string`, sharing `rowOf` and `shouldRecord` with
+  `storeRecorder` but calling `store.insertDecision` **without** the catch: it returns the decision id or throws, so a
+  failed insert aborts the transaction. (`storeRecorder` swallows insert failures and returns `null`, `record.ts:49–62`,
+  and `flushLadder` does not treat `null` as a failure, `core-worker.ts:3033`; neither can enforce this.) The bookkeeping
+  `storeRecorder` does around the insert (`clearFallback`, `afterRecord`) runs **after the commit**. If the transaction
+  throws, nothing of the item is stored, the cursor has not moved, the next tick retries it, and a failed decision insert
+  opens `decision_record_failed` (the existing kind) after the rollback — a mail is never stored without its decision
+  row, nor pinged without its row.
 - **Fold** (code, after the verdict; not a decision): if ≥ 6 items with `lane='ping'` were stored in the last 60 min
   (counted from `mail_items`, not the outbox), the item is stored `lane='inbox'`, reason `folded`, and — once per hour
   bucket — one card is enqueued: "More urgent mail this hour — see /inbox" (key `mail:fold:<YYYY-MM-DDTHH>`). No message
@@ -230,8 +235,9 @@ addresses by design.
 
 **Retention.** A daily sweep, for items older than `HOUGE_MAIL_TEXT_DAYS` (default 30, min 1):
 - sets `mail_items.subject` / `snippet` / `from_name` to NULL and stamps `text_cleared_at`;
-- rewrites the `mail_card` outbox rows of those items that are in a terminal state (delivered or dead) to the stripped
-  form (`📧 · <kind>`), recomputing `payload_hash` with `stableHash`; queued rows are never touched.
+- rewrites every `mail_card` outbox row of those items to the stripped form (`📧 · <kind>`), recomputing `payload_hash`
+  with `stableHash`. A row still queued after 30 days cannot normally exist (the outbox dead-letters after its retry
+  budget); if one does, it is stripped too, so a stale card can only ever send without text.
 Metadata, decisions, labels and rules stay. **Accepted gaps, written into the ADR:** the nightly DB snapshots
 (`src/run/db-backup.ts`) keep older text until they rotate out; Paco's own Telegram history keeps what was sent; the
 `/changes` lines keep masked addresses. `houge mail purge --yes` (CLI only, irreversible) does all of the sweep now for
@@ -346,8 +352,8 @@ the rule id (2.6 behaviour, the 2.5 arm, 7.2 redaction of every envelope text fi
   `messages.get` 404 skips one id; cursor 404 → backfill without pings, an `always` rule still pings, cap reporting;
   first run → 24 h to `/inbox`; `invalid_grant` → pause + exactly one `mail_auth_lost`; overlap → skip.
 - Write path: a crash injected after the Jev answer and before the commit stores nothing and the retry pings once; a
-  crash injected inside the transaction (after the row insert, before the enqueue) rolls back the row; a decision flush
-  failure rolls back the item; a crash after commit sends exactly one card.
+  crash injected inside the transaction (after the row insert, before the enqueue) rolls back the row; a failing
+  `insertDecision` inside `recordStrict` rolls back the item and opens `decision_record_failed` once; a crash after commit sends exactly one card.
 - Ladder: floor order; bar boundaries 0.59/0.60 and 0.84/0.85; `jev_unsure` row carries the top p; Jev transport failure
   → `rung fail`, `fallback_rung system_one`, verdict `ping`, item reason `jev_unavailable`; no `decision_fallback` page
   after 3 Jev failures in an hour (`JEV_PAGED_ELSEWHERE`); every item has exactly one decision row (`alwaysRecord`);
@@ -360,8 +366,7 @@ the rule id (2.6 behaviour, the 2.5 arm, 7.2 redaction of every envelope text fi
   and rule id; `/mail_undo` → next mail back on Jev.
 - Switch: `/mail off` stops the poller, invalidates only Paco's token, and makes `account: "paco"` reads refuse;
   `gmail_read` without `account` is byte-identical to today (existing tests unchanged).
-- Retention: day-30 sweep nulls item text and strips terminal `mail_card` outbox payloads (hash recomputed), leaves
-  queued rows; `/inbox` renders the stripped form; `purge --yes` clears all.
+- Retention: day-30 sweep nulls item text and strips every `mail_card` outbox payload past retention (hash recomputed); `/inbox` renders the stripped form; `purge --yes` clears all.
 - Telegram: `disable_notification` and URL buttons reach the client; existing payloads serialise byte-identically.
 - No leak: `decisions`, `change_log`, `ledger_events`, `/status`, the daemon log and the Jev request capture never contain
   a planted subject; the address appears only masked outside `mail_*` tables and the Jev request.
@@ -398,14 +403,18 @@ None left from Rev 1.0: Q1 (stage) — a new `inbound` value; Q2 (callback size)
 Q3 (`paco_active_30m`) — dropped from the Jev state; quiet hours use the clock only.
 
 ## 13. Change log
-**Rev 1.1 (2026-11-09)**, from the two reviews:
-- Write path made real: queuing recorder + one sync transaction (both reviews' blocker); crash tests.
+**Rev 1.1–1.2 (2026-11-09)**, from the two reviews and codex's scoped re-review of 1.1:
+- Write path made real: queuing recorder + one sync transaction with a strict flush (`recordStrict`) that throws on a
+  failed insert (both reviews' blocker; codex's re-review found `storeRecorder` swallows failures); crash tests.
 - Jev state limited to D3's set as `MailJevState`; rule-side fields stay local (Fable blocker); every untrusted text
   field redacted, including the sender name (codex blocker); exact redactor call (`codeShapes`).
 - Cursor advances only after the whole history range is stored; deadline and resync cap reported (codex blocker).
 - Fold and thread items stored as `inbox` with their own reasons; no message edits; `/inbox` paged with per-item
   `seen_at` (codex blocker, Fable warnings).
-- Retention also strips terminal outbox payloads; remaining gaps named (codex blocker, Fable warning).
+- Retention also strips every past-retention outbox payload, queued included; remaining gaps named (codex blocker and
+  re-review, Fable warning).
+- Not taken: redacting the sender **address** before Jev (codex). D3 approves sending the sender; the address is the rule
+  key and passes an allowlist before use. Codex's re-review agrees D3 approves it.
 - 2.6 predicate given a runtime call site, the bounding sentence, both `entryProblems` arms and behaviour mutants;
   `Announce` gains `inbox` with its own allowlist; one `ProvisionalBar` + `MAIL_DOWN_BAR` (codex blocker, Fable warnings).
 - Reason codes in the runner's vocabulary (Jev rung always answers; `rung fail` for outages); `alwaysRecord`;
