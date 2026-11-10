@@ -113,7 +113,7 @@ describe("E. undo and requests", () => {
     expect(await s.svc.undo(f.name, null)).toEqual({ ok: true, removed: true });
   });
 
-  it("an exemplar cannot be undone; an adopted item with no version rows is removed by undo", async () => {
+  it("an exemplar cannot be undone; an adopted item is one version, so undo removes it", async () => {
     const s = await growSetup();
     const ex = other("option-comparison", "options");
     await s.svc.seed(ex, "exemplar", "seed");
@@ -121,11 +121,40 @@ describe("E. undo and requests", () => {
     const g = other("stray-skill", "strays");
     await s.zone.writeAndCommit(g.name, renderSkillFile(g, "clean"), "skill(stray-skill): by hand");
     await s.svc.syncWithHead();
-    expect(s.svc.adopt(g.name)).toBe(true);
-    expect(s.store.listGrowVersions(g.name)).toEqual([]);
+    expect(await s.svc.adopt(g.name)).toBe(true);
+    expect(s.store.listGrowVersions(g.name)).toMatchObject([{ content_hash: contentHash(g), commit_id: await s.zone.head(), undone: false }]);
     expect(await s.svc.undo(g.name, null)).toEqual({ ok: true, removed: true });
     expect(s.store.getGrowItem(g.name)?.state).toBe("removed");
     expect(await s.zone.readHead(g.name)).toBeNull();
+  });
+
+  it("I8: adopt, then a reviewed update, then undo restores the adopted text, not nothing", async () => {
+    const s = await growSetup();
+    const g = other("stray-skill", "strays");
+    await s.zone.writeAndCommit(g.name, renderSkillFile(g, "clean"), "skill(stray-skill): by hand");
+    await s.svc.syncWithHead();
+    expect(await s.svc.adopt(g.name)).toBe(true);
+    await s.live(rewrite(g));
+    expect(await s.svc.undo(g.name, "worse")).toEqual({ ok: true, removed: false });
+    expect(s.store.getGrowItem(g.name)).toMatchObject({ state: "live", content_hash: contentHash(g) });
+    expect(await s.zone.readHead(g.name)).toBe(renderSkillFile(g, "untrusted"));
+  });
+
+  it("I8: an outside edit synced from HEAD is a version: undo steps back to what was live before it", async () => {
+    const edited = (f: GrowFields): GrowFields => ({ ...f, body: growBody(40, " edited by hand") });
+    // v1, v2, then an outside edit: undo restores v2
+    const s = await twoVersions(); const { f } = s;
+    await s.zone.writeAndCommit(f.name, renderSkillFile(edited(f), "clean"), "skill(unit-convert): by hand");
+    expect(await s.svc.syncWithHead()).toMatchObject({ changed: 1 });
+    expect(await s.svc.undo(f.name, "not mine")).toEqual({ ok: true, removed: false });
+    expect(s.store.getGrowItem(f.name)?.content_hash).toBe(contentHash(small(f)));
+    // v1 alone, then an outside edit: undo restores v1, it does not remove the skill
+    const t = await growSetup();
+    await t.live(f);
+    await t.zone.writeAndCommit(f.name, renderSkillFile(edited(f), "clean"), "skill(unit-convert): by hand");
+    await t.svc.syncWithHead();
+    expect(await t.svc.undo(f.name, "not mine")).toEqual({ ok: true, removed: false });
+    expect(t.store.getGrowItem(f.name)).toMatchObject({ state: "live", content_hash: contentHash(f) });
   });
 
   it("I2: undo cancels a pending publish whose commit is positively absent; reconcile then publishes nothing", async () => {
@@ -361,15 +390,15 @@ describe("E. undo and requests", () => {
     s.store.unmarkGrowName(g.name);                                     // so the mark adopt sets is observable
     const id = request(s, "adopt", g.name);
     vi.spyOn(s.store, "appendGrowEvent").mockImplementationOnce(() => { throw new Error("disk"); });
-    expect(() => s.svc.adopt(g.name, id)).toThrow("disk");
+    await expect(s.svc.adopt(g.name, id)).rejects.toThrow("disk");
     expect(s.store.getGrowItem(g.name)?.state).toBe("orphan");
     expect(s.store.isGrowMarked(g.name)).toBe(false);
     expect(requestRow(s.store, id).state).toBe("queued");
-    expect(s.svc.adopt(g.name, id)).toBe(true);
+    expect(await s.svc.adopt(g.name, id)).toBe(true);
     expect(s.store.isGrowMarked(g.name)).toBe(true);
     expect(s.store.listGrowEvents({ actions: ["adopt"] })).toHaveLength(1);
     expect(requestRow(s.store, id)).toMatchObject({ state: "done", result: "✅ stray-skill adopted; it reads as outside content until you trust it." });
-    expect(s.svc.adopt(g.name)).toBe(false);
+    expect(await s.svc.adopt(g.name)).toBe(false);
     const none = request(s, "adopt", "nothing-here");
     expect(await s.svc.runRequests()).toBe(1);
     expect(outboxTexts(s.store, `grow:req:${none}`)).toEqual(["Nothing to adopt under nothing-here."]);
@@ -430,7 +459,7 @@ describe("F. sync, index, notes", () => {
     await s.zone.writeAndCommit(g.name, renderSkillFile(g, "clean"), "skill(stray-skill): by hand");
     await s.svc.syncWithHead();
     expect(s.svc.indexBlock() ?? "").not.toContain("stray-skill");
-    expect(s.svc.adopt(g.name)).toBe(true);
+    expect(await s.svc.adopt(g.name)).toBe(true);
     expect(s.store.getGrowItem(g.name)).toMatchObject({ state: "live", origin: "untrusted" });
     expect(s.svc.indexBlock()).toContain("- stray-skill — (from outside content; grow_read it to see it)");   // marked: name only (G4)
     expect(s.svc.indexBlock()).not.toContain(g.description);

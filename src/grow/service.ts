@@ -374,7 +374,7 @@ export class GrowService {
     }
   }
 
-  /** I8: one step back by the version list (never by git history). A live item with no version rows (adopted) is removed. */
+  /** I8: one step back by the version list (never by git history). A live item with no earlier version is removed. */
   private async newUndoOp(name: string, reason: string | null, requestId?: number): Promise<GrowOpRow | "busy" | "unknown_skill" | "is_exemplar"> {
     const { store } = this.d;
     const settled = await this.cancelOrSettle(name);
@@ -422,7 +422,7 @@ export class GrowService {
   private async runRequest(id: number, kind: "undo" | "adopt", name: string, reason: string | null): Promise<boolean> {
     const { store } = this.d;
     if (kind === "adopt") {
-      try { this.adopt(name, id); } catch { console.error("[grow] requests: adopt_failed"); }
+      try { await this.adopt(name, id); } catch (e) { console.error("[grow] requests: adopt_failed"); this.latchOnZoneError(e); }
     } else {
       // A request with an operation is finished only inside that operation's transaction (applyUndo or failOp, I7).
       const r = await this.undoLocked(name, reason, id);
@@ -452,15 +452,21 @@ export class GrowService {
     }
   }
 
-  /** One transaction: an orphan becomes live and untrusted with its name marked; a request is finished with the outcome. */
-  adopt(name: string, requestId?: number): boolean {
-    const { store } = this.d; const now = this.d.now();
+  /**
+   * An orphan becomes live and untrusted with its name marked, and its content at HEAD becomes its first version (I8: an
+   * undo of a later update steps back to it). HEAD is read first, outside the transaction; the rest is one transaction,
+   * which also finishes a request with the outcome. A file gone from HEAD meanwhile is nothing to adopt.
+   */
+  async adopt(name: string, requestId?: number): Promise<boolean> {
+    const { store } = this.d;
+    const orphan = store.getGrowItem(name)?.state === "orphan";
+    const head = orphan ? await this.d.zone.head() : null;
+    const f = head === null ? null : await this.headFields(name);
+    const now = this.d.now();
     return store.inTransaction(() => {
-      const adopted = store.getGrowItem(name)?.state === "orphan";
+      const adopted = head !== null && f !== null && store.getGrowItem(name)?.state === "orphan";
       if (adopted) {
-        store.setGrowItemState(name, "live", now);
-        store.setGrowItemOrigin(name, "untrusted", now);
-        store.markGrowName(name, now);
+        this.writeFromHead(name, f, "live", head, "adopt");
         store.appendGrowEvent({ at: now, run_id: null, chat_id: null, name, action: "adopt", result: "live", code: null, reviewer_model: null, commit_id: null });
       }
       if (requestId !== undefined) store.finishGrowRequest(requestId, adopted ? `✅ ${name} adopted; it reads as outside content until you trust it.` : `Nothing to adopt under ${name}.`, now);
@@ -503,22 +509,27 @@ export class GrowService {
   private async syncOrphan(name: string, head: string): Promise<boolean> {
     const f = await this.headFields(name);
     if (!f) return false;
-    this.syncRecord(name, "orphan", head, () => this.writeFromHead(name, f, "orphan", head));
+    this.syncRecord(name, "orphan", head, () => this.writeFromHead(name, f, "orphan", head, "sync"));
     return true;
   }
 
   private async syncChanged(name: string, hash: string, head: string): Promise<boolean> {
     const f = await this.headFields(name);
     if (!f || contentHash(f) === hash) return false;
-    this.syncRecord(name, "changed", head, () => this.writeFromHead(name, f, "live", head));
+    this.syncRecord(name, "changed", head, () => this.writeFromHead(name, f, "live", head, "sync"));
     return true;
   }
 
-  /** Content that did not come through the door: untrusted, and the name is marked. */
-  private writeFromHead(name: string, f: GrowFields, state: "live" | "orphan", head: string): void {
-    const now = this.d.now();
-    this.d.store.upsertGrowItem({ name, state, origin: "untrusted", description: f.description, example: f.example, head_commit: head, content_hash: contentHash(f), body_hash: bodyHash(f) }, now);
-    this.d.store.markGrowName(name, now);
+  /**
+   * Content that did not come through the door: untrusted, and the name is marked. Live content is a version (I8), so
+   * an undo steps back from it to what was live before. Its `op_id` names no operation (none wrote it): `sync:` or
+   * `adopt:` plus a fresh id, never one an earlier version holds (the column is unique), whatever HEAD is.
+   */
+  private writeFromHead(name: string, f: GrowFields, state: "live" | "orphan", head: string, by: "sync" | "adopt"): void {
+    const { store } = this.d; const now = this.d.now();
+    store.upsertGrowItem({ name, state, origin: "untrusted", description: f.description, example: f.example, head_commit: head, content_hash: contentHash(f), body_hash: bodyHash(f) }, now);
+    store.markGrowName(name, now);
+    if (state === "live") store.insertGrowVersion({ name, op_id: `${by}:${randomUUID()}`, commit_id: head, content_hash: contentHash(f), fields_json: JSON.stringify(f), at: now });
   }
 
   private syncRecord(name: string, result: "orphan" | "removed" | "changed", head: string, change: () => void): void {
