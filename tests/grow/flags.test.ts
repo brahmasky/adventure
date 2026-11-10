@@ -28,6 +28,13 @@ describe("grow flags", () => {
     expect(pick("/private/tmp/a/grow")).toBe("/private/tmp/a/grow");
     expect(pick(`${repo}-other/grow`)).toBe(`${repo}-other/grow`);
   });
+  it("compares overlaps case-insensitively, as the deny matcher does on a case-insensitive volume", () => {
+    const repo = "/Users/x/Projects/adventure", avoid = [repo, "/Users/x/Library/Application Support/houge/data"];
+    const pick = (dir: string): string => resolveGrowDir({ HOUGE_GROW_DIR: dir }, "/Users/x", avoid);
+    for (const bad of ["/users/x/projects/adventure", "/USERS/X/Projects/adventure/grow", "/Users/x/.OMP/x", "/USERS/x"]) expect(pick(bad), bad).toBe(DEFAULT);
+    expect(pick(`${repo}-other/grow`)).toBe(`${repo}-other/grow`);
+    expect(pick("/Private/Tmp/A/grow")).toBe("/Private/Tmp/A/grow");
+  });
   it("returns the normalised path it validated, never the raw override", () => {
     expect(resolveGrowDir({ HOUGE_GROW_DIR: "/data/a/../grow/zone/" }, "/Users/x")).toBe("/data/grow/zone");
     expect(resolveGrowDir({ HOUGE_GROW_DIR: "/data/a/b/../../../../Users/x" }, "/Users/x")).toBe(DEFAULT);
