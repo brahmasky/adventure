@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { checkFields, fieldScrub, parseSkillFile, renderSkillFile } from "../../src/grow/checks.js";
 import type { GrowService } from "../../src/grow/service.js";
 import { EXEMPLAR_NAME, migrateLegacySkills, seedExemplars } from "../../src/grow/seed.js";
-import { CLEAN, commitCount, growBody, growFields, growSetup, mkTmp } from "../helpers/grow.js";
+import { CLEAN, commitCount, growBody, growFields, growSetup, mkTmp, small } from "../helpers/grow.js";
 
 const NOW = "2025-03-10T10:00:00.000Z";   // a past month: a wall-clock read would name another folder
 const SEED = join(import.meta.dirname, "..", "..", "grow-seed");
@@ -97,11 +97,39 @@ describe("grow seed", () => {
     expect(existsSync(join(legacy, "ask", "dup-skill.md")) && existsSync(join(legacy, "plan", "dup-skill.md"))).toBe(true);
   });
 
-  it("a legacy file colliding with a different live item is invalid; an identical live one is silently fine", async () => {
+  it("a known name is silent whatever its state or content: migrated then improved through the grow door, then migrated again", async () => {
+    const s = await growSetup(); const legacy = join(mkTmp(), "skills");
+    writeLegacy(legacy, "kept-one.md", GOOD("kept-one")); writeLegacy(legacy, "bad-one.md", legacyFile("bad-one", "tiny", "x"));
+    expect((await migrateLegacySkills({ store: s.store, svc: s.svc, legacyDir: legacy, now: NOW })).migrated).toEqual(["kept-one"]);
+    const { origin: _o, ...head } = parseSkillFile((await s.zone.readHead("kept-one"))!)!;
+    await s.live(small(head));
+    const hash = s.store.getGrowItem("kept-one")!.content_hash;
+    expect(await migrateLegacySkills({ store: s.store, svc: s.svc, legacyDir: legacy, now: NOW })).toEqual({ migrated: [], invalid: ["ask/bad-one.md"], renamed: false });
+    expect(s.store.getGrowItem("kept-one")).toMatchObject({ state: "live", content_hash: hash });
+    expect(await s.zone.readHead("kept-one")).toContain("Step three of");
+  });
+
+  it("a known name with different content is silent whether it is live or removed", async () => {
     const s = await growSetup(); const legacy = join(mkTmp(), "skills");
     await s.live(growFields({ name: "clash-one", description: "an unrelated live skill about something else entirely", body: growBody(40, "x") }));
-    writeLegacy(legacy, "clash-one.md", GOOD("clash-one"));
-    expect(await migrateLegacySkills({ store: s.store, svc: s.svc, legacyDir: legacy, now: NOW })).toEqual({ migrated: [], invalid: ["ask/clash-one.md"], renamed: false });
+    await s.live(growFields({ name: "gone-one", description: "another unrelated skill that will be removed soon", body: growBody(40, "g") }));
+    await s.svc.undo("gone-one", "not wanted");
+    expect(s.store.getGrowItem("gone-one")?.state).toBe("removed");
+    writeLegacy(legacy, "clash-one.md", GOOD("clash-one")); writeLegacy(legacy, "gone-one.md", GOOD("gone-one"));
+    expect(await migrateLegacySkills({ store: s.store, svc: s.svc, legacyDir: legacy, now: NOW })).toEqual({ migrated: [], invalid: [], renamed: true });
+    expect(s.store.getGrowItem("gone-one")?.state).toBe("removed");
+  });
+
+  it("a legacy file named like the exemplar is invalid and keeps the folder", async () => {
+    const s = await growSetup(); const legacy = join(mkTmp(), "skills");
+    writeLegacy(legacy, `${EXEMPLAR_NAME}.md`, GOOD(EXEMPLAR_NAME));
+    expect(await migrateLegacySkills({ store: s.store, svc: s.svc, legacyDir: legacy, now: NOW })).toEqual({ migrated: [], invalid: [`ask/${EXEMPLAR_NAME}.md`], renamed: false });
+    expect(existsSync(join(legacy, "ask", `${EXEMPLAR_NAME}.md`))).toBe(true);
+    expect(s.store.listGrowItems()).toEqual([]);
+  });
+
+  it("an identical live item is silently fine, before and after the folder was renamed", async () => {
+    const s = await growSetup();
     const legacy2 = join(mkTmp(), "skills");
     writeLegacy(legacy2, "same-one.md", GOOD("same-one"));
     expect((await migrateLegacySkills({ store: s.store, svc: s.svc, legacyDir: legacy2, now: NOW })).migrated).toEqual(["same-one"]);
@@ -138,6 +166,16 @@ describe("grow seed", () => {
     expect(await seedExemplars({ store: s.store, svc: s.svc, seedDir, now: NOW })).toEqual({ seeded: [], failed: [] });
     writeLegacy(legacy, "good-one.md", GOOD("good-one")); writeFileSync(join(legacy, ".DS_Store"), "x"); writeFileSync(join(legacy, "ask", ".DS_Store"), "x");
     expect(await migrateLegacySkills({ store: s.store, svc: s.svc, legacyDir: legacy, now: NOW })).toEqual({ migrated: ["good-one"], invalid: [], renamed: true });
+  });
+
+  it("dot-named entries are never read: a dot directory in the seed, a dot scope and an AppleDouble file in the legacy folder", async () => {
+    const s = await growSetup(); const seedDir = mkTmp(); const legacy = join(mkTmp(), "skills");
+    mkdirSync(join(seedDir, "skills", ".hidden"), { recursive: true });
+    writeFileSync(join(seedDir, "skills", ".hidden", "SKILL.md"), readFileSync(join(SEED, "skills", EXEMPLAR_NAME, "SKILL.md"), "utf8"));
+    expect(await seedExemplars({ store: s.store, svc: s.svc, seedDir, now: NOW })).toEqual({ seeded: [], failed: [] });
+    writeIn(legacy, ".trash", "t-skill.md", GOOD("t-skill")); writeLegacy(legacy, "._x.md", "\u0000garbage"); writeLegacy(legacy, "good-one.md", GOOD("good-one"));
+    expect(await migrateLegacySkills({ store: s.store, svc: s.svc, legacyDir: legacy, now: NOW })).toEqual({ migrated: ["good-one"], invalid: [], renamed: true });
+    expect(s.store.listGrowItems().map((i) => i.name)).toEqual(["good-one"]);
   });
 
   it("never follows a symlink: a linked .md and a linked scope are invalid and keep the folder", async () => {

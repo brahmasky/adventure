@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, readdirSync, renameSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import type { RunStore } from "../run/run-store.js";
-import { type GrowFields, checkFields, contentHash, fieldScrub, parseSkillFile } from "./checks.js";
+import { type GrowFields, checkFields, fieldScrub, parseSkillFile } from "./checks.js";
 import type { GrowService } from "./service.js";
 
 export const EXEMPLAR_NAME = "option-comparison";
@@ -47,7 +47,7 @@ function legacyFiles(dir: string): { files: Array<{ path: string; label: string 
     if (skip(scope.name)) continue;
     if (scope.isSymbolicLink()) { bad.push(scope.name); continue; }
     if (!scope.isDirectory()) continue;
-    for (const e of readdirSync(join(dir, scope.name), { withFileTypes: true }).filter((x) => x.name.endsWith(".md")).sort((a, b) => a.name.localeCompare(b.name))) {
+    for (const e of readdirSync(join(dir, scope.name), { withFileTypes: true }).filter((x) => x.name.endsWith(".md") && !skip(x.name)).sort((a, b) => a.name.localeCompare(b.name))) {
       const label = join(scope.name, e.name);
       if (e.isFile()) files.push({ path: join(dir, label), label }); else bad.push(label);
     }
@@ -65,8 +65,8 @@ function migratedTarget(dir: string, month: string): string {
 
 /**
  * One-shot, idempotent: the skills Paco accepted under the old gate become live clean items after the formal checks, only
- * through `svc.seed` (which skips any name the zone knows, in any state). The folder is renamed only when no file was invalid:
- * a repeated name, a live item with different content, a symlink, a failed publish all keep it.
+ * through `svc.seed` (which skips any name the zone knows, in any state; dot- and _-named entries are never read). The folder is renamed only when no file was invalid:
+ * a repeated name, the exemplar's name, a symlink, a failed publish all keep it.
  */
 export async function migrateLegacySkills(d: { store: RunStore; svc: GrowService; legacyDir: string; now: string }): Promise<{ migrated: string[]; invalid: string[]; renamed: boolean }> {
   if (!existsSync(d.legacyDir)) return { migrated: [], invalid: [], renamed: false };
@@ -75,10 +75,10 @@ export async function migrateLegacySkills(d: { store: RunStore; svc: GrowService
   const invalid: string[] = [...bad];
   for (const { path, label } of files) {
     const f = parseLegacy(readOrNull(path) ?? "");
-    if (!f || f.name !== basename(path, ".md") || seen.has(f.name)) { invalid.push(label); continue; }
+    if (!f || f.name !== basename(path, ".md") || seen.has(f.name) || f.name === EXEMPLAR_NAME) { invalid.push(label); continue; }
     seen.add(f.name);
     const known = d.store.getGrowItem(f.name);
-    if (known) { if (known.state === "live" && known.content_hash !== contentHash(f)) invalid.push(label); continue; }   // a removed (undone) or identical one stays in neither list
+    if (known) continue;   // a name the zone knows, in any state or with any content (migrated earlier, undone, improved since), stays in neither list
     if (!checkFields(f, d.store.listGrowItems("live"), fieldScrub(d.store)).ok) { invalid.push(label); continue; }
     const r = await d.svc.seed(f, "clean", "migrate");
     if (r === "published") migrated.push(f.name); else if (r === "failed") invalid.push(label);
