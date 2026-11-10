@@ -137,6 +137,26 @@ describe("PlannerSupervisor — detached turns (spec §7)", () => {
     expect(kinds).toEqual(["quota", undefined]);
   });
 
+  it("commits the grow notes once for a successful turn, with its run id, and never for a failed one", async () => {
+    const commit = vi.fn();
+    const ok = harness(fakeSession(), {}, {}, { turnContext: { growNotesCommit: commit } });
+    const run_id = createQueuedTurnRun(ok.store);
+    ok.sup.submit(req(run_id)); await ok.sup.whenIdle();
+    expect(commit.mock.calls).toEqual([[run_id]]);
+    const bad = vi.fn();
+    const session = fakeSession({ onPrompt: (_t, e) => { e({ type: "turn_start" }); session.assistant("", { stopReason: "error", errorMessage: "429 quota" }); e({ type: "agent_end" }); } });
+    const f = harness(session, {}, {}, { turnContext: { growNotesCommit: bad } });
+    f.sup.submit(req(createQueuedTurnRun(f.store))); await f.sup.whenIdle();
+    expect(f.outcome.failed).toHaveLength(1);
+    expect(bad).not.toHaveBeenCalled();
+  });
+
+  it("a throwing grow-notes commit does not fail the turn", async () => {
+    const h = harness(fakeSession(), {}, {}, { turnContext: { growNotesCommit: () => { throw new Error("boom"); } } });
+    h.sup.submit(req(createQueuedTurnRun(h.store))); await h.sup.whenIdle();
+    expect(h.outcome.done).toHaveLength(1);
+  });
+
   it("fails every planner string exhausted as no_planner_leg and opens an incident", async () => {
     const session = fakeSession({ onPrompt: (_t, e) => { e({ type: "turn_start" }); session.assistant("", { stopReason: "error", errorMessage: "429 quota" }); e({ type: "agent_end" }); } });
     const { store, sup, outcome } = harness(session); const run_id = createQueuedTurnRun(store);

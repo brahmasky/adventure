@@ -274,6 +274,8 @@ export interface ComposeOptions {
    * so a run with no skills composes byte-identically to today (eval goldens unaffected).
    */
   skillsReader?: (scope: string) => string | undefined;
+  /** The omp planner's own procedures: an index, never bodies (ADR 0035). Rendered instead of the skills section. */
+  growIndex?: () => string | undefined;
   /** Read skills from a different scope (e.g. the critique pass reuses `research` skills). */
   skillsScope?: string;
   /**
@@ -321,6 +323,7 @@ export function composeSystemPrompt(
   const lessons = options.lessonsReader?.(lessonsScope);
   const skillsScope = options.skillsScope ?? surface;
   const skills = options.skillsReader?.(skillsScope);
+  const grow = options.growIndex?.();
   const core = options.coreReader?.();
   const episodic = options.episodicReader?.();
   const wiki = options.wikiReader?.();
@@ -329,7 +332,7 @@ export function composeSystemPrompt(
     temporalContext(options.now),
     identity,
     discipline,
-    skills ? `## Skills — apply when relevant\n${skills}` : "",
+    grow ? `## Your procedures (grow zone)\n${grow}` : skills ? `## Skills — apply when relevant\n${skills}` : "",
     // Always-known biography grounds the answer BEFORE the scored episodic recollection.
     core ? `${CORE_FACTS_SECTION_HEADER}\n${core}` : "",
     episodic ? `${EPISODIC_SECTION_HEADER}\n${episodic}` : "",

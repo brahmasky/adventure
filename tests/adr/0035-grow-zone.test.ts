@@ -132,3 +132,23 @@ describe("ADR 0035 G6: review by size and provenance", () => {
     expect((await s.svc.submit(small(growFields()), ctx)).status).toBe("STAGED");
   });
 });
+
+describe("ADR 0035: index stable order", () => {
+  it("renders live items in name order whatever the publish order, and a grow_read leaves the block byte-identical", async () => {
+    const s = await growSetup();
+    await s.live(growFields({ name: "zebra", description: "grooming striped horses before a show", example: "brush the zebra", body: growBody(40, " for zebras") }));
+    await s.live(growFields({ name: "alpha", description: "ranking greek letters for a naming scheme", example: "rank alpha beta", body: growBody(40, " for letters") }));
+    const block = s.svc.indexBlock() ?? "";
+    expect(block.indexOf("- alpha")).toBeGreaterThan(-1);
+    expect(block.indexOf("- alpha")).toBeLessThan(block.indexOf("- zebra"));
+    expect((await s.svc.read("zebra", { run_id: "run_1" })).ok).toBe(true);
+    expect((await s.svc.read("alpha", { run_id: "run_1" })).ok).toBe(true);
+    expect(s.svc.indexBlock()).toBe(block);
+  });
+});
+
+describe("ADR 0035: skills leave the prompt", () => {
+  // switched on in Task 13 (the skills reader and the skills section are deleted):
+  // walk("src").filter((f) => /readScopeBlock|skillsReader/.test(readFileSync(join(root, f), "utf8"))) is []
+  it.todo("no source file folds skill bodies into a prompt (the planner reads a skill through grow_read)");
+});

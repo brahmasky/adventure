@@ -40,7 +40,7 @@ function deps(store: RunStore, over: Partial<TurnContextDeps> & { retrieval?: Tu
   const recorder: DecisionRecorder = { record: (e, r, c) => { counts[e.id] = (counts[e.id] ?? 0) + 1; return inner.record(e, r, c); } };
   const { retrieval, ...rest } = over;
   const d: TurnContextDeps = {
-    store, memoryRoot: new URL("../../memory", import.meta.url).pathname, dataDir, skillsReader: () => undefined, coreBlock: () => undefined,
+    store, memoryRoot: new URL("../../memory", import.meta.url).pathname, dataDir, growIndex: () => undefined, coreBlock: () => undefined,
     retrieve: async () => retrieval ?? NONE, env: {}, now: NOW, recorder, ...rest
   };
   return { d, counts };

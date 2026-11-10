@@ -1650,6 +1650,7 @@ export class PlannerSupervisor {
     for (const m of t.merged) outcome.complete({ ...base, run_id: m, merged_into: t.req.run_id, attachments: [] });
     this.recordAttach(t, delivered); // spec R7 §4.0: after outcome.complete, before recordChatTurn; kept when the run later fails to stage or loses its claim
     store.recordChatTurn({ chat_id: chatId, run_id: t.req.run_id, role: "assistant", text, intent: assistantIntentFor(text, t.usedTool) });
+    try { this.d.turnContext.growNotesCommit?.(t.req.run_id); } catch (e) { console.error(`planner supervisor: grow notes not committed (${message(e)})`); }
     this.routeEnd(t, "planner_done");
   }
 

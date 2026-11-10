@@ -2435,7 +2435,9 @@ export class CoreWorker {
   private ompTurnContext(dataDir: string): TurnContextDeps {
     return {
       store: this.runStore, memoryRoot: memoryRootFor(this.projectRoot), dataDir,
-      skillsReader: this.skillsReader(),
+      growIndex: () => (resolveSkillsEnabled(process.env) ? this.growService().indexBlock() : undefined),
+      growNotes: (chatId, runId) => (resolveSkillsEnabled(process.env) ? this.growService().contextNotes(chatId, runId) : []),
+      growNotesCommit: (runId) => this.growService().commitNotes(runId),
       coreBlock: (chatId) => {
         const core = this.renderedCore(chatId);
         return core.ids.length > 0 ? core : undefined;

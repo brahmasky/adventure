@@ -106,7 +106,7 @@ export function mkSupervisor(d, store, opts = {}) {
   const session = opts.session ?? fakeSession();
   sup = new d.PlannerSupervisor({
     chatId: "42", store, cfg: d.resolveOmpConfig({ HOUGE_OMP_SANDBOX: "0" }), ctx: { home: data, repo: data, data }, distDir: data, decls: [], env: {}, turnEnvelopeActions: ["shell"],
-    turnContext: { store, memoryRoot: MEMORY_ROOT, dataDir: data, skillsReader: () => undefined, coreBlock: () => undefined, retrieve: async () => ({ facts: [], pages: [] }), env: {},
+    turnContext: { store, memoryRoot: MEMORY_ROOT, dataDir: data, growIndex: () => undefined, coreBlock: () => undefined, retrieve: async () => ({ facts: [], pages: [] }), env: {},
       ...(opts.recorder ? { recorder: opts.recorder } : {}), ...(opts.turnContext ?? {}) }, // R5: the recorder reaches the turn-context entries; a partial turnContext is merged last (as o.turnContext in the TS harness)
     buildTools: () => ({ registry: new d.ToolRegistry(), quarantine: async () => ({ digest: "", contains_instructions: false, source_meta: { tool: "x", bytes: 0 } }) }),
     posture: () => null, outcome, sessionFactory: (o) => session.bind(o), versionCheck: () => ({ ok: true, version: "18.4.4" }), skipPreflightForTest: true,
