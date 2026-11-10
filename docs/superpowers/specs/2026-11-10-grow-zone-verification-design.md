@@ -373,10 +373,18 @@ message only as an incident (a door disabled).
   `0035-g7-schedule-no-submit`, `0035-grow-flag-in-disarm`, `0035-index-stable-order`,
   `0032-grow-root-denied` (run with data dir ≠ repo, so it cannot pass on the existing repo deny), and the
   existing `0034-8.2` trust-table test updated in the same commit.
-- **`AGENTS.md` — Paco's hand.** The full build flow for the kernel and the protected surface; for other `src/`
-  code, tests + one different-model review + live gate, with a spec and ADR only when a rule changes; no build
-  flow for the grow zone. New invariant: "new capability starts in the grow zone; it moves into `src/` only when
-  it fails the kernel test". Wording is drafted on the branch for his signature.
+- **`AGENTS.md` — wording APPROVED by Paco 2026-11-10; applied on the 1a branch in the same merge as the code**
+  (the text names ADR 0035, `HOUGE_GROW_DIR`, `grow_submit`, `src/grow` and `grow-seed/`, none of which exist
+  before that merge; the file is protected surface and this approval is Paco's hand for the edit).
+  - Invariants, new bullet: "Kernel and grow zone (ADR 0035). New capability starts in the grow zone (Houge's own
+    git repo at `HOUGE_GROW_DIR`), written by Houge through `grow_submit`. It moves into `src/` only when it fails
+    the kernel test: can this file weaken a floor, leak a secret, or stop Houge running? The orchestrator writes
+    no grow-zone item except the exemplars in `grow-seed/`."
+  - Build flow, new bullet: "Flow by zone. Kernel (the protected surface, `src/omp`, `src/policy`,
+    `src/decisions`, `src/grow`, and anything an ADR rule names): the global flow in full. Other `src/` code:
+    tests, one different-model review, live gate; a spec and ADR only when a rule changes. Grow zone: no build
+    flow; the door's checks are the gate."
+  - The protected-surface line gains `src/grow`.
 
 ## 10. Tests
 
