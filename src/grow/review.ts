@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { OneShotInput } from "../llm/providers/omp.js";
 import type { LlmResult } from "../llm/types.js";
-import { familyOf, type ModelString } from "../omp/model-string.js";
+import { familyOf, type ModelFamily, type ModelString } from "../omp/model-string.js";
 import type { GrowFields } from "./checks.js";
 
 export interface ReviewInput { fields: GrowFields; previous: GrowFields | null; exemplar: string; index: string; undoReasons: string[] }
@@ -21,15 +21,22 @@ const RULES = [
   'Reply with STRICT JSON only, no prose and no code fence: {"pass": boolean, "findings": [{"step": string, "problem": string}]}'
 ].join("\n");
 
-const block = (tag: string, text: string): string => `<<<${tag}\n${text.replaceAll(">>>", "> > >")}\n>>>`;
+/** The families a reviewer or an author can be. Typed against ModelFamily so a new family cannot drift out of this set. */
+const KNOWN_FAMILIES: Readonly<Record<Exclude<ModelFamily, "other">, true>> = { claude: true, gemini: true, gpt: true, kimi: true };
+const isKnownFamily = (f: string): boolean => Object.hasOwn(KNOWN_FAMILIES, f);
 
-export function buildReviewPrompt(i: ReviewInput): string {
+/** Content is neutralised so an item can neither close its own block early nor forge another block's opener. */
+const block = (tag: string, text: string): string => `<<<${tag}\n${text.replaceAll(">>>", "> > >").replaceAll("<<<", "< < <")}\n>>>`;
+
+/** `scrub` runs on each block's content, never on the frame, so a redaction token cannot alter a marker. */
+export function buildReviewPrompt(i: ReviewInput, scrub: (s: string) => string = (s) => s): string {
   const f = i.fields;
   const item = `name: ${f.name}\ndescription: ${f.description}\nexample: ${f.example}\n${(f.anchors ?? []).map((a) => `anchor: ${a}`).join("\n")}\n\n${f.body}`;
-  return [RULES, block("ITEM", item),
-    ...(i.previous ? [block("PREVIOUS_VERSION", i.previous.body)] : []),
-    ...(i.undoReasons.length > 0 ? [block("UNDO_REASONS", i.undoReasons.join("\n"))] : []),
-    block("LIVE_INDEX", i.index || "(empty)"), block("EXEMPLAR_OF_GOOD_SHAPE", i.exemplar)].join("\n\n");
+  const b = (tag: string, text: string): string => block(tag, scrub(text));
+  return [RULES, b("ITEM", item),
+    ...(i.previous ? [b("PREVIOUS_VERSION", i.previous.body)] : []),
+    ...(i.undoReasons.length > 0 ? [b("UNDO_REASONS", i.undoReasons.join("\n"))] : []),
+    b("LIVE_INDEX", i.index || "(empty)"), b("EXEMPLAR_OF_GOOD_SHAPE", i.exemplar)].join("\n\n");
 }
 
 /** The verdict must be the reviewer's whole reply (one optional json fence): an item can plant a pass in its own text for a reviewer to echo. */
@@ -46,18 +53,22 @@ export function parseReview(answer: string): ReviewVerdict | null {
   return { pass: o.pass, findings: findings.slice(0, 20).map((x) => ({ step: String(x.step).slice(0, 80), problem: String(x.problem).slice(0, 400) })) };
 }
 
-export function reviewerChain(chain: ModelString[], authorFamilies: string[]): ModelString[] {
-  return chain.filter((m) => !authorFamilies.includes(familyOf(m)));
+export function reviewerChain(chain: ModelString[], authorFamilies: readonly string[]): ModelString[] {
+  return chain.filter((m) => { const f = familyOf(m); return isKnownFamily(f) && !authorFamilies.includes(f); });
 }
 
-export async function runReview(i: ReviewInput & { authorFamilies: { families: string[]; unknown: boolean }; chain: ModelString[]; correlationId: string; signal?: AbortSignal; scrub: (s: string) => string },
+/** A throw from `spawn` propagates and the caller treats it as an outage; a shutdown abort comes back as `seat_failed` and the caller tells it apart by its own `signal.aborted`. */
+export async function runReview(i: ReviewInput & { authorFamilies: { families: readonly string[]; unknown: boolean }; chain: ModelString[]; correlationId: string; signal?: AbortSignal; scrub: (s: string) => string },
   deps: { spawn: (input: OneShotInput) => Promise<LlmResult> }): Promise<ReviewOutcome> {
-  if (i.authorFamilies.unknown) return { kind: "unavailable", reason: "no_family" };
-  const chain = reviewerChain(i.chain, i.authorFamilies.families);
+  const af = i.authorFamilies;
+  if (af.unknown || af.families.length === 0 || !af.families.every(isKnownFamily)) return { kind: "unavailable", reason: "no_family" };
+  const chain = reviewerChain(i.chain, af.families);
   if (chain.length === 0) return { kind: "unavailable", reason: "no_reviewer" };
-  const prompt = i.scrub(buildReviewPrompt(i));
+  const prompt = buildReviewPrompt(i, i.scrub);
   const r = await deps.spawn({ seat: "grow_review", chain, prompt, correlationId: i.correlationId, ...(i.signal ? { signal: i.signal } : {}) });
   if (!r.ok) return { kind: "unavailable", reason: "seat_failed" };
+  const answered = familyOf({ model: r.model });
+  if (!isKnownFamily(answered) || i.authorFamilies.families.includes(answered)) return { kind: "unavailable", reason: "no_reviewer" };
   const verdict = parseReview(r.answer);
   if (!verdict) return { kind: "unavailable", reason: "bad_json" };
   return { kind: "verdict", verdict, model: `${r.provider}/${r.model}`, inputHash: createHash("sha256").update(prompt).digest("hex") };

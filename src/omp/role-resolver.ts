@@ -22,7 +22,7 @@ const CATALOG_INCIDENT: ReadonlySet<string> = new Set(["model_catalog_unavailabl
 /** Structurally src/jev/tree-policy.ts `Effort`. */
 type RoutedEffort = "low" | "medium" | "high";
 interface CandidateOptions { refused?: ReadonlySet<string>; effort?: RoutedEffort | null; seat?: number }
-/** One resolution's view: the mode and the overrides, read once so a chains() call is consistent across its seven roles. */
+/** One resolution's view: the mode and the overrides, read once so a chains() call is consistent across its eight roles. */
 interface Snapshot { mode: ModelRolesMode; overrides: Map<OverrideKey, string>; tiers: TierHeads }
 interface ResolverDeps {
   store: RunStore; env?: () => NodeJS.ProcessEnv; readCatalog: () => Promise<CatalogModel[] | null>;
@@ -88,7 +88,7 @@ export class RoleResolver {
   }
 
   /**
-   * The seven OmpConfig chains. A role the catalog emptied runs its static list (F7, the same rule as candidates()).
+   * The eight OmpConfig chains. A role the catalog emptied runs its static list (F7, the same rule as candidates()).
    * A judge seat keeps its index: an unresolved seat runs its static selector and fails alone (panel quorum).
    */
   chains(): RoleChains {

@@ -210,12 +210,12 @@ export function clampEffort(m: ModelString, effort: RoutedEffort | null, catalog
 /** An exhausted planner role steps up (spec §4): Fast → Default → Thinking → none (`no_planner_leg`). */
 export const STEP_UP: Readonly<Record<PlannerRole, PlannerRole | null>> = { fast: "default", default: "thinking", thinking: null };
 
-/** The seven OmpConfig seat chains, as the roles fill them. */
+/** The eight OmpConfig seat chains, as the roles fill them. */
 export interface RoleChains { planner: ModelString[]; reader: ModelString[]; media: ModelString[]; ticks: ModelString[];
   judges: ModelString[]; chair: ModelString[]; reviewer: ModelString[]; growReview: ModelString[] }
 
 /**
- * The seven seat chains as STATIC_ROLE_LISTS: today's chains exactly. `HOUGE_MODEL_ROLES=static`, callers that hold no
+ * The eight seat chains as STATIC_ROLE_LISTS: today's chains exactly. `HOUGE_MODEL_ROLES=static`, callers that hold no
  * resolver (the CLI, scripts), and resolveOmpConfig's default.
  */
 export function staticRoleChains(): RoleChains {
