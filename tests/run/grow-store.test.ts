@@ -117,7 +117,7 @@ describe("grow store", () => {
 
   it("insertGrowStaged is due immediately and listGrowStaged is in ascending id", () => {
     const s = mem(); const a = staged(s, "one"); const b = staged(s, "two");
-    expect(s.getGrowStaged(a)).toMatchObject({ state: "staged", next_attempt_at: NOW, needs_review: true, publish_failures: 0 });
+    expect(s.getGrowStaged(a)).toMatchObject({ state: "staged", next_attempt_at: NOW, needs_review: true, });
     expect(s.listGrowStaged("staged").map((r) => r.id)).toEqual([a, b]);
     s.patchGrowStaged(a, { state: "failed", code: "bad" }, LATER);
     expect(s.listGrowStaged("failed").map((r) => r.id)).toEqual([a]);
@@ -139,10 +139,8 @@ describe("grow store", () => {
     expect(s.getGrowStaged(keep)).toMatchObject({ state: "failed", code: "undone" });
   });
 
-  it("bumpGrowPublishFailure counts and unclaimGrowReview restores the attempt count", () => {
+  it("unclaimGrowReview restores the attempt count", () => {
     const s = mem(); const id = staged(s);
-    expect(s.bumpGrowPublishFailure(id)).toBe(1);
-    expect(s.bumpGrowPublishFailure(id)).toBe(2);
     s.claimGrowReview(id, NOW);
     expect(s.getGrowStaged(id)).toMatchObject({ attempts: 1, claimed_at: NOW });
     s.unclaimGrowReview(id);
@@ -234,5 +232,51 @@ describe("grow store", () => {
     s.setGrowContextCursor("555", 7); s.setGrowContextCursor("555", 9);
     expect(s.getGrowContextCursor("555")).toBe(9);
     expect(s.getGrowContextCursor("666")).toBe(0);
+  });
+
+  const op = (s: RunStore, id: string, over: Record<string, unknown> = {}) =>
+    s.insertGrowOp({ id, kind: "publish", source: "submit", name: "unit-convert", staged_id: null, request_id: null, target_json: null, reason: null, undo_version_id: null, now: NOW, ...over });
+
+  it("a pending operation is listed oldest first until finished, and finishing twice changes nothing", () => {
+    const s = mem();
+    expect(op(s, "op1")).toMatchObject({ id: "op1", state: "pending", failures: 0, commit_id: null });
+    op(s, "op2", { now: LATER }); op(s, "op3", { name: "other", now: NOW });
+    expect(s.pendingGrowOps().map((o) => o.id)).toEqual(["op1", "op3", "op2"]);
+    expect(s.pendingGrowOps("unit-convert").map((o) => o.id)).toEqual(["op1", "op2"]);
+    s.finishGrowOp("op1", "done", "c1", LATER);
+    expect(s.pendingGrowOps("unit-convert").map((o) => o.id)).toEqual(["op2"]);
+    s.finishGrowOp("op1", "failed", "c2", "2026-11-10T11:00:00.000Z");
+    expect(s.getGrowOp("op1")).toMatchObject({ state: "done", commit_id: "c1", updated_at: LATER });
+  });
+
+  it("a second operation for one request id is rejected, and getGrowOpByRequest finds it in any state", () => {
+    const s = mem();
+    op(s, "op1", { kind: "undo", source: "undo", request_id: 7 });
+    expect(() => op(s, "op2", { request_id: 7 })).toThrow();
+    s.finishGrowOp("op1", "failed", null, LATER);
+    expect(s.getGrowOpByRequest(7)).toMatchObject({ id: "op1", state: "failed" });
+    expect(s.getGrowOpByRequest(8)).toBeUndefined();
+  });
+
+  it("bumpGrowOpFailure returns the new count", () => {
+    const s = mem(); op(s, "op1");
+    expect(s.bumpGrowOpFailure("op1")).toBe(1);
+    expect(s.bumpGrowOpFailure("op1")).toBe(2);
+    expect(s.getGrowOp("op1")?.failures).toBe(2);
+  });
+
+  it("latest and previous versions skip undone ones, and one op id yields one version", () => {
+    const s = mem();
+    const v = (op_id: string) => s.insertGrowVersion({ name: "unit-convert", op_id, commit_id: `c-${op_id}`, content_hash: "h", fields_json: "{}", at: NOW });
+    const a = v("o1"); const b = v("o2"); const c = v("o3");
+    expect(s.latestGrowVersion("unit-convert")?.id).toBe(c);
+    expect(s.previousGrowVersion("unit-convert", c)?.id).toBe(b);
+    s.markGrowVersionUndone(c); s.markGrowVersionUndone(b);
+    expect(s.latestGrowVersion("unit-convert")?.id).toBe(a);
+    expect(s.previousGrowVersion("unit-convert", b)?.id).toBe(a);
+    expect(s.previousGrowVersion("unit-convert", a)).toBeUndefined();
+    expect(s.listGrowVersions("unit-convert").map((x) => x.undone)).toEqual([false, true, true]);
+    expect(s.latestGrowVersion("nope")).toBeUndefined();
+    expect(() => v("o1")).toThrow();
   });
 });

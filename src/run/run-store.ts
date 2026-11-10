@@ -1258,7 +1258,7 @@ const GROW_DDL = `
     fields_json TEXT NOT NULL, content_hash TEXT NOT NULL, needs_review INTEGER NOT NULL,
     state TEXT NOT NULL CHECK (state IN ('staged','approved','publishing','failed')),
     attempts INTEGER NOT NULL DEFAULT 0, claimed_at TEXT, next_attempt_at TEXT, author_families TEXT,
-    code TEXT, findings_json TEXT, review_input_hash TEXT, publish_failures INTEGER NOT NULL DEFAULT 0,
+    code TEXT, findings_json TEXT, review_input_hash TEXT,
     created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
   CREATE INDEX IF NOT EXISTS grow_staged_state_idx ON grow_staged(state, next_attempt_at);
   CREATE TABLE IF NOT EXISTS grow_events (
@@ -1281,18 +1281,35 @@ const GROW_DDL = `
     id INTEGER PRIMARY KEY AUTOINCREMENT, idempotency_key TEXT NOT NULL UNIQUE, kind TEXT NOT NULL CHECK (kind IN ('undo','adopt')),
     name TEXT NOT NULL, reason TEXT, chat_id TEXT, state TEXT NOT NULL CHECK (state IN ('queued','done','replied')), result TEXT,
     created_at TEXT NOT NULL, done_at TEXT);
-  CREATE TABLE IF NOT EXISTS grow_marks (name TEXT PRIMARY KEY, marked_at TEXT NOT NULL);`;
+  CREATE TABLE IF NOT EXISTS grow_marks (name TEXT PRIMARY KEY, marked_at TEXT NOT NULL);
+  CREATE TABLE IF NOT EXISTS grow_ops (
+    id TEXT PRIMARY KEY, kind TEXT NOT NULL CHECK (kind IN ('publish','undo')), source TEXT NOT NULL CHECK (source IN ('submit','seed','migrate','undo')),
+    name TEXT NOT NULL, staged_id INTEGER, request_id INTEGER, target_json TEXT, reason TEXT, undo_version_id INTEGER,
+    state TEXT NOT NULL CHECK (state IN ('pending','done','failed')), failures INTEGER NOT NULL DEFAULT 0, commit_id TEXT,
+    created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+  CREATE INDEX IF NOT EXISTS grow_ops_state_idx ON grow_ops(state, name);
+  CREATE UNIQUE INDEX IF NOT EXISTS grow_ops_request_idx ON grow_ops(request_id) WHERE request_id IS NOT NULL;
+  CREATE TABLE IF NOT EXISTS grow_versions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, op_id TEXT NOT NULL UNIQUE, commit_id TEXT NOT NULL, content_hash TEXT NOT NULL,
+    fields_json TEXT NOT NULL, at TEXT NOT NULL, undone INTEGER NOT NULL DEFAULT 0);
+  CREATE INDEX IF NOT EXISTS grow_versions_name_idx ON grow_versions(name, id);`;
 
 export type GrowOrigin = "clean" | "untrusted" | "exemplar";
 export interface GrowItemRow { name: string; state: "live" | "removed" | "orphan"; origin: GrowOrigin; description: string; example: string; uses: number; last_used_at: string | null; head_commit: string | null; content_hash: string; body_hash: string; created_at: string; updated_at: string }
-export interface GrowStagedRow { id: number; name: string; run_id: string | null; chat_id: string | null; origin: GrowOrigin; fields_json: string; content_hash: string; needs_review: boolean; state: "staged" | "approved" | "publishing" | "failed"; attempts: number; claimed_at: string | null; next_attempt_at: string | null; author_families: string | null; code: string | null; findings_json: string | null; review_input_hash: string | null; publish_failures: number; created_at: string; updated_at: string }
+export interface GrowStagedRow { id: number; name: string; run_id: string | null; chat_id: string | null; origin: GrowOrigin; fields_json: string; content_hash: string; needs_review: boolean; state: "staged" | "approved" | "publishing" | "failed"; attempts: number; claimed_at: string | null; next_attempt_at: string | null; author_families: string | null; code: string | null; findings_json: string | null; review_input_hash: string | null; created_at: string; updated_at: string }
 export interface GrowEventRow { id: number; at: string; run_id: string | null; chat_id: string | null; name: string; action: "submit" | "publish" | "review_failed" | "undo" | "read" | "hint" | "seed" | "migrate" | "trust" | "adopt"; result: string; code: string | null; reviewer_model: string | null; commit_id: string | null }
 export interface GrowReviewRow { id: number; staged_id: number; name: string; content_hash: string; pass: boolean; code: string; findings_json: string; reviewer_model: string | null; input_hash: string | null; author_families: string; undo_reasons_n: number; at: string }
 export interface GrowRequestRow { id: number; idempotency_key: string; kind: "undo" | "adopt"; name: string; reason: string | null; chat_id: string | null; state: "queued" | "done" | "replied"; result: string | null; created_at: string; done_at: string | null }
+export interface GrowOpRow { id: string; kind: "publish" | "undo"; source: "submit" | "seed" | "migrate" | "undo"; name: string; staged_id: number | null; request_id: number | null; target_json: string | null; reason: string | null; undo_version_id: number | null; state: "pending" | "done" | "failed"; failures: number; commit_id: string | null; created_at: string; updated_at: string }
+export interface GrowVersionRow { id: number; name: string; op_id: string; commit_id: string; content_hash: string; fields_json: string; at: string; undone: boolean }
+type GrowVersionDbRow = Omit<GrowVersionRow, "undone"> & { undone: number };
+const GROW_OP_COLUMNS = `id, kind, source, name, staged_id, request_id, target_json, reason, undo_version_id, state, failures, commit_id, created_at, updated_at`;
+const GROW_VERSION_COLUMNS = `id, name, op_id, commit_id, content_hash, fields_json, at, undone`;
+const toGrowVersion = (r: GrowVersionDbRow): GrowVersionRow => ({ ...r, undone: r.undone === 1 });
 type GrowStagedDbRow = Omit<GrowStagedRow, "needs_review"> & { needs_review: number };
 type GrowReviewDbRow = Omit<GrowReviewRow, "pass"> & { pass: number };
 const GROW_ITEM_COLUMNS = `name, state, origin, description, example, uses, last_used_at, head_commit, content_hash, body_hash, created_at, updated_at`;
-const GROW_STAGED_COLUMNS = `id, name, run_id, chat_id, origin, fields_json, content_hash, needs_review, state, attempts, claimed_at, next_attempt_at, author_families, code, findings_json, review_input_hash, publish_failures, created_at, updated_at`;
+const GROW_STAGED_COLUMNS = `id, name, run_id, chat_id, origin, fields_json, content_hash, needs_review, state, attempts, claimed_at, next_attempt_at, author_families, code, findings_json, review_input_hash, created_at, updated_at`;
 const GROW_EVENT_COLUMNS = `id, at, run_id, chat_id, name, action, result, code, reviewer_model, commit_id`;
 const GROW_REVIEW_COLUMNS = `id, staged_id, name, content_hash, pass, code, findings_json, reviewer_model, input_hash, author_families, undo_reasons_n, at`;
 const GROW_REQUEST_COLUMNS = `id, idempotency_key, kind, name, reason, chat_id, state, result, created_at, done_at`;
@@ -7772,8 +7789,59 @@ export class RunStore {
       .run(code, now, name, exceptId, exceptId).changes);
   }
 
-  bumpGrowPublishFailure(id: number): number {
-    return this.db.prepare(`UPDATE grow_staged SET publish_failures = publish_failures + 1 WHERE id = ? RETURNING publish_failures`).get<{ publish_failures: number }>(id)?.publish_failures ?? 0;
+  /** Operation log: plain statements only, so the executor can call these inside its own transaction. */
+  insertGrowOp(i: { id: string; kind: GrowOpRow["kind"]; source: GrowOpRow["source"]; name: string; staged_id: number | null; request_id: number | null; target_json: string | null; reason: string | null; undo_version_id: number | null; now: string }): GrowOpRow {
+    this.db.prepare(`INSERT INTO grow_ops (id, kind, source, name, staged_id, request_id, target_json, reason, undo_version_id, state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`)
+      .run(i.id, i.kind, i.source, i.name, i.staged_id, i.request_id, i.target_json, i.reason, i.undo_version_id, i.now, i.now);
+    const row = this.getGrowOp(i.id);
+    if (!row) throw new Error(`grow op ${i.id} missing after insert`);
+    return row;
+  }
+
+  getGrowOp(id: string): GrowOpRow | undefined {
+    return this.db.prepare(`SELECT ${GROW_OP_COLUMNS} FROM grow_ops WHERE id = ?`).get<GrowOpRow>(id);
+  }
+
+  pendingGrowOps(name?: string): GrowOpRow[] {
+    return name === undefined
+      ? this.db.prepare(`SELECT ${GROW_OP_COLUMNS} FROM grow_ops WHERE state = 'pending' ORDER BY created_at, rowid`).all<GrowOpRow>()
+      : this.db.prepare(`SELECT ${GROW_OP_COLUMNS} FROM grow_ops WHERE state = 'pending' AND name = ? ORDER BY created_at, rowid`).all<GrowOpRow>(name);
+  }
+
+  getGrowOpByRequest(request_id: number): GrowOpRow | undefined {
+    return this.db.prepare(`SELECT ${GROW_OP_COLUMNS} FROM grow_ops WHERE request_id = ?`).get<GrowOpRow>(request_id);
+  }
+
+  bumpGrowOpFailure(id: string): number {
+    return this.db.prepare(`UPDATE grow_ops SET failures = failures + 1 WHERE id = ? RETURNING failures`).get<{ failures: number }>(id)?.failures ?? 0;
+  }
+
+  finishGrowOp(id: string, state: "done" | "failed", commit_id: string | null, now: string): void {
+    this.db.prepare(`UPDATE grow_ops SET state = ?, commit_id = ?, updated_at = ? WHERE id = ? AND state = 'pending'`).run(state, commit_id, now, id);
+  }
+
+  insertGrowVersion(v: { name: string; op_id: string; commit_id: string; content_hash: string; fields_json: string; at: string }): number {
+    const r = this.db.prepare(`INSERT INTO grow_versions (name, op_id, commit_id, content_hash, fields_json, at) VALUES (?, ?, ?, ?, ?, ?)`)
+      .run(v.name, v.op_id, v.commit_id, v.content_hash, v.fields_json, v.at);
+    return Number(r.lastInsertRowid);
+  }
+
+  latestGrowVersion(name: string): GrowVersionRow | undefined {
+    const r = this.db.prepare(`SELECT ${GROW_VERSION_COLUMNS} FROM grow_versions WHERE name = ? AND undone = 0 ORDER BY id DESC LIMIT 1`).get<GrowVersionDbRow>(name);
+    return r ? toGrowVersion(r) : undefined;
+  }
+
+  previousGrowVersion(name: string, beforeId: number): GrowVersionRow | undefined {
+    const r = this.db.prepare(`SELECT ${GROW_VERSION_COLUMNS} FROM grow_versions WHERE name = ? AND undone = 0 AND id < ? ORDER BY id DESC LIMIT 1`).get<GrowVersionDbRow>(name, beforeId);
+    return r ? toGrowVersion(r) : undefined;
+  }
+
+  markGrowVersionUndone(id: number): void {
+    this.db.prepare(`UPDATE grow_versions SET undone = 1 WHERE id = ?`).run(id);
+  }
+
+  listGrowVersions(name: string): GrowVersionRow[] {
+    return this.db.prepare(`SELECT ${GROW_VERSION_COLUMNS} FROM grow_versions WHERE name = ? ORDER BY id`).all<GrowVersionDbRow>(name).map(toGrowVersion);
   }
 
   setGrowStagedOrigin(name: string, origin: GrowOrigin, now: string): number {
