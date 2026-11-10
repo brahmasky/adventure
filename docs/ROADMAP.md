@@ -186,7 +186,7 @@ OS user for the planner, quota invariant) → **SP4 self-evolution v2** (weaknes
 Phase R below is subsumed by SP1 (a real agent loop replaces the step-cap fallback work); episodic/wiki stay as
 knowledge Houge owns; Earn is parked behind SP1.
 
-**Delta 2026-11-10: direction change — a small kernel and a grow zone (Paco; decided, not shipped).** The finding:
+**Delta 2026-11-10: direction change — a small kernel and a grow zone (Paco; 1a shipped 2026-11-10; 1b onward decided, not shipped).** The finding:
 capability lands as hand-written TypeScript that only the build orchestrator touches, so Houge does not evolve
 himself (3 skills, 0 improvement jobs ever). From here new capability starts in a **grow zone** Houge writes
 himself (its own local git repository), goes live on code-owned checks with no human gate, and moves into `src/`

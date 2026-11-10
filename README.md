@@ -110,7 +110,7 @@ Telegram ──long-poll──▶ houge daemon (launchd; ledger, scheduler, swee
 3. The supervisor makes sure a planner child is up: omp answers with a version, Seatbelt profiles
    rendered, system prompt written (identity, discipline, the `ask` lessons, the skills index), bridge socket
    minted. A child counts as started only after the bridge has served it the tool manifest within
-   15 s. `open_session` resumes the chat's transcript. A changed lesson, identity or skill restarts
+   15 s. `open_session` resumes the chat's transcript. A changed lesson, identity or skills index (a skill added, removed or re-described) restarts
    the child at the next idle boundary.
 4. The daemon prepends a `[context]` block (episodic facts and wiki pages) to the prompt and
    records what it applied, so rating attribution still works.
@@ -141,7 +141,7 @@ declaration under `src/omp/tools/` plus a daemon-side adapter:
 | `schedule_task` | Create, list, update or cancel this chat's schedules ([ADR 0017](docs/decisions/0017-scheduler.md)). |
 | `wiki_build` · `wiki_refine` | Save or improve a durable knowledge page ([ADR 0020](docs/decisions/0020-llm-wiki.md)). |
 | `self_diagnose` · `self_write_propose` | Read Houge's own source, or propose a code change through the self-write pipeline. Both run in the background and end the turn. |
-| `grow_submit` | Add or improve one of Houge's own procedures; checked by code, reviewed by another model before it goes live. |
+| `grow_submit` | Add or improve one of Houge's own procedures; checked by code; a new or large change is reviewed by another model family before it goes live. |
 | `grow_read` | Read one of Houge's own procedures by name. |
 | `houge_status` | Read-only view of Houge's own runtime (uptime, why he booted, live build, open incidents, kill and park state); the planner calls it before answering a question about a restart or his health. |
 | `memory_correct` | Search, then retire or correct one remembered fact when Paco asks. Every change waits for his tap and has an Undo. |
@@ -199,7 +199,7 @@ merged lesson and supersedes the originals; it never deletes. Preview with
 Slash commands keep it inspectable (idempotent, no run, no budget unless noted):
 
 - `/lessons [scope]` view lessons · `/forget <scope|id>` retire them (a reversible status flip; one the improvement check saved has its whole change undone).
-- `/grow` lists the skills Houge wrote for himself; `/grow undo <name> [reason]` removes one (queued, the daemon confirms); `/grow trust <name>` clears the "from outside content" mark.
+- `/grow` lists the skills Houge wrote for himself; `/grow undo <name> [reason]` steps back one version (removes the skill if it had none) (queued, the daemon confirms); `/grow trust <name>` clears the "from outside content" mark.
 - `/schedule` · `/schedule cancel <N>` list or cancel this chat's schedules. Schedules are created and
   updated conversationally through `schedule_task`.
 - `/status` health digest (with a `Jev front door: armed` or `off (cause)` line, plus 24 h decision counts, the settle health line, per-entry Jev skips when there were any, and the Improvement (7 d) line) · `/status decisions` the last 10 decisions · `/changes` background changes of the last 30 days in plain words (model switches, internal self-checks, routine Jev notices — what no longer comes to chat) · `/usage` token use per model (omp rows show "sub", never dollars).
@@ -232,8 +232,8 @@ tracked files, so gitignored secrets are absent by construction. Off by default
 
 **Skills (the grow zone).** A skill is a reusable procedure Houge wrote for himself, kept in the grow
 zone and indexed into the planner's prompt; skills are ambient, never invoked by name. The planner
-stages one with `grow_submit`, which runs the formal checks and queues it for review (a small update to a clean live
-skill goes live at once), and reads one back with `grow_read`. `/grow` lists them and `/grow undo` removes one
+stages one with `grow_submit`, which runs the formal checks and queues it for review (a small update to a clean, never-undone live
+skill, from a clean turn, goes live at once), and reads one back with `grow_read`. `/grow` lists them and `/grow undo` steps back one version (removes the skill if it had none)
 ([configuration](docs/reference/configuration.md)).
 
 **Code self-write (Phase 3).** When the fix belongs in Houge's own code, the planner calls

@@ -9628,8 +9628,7 @@ export class RunStore {
 
   /**
    * Skill retirement spec (2026-07-29): `skill_reverify_state` — the single-row weekly
-   * latch of the re-verify advisor, which ADR 0035 deleted; the table stays with no reader or writer (seeded NULL so arming fires immediately
-   * — a first sweep today, then weekly at the slot; mirrors radar_panel_state).
+   * latch of the re-verify advisor, which ADR 0035 deleted; the table stays with no reader or writer (seeded NULL).
    */
   private applySkillReverifyMigration(): void {
     const version = "2026-07-29-skill-reverify";

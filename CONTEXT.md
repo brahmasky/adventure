@@ -48,7 +48,7 @@ This file defines domain language for Houge architecture reviews and implementat
 
 **Skill**: A reusable procedure Houge wrote for himself, one prose item in the grow zone. Its name and description sit in the planner's prompt index; the planner reads the body with `grow_read` when it judges it relevant. Skills do not secretly define policy.
 
-**Grow zone**: Houge's own local git repository of skills (ADR 0035), outside the code checkout and never pushed. The planner writes it through `grow_submit` (formal checks, then a review by another model family unless the update is small and the item clean) and reads it through `grow_read`; only the daemon commits. Paco can undo a version (`/grow undo`) and clear a skill's "from outside content" mark (`/grow trust`).
+**Grow zone**: Houge's own local git repository of skills (ADR 0035), outside the code checkout and never pushed. The planner writes it through `grow_submit` (formal checks, then a review by another model family unless it is a small update to a clean, never-undone item from a clean turn) and reads it through `grow_read`; only the daemon commits. Paco can undo a version (`/grow undo`) and clear a skill's "from outside content" mark (`/grow trust`).
 
 **Memory Artifact**: A durable knowledge item such as a user profile, wiki page, environment guidebook, accepted or activated lesson, or eval checklist.
 
