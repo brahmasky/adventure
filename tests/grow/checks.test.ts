@@ -80,8 +80,45 @@ describe("grow formal checks", () => {
   it.each([["right-to-left override", "\u202e"], ["zero-width space", "\u200b"], ["byte order mark", "\ufeff"], ["bidi isolate", "\u2066"]])(
     "rejects %s, which hides text from a reviewer", (_n, ch) => { expect(code(ok({ body: `${body(8)}${ch}` }))).toBe("control_chars"); });
 
-  it("keeps the zero-width joiner, which emoji sequences need", () => {
-    expect(code(ok({ body: `${body(8)}\n👨\u200d👩\u200d👧 family` }))).toBe("ok");
+  // Each of these renders as nothing (or as nothing visible) and can hide text from the reviewer or split a secret's
+  // shape so the scrub misses it. The table spans every class the door refuses, at its range ends.
+  it.each([
+    ["tag character (start)", "\u{E0001}"], ["tag character (letter)", "\u{E0041}"], ["tag character (cancel)", "\u{E007F}"],
+    ["variation selector 1", "︀"], ["variation selector 16", "️"], ["supplementary variation selector", "\u{E0100}"], ["last supplementary variation selector", "\u{E01EF}"],
+    ["soft hyphen", "­"], ["zero-width joiner", "‍"], ["left-to-right mark", "‎"], ["right-to-left mark", "‏"],
+    ["Arabic letter mark", "؜"], ["function application", "⁡"], ["invisible plus", "⁤"], ["Mongolian vowel separator", "᠎"],
+    ["Hangul filler", "ㅤ"], ["Hangul choseong filler", "ᅟ"], ["Hangul jungseong filler", "ᅠ"], ["halfwidth Hangul filler", "ﾠ"],
+    ["interlinear annotation anchor", "￹"], ["interlinear annotation terminator", "￻"],
+    ["C1 control (first)", "\u0080"], ["C1 control (last)", "\u009f"], ["inhibit symmetric swapping", "⁪"], ["nominal digit shapes", "⁯"],
+    ["bare carriage return", "\r"], ["private-use character", ""], ["unassigned code point", "͸"], ["lone surrogate", "\ud800"]
+  ])("rejects %s in any field", (_n, ch) => {
+    expect(code(ok({ body: `${body(8)}\nsee th${ch}is step` }))).toBe("control_chars");
+    expect(code(ok({ anchors: [`a fact${ch} here`] }))).toBe(ch === "\r" ? "bad_anchors" : "control_chars");   // a one-line field refuses \r first
+  });
+
+  it("keeps newline and tab in the body, and ordinary non-ASCII text", () => {
+    expect(code(ok({ body: `${body(8)}\n\tindented note: 200 °C, ½ cup, café, 猴哥, m²` }))).toBe("ok");
+  });
+
+  it("rejects an emoji sequence and says so: the joiner and the variation selector are not allowed", () => {
+    for (const s of ["\u{1F468}‍\u{1F469}‍\u{1F467} family", "red ❤️ heart"]) {
+      const r = checkFields(ok({ body: `${body(8)}\n${s}` }), [], same);
+      expect(r.ok).toBe(false);
+      expect(!r.ok && r.code).toBe("control_chars");
+      expect(!r.ok && r.message).toMatch(/emoji sequences are not allowed/);
+    }
+  });
+
+  it("names the class of the refused character, never the character itself", () => {
+    const msg = (ch: string): string => { const r = checkFields(ok({ body: `${body(8)}\nx${ch}y` }), [], same); return r.ok ? "" : r.message; };
+    expect(msg("\u0007")).toMatch(/a control character/);
+    expect(msg("​")).toMatch(/an invisible format character/);
+    expect(msg("️")).toMatch(/a variation selector/);
+    expect(msg("ㅤ")).toMatch(/an invisible filler/);
+    expect(msg(" ")).toMatch(/a line or paragraph separator/);
+    expect(msg("")).toMatch(/a private-use character/);
+    expect(msg("͸")).toMatch(/an unassigned code point/);
+    expect(msg("​")).not.toContain("​");
   });
 
   it("a small update is at most 20 changed lines and a quarter of the body, with description and example untouched", () => {
