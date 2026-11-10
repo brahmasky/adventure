@@ -51,7 +51,7 @@ export const DISARM_FLAGS: readonly string[] = [
   "HOUGE_MEDIA_INGEST_ENABLED",
   // Jev System One master (ADR 0033 G6, ADR 0034 1.6): /disarm switches Jev's front door off; Jev's other entries do not read this flag.
   "HOUGE_JEV_ENABLED",
-  // 2b-ii follow-up: the improvement tick turns Paco's taps into proposals and skill jobs — an evolution surface the STOP switch covers.
+  // 2b-ii follow-up: the improvement tick turns Paco's taps into proposals and grow hints — an evolution surface the STOP switch covers.
   "HOUGE_IMPROVE_ENABLED",
   // SP2 mail triage (spec 2026-11-09): polls Paco's own inbox unattended and pushes cards — unattended autonomy the STOP switch covers.
   "HOUGE_MAIL_ENABLED",

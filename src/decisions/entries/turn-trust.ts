@@ -47,6 +47,6 @@ export const TURN_TRUST: Entry<TurnTrustState, TrustLevel> = {
   outcomes: [], armed: { rule: "on" },
   effects: { clean: { kind: "none", reversible: true, announced: "none" },
     untrusted: tighten("lesson_write, schedule_task and self_write_propose ask"),
-    hostile: tighten("every shell command off the read-only list and every write asks; built-in edit/write redirect to bash") },
+    hostile: tighten("every shell command off the read-only list and every write asks (grow_submit is refused outright); built-in edit/write redirect to bash") },
   reasonCodes: ["wall_read", "shell_netread", "judge_timeout", "injection_withheld", "unjudged_outside", "unjudged_local", "judge_lost_outside", "carried_untrusted", "carried_hostile", "grow_read_untrusted"]
 };

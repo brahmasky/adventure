@@ -60,6 +60,10 @@ describe("ADR 0035 G2: one door into the zone's repository", () => {
     const callers = walk("src").filter((p) => /\.(?:writeAndCommit|removeAndCommit)\(/.test(readFileSync(join(root, p), "utf8")));
     expect(callers.filter((p) => p !== join("src", "grow", "ops.ts"))).toEqual([]);
   });
+  it("nothing in src writes the old skills folder", () => {
+    const hits = walk("src").filter((f) => /join\([^)]*["']skills["']\)/.test(readFileSync(join(root, f), "utf8")) && !f.includes("/grow/"));
+    expect(hits).toEqual([]);
+  });
 });
 
 describe("ADR 0035 G5: undo reasons and reviews are append-only", () => {
@@ -110,8 +114,10 @@ describe("ADR 0035 / ADR 0034 §10.4: recurrence gives a hint, never a job", () 
       expect([f, text.includes("recordGrowHint(")]).toEqual([f, true]);
     }
   });
-  // switched on when src/core/skill-job.ts is deleted (Task 13): walk("src").filter((f) => startsJob.test(readFileSync(join(root, f), "utf8")) && !f.endsWith("run-store.ts")) is []
-  it.todo("no source file inserts an improvement job");
+  it("no source file inserts an improvement job", () => {
+    const hits = walk("src").filter((f) => startsJob.test(readFileSync(join(root, f), "utf8")) && !f.endsWith("run-store.ts"));
+    expect(hits).toEqual([]);
+  });
 });
 
 describe("ADR 0035 G4 clause a: a hostile turn's grow_submit is refused in the preflight", () => {
@@ -181,7 +187,8 @@ describe("ADR 0035: index stable order", () => {
 });
 
 describe("ADR 0035: skills leave the prompt", () => {
-  // switched on in Task 13 (the skills reader and the skills section are deleted):
-  // walk("src").filter((f) => /readScopeBlock|skillsReader/.test(readFileSync(join(root, f), "utf8"))) is []
-  it.todo("no source file folds skill bodies into a prompt (the planner reads a skill through grow_read)");
+  it("no source file folds skill bodies into a prompt (the planner reads a skill through grow_read)", () => {
+    const hits = walk("src").filter((f) => /readScopeBlock|skillsReader/.test(readFileSync(join(root, f), "utf8")));
+    expect(hits).toEqual([]);
+  });
 });

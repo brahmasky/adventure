@@ -239,7 +239,7 @@ export interface ComposeOptions {
   growIndex?: () => string | undefined;
   /**
    * Injected episodic-facts reader (Phase M B3): `() => block | undefined`. Zero-arg
-   * on purpose — unlike lessons/skills (scope-keyed), episodic facts are CHAT-keyed
+   * on purpose — unlike lessons (scope-keyed), episodic facts are CHAT-keyed
    * and retrieved once per turn against the incoming message, so the caller binds
    * the chat and the retrieval result and the composer only folds the rendered block
    * in. Absent (or returning nothing) → the section is omitted and the prompt is

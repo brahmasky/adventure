@@ -4291,7 +4291,7 @@ function loopToolTimeoutMs(name: string, seat: (role: LlmCallRole) => number): n
 
 /**
  * The seats lesson_write's internal calls ride: memory work on the ticks chain (spec §8), like the
- * episodic distill/consolidate ticks. /ask, /research and skill authoring stay on the planner chain.
+ * episodic distill/consolidate ticks. /ask and /research stay on the planner chain.
  * The routing lives here so the runner cap (loopToolTimeoutMs) matches it.
  */
 const LESSON_WRITE_ROLES = { distill: "distill", reconcile: "consolidate" } as const satisfies Record<string, LlmCallRole>;
