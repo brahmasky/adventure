@@ -1241,8 +1241,8 @@ describe("the daemon's sweep wiring (M9)", () => {
       const controller = new AbortController(); controller.abort();
       await runTelegramDaemon({ store, projectRoot: root, omp: fakeOmp(root), allowlist: ALLOWLIST, stopSignal: controller.signal,
         telegramClient: { getUpdates: async () => [], sendMessage: async () => ({ message_id: 1 }) } as never });
-      // boot also imports the Jev anchor: no reference files in this fixture project root, so that incident is expected and is not the subject
-      expect(store.listOpenIncidents().filter((i) => i.kind !== "jev_anchor_missing").map((i) => [i.kind, JSON.parse(i.detail_json).invalid])).toEqual([["omp_config_invalid", ["HOUGE_OMP_LEASE_TTL_S"]]]);
+      // boot also imports the Jev anchor and seeds the grow zone: this fixture project root has neither reference files nor grow-seed/, so those incidents are expected and are not the subject
+      expect(store.listOpenIncidents().filter((i) => i.kind !== "jev_anchor_missing" && i.kind !== "grow_seed_failed").map((i) => [i.kind, JSON.parse(i.detail_json).invalid])).toEqual([["omp_config_invalid", ["HOUGE_OMP_LEASE_TTL_S"]]]);
     } finally {
       store.close();
     }

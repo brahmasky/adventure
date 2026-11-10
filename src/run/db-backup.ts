@@ -1,5 +1,5 @@
 import { createRequire } from "node:module";
-import { mkdirSync, readdirSync, renameSync, statSync, unlinkSync } from "node:fs";
+import { mkdirSync, readdirSync, renameSync, rmSync, statSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import type { RunStore } from "./run-store.js";
 
@@ -165,6 +165,7 @@ function pruneOldSnapshots(dir: string, keep: number, spare: string): number {
   for (const name of snapshots) {
     if (!keepSet.has(name)) {
       unlinkSync(join(dir, name));
+      rmSync(join(dir, name.replace(/\.sqlite$/, ".grow.bundle")), { force: true }); // the zone bundle paired with it (grow zone spec §5.1)
     }
   }
   return Math.min(snapshots.length, keepSet.size);

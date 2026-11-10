@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { errorCode } from "../domain/error-code.js";
 import type { RunStore } from "../run/run-store.js";
+import { bundlePathFor } from "./bundle.js";
 import { checkFields, fieldScrub, parseSkillFile } from "./checks.js";
 import { resolveGrowDir } from "./flags.js";
 import { trustItem } from "./service.js";
@@ -42,7 +43,7 @@ function log(store: RunStore, backupDir: string): string {
 function backups(dir: string): string[] {
   if (!existsSync(dir)) return [];
   return readdirSync(dir).filter((f) => /^houge-.*\.sqlite$/.test(f)).sort()
-    .map((f) => `${f}  bundle: ${existsSync(join(dir, `${f.slice(0, -".sqlite".length)}.grow.bundle`)) ? "yes" : "no"}`);
+    .map((f) => `${f}  bundle: ${existsSync(bundlePathFor(join(dir, f))) ? "yes" : "no"}`);
 }
 
 async function check(store: RunStore, zone: GrowZone, only: string): Promise<string> {

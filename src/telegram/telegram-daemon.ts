@@ -47,9 +47,15 @@ import { resolveMediaIngestEnabled } from "../media/media-config.js";
 import { LocalNotificationAdapter } from "../notifications/local-notification-adapter.js";
 import { NotificationDispatcher, type NotificationAdapters } from "../notifications/notification-dispatcher.js";
 import { NotificationOutbox } from "../notifications/notification-outbox.js";
-import { resolveBackupEnabled, runDbBackupTick } from "../run/db-backup.js";
+import { ensureGrowBundle } from "../grow/bundle.js";
+import { resolveGrowEnabled } from "../grow/flags.js";
+import { EXEMPLAR_NAME, legacySkillsDir, migrateLegacySkills, seedExemplars } from "../grow/seed.js";
+import { runGrowTick } from "../grow/tick.js";
+import { spawnOneShot } from "../llm/providers/omp.js";
+import { turnTrustFinal } from "../decisions/trust.js";
+import { BACKUP_DIR_NAME, resolveBackupEnabled, runDbBackupTick } from "../run/db-backup.js";
 import type { LlmCallRole, ReloadMarker, RunStore } from "../run/run-store.js";
-import { runIncidentReminder } from "../run/incident-alert.js";
+import { openAlertedIncident, runIncidentReminder } from "../run/incident-alert.js";
 import { maybeFireScheduledTasks } from "../run/schedule-tick.js";
 import { SkillStore } from "../skills/skill-store.js";
 import { runInvariantSweep, type InvariantSweepInput, type InvariantSweepResult } from "../run/invariant-sweep.js";
@@ -299,6 +305,7 @@ export async function runTelegramDaemon(
   } catch (error) {
     console.error(`[telegram-daemon] improvement job boot reconcile failed: ${errorCode(error)}`);
   }
+  await bootGrowZone(options, worker, startedAt); // the zone is consistent before anything is seeded; a failure here leaves the zone usable
   // the retry step first: a reply that went stale while the daemon was down is abandoned before this flush can send it
   await flushLogged({ retry: true }); // best-effort: the poll loop re-dispatches queued notifications anyway
 
@@ -307,6 +314,7 @@ export async function runTelegramDaemon(
   let parkMarkerCleared = false;
   const rolesTick = detachedJob();
   const mailTick = detachedJob();
+  const growTick = detachedJob();
   // SP2 mail: the documented recovery from a lost grant is "re-auth, then restart" — the restart clears the stored auth pause (once, env switch on)
   if (clearAuthPauseAtBoot(options.store, process.env)) console.error("[telegram-daemon] mail: auth pause cleared at boot, polling resumes");
 
@@ -364,7 +372,7 @@ export async function runTelegramDaemon(
       // ⓪·3 S2: the signal path rides the poll loop (before the outbox flush, so a
       // rating ask enqueued this cycle is delivered this cycle). B10b threads the
       // gateway + worker in so the scheduler tick fires due tasks down the SAME path.
-      await runSignalPathTick(options, gateway, worker, t, rolesTick, mailTick);
+      await runSignalPathTick(options, gateway, worker, t, rolesTick, mailTick, growTick);
       await flushLogged({ retry: true }); // a failed drain is logged + incident'd, never a poll failure: the next flush retries
 
       options.store.recordPollHeartbeat({ now: now(), ok: true });
@@ -400,6 +408,7 @@ export async function runTelegramDaemon(
   await worker.shutdownPlanners();
   await settledWithin(gateway.whenTierTapsSettled(), TIER_TAP_SHUTDOWN_CAP_MS);
   await settledWithin(mailTick.settled(), MAIL_TICK_SHUTDOWN_CAP_MS); // the stop aborts the tick between mails; the cursor has not moved, the next boot re-reads the range
+  await settledWithin(growTick.settled(), GROW_TICK_SHUTDOWN_CAP_MS); // the stop aborts the review; the row is unclaimed and the next boot's tick takes it
   await settledWithin(rolesTick.settled(), ROLES_TICK_SHUTDOWN_CAP_MS); // the stop aborts its probe; the 24 h latch re-runs the whole unit next boot
   await settledWithin(jevJobSettled(), JEV_JOB_SHUTDOWN_CAP_MS); // capped: the check resumes from its rows, the flush and the evolution lane must not wait on Jev
   await flushLogged();
@@ -433,6 +442,52 @@ export const MAIL_TICK_SHUTDOWN_CAP_MS = 5_000;
 
 /** Shutdown waits at most this long for the detached roles tick: its probe takes the stop signal, so the cap only bounds a probe that ignores it. */
 export const ROLES_TICK_SHUTDOWN_CAP_MS = 5_000;
+
+/** Shutdown waits at most this long for the detached grow tick (its review spawn takes the stop signal). */
+export const GROW_TICK_SHUTDOWN_CAP_MS = 5_000;
+
+/**
+ * Boot step for the grow zone (spec §5.11): the zone exists and is consistent (reconcile, then sync with HEAD) before
+ * anything is seeded; a seed or migration that does not pass opens `grow_seed_failed` and leaves the zone usable.
+ * Exported for its test; never throws, logs a code only.
+ */
+export async function bootGrowZone(options: RunTelegramDaemonOptions, worker: CoreWorker, at: string): Promise<void> {
+  try {
+    const svc = worker.growService();
+    if (!(await svc.ensureZone())) return;
+    await svc.reconcile(resolveGrowEnabled(process.env));
+    await svc.syncWithHead();
+    const seed = await seedExemplars({ store: options.store, svc, seedDir: join(options.projectRoot, "grow-seed"), now: at });
+    const moved = await migrateLegacySkills({ store: options.store, svc, legacyDir: legacySkillsDir(options.projectRoot), now: at });
+    if (seed.failed.length + moved.invalid.length > 0) {
+      openAlertedIncident(options.store, { kind: "grow_seed_failed", subject: "boot", detail: { exemplars: seed.failed.length, legacy: moved.invalid.length }, now: at });
+    }
+  } catch (error) { console.error(`[telegram-daemon] grow boot failed: ${errorCode(error)}`); }
+}
+
+/** The bundle beside the newest snapshot (spec §5.1): a failure pages once (deduped on the open incident), a success closes it. Own catch. */
+async function growBundleStep(options: RunTelegramDaemonOptions, worker: CoreWorker, now: string): Promise<void> {
+  if (!resolveBackupEnabled(process.env)) return;
+  try {
+    const answer = await ensureGrowBundle({ zone: worker.growService().zone, backupDir: join(options.projectRoot, BACKUP_DIR_NAME) });
+    const fingerprint = options.store.incidentFingerprint("grow_backup_failed", "bundle");
+    if (answer === "failed") openAlertedIncident(options.store, { kind: "grow_backup_failed", subject: "bundle", detail: {}, now });
+    else if (answer === "written") { const open = options.store.findOpenIncident(fingerprint); if (open) options.store.resolveIncident(open.incident_id, now); }
+  } catch (error) { console.error(`[telegram-daemon] grow bundle failed: ${errorCode(error)}`); }
+}
+
+/** One grow poll (spec §5.4): review and publish, then the bundle. Its own catch: a failed tick logs a code and the next poll retries. Exported for its test. */
+export async function runGrowTickSafe(options: RunTelegramDaemonOptions, worker: CoreWorker, now: string): Promise<void> {
+  if (options.stopSignal.aborted) return;
+  try {
+    const svc = worker.growService(); const cfg = resolveOmpConfig(process.env, worker.modelRoles().chains());
+    await runGrowTick({ store: options.store, svc, env: process.env, now, signal: options.stopSignal,
+      chain: () => worker.modelRoles().candidates("grow_review"),
+      spawn: (input) => spawnOneShot(input, { cfg, audit: options.store.llmAuditSink({ correlation_id: input.correlationId, role: "grow_review" }) }),
+      exemplar: async () => (await svc.zone.readHead(EXEMPLAR_NAME)) ?? "", settled: (id) => turnTrustFinal(options.store, id) !== null });
+  } catch (error) { console.error(`[telegram-daemon] grow tick failed: ${errorCode(error)}`); }
+  await growBundleStep(options, worker, now);
+}
 
 /** One detached job at a time: a start while the last run is in flight is a no-op; `settled()` is for shutdown. Exported for its test. */
 export interface DetachedJob { start(run: () => Promise<void>): void; settled(): Promise<void> }
@@ -578,7 +633,8 @@ async function runSignalPathTick(
   worker: CoreWorker,
   now: string,
   rolesTick: DetachedJob,
-  mailTick: DetachedJob
+  mailTick: DetachedJob,
+  growTick: DetachedJob
 ): Promise<void> {
   try {
     options.store.runLessonDecayTick(now);
@@ -615,6 +671,7 @@ async function runSignalPathTick(
     // ticks so it observes this cycle's work, self-throttles to 5 min, and alerts at most
     // once per incident transition. Flag-gated OFF; pure reads + incident bookkeeping —
     // it can never act on what it finds.
+    growTick.start(() => runGrowTickSafe(options, worker, now)); // one tick in flight; serial, never awaited by the poll loop
     sweepAndRearm(invariantSweepInput(options, now), worker);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
