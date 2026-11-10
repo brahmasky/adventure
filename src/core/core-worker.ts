@@ -37,7 +37,7 @@ import type { GoogleAuthClient } from "../capabilities/google-auth.js";
 import type { SecretBroker } from "../config/secret-broker.js";
 import { resolveHttpFetchTimeoutMs } from "../web/http-fetch.js";
 import { chatContextSince, feedTurnText, resolveChatContextTurnChars, resolveChatContextTurns } from "../capabilities/intent.js";
-import { createMemoryWriteAdapter, createSrcPhraseChecker, LESSON_CAPPED_HINT, type MemoryPlan, type MemorySaveResult } from "../capabilities/lesson-write.js";
+import { createMemoryWriteAdapter, createSrcPhraseChecker, type MemoryPlan, type MemorySaveResult } from "../capabilities/lesson-write.js";
 import { memorySources, type MemorySources, type PacoMessage } from "../capabilities/memory-sources.js";
 import { askMemoryKind, MEMORY_KIND_TIMEOUT_MS, type MemoryKindAsk } from "../jev/memory-kind-ask.js";
 import { OMP_LESSON_SCOPES } from "../run/lesson-render.js";
@@ -1137,38 +1137,6 @@ export class CoreWorker {
     });
   }
 
-  /**
-   * ⓪·3 S1b — the shared lesson write for EVERY path that saves a lesson (the
-   * lesson_write loop tool, the Gate A down-routes): reconcile the
-   * candidate against the active lessons of both scopes (one cheap-chain compare, which also
-   * names the theme; any parse/chain failure defaults to ADD), then apply the verdict
-   * to the store — SUPERSEDE/UPDATE write a NEW row linked via bidirectional pointers,
-   * never a delete. Replaces the old char-cap consolidation REWRITE (the per-scope row
-   * cap prunes lowest reuse_value on overflow instead).
-   */
-  private async reconcileAndSaveLesson(
-    run_id: string,
-    candidate: { scope: string; text: string; avoid?: string },
-    source: LessonSource,
-    llm: (input: { question: string; system: string }) => Promise<{ ok: true; answer: string } | { ok: false }>,
-    now: string = new Date().toISOString()
-  ): Promise<LessonSaveResult> {
-    const r = await this.reconcileLessonVerdict(candidate, llm);
-    let change_id: string | undefined;
-    // The save and its lesson_changes row commit together, so the Undo card always has a change to revert.
-    const saved = this.runStore.inTransaction(() => {
-      const s = this.saveLessonVerdict(candidate, r, source, now);
-      if (s.id !== undefined) change_id = this.recordLessonChange(run_id, this.chatOf(run_id), { ...s, id: s.id }, source, now);
-      return s;
-    });
-    // Paco 2026-10-12: an automatic save (for example a distilled lesson) is announced on the Undo card.
-    if (saved.id !== undefined && change_id) {
-      const theme = this.runStore.getLesson(saved.id)?.theme ?? r.theme;
-      this.announceSave(run_id, { lesson: savedLessonOf({ ...saved, id: saved.id }, theme, change_id) });
-    }
-    return saved;
-  }
-
   /** What Undo reverts: the save's lesson_changes row and its lesson_saved ledger event, inside the caller's transaction. */
   private recordLessonChange(run_id: string, chat_id: string, s: LessonSaveResult & { id: number }, source: LessonSource, now: string): string {
     const change = this.runStore.insertLessonChange({
@@ -1199,17 +1167,6 @@ export class CoreWorker {
     const saved = this.runStore.saveReconciledLesson({ ...candidate, theme: r.theme }, r.verdict, source, now, resolveLessonCapPerScope(process.env));
     if (!r.themeKnown && saved.id !== undefined) this.runStore.recordMemoryEvent("lesson_theme_unknown", { lesson_id: saved.id });
     return saved;
-  }
-
-  /** The reconcile compare on the turn's shared, budget-charged chain (legacy paths). */
-  private reconcileLlm(
-    claim: ClaimedRun,
-    budget: BudgetLedger
-  ): (input: { question: string; system: string }) => Promise<{ ok: true; answer: string } | { ok: false }> {
-    return async (input) => {
-      const r = await this.runLlm(claim, input.question, input.system, budget, "compose");
-      return r.ok ? { ok: true, answer: r.answer } : { ok: false };
-    };
   }
 
   /**
@@ -1715,18 +1672,6 @@ export class CoreWorker {
     return { ok: true, text: result.text, modality: result.modality, ...(result.echo ? { echo: result.echo } : {}) };
   }
 
-  /**
-   * `llmAdapterFor`'s run-less twin: a call with NO run (Gate B verify runs walled-off under a
-   * synthetic contract) is audited under an honest correlation id instead of a phantom run id.
-   * Same injected-adapter passthrough as `llmAdapterFor`.
-   */
-  private llmAdapterRunless(
-    correlation_id: string,
-    role: LlmCallRole
-  ): (input: Record<string, unknown>) => Promise<ToolAdapterResult> {
-    return this.seatAdapter({ correlation_id, role });
-  }
-
   /** {@link quarantineRead} plus the reader's instruction flag and the raw byte count (the omp wall's result shape). */
   private async quarantineExtract(
     readerAdapter: (input: Record<string, unknown>) => Promise<ToolAdapterResult>,
@@ -1832,57 +1777,6 @@ export class CoreWorker {
         ...(buttons ? { notifyButtons: buttons } : {})
       }
     };
-  }
-
-  /**
-   * Run a single `llm_answer` with an explicit system prompt on the shared budget. Used
-   * by the skill/self-diagnose helpers and the loop tools for their intermediate LLM
-   * passes (Gate A, distill, author) — the answer-back itself goes through runAnswer so
-   * it reuses the composed prompt + report shape.
-   */
-  private async runLlm(
-    claim: ClaimedRun,
-    question: string,
-    system: string,
-    budget: BudgetLedger,
-    // The call's purpose on its `llm_attempt` rows — EXPLICIT at every caller (no default), so a
-    // Gate A classification is never booked as an "answer".
-    role: LlmCallRole
-  ): Promise<{ ok: true; answer: string } | { ok: false; failure: Exclude<CapabilityResult, { status: "succeeded" }> }> {
-    return this.runLlmWith(this.llmAdapterFor(claim.run_id, role), role, claim.contract, question, system, budget);
-  }
-
-  /** `runLlm`'s body over an explicit adapter — the run-less callers (Gate B) bring their own scope. */
-  private async runLlmWith(
-    adapter: (input: Record<string, unknown>) => Promise<ToolAdapterResult>,
-    role: LlmCallRole,
-    contract: ClaimedRun["contract"],
-    question: string,
-    system: string,
-    budget: BudgetLedger
-  ): Promise<{ ok: true; answer: string } | { ok: false; failure: Exclude<CapabilityResult, { status: "succeeded" }> }> {
-    const registry = new ToolRegistry();
-    const llmTimeoutMs = this.llmTimeoutMs(role); // the called role's chain, not the planner's
-    registry.register({
-      name: "llm_answer",
-      category: "tool",
-      side_effect_level: "external_read",
-      risk_level: "low",
-      timeout_ms: llmTimeoutMs,
-      output_limit_bytes: 100_000,
-      execute: adapter
-    });
-    const result = await new CapabilityRunner(registry).execute({
-      contract,
-      capability: "llm_answer",
-      input: { question, system },
-      budget
-    });
-    if (result.status !== "succeeded") {
-      return { ok: false, failure: result };
-    }
-    const answer = typeof result.output.answer === "string" ? result.output.answer : "";
-    return { ok: true, answer };
   }
 
   // ── omp planner turns (Task 13): the daemon hands a turn over and returns at once ────────
@@ -4401,12 +4295,6 @@ function loopToolTimeoutMs(name: string, seat: (role: LlmCallRole) => number): n
  * The routing lives here so the runner cap (loopToolTimeoutMs) matches it.
  */
 const LESSON_WRITE_ROLES = { distill: "distill", reconcile: "consolidate" } as const satisfies Record<string, LlmCallRole>;
-
-/** Memory A1 §2: a lesson the size cap refused is reported as refused, never as saved. */
-function savedLessonLine(saved: LessonSaveResult | undefined, savedLine: string, nothingLine: string): string {
-  if (!saved) return nothingLine;
-  return saved.verb === "capped" ? `→ Lesson NOT saved: ${LESSON_CAPPED_HINT}` : savedLine;
-}
 
 /** Tool error for `account: "paco"` while the mail switch is off. */
 const PACO_MAIL_OFF_ERROR = "Paco's mail is off (/mail on to allow)";
