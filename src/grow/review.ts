@@ -25,8 +25,17 @@ const RULES = [
 const KNOWN_FAMILIES: Readonly<Record<Exclude<ModelFamily, "other">, true>> = { claude: true, gemini: true, gpt: true, kimi: true };
 const isKnownFamily = (f: string): boolean => Object.hasOwn(KNOWN_FAMILIES, f);
 
+/**
+ * A run of three or more marker characters as a model reads it: `<` or `>` in any form that folds to it under NFKC
+ * (fullwidth, small), with invisible format characters, combining marks or fillers allowed between them. Content
+ * reaches here from places the door never checked (undo reasons, the index, an adopted orphan), so this does not rely
+ * on the door's character rule.
+ */
+const MARKER_UNIT = "[<>\\uFE64\\uFE65\\uFF1C\\uFF1E][\\p{Cf}\\p{M}\\u115F\\u1160\\u3164\\uFFA0]*";
+const MARKER_RUN = new RegExp(`(?:${MARKER_UNIT}){3,}`, "gu");
+const MARKER_SPLIT = new RegExp(MARKER_UNIT, "gu");
 /** Content is neutralised so an item can neither close its own block early nor forge another block's opener. */
-const block = (tag: string, text: string): string => `<<<${tag}\n${text.replace(/>{3,}/g, (m) => [...m].join(" ")).replace(/<{3,}/g, (m) => [...m].join(" "))}\n>>>`;
+const block = (tag: string, text: string): string => `<<<${tag}\n${text.replace(MARKER_RUN, (m) => (m.match(MARKER_SPLIT) ?? [m]).join(" "))}\n>>>`;
 
 /** `scrub` runs on each block's content, never on the frame, so a redaction token cannot alter a marker. */
 export function buildReviewPrompt(i: ReviewInput, scrub: (s: string) => string = (s) => s): string {
