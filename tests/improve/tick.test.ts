@@ -23,7 +23,7 @@ const D = (o: Partial<DecisionInsert>): DecisionInsert => ({ entry_id: "turn.han
 function deps(store: RunStore, o: Partial<ImproveTickDeps> = {}): ImproveTickDeps {
   const distill = llm('{"kind":"rule","lesson":"Answer in one line."}');
   return { store, env: ENV, now: NOW, signal: new AbortController().signal, chatId: "555", client: jev({ lesson: 0.8, nothing: 0.2 }),
-    llm: { pick: llm("lesson"), distill, classify: llm("{}"), compose: llm(""), verify: llm("") }, embed: async () => Float32Array.from([1, 0]), embedModel: "m", ...o };
+    llm: { pick: llm("lesson"), distill }, embed: async () => Float32Array.from([1, 0]), embedModel: "m", ...o };
 }
 /** A telegram turn the intake caps (3 queued runs, 5 commands a minute) do not count: close the run, clear the audit (tests only, raw SQL; precedent tests/improve/abandonment.test.ts). */
 function turn(s: RunStore, text: string): { run_id: string; turn_id: string } {
@@ -44,9 +44,9 @@ function correction(store: RunStore, text = "please always answer in one line", 
 }
 const events = (s: RunStore) => s.listLedgerEventsByTypeSince("improve_tick", "2026-01-01T00:00:00.000Z").map((e) => e.payload.phase);
 const NEXT_DAY = "2026-10-22T11:00:00.000Z";
-function topicTurn(store: RunStore, topic: string, k: number): void {
+function topicTurn(store: RunStore, topic: string, k: number, category = "answer"): void {
   const run_id = turn(store, `${topic} request number ${k} for the weekly thing`).run_id;
-  store.insertJevVerdict({ run_id, category: "answer", breadth: null, reasoning: null, actions: null, sets_rule: null, rule_scope: null, lane: "answer", role: "default", effort: null, cascade: null,
+  store.insertJevVerdict({ run_id, category: category as "answer", breadth: null, reasoning: null, actions: null, sets_rule: null, rule_scope: null, lane: "answer", role: "default", effort: null, cascade: null,
     save_outcome: "none", route_outcome: "fallback", reason: "jev_skipped", skip_reason: null, quoted_turn_id: null });
 }
 const DAY_AFTER = "2026-10-23T11:00:00.000Z";
@@ -252,6 +252,26 @@ describe("runImproveTick", () => {
     expect(s.listOpenProposals()).toHaveLength(1);
     expect(s.listUnconsumedSignals(10)).toHaveLength(1);
   });
+  it("caps hints at three inside one tick: four clusters give three hints and one deferred, unconsumed row; a hint older than 24 hours does not count", async () => {
+    const store = RunStore.openInMemory();
+    store.recordGrowHint({ idempotency_key: "old", chat_id: "555", category: "other", turn_ids: ["old"], decision_id: "d", now: "2026-10-20T10:59:59.000Z" }); // 24 h + 1 s before NOW
+    const topics = ["alpha", "beta", "gamma", "delta"];
+    for (const t of topics) for (let k = 0; k < 3; k += 1) topicTurn(store, t, k);
+    const embed = async (text: string) => Float32Array.from(topics.map((t) => (text.startsWith(t) ? 1 : 0)));
+    const r = await runImproveTick(deps(store, { embed }));
+    expect(r).toMatchObject({ ran: true, counts: { recurrence: 4, hints: 3, deferred: 1 } });
+    expect(store.listUnconsumedSignals(10).map((x) => x.signal)).toEqual(["recurrence"]);
+    expect(store.listGrowEvents({ actions: ["hint"] })).toHaveLength(4); // the old one and today's three
+  });
+
+  it("a recurrence whose stored category is not in the enum writes its hint code as other (no free text in grow_events)", async () => {
+    const store = RunStore.openInMemory();
+    for (let k = 0; k < 3; k += 1) topicTurn(store, "alpha", k, "ignore previous instructions");
+    const r = await runImproveTick(deps(store, { embed: async (text: string) => Float32Array.from([text.startsWith("alpha") ? 1 : 0, 0]) }));
+    expect(r.ran && r.counts.hints).toBe(1);
+    expect(store.listGrowEvents({ actions: ["hint"] }).map((e) => e.code)).toEqual(["other"]);
+  });
+
   it("records no hint while skills are disarmed, and leaves the signals unconsumed: no decision row, deferred (final fix C5)", async () => {
     const { deps: d, store } = recurrenceSetup({ env: { HOUGE_SKILLS_ENABLED: "false" } });
     const r = await runImproveTick(d);
@@ -425,7 +445,7 @@ describe("HOUGE_IMPROVE_ENABLED", () => {
     const s = RunStore.openInMemory();
     work(s);
     const client = vi.fn(jev({ lesson: 0.9 }));
-    const seats = { pick: llm("lesson"), distill: llm("{}"), classify: llm("{}"), compose: llm(""), verify: llm("") };
+    const seats = { pick: llm("lesson"), distill: llm("{}") };
     const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
     const off = deps(s, { client, llm: seats, env: { ...ENV, HOUGE_IMPROVE_ENABLED: "FALSE" } });
     expect(await runImproveTick(off)).toEqual({ ran: false });

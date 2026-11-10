@@ -1,7 +1,7 @@
 import { resolveWikiEnabled } from "../capabilities/wiki.js";
 import type { ImproveState } from "../decisions/entries/improve-route.js";
 import type { DecisionSignal } from "../decisions/types.js";
-import type { Category } from "../jev/questions/tree.js";
+import { CATEGORIES, type Category } from "../jev/questions/tree.js";
 import type { LedgerEvent } from "../run/run-ledger.js";
 import type { ImproveSignalRow, JevVerdictRow, RunStore } from "../run/run-store.js";
 
@@ -53,11 +53,23 @@ export function toolSummaryOf(events: readonly LedgerEvent[]): string {
   return counts.size === 0 ? "none" : [...counts].map(([t, n]) => `${t} ${n}`).join(" · ");
 }
 
-/** A live grow item's name mentioned word-bounded (the slug alphabet's complement), case-folded. */
+/**
+ * A live grow item is mentioned when a lower-cased text contains its name word-bounded (the slug alphabet's complement),
+ * its name with hyphens as spaces, or its whole non-empty description. Plain containment only: no fuzzy matching.
+ */
 export function skillMentioned(metas: ReadonlyArray<{ name: string; when: string }>, texts: readonly string[]): boolean {
   const lowered = texts.map((t) => t.toLowerCase());
-  return metas.some((m) => { const re = new RegExp(`(^|[^a-z0-9_-])${m.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^a-z0-9_-]|$)`); return lowered.some((t) => re.test(t)); });
+  return metas.some((m) => {
+    const name = m.name.toLowerCase();
+    const re = new RegExp(`(^|[^a-z0-9_-])${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^a-z0-9_-]|$)`);
+    const spaced = name.includes("-") ? name.replace(/-/g, " ") : null;
+    const when = m.when.trim().toLowerCase();
+    return lowered.some((t) => re.test(t) || (spaced !== null && t.includes(spaced)) || (when.length > 0 && t.includes(when)));
+  });
 }
+
+/** The category a grow hint may carry (its event code): the code's own enum; anything else (a stored TEXT value) is `other`. */
+export const hintCategory = (c: unknown): Category => (CATEGORIES.includes(c as Category) ? (c as Category) : "other");
 
 export interface StateDeps { store: RunStore; env: NodeJS.ProcessEnv; now: string; redact: (text: string) => string;
   scheduleHints: ReadonlyMap<string, { schedule_id: string; hour: number }>; since14: readonly ImproveSignalRow[] }

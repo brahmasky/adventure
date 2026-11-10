@@ -35,7 +35,7 @@ describe("runTelegramDaemon — the improvement wiring (2b-ii, final fix F1)", (
     expect(calls.improve[0]).toMatchObject({ chatId: "222" });
     expect(calls.improve[0]).not.toHaveProperty("jobs");     // the tick must not be handed a way to start a skill job
     expect(calls.improve[0]).not.toHaveProperty("skills");
-    expect(calls.improve[0]!.llm).toEqual({ pick: expect.any(Function), distill: expect.any(Function), classify: expect.any(Function), compose: expect.any(Function), verify: expect.any(Function) });
+    expect(calls.improve[0]!.llm).toEqual({ pick: expect.any(Function), distill: expect.any(Function) }); // the skill-job seats are gone with the job
     expect(Object.keys(await import("../../src/decisions/digest.js")).sort()).toEqual(["DIGEST_LM_PREFIX", "DIGEST_PR_PREFIX", "REVIEW_PREFIX", "STANDING_DIGEST_TEXT"]); // the module is constants only
     store.close();
   });

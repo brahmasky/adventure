@@ -92,7 +92,7 @@ async function prepare(args) {
     retries: 0, timeoutMs: m.IMPROVE_JEV_MS, fetchImpl: async (url, init) => { g.bodies.push(String(init?.body ?? "")); return fetch(url, init); } });
   g.client = jev;
   const seat = (name, role) => { const s = m.tickSeat(store, name, role, process.env); return (i) => { g.seatInputs.push({ name, text: `${i.question}\n${i.system}` }); return s(i); }; };
-  g.llm = { pick: seat("improve_pick", "improve_pick"), distill: seat("improve_distill", "distill"), classify: seat("improve_gate_a", "classify"), compose: seat("improve_author", "compose"), verify: seat("improve_gate_b", "verify") };
+  g.llm = { pick: seat("improve_pick", "improve_pick"), distill: seat("improve_distill", "distill") };
   const cfg = m.resolveEmbedConfig(process.env); g.embedModel = cfg.model; g.embed = (t) => m.embedText(t, cfg);
   g.gateway = new m.Gateway(store, undefined, undefined, undefined, undefined, { dataDir: temp.root });
   return g;
@@ -384,8 +384,10 @@ function case9(g, deferred) {
   const ids = routeRows(g).map((d) => d.decision_id); const pool = ids.flatMap((id) => g.store.listDecisionOutcomes(id)).map((o) => `${o.signal}|${o.value}`);
   const missing = []; for (const r of rows.filter((x) => x.consumed_at !== null)) { const k = `${r.signal}|${r.value}`; const at = pool.indexOf(k); if (at < 0) missing.push(r.signal); else pool.splice(at, 1); }
   check(c, "every consumed row has exactly one outcome (signal, value) on the gate's own improve.route decisions", missing.length === 0 && pool.length === 0, `missing=${missing.length} extra_outcomes=${pool.length}`);
-  const hintRows = g.q.all(`SELECT created_at FROM grow_hints`).map((h) => h.created_at); const hintEvents = hintsOf(g);
-  const paired = hintEvents.every((e) => hintRows.includes(e.at)); const jobEvents = g.store.listLedgerEventsByTypeSince("improvement_job", g.realStart);
+  // per instant: every hint of one tick shares its `now`, so the counts must match, not just the instants (the gate's own rows only: its decisions, its events)
+  const mine = new Set(routeRows(g).map((d) => d.decision_id)); const hintEvents = hintsOf(g); const tally = (xs) => xs.reduce((m, at) => m.set(at, (m.get(at) ?? 0) + 1), new Map());
+  const rowsAt = tally(g.q.all(`SELECT decision_id, created_at FROM grow_hints`).filter((h) => mine.has(h.decision_id)).map((h) => h.created_at)); const eventsAt = tally(hintEvents.map((e) => e.at));
+  const paired = rowsAt.size === eventsAt.size && [...eventsAt].every(([at, n]) => rowsAt.get(at) === n); const jobEvents = g.store.listLedgerEventsByTypeSince("improvement_job", g.realStart);
   check(c, "every hint event has its grow_hints row, and no improvement job or job transition came from the gate's ticks", hintEvents.length > 0 && paired && newJobs(g) === 0 && jobEvents.length === 0, `hint_events=${hintEvents.length} paired=${paired} new_jobs=${newJobs(g)} job_events=${jobEvents.length}`);
   const ticks = g.store.listLedgerEventsByTypeSince("improve_tick", g.realStart); const starts = ticks.filter((e) => e.payload.phase === "start").length; const ends = ticks.filter((e) => e.payload.phase === "end");
   check(c, "an improve_tick start and end per tick run", starts === g.ticks && ends.length === g.ticks && ends.every((e) => typeof e.payload.local_date === "string" && ["done", "stopped", "failed"].includes(e.payload.result)), `runs=${g.ticks} starts=${starts} ends=${ends.length} results=${ends.map((e) => e.payload.result).join(",")}`);

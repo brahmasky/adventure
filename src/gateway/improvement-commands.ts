@@ -7,7 +7,7 @@ import type { NotificationButton } from "../notifications/notification-types.js"
 import type { TypedTaskEvent } from "../domain/types.js";
 import { errorCode } from "../domain/error-code.js";
 import { computeNextRunAt, parseScheduleSpec } from "../run/schedule-spec.js";
-import { CATEGORIES, type Category } from "../jev/questions/tree.js";
+import { hintCategory } from "../improve/groups.js";
 import type { ImprovementProposalRow, RunStore } from "../run/run-store.js";
 import { standingRevokedText } from "../decisions/standing-approval.js";
 import { LadderMoveRefused } from "../run/run-store.js";
@@ -91,7 +91,8 @@ function acceptProposal(store: RunStore, p: ImprovementProposalRow, tap: Tap, ch
 function acceptSkill(store: RunStore, p: ImprovementProposalRow, draft: Record<string, unknown>, now: string): string {
   const origin = (draft.origin ?? {}) as { turn_ids?: unknown; category?: unknown };
   const turn_ids = Array.isArray(origin.turn_ids) ? origin.turn_ids.filter((t): t is string => typeof t === "string") : [];
-  const category: Category = CATEGORIES.includes(origin.category as Category) ? (origin.category as Category) : "other";
+  const category = hintCategory(origin.category);
+  if (turn_ids.length === 0) return TAP_HANDLED_TEXT; // no turn to key on: it could never dedupe against the tick, and would take a cap slot
   if (!store.transitionProposal({ proposal_id: p.proposal_id, from: ["open"], to: "accepted", now })) return TAP_HANDLED_TEXT;
   const fresh = store.recordGrowHint({ idempotency_key: `${category}:${turn_ids[0] ?? p.proposal_id}`, chat_id: p.chat_id ?? null, category, turn_ids, decision_id: p.decision_id, now });
   return fresh ? HINT_NOTED_TEXT : HINT_EXISTS_TEXT;

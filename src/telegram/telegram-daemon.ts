@@ -680,8 +680,7 @@ async function runImproveTickSafe(options: RunTelegramDaemonOptions, worker: Cor
       audit: options.store.llmAuditSink({ correlation_id: "improve-tick", role: "improve" }), meteredBreached: () => options.store.meteredFuseLatched(), retries: 0, timeoutMs: IMPROVE_JEV_MS });
     const cfg = resolveEmbedConfig(process.env);
     await runImproveTick({ store: options.store, env: process.env, now, signal: options.stopSignal, chatId, client,
-      llm: { pick: tickLlm(options, "improve_pick", "improve_pick", roles), distill: tickLlm(options, "improve_distill", "distill", roles), classify: tickLlm(options, "improve_gate_a", "classify", roles),
-        compose: tickLlm(options, "improve_author", "compose", roles), verify: tickLlm(options, "improve_gate_b", "verify", roles) },
+      llm: { pick: tickLlm(options, "improve_pick", "improve_pick", roles), distill: tickLlm(options, "improve_distill", "distill", roles) },
       embed: (text) => embedText(text, cfg), embedModel: cfg.model });
   } catch (error) {
     console.error(`[telegram-daemon] improve tick failed: ${errorCode(error)}`);

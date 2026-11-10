@@ -15,7 +15,7 @@ import { resolveSkillsEnabled } from "../grow/flags.js";
 import { resolveImproveAt, resolveImproveEnabled } from "./flag.js";
 import { computeAbandonment } from "./abandonment.js";
 import { decideImprove, deferredRecorder, isJevOutage, type RecordPatch, type TickLlm } from "./decide-improve.js";
-import { buildImproveState, groupSignals, RECURRENCE_WINDOW_DAYS, type SignalGroup } from "./groups.js";
+import { buildImproveState, groupSignals, hintCategory, RECURRENCE_WINDOW_DAYS, type SignalGroup } from "./groups.js";
 import { DRAFT_SEAT_FAILED, draftFor, PROPOSAL_TTL_DAYS, rewriteEvidence, type Draft } from "./proposals.js";
 import { computeRecurrence, recordRecurrenceSignals, resolveRecurrenceGate, type Embedder, type RecurrenceCluster } from "./recurrence.js";
 import { scheduleHints } from "./schedule-shift.js";
@@ -27,7 +27,7 @@ import { scheduleHints } from "./schedule-shift.js";
  * crash resumes from the `running` latch; the stop signal is checked between model calls; `improve_tick` events bracket it.
  */
 export const IMPROVE_GROUPS_PER_TICK = 40;
-export const IMPROVE_JOBS_PER_DAY = 3;
+export const IMPROVE_HINTS_PER_DAY = 3;
 export const IMPROVE_INBOX_BATCH = 500;
 export const IMPROVE_STALE_DAYS = 30;
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -35,7 +35,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 export interface ImproveTickDeps {
   store: RunStore; env: NodeJS.ProcessEnv; now: string; signal: AbortSignal; chatId: string | null;
   client: (r: JevRequest) => Promise<JevResult>;
-  llm: { pick: TickLlm; distill: TickLlm; classify: TickLlm; compose: TickLlm; verify: TickLlm };
+  llm: { pick: TickLlm; distill: TickLlm };
   embed: Embedder; embedModel: string;
   /** Tests only: overrides IMPROVE_TICK_BUDGET_MS, and the wall clock the budget is measured on (a flake-free budget test). */
   budgetMs?: number;
@@ -44,7 +44,7 @@ export interface ImproveTickDeps {
   seatDeadlineMs?: number;
 }
 export const IMPROVE_TICK_BUDGET_MS = 120_000;
-/** Final fix E3: one seat call (distill, pick, classify, compose, verify) from the tick never runs longer than this. */
+/** Final fix E3: one seat call (distill, pick) from the tick never runs longer than this. */
 export const IMPROVE_SEAT_DEADLINE_MS = 60_000;
 export interface TickCounts { mirrored: number; recurrence: number; abandoned: number; groups: number; decided: number; proposals: number; applied: number; cards: number; hints: number; deferred: number; deferred_outage: number; stale: number; already_proposed: number; no_draft: number; record_failed: number; embed_unavailable: number }
 export type ImproveTickResult = { ran: false } | { ran: true; result: "done" | "stopped" | "failed"; counts: TickCounts };
@@ -104,7 +104,7 @@ function deadlineSeats(llm: ImproveTickDeps["llm"], stop: AbortSignal, ms: numbe
     const aborted = new Promise<{ ok: false }>((resolve) => { onAbort = () => resolve({ ok: false }); signal.addEventListener("abort", onAbort, { once: true }); });
     try { return await Promise.race([seat({ ...input, signal }), aborted]); } finally { signal.removeEventListener("abort", onAbort); }
   };
-  return { pick: wrap(llm.pick), distill: wrap(llm.distill), classify: wrap(llm.classify), compose: wrap(llm.compose), verify: wrap(llm.verify) };
+  return { pick: wrap(llm.pick), distill: wrap(llm.distill) };
 }
 
 /** Phase 1: housekeeping and the producers. `stopped` when the daemon is stopping or the produce phase used up the budget (final fix E2). */
@@ -135,7 +135,7 @@ async function tickBody(d: ImproveTickDeps, c: TickCounts): Promise<"done" | "st
   const hints = scheduleHints(d.store, d.now, tz);
   const since14 = d.store.listImproveSignalsSince(new Date(Date.parse(d.now) - RECURRENCE_WINDOW_DAYS * DAY_MS).toISOString());
   const dayAgo = new Date(Date.parse(d.now) - DAY_MS).toISOString();
-  let hintsLeft = IMPROVE_JOBS_PER_DAY - d.store.countGrowHintsSince(dayAgo);
+  let hintsLeft = IMPROVE_HINTS_PER_DAY - d.store.countGrowHintsSince(dayAgo);
   const latch = { on: false }; // final fix 2: after the first outage of the segment, the rule rung only (no Jev, no seat call)
   for (const g of groups) {
     // ruling 17: between groups only — a decided group always commits; the stop or the budget ends the call, the latch resumes next cycle
@@ -232,7 +232,7 @@ function commitGroup(d: ImproveTickDeps, g: SignalGroup, s: ImproveState, r: Dec
     }
     let queued = false;
     if (hint) { // recordGrowHint joins this transaction; the category is the tick's own enum, never Paco's text
-      queued = d.store.recordGrowHint({ idempotency_key: s.recurrence!.idempotencyKey, chat_id: g.newest.chat_id ?? d.chatId, category: s.category ?? "other", turn_ids: s.recurrence!.turnIds, decision_id, now: d.now });
+      queued = d.store.recordGrowHint({ idempotency_key: s.recurrence!.idempotencyKey, chat_id: g.newest.chat_id ?? d.chatId, category: hintCategory(s.category), turn_ids: s.recurrence!.turnIds, decision_id, now: d.now });
       if (queued) bumps.hints += 1;
     } else if (patch?.reason === "already_proposed") bumps.already_proposed += 1;
     else if (patch?.reason === "no_text") bumps.no_draft += 1;

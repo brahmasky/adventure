@@ -59,6 +59,13 @@ describe("toolSummaryOf and skillMentioned", () => {
     expect(skillMentioned(metas, ["run the Weekly-Report again"])).toBe(true);
     expect(skillMentioned(metas, ["verifying the numbers"])).toBe(false);
   });
+  it("skillMentioned also matches the name with hyphens as spaces, or the whole description; never an unrelated text, and an empty description never matches everything", () => {
+    const metas = [{ name: "unit-convert", when: "  Converting Recipe Quantities  " }];
+    expect(skillMentioned(metas, ["please unit convert these grams"])).toBe(true);                   // Paco rarely types the slug
+    expect(skillMentioned(metas, ["I am converting recipe quantities for dinner again"])).toBe(true); // the description, trimmed and case-folded
+    expect(skillMentioned(metas, ["what is the weather in Lima"])).toBe(false);
+    expect(skillMentioned([{ name: "weekly-report", when: "" }, { name: "x-y", when: "   " }], ["anything at all"])).toBe(false);
+  });
 });
 
 describe("buildImproveState", () => {
