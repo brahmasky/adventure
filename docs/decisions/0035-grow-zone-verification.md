@@ -58,7 +58,7 @@ Conformance: `ADR 0035 G1: the orchestrator seeds only the exemplar` (`grow-seed
   (no file is copied from the workspace, so there is no path, symlink or check-to-copy race). **Read door**
   `grow_read({ name, what? })`: returns the committed body (or, with `what: "review"`, the stored findings).
 - The daemon is the only writer. Inside the daemon, only the publish operation (`src/grow/ops.ts`), the exemplar
-  seeder and the one-shot migration write the repository. Nothing writes `<repo>/skills/`.
+  seeder and the one-shot migration write the repository. Nothing writes `<repo>/skills/`; the one-shot migration only renames it aside.
 - The zone lives at `HOUGE_GROW_DIR` (default `~/Library/Application Support/houge/grow`), outside the code checkout.
   The override is accepted only when absolute, at least three segments deep, not the home directory or an ancestor of
   it, and overlapping neither the checkout, the data dir nor `~/.omp`. Every git call goes through the hardened
@@ -92,7 +92,7 @@ profiles, run with data dir different from the repo so it cannot pass on the rep
   `grow_disabled`, `turn_hostile`, `name_is_exemplar`, `rate_capped` (20 submits per rolling 24 hours), `zone_full`
   (200 items), `busy`, `zone_unavailable`.
 - **Review is an enforced gate.** An item that needs review is reviewed after the turn ends by a one-shot seat on the
-  role `grow_review` (no tools; three legs, two in the static rollback list: Kimi, Gemini pro, Codex: none is of the Claude family that runs the planner, and
+  role `grow_review` (no tools; three legs (Kimi, Gemini pro, Codex; the static rollback list holds Kimi and Codex): none is of the Claude family that runs the planner, and
   none draws on the Anthropic pool). The author's families are read at claim time from the run's successful `compose`
   `llm_attempt` rows; a leg whose family is among them is skipped; an unknown family fails closed. The review is a
   persistent queue claimed from the daemon's poll loop (`grow_staged`, `next_attempt_at`), at most one at a time;
@@ -211,7 +211,7 @@ test lives in the G4 describe block and names G7).
   `ADR 0035: skills leave the prompt` (no `readScopeBlock` or `skillsReader` in `src`, so no source file folds skill bodies
   into a prompt).
 - **Outcomes reach Houge** through a per-chat cursor over `grow_events`: the next turn's `[context]` carries one line per
-  outcome (`grow: <name> is live`, `grow: <name> failed review (grow_read it to see why)`), advanced only after the
+  outcome (`grow: <name> is live`, `grow: <name> failed review (grow_read it with what "review" to see why)`), advanced only after the
   planner accepted the prompt that carried them.
 - **Use is counted**, not acted on: each successful `grow_read` of a live item counts one use for that run. Acting on
   the count belongs to slice 3.
@@ -223,7 +223,7 @@ test lives in the G4 describe block and names G7).
 - **Orphans.** An item in the repository but unknown to the database is listed `orphan` in `/grow`, kept out of the index,
   and adopted as untrusted by `houge grow adopt <name>` (queued like undo).
 - **Surface.** `houge grow list | show | check | log | undo | trust | adopt`; Telegram `/grow`, `/grow undo`, `/grow trust`;
-  `/skills` is an alias of `/grow` for one release; `/status` shows a review pending over a day, a disabled door, orphans.
+  `/skills` is an alias of the `/grow` list for one release; `/status` shows a review pending over a day, a disabled door, orphans.
 - **Incidents (ADR 0031).** `grow_zone_unavailable` (page), `grow_publish_failed` (page), `grow_seed_failed` (log),
   `grow_backup_failed` (log); notification topic `grow_log` (log).
 
@@ -251,7 +251,7 @@ test lives in the G4 describe block and names G7).
 - Skill bodies leave the system prompt. The planner reads one when it judges it relevant. The scheduled news brief and
   the security report may apply their skills less reliably; the live gate checks a one-off schedule, and the next real
   08:00 fire is observed and recorded.
-- The planner child restarts once per change to the set of live items, as it does per lesson change.
+- The planner child restarts once per change to the index text (an item added, removed or re-described, or the door switching), as it does per lesson change.
 - `/skills` (as a command with its own meaning), the `skill_author` tool, the anchor gate, the weekly re-verify and the
   skill job with its promotion step are gone. The recurrence sensor now feeds the planner.
 - A decision made once and kept: the AGENTS.md invariant and the flow-by-zone rule (below) put new capability in the grow

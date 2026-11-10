@@ -277,7 +277,7 @@ Amended 2026-11-10 by [ADR 0035](0035-grow-zone-verification.md) (spec 2026-11-1
   (code), then a reviewer of a different model family**. A skill is written by Houge through the grow zone's one door
   (`grow_submit`); a new item, a large rewrite, a born-untrusted item and any item with a stored undo reason are
   reviewed by a one-shot seat (role `grow_review`) whose families exclude the author's; a small update of a clean item
-  is not. Nothing goes live unreviewed where review is required, and no tap is asked of Paco. Every live write is a
+  is not. Nothing goes live unreviewed where review is required, and no trust tap is asked of Paco (a Jev-rung send-back still asks, ADR 0034 2b-R7). Every live write is a
   commit; one command reverts it.
 - **Anchors become optional.** The `anchors` field is kept on the item and passed to the reviewer, but no model-run
   anchor gate scores a skill and nothing requires one.

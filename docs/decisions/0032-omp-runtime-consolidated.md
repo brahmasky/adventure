@@ -216,7 +216,7 @@ door, not on the wall.
 ### 7. Model roles and tiers
 
 7.1 **Roles.** Paco's rule (2026-11-02): always use the latest model under his subscriptions; tiers are how code
-follows it. Each seat names a role (Fast, Default, Thinking, Reader, Vision, Tiny, Judges, Chair, Reviewer, GrowReview). *Amended 2026-11-10 by ADR 0035:* `grow_review` is the role of the asynchronous skill reviewer — a one-shot seat with no tools and three legs (two in the static rollback list: Kimi high, Gemini pro high, Codex high), none of the Claude family that runs the planner; the legs of a family the item's author used are skipped. Each
+follows it. Each seat names a role (Fast, Default, Thinking, Reader, Vision, Tiny, Judges, Chair, Reviewer, GrowReview). *Amended 2026-11-10 by ADR 0035:* `grow_review` is the role of the asynchronous skill reviewer — a one-shot seat with no tools and three legs (Kimi, Gemini pro, Codex; the static rollback list holds Kimi and Codex), none of the Claude family that runs the planner; the legs of a family the item's author used are skipped. Each
 role is a code-owned list of `{tier, effort}` legs in `src/omp/model-roles.ts`; a leg resolves to its tier's adopted
 head, then its previous adopted head. The seven `HOUGE_OMP_*` chain variables are retired: a set value is ignored and
 named once in a boot warning. Model names change with the catalog, without an ADR amendment.
