@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { saveMemoryPlan, LESSON_CAPPED_HINT } from "../capabilities/memory-save.js";
 import { memoryUndoButton } from "../capabilities/memory-correct.js";
 import { memlaneUndoButton } from "../core/memory-lane-card.js";
@@ -6,53 +5,49 @@ import { DIGEST_LM_PREFIX, DIGEST_PR_PREFIX } from "../decisions/digest.js";
 import { button } from "../improve/proposal-card.js";
 import type { NotificationButton } from "../notifications/notification-types.js";
 import type { TypedTaskEvent } from "../domain/types.js";
-import { startSkillJob } from "../core/skill-job.js";
 import { errorCode } from "../domain/error-code.js";
 import { computeNextRunAt, parseScheduleSpec } from "../run/schedule-spec.js";
-import { promote, TAP_STALE_DAYS } from "../skills/promote.js";
-import type { ImprovementJobRow, ImprovementProposalRow, RunStore } from "../run/run-store.js";
+import { CATEGORIES, type Category } from "../jev/questions/tree.js";
+import type { ImprovementProposalRow, RunStore } from "../run/run-store.js";
 import { standingRevokedText } from "../decisions/standing-approval.js";
 import { LadderMoveRefused } from "../run/run-store.js";
-import type { SkillStore } from "../skills/skill-store.js";
 import type { GatewayIntakeResult } from "./gateway.js";
 import { oncePerTrigger, replyTo } from "./memory-commands.js";
 
 /**
- * Improvement taps (2b-ii §5.1, §5.2, §5.5, §5.6, §6.3). The adapter passed the sender allowlist; oncePerTrigger replays a
+ * Improvement taps (2b-ii §5.1, §5.5, §5.6, §6.3). The adapter passed the sender allowlist; oncePerTrigger replays a
  * redelivered callback id. Every handled tap is one improvement_taps row; an action acts only on the state named for it,
  * on an offered subject, within TAP_STALE_DAYS (a standing Revoke: within the grant's own 30 days); anything else answers TAP_HANDLED_TEXT and writes only the tap row.
  */
-export { TAP_STALE_DAYS };
+export const TAP_STALE_DAYS = 14;
 export const TAP_HANDLED_TEXT = "Already handled.";
 /** A transient failure (a store error mid-effect): the trigger is processed, but the text says so and a NEW tap (a new callback id) retries (codex B20). */
 export const TAP_FAILED_TEXT = "That did not go through; tap it again.";
-export const JOB_EXISTS_TEXT = "A job for this already exists; nothing new queued.";
-/** Final fix C4: the promote failed and the job could not be put back on offer; the tick's reconcile retries it. */
-export const PROMOTE_RETRY_TEXT = "That did not go through; it is retried at the next tick.";
+export const HINT_NOTED_TEXT = "✅ Noted: I will consider writing this as a skill in my next turn with you.";
+export const HINT_EXISTS_TEXT = "Already noted: that recurrence has a hint waiting.";
 const DAY_MS = 24 * 60 * 60 * 1000;
 const tapped = (): GatewayIntakeResult => ({ ok: true, status: "improvement_tapped", run_id: "" });
 const chatOf = (e: TypedTaskEvent): string => (e.notify.kind === "telegram" ? e.notify.chat_id : "");
 /** Spec 2026-11-07 §2: the tap's own reply carries the Undo / Revert / Revoke button (the digest line that carried it is gone). */
 export type TapReply = string | { text: string; buttons: NotificationButton[] };
 const textOf = (r: TapReply): string => (typeof r === "string" ? r : r.text);
-interface Tap { kind: "pr" | "sk" | "lm" | "sa"; id: string; action: string; callback: string }
+interface Tap { kind: "pr" | "lm" | "sa"; id: string; action: string; callback: string }
 
-export function handleImprovementTap(store: RunStore, skills: SkillStore, event: TypedTaskEvent, now: string = new Date().toISOString()): GatewayIntakeResult {
+export function handleImprovementTap(store: RunStore, event: TypedTaskEvent, now: string = new Date().toISOString()): GatewayIntakeResult {
   return oncePerTrigger(store, event, () => {
     const m = event.metadata ?? {};
     const tap: Tap = { kind: m.kind as Tap["kind"], id: String(m.id ?? ""), action: String(m.action ?? ""), callback: String(m.telegram_callback_id ?? "") };
     let reply: TapReply = TAP_FAILED_TEXT;
     try {
-      reply = tap.kind === "pr" ? proposalTap(store, skills, tap, chatOf(event), now) : tap.kind === "sk" ? jobTap(store, skills, tap, chatOf(event), now)
-        : tap.kind === "sa" ? standingTap(store, tap, chatOf(event), now) : moveTap(store, tap, chatOf(event), now);
+      reply = tap.kind === "pr" ? proposalTap(store, tap, chatOf(event), now) : tap.kind === "sa" ? standingTap(store, tap, chatOf(event), now) : moveTap(store, tap, chatOf(event), now);
     } catch (e) {
       console.error(`[improve] tap ${tap.kind}:${tap.action} failed: ${errorCode(e)}`);
     }
     const text = textOf(reply);
     try {
-      const result = text === TAP_HANDLED_TEXT ? "handled" : text === TAP_FAILED_TEXT || text === PROMOTE_RETRY_TEXT ? "failed" : text === LESSON_CAPPED_HINT ? "capped" : "applied";
+      const result = text === TAP_HANDLED_TEXT ? "handled" : text === TAP_FAILED_TEXT ? "failed" : text === LESSON_CAPPED_HINT ? "capped" : "applied";
       // improvement_taps.subject_kind is CHECK-bound to three kinds: a standing tap is a move tap whose id starts sa_
-      store.insertImprovementTap({ subject_kind: tap.kind === "pr" ? "proposal" : tap.kind === "sk" ? "job" : "move", subject_id: tap.id, action: tap.action, telegram_callback_id: tap.callback, result, created_at: now });
+      store.insertImprovementTap({ subject_kind: tap.kind === "pr" ? "proposal" : "move", subject_id: tap.id, action: tap.action, telegram_callback_id: tap.callback, result, created_at: now });
       replyTo(store, event, "improvement_tap", text, typeof reply === "string" ? undefined : reply.buttons);
     } catch (e) {
       console.error(`[improve] tap ${tap.kind}:${tap.action} record failed: ${errorCode(e)}`);
@@ -64,7 +59,7 @@ export function handleImprovementTap(store: RunStore, skills: SkillStore, event:
 const stale = (at: string | null, now: string): boolean => at === null || Date.parse(now) - Date.parse(at) > TAP_STALE_DAYS * DAY_MS;
 
 /** Accept and Dismiss act within 14 days of the OFFER; Revert within 14 days of the ACCEPT (`resolved_at`; codex B21). Ruling 19: the tapping chat must be the proposal's. */
-function proposalTap(store: RunStore, skills: SkillStore, tap: Tap, chat_id: string, now: string): TapReply {
+function proposalTap(store: RunStore, tap: Tap, chat_id: string, now: string): TapReply {
   const p = store.getImprovementProposal(tap.id);
   if (!p || p.chat_id !== chat_id) return TAP_HANDLED_TEXT;
   if (tap.action === "rev") return revertSchedule(store, p, now);
@@ -88,18 +83,18 @@ function acceptProposal(store: RunStore, p: ImprovementProposalRow, tap: Tap, ch
   }
 }
 
-/** Ruling 14: the state change and the queued job commit together; the tick starts it. reconcileAccepted is the net for an older crash. */
+/**
+ * ADR 0035: Accept records a grow hint in the same transaction as the state change; the planner reads it as one line of
+ * context and decides whether to grow_submit. The hint's category is the code's own enum (anything else is `other`), so no
+ * user text reaches grow_hints or grow_events.
+ */
 function acceptSkill(store: RunStore, p: ImprovementProposalRow, draft: Record<string, unknown>, now: string): string {
-  const origin = draft.origin as { turn_ids: string[]; category: string } | undefined;
-  if (!origin || !store.transitionProposal({ proposal_id: p.proposal_id, from: ["open"], to: "accepted", now })) return TAP_HANDLED_TEXT;
-  const texts = origin.turn_ids.map((id) => store.getChatTurnById(id)?.text ?? "");
-  const job_id = startSkillJob(store, { decision_id: p.decision_id, proposal_id: p.proposal_id, chat_id: p.chat_id, now, idempotency_key: `${origin.category}:${origin.turn_ids[0]}`,
-    origin: { turn_ids: origin.turn_ids, run_ids: origin.turn_ids.map((id) => store.getChatTurnById(id)?.run_id ?? ""), category: origin.category, text_hashes: texts.map((t) => createHash("sha256").update(t).digest("hex").slice(0, 16)) } });
-  if (job_id === null) { // a job for this cluster already exists (idempotency key): say so, never "Queued" without a job
-    store.transitionProposal({ proposal_id: p.proposal_id, from: ["accepted"], to: "dismissed", now, result_json: JSON.stringify({ reason: "job_exists" }) });
-    return JOB_EXISTS_TEXT;
-  }
-  return "✅ Queued: the skill will be drafted at the next tick.";
+  const origin = (draft.origin ?? {}) as { turn_ids?: unknown; category?: unknown };
+  const turn_ids = Array.isArray(origin.turn_ids) ? origin.turn_ids.filter((t): t is string => typeof t === "string") : [];
+  const category: Category = CATEGORIES.includes(origin.category as Category) ? (origin.category as Category) : "other";
+  if (!store.transitionProposal({ proposal_id: p.proposal_id, from: ["open"], to: "accepted", now })) return TAP_HANDLED_TEXT;
+  const fresh = store.recordGrowHint({ idempotency_key: `${category}:${turn_ids[0] ?? p.proposal_id}`, chat_id: p.chat_id ?? null, category, turn_ids, decision_id: p.decision_id, now });
+  return fresh ? HINT_NOTED_TEXT : HINT_EXISTS_TEXT;
 }
 
 function acceptMemory(store: RunStore, p: ImprovementProposalRow, draft: Record<string, unknown>, run_id: string | null, chat_id: string, now: string): TapReply {
@@ -158,47 +153,6 @@ function acceptLadder(store: RunStore, p: ImprovementProposalRow, draft: Record<
     if (e instanceof LadderMoveRefused) return TAP_HANDLED_TEXT;
     throw e;
   }
-}
-
-/** §5.2 job flow: Accept on pending_review → promoting(refuse); collision → the collision card; replace/keep on collision → promoting(mode); dismiss on either retires the draft. */
-function jobTap(store: RunStore, skills: SkillStore, tap: Tap, chat_id: string, now: string): string {
-  const job = store.getImprovementJob(tap.id);
-  if (!job || job.chat_id !== chat_id || !job.pending_scope || !job.pending_name || stale(job.offered_at, now)) return TAP_HANDLED_TEXT; // ruling 19: chat-bound
-  if (tap.action === "dismiss") return dismissJob(store, skills, job, now);
-  const mode = tap.action === "accept" && job.state === "pending_review" ? "refuse" : tap.action === "replace" && job.state === "collision" ? "replace" : tap.action === "keep" && job.state === "collision" ? "keep_both" : null;
-  if (!mode || !store.transitionJob({ job_id: job.job_id, from: [job.state], to: "promoting", now, patch: { promote_mode: mode } })) return TAP_HANDLED_TEXT;
-  try {
-    return promote(store, skills, { ...job, state: "promoting", promote_mode: mode }, chat_id, now);
-  } catch (e) {
-    console.error(`[improve] promote from tap failed: ${errorCode(e)}`);
-    return restoreOffer(store, job, now) ? TAP_FAILED_TEXT : PROMOTE_RETRY_TEXT;
-  }
-}
-
-/** Final fix C4: a promote that threw puts the job back on its offer (state and offered_at), so "tap it again" is true. */
-function restoreOffer(store: RunStore, job: ImprovementJobRow, now: string): boolean {
-  try {
-    return store.inTransaction(() => {
-      if (!store.transitionJob({ job_id: job.job_id, from: ["promoting"], to: job.state, now })) return false;
-      if (job.offered_at) store.markJobsOffered([job.job_id], job.offered_at);
-      return true;
-    });
-  } catch (e) {
-    console.error(`[improve] offer not restored: ${errorCode(e)}`);
-    return false;
-  }
-}
-
-export const DISMISS_FILE_DEFERRED_TEXT = "🗑 Dismissed. The draft file could not be moved now; it is retired at the next tick.";
-
-/** Final fix B4: the fenced transition first, then the file; a failed move leaves the file for the sweep (a dismissed job's stamped draft). */
-function dismissJob(store: RunStore, skills: SkillStore, job: ImprovementJobRow, now: string): string {
-  if (job.state !== "pending_review" && job.state !== "collision") return TAP_HANDLED_TEXT;
-  if (!store.transitionJob({ job_id: job.job_id, from: [job.state], to: "dismissed", now })) return TAP_HANDLED_TEXT;
-  const r = skills.dismissPending(job.pending_scope!, job.pending_name!, now.slice(0, 10));
-  if (r.ok || r.error === "not_found") return "🗑 Draft retired.";
-  console.error(`[improve] dismiss file move failed: ${r.error}`);
-  return DISMISS_FILE_DEFERRED_TEXT;
 }
 
 /** Stage 4A §7: Revoke works for the grant's whole 30 days (never TAP_STALE_DAYS), only from the row's chat; the row and its move end in one transaction (endStandingApproval). */

@@ -10,7 +10,7 @@
 // Never opens the live DB for writing; every printed excerpt is redacted (redactForImprove) and capped, and the buffer is checked for a planted token first.
 import { mkdtempSync, rmSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
-import { dirname, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 
 const DIST = resolve(new URL("../dist", import.meta.url).pathname);
 const PROPOSALS_PER_DAY_MAX = 5; const SAMPLES = 20; const EXCERPT = 80; const PACE_MS = 150; const DAY_MS = 86_400_000;
@@ -35,7 +35,7 @@ function parseArgs(argv) {
 }
 
 async function load() {
-  const paths = ["config/load-env.js", "domain/error-code.js", "run/run-store.js", "run/schedule-spec.js", "jev/jev-client.js", "llm/embeddings.js", "llm/registry.js", "skills/skill-store.js",
+  const paths = ["config/load-env.js", "domain/error-code.js", "run/run-store.js", "run/schedule-spec.js", "jev/jev-client.js", "llm/embeddings.js", "llm/registry.js",
     "capabilities/wiki.js", "decisions/egress.js", "decisions/outcomes.js", "decisions/entries/improve-route.js", "improve/groups.js", "improve/decide-improve.js", "improve/recurrence.js",
     "improve/abandonment.js", "improve/proposals.js", "improve/schedule-shift.js", "improve/tick.js"];
   return Object.assign({}, ...(await Promise.all(paths.map((p) => import(join(DIST, p))))));
@@ -65,8 +65,7 @@ async function prepare(args) {
   const pick = async (i) => { if (`${i.question}${i.system}`.includes(TOKEN)) leaks.n++; pickStat.calls++; const r = await tiny(i); if (!r.ok) pickStat.failed++; return r; };
   const cfg = m.resolveEmbedConfig(process.env);
   const embed = (t) => m.embedText(t, cfg);
-  const skills = new m.SkillStore({ root: join(dirname(live), "skills") });
-  return { m, store, copy, redact, client, pick, pickStat, leaks, embed, cfg, skills, live };
+  return { m, store, copy, redact, client, pick, pickStat, leaks, embed, cfg, live };
 }
 
 /** Inbox backfill on the copy from what the window holds: planner failures and approvals (no producer ran live before this build) and every decision outcome. */
@@ -168,9 +167,9 @@ async function scoreReal(c, args, now0, produced) {
   const groups = m.groupSignals(rows, (id) => store.getJevVerdictForRun(id), produced.clusters, staleBefore);
   const hints = m.scheduleHints(store, nowIso, tz);
   const since14 = store.listImproveSignalsSince(new Date(now0 - 14 * DAY_MS).toISOString());
-  const r = { rows: rows.length, groups: groups.length, byTarget: new Map(), byRule: new Map(), byRung: new Map(), byFb: new Map(), hist: new Array(10).fill(0), withP: 0, proposals: [], lost: 0, byFamily: new Map(), pickFailed: 0, failRung: 0, jobs: 0 };
+  const r = { rows: rows.length, groups: groups.length, byTarget: new Map(), byRule: new Map(), byRung: new Map(), byFb: new Map(), hist: new Array(10).fill(0), withP: 0, proposals: [], lost: 0, byFamily: new Map(), pickFailed: 0, failRung: 0, hints: 0 };
   for (const g of groups) {
-    const s = m.buildImproveState(g, { store, env: process.env, now: nowIso, skills: c.skills, redact: c.redact, scheduleHints: hints, since14, recurrenceGate: m.resolveRecurrenceGate(process.env) });
+    const s = m.buildImproveState(g, { store, env: process.env, now: nowIso, redact: c.redact, scheduleHints: hints, since14 });
     const { r: d, pickFailed } = await decideOne(c, s, g.newest.about_run_id ?? g.newest.run_id);
     if (pickFailed) r.pickFailed++;
     if (d.rung === "fail") r.failRung++;
@@ -178,7 +177,7 @@ async function scoreReal(c, args, now0, produced) {
     if (d.rung === "rule") bump(r.byRule, d.reason ?? "-");
     if (d.fallbackReason) { bump(r.byFb, d.fallbackReason); r.lost++; }
     if (d.detail?.p !== undefined) { r.hist[Math.min(9, Math.floor(d.detail.p * 10))]++; r.withP++; }
-    if (d.rung === "rule" && d.verdict === "skill") r.jobs++; // a rule-rung skill starts a job, not a proposal
+    if (d.rung === "rule" && d.verdict === "skill") r.hints++; // a rule-rung skill records a grow hint (ADR 0035), not a proposal
     else if (d.verdict !== "nothing" && d.verdict !== "knowledge") {
       const p = await previewOf(c, g, s, d, tz);
       if (p.hasDraft) r.proposals.push({ verdict: d.verdict, scope: s.scope, rung: d.rung, ...p });
@@ -195,7 +194,7 @@ function printReal(c, r, args) {
   say(`top-p histogram (${r.withP} groups that reached Jev):`);
   r.hist.forEach((n, i) => say(`  ${(i / 10).toFixed(1)}-${i === 9 ? "1.0" : ((i + 1) / 10).toFixed(1)} ${"#".repeat(n)} ${n}`));
   const perDay = r.proposals.length / args.days;
-  say(`proposals it would have made: ${r.proposals.length} (${perDay.toFixed(2)}/day, bar <= ${PROPOSALS_PER_DAY_MAX}/day; an upper bound: a lesson/fact draft that distill rejects is not made; ${r.jobs} rule-rung skill job(s) not counted)`);
+  say(`proposals it would have made: ${r.proposals.length} (${perDay.toFixed(2)}/day, bar <= ${PROPOSALS_PER_DAY_MAX}/day; an upper bound: a lesson/fact draft that distill rejects is not made; ${r.hints} rule-rung grow hint(s) not counted)`);
   say(`real groups: ${r.failRung} decided on rung fail (all rungs abstained), ${r.pickFailed} failed Tiny pick(s)`);
   const step = Math.max(1, Math.floor(r.proposals.length / SAMPLES));
   say(`${Math.min(SAMPLES, r.proposals.length)} sampled proposals (target · scope · evidence · draft<=${EXCERPT}, redacted):`);

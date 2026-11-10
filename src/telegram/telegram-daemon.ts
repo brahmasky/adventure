@@ -35,7 +35,7 @@ import { pacoAddress, resolveMailEnabled } from "../mail/flag.js";
 import { clearAuthPauseAtBoot, runMailTick } from "../mail/poller.js";
 import { runMailRetention } from "../mail/retention.js";
 import { evolutionLaneSettled, evolutionLaneSnapshot } from "../core/evolution-lane.js";
-import { reconcileJobsAtBoot, skillJobHooks } from "../core/skill-job.js";
+import { reconcileJobsAtBoot } from "../core/skill-job.js";
 import type { TelegramAllowlist } from "../domain/types.js";
 import { Gateway } from "../gateway/gateway.js";
 import { ANCHOR_DIR, bootJevAnchor } from "../decisions/jev-anchor-import.js";
@@ -682,7 +682,7 @@ async function runImproveTickSafe(options: RunTelegramDaemonOptions, worker: Cor
     await runImproveTick({ store: options.store, env: process.env, now, signal: options.stopSignal, chatId, client,
       llm: { pick: tickLlm(options, "improve_pick", "improve_pick", roles), distill: tickLlm(options, "improve_distill", "distill", roles), classify: tickLlm(options, "improve_gate_a", "classify", roles),
         compose: tickLlm(options, "improve_author", "compose", roles), verify: tickLlm(options, "improve_gate_b", "verify", roles) },
-      embed: (text) => embedText(text, cfg), embedModel: cfg.model, skills: new SkillStore({ root: join(options.projectRoot, "skills") }), jobs: skillJobHooks });
+      embed: (text) => embedText(text, cfg), embedModel: cfg.model });
   } catch (error) {
     console.error(`[telegram-daemon] improve tick failed: ${errorCode(error)}`);
   }

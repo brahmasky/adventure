@@ -5,7 +5,6 @@ import { buildGateAQuestion, GATE_A_DISCIPLINE, parseGateAVerdict, type GateARes
 import { compileSkillAuthorContract } from "../contracts/task-contract.js";
 import { redactForImprove } from "../decisions/egress.js";
 import type { TickLlm } from "../improve/decide-improve.js";
-import type { ImproveTickDeps, JobHooks } from "../improve/tick.js";
 import type { NotificationButton } from "../notifications/notification-types.js";
 import type { ImprovementJobRow, JobPatch, JobState, RunStore } from "../run/run-store.js";
 import { jobCollisionCard, promote, SK_PREFIX, skillButtons, TAP_STALE_DAYS } from "../skills/promote.js";
@@ -272,12 +271,3 @@ export function reconcileAccepted(d: Pick<JobDeps, "store" | "now">): void {
         text_hashes: texts.map((t) => createHash("sha256").update(t).digest("hex").slice(0, 16)) } });
   }
 }
-
-/** The tick's hooks (Task 10 JobHooks), bound to the tick's deps. */
-export const skillJobHooks: JobHooks = {
-  reconcile: (d) => reconcileJobs(jobDeps(d)),
-  reconcileAccepted: (d) => reconcileAccepted(jobDeps(d)),
-  enqueueFromRecurrence: (store, i) => startSkillJob(store, i),
-  runQueued: (d, budget) => runQueuedJobs(jobDeps(d), budget)
-};
-const jobDeps = (d: ImproveTickDeps): JobDeps => ({ store: d.store, env: d.env, now: d.now, chatId: d.chatId, skills: d.skills, llm: { classify: d.llm.classify, compose: d.llm.compose, verify: d.llm.verify }, signal: d.signal, ...(d.wallNow ? { wallNow: d.wallNow } : {}) });

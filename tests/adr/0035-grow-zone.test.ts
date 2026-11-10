@@ -62,3 +62,16 @@ describe("ADR 0035 G4: the trust rule", () => {
     expect(r.contract.allowed_actions).not.toContain("grow_submit");
   });
 });
+
+describe("ADR 0035 / ADR 0034 §10.4: recurrence gives a hint, never a job", () => {
+  const startsJob = /insertImprovementJob\(|startSkillJob\(|enqueueFromRecurrence\(/;
+  it("the improve tick and the improvement taps start no skill job: a recurrence or a skill Accept records a grow hint", () => {
+    for (const f of [join("src", "improve", "tick.ts"), join("src", "gateway", "improvement-commands.ts")]) {
+      const text = readFileSync(join(root, f), "utf8");
+      expect([f, startsJob.test(text)]).toEqual([f, false]);
+      expect([f, text.includes("recordGrowHint(")]).toEqual([f, true]);
+    }
+  });
+  // switched on when src/core/skill-job.ts is deleted (Task 13): walk("src").filter((f) => startsJob.test(readFileSync(join(root, f), "utf8")) && !f.endsWith("run-store.ts")) is []
+  it.todo("no source file inserts an improvement job");
+});

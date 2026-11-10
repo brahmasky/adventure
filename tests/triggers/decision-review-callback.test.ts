@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { skillButtons } from "../../src/core/skill-job.js";
 import { parseDecisionReviewCallback, parseImprovementCallback } from "../../src/triggers/telegram-command-parser.js";
 import { normalizeTelegramUpdate } from "../../src/triggers/telegram-trigger-adapter.js";
 
@@ -35,19 +34,19 @@ describe("the review tap through the adapter", () => {
   });
 });
 
-// 2b-ii §6.3: three callback families, ids pr_/job_/lm_ + uuid, closed action words; anything else is null (never a command).
+// 2b-ii §6.3: the callback families, ids pr_/lm_/sa_ + uuid, closed action words; anything else is null (never a command).
+// The skill-job family (`dec:sk:`) is gone with the job (ADR 0035): a stale button in an old message parses to nothing.
 describe("parseImprovementCallback", () => {
   const u = "0f1e2d3c-4b5a-6978-8a9b-0c1d2e3f4a5b";
-  it("dec:pr:<id>:acc|dis|rev, dec:sk:<job>:accept|dismiss|replace|keep, dec:lm:<move>:revoke", () => {
+  it("dec:pr:<id>:acc|dis|rev, dec:lm:<move>:revoke", () => {
     expect(parseImprovementCallback(`dec:pr:pr_${u}:acc`)).toEqual({ kind: "pr", id: `pr_${u}`, action: "acc" });
-    expect(parseImprovementCallback(`dec:sk:job_${u}:keep`)).toEqual({ kind: "sk", id: `job_${u}`, action: "keep" });
     expect(parseImprovementCallback(`dec:lm:lm_${u}:revoke`)).toEqual({ kind: "lm", id: `lm_${u}`, action: "revoke" });
     for (const bad of [`dec:pr:pr_${u}:accept`, `dec:sk:pr_${u}:accept`, `dec:lm:lm_${u}:acc`, "dec:pr:x:acc", `dec:pr:pr_${u}:acc:x`, `dec:pr:pr_${u.toUpperCase()}:acc`, "dec:pr::acc", "dec:sk::keep", 42, null]) expect(parseImprovementCallback(bad)).toBeNull();
-    expect(Buffer.byteLength(`dec:sk:job_${u}:dismiss`)).toBeLessThanOrEqual(64);
   });
-  it("every button skillButtons builds parses back (the literal prefix is pinned here)", () => {
-    for (const kind of ["review", "collision"] as const) {
-      for (const b of skillButtons(`job_${u}`, kind)) expect(parseImprovementCallback(b.data)).toMatchObject({ kind: "sk", id: `job_${u}` });
+  it("a stale skill-job button (dec:sk:, every action the old cards carried) parses to null and the adapter skips it as unrecognised: no event, no throw", () => {
+    for (const action of ["accept", "dismiss", "replace", "keep"]) {
+      expect(parseImprovementCallback(`dec:sk:job_${u}:${action}`)).toBeNull();
+      expect(tap(111, `dec:sk:job_${u}:${action}`)).toMatchObject({ ok: false, error: { code: "TELEGRAM_COMMAND_INVALID" } });
     }
   });
   it("the adapter turns an improvement tap into an improvement_tap event and refuses a stranger", () => {

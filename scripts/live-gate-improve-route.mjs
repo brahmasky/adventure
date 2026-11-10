@@ -5,13 +5,13 @@
 //   HOUGE_ENV_FILE=<main checkout>/.env node scripts/live-gate-improve-route.mjs [--db <path>] [--keep] [--skip-memory-gate]
 // Clock: the gate's "now" is a 22:00 local instant 20 days AHEAD of the wall clock, so none of the copy's real turns, schedules, approvals or signals fall in a
 // recurrence, abandonment, hint or Watch window, and the copy's old inbox rows and outcome history are marked consumed/read first (a real stale backlog must not
-// crowd the planted groups out of the 40-group cap). Every fixture is synthetic text. Skills go to a temp SkillStore passed to the tick; HOUGE_DAEMON_TMP_DIR is the
+// crowd the planted groups out of the 40-group cap). Every fixture is synthetic text. A recurrence records a grow hint (ADR 0035), never a skill job; HOUGE_DAEMON_TMP_DIR is the
 // gate's own temp dir. Case 3 forces a real apply (the Jev answer for the planted memlane_fix correction is replaced by lesson above the bar for the day-1 tick only); the undo (case 4) runs through the real intake and must undo the whole change; a near-copy of the undone lesson (day-2 tick) must be skipped by the repeat check and a different correction on the same scope (day-3 tick) must apply — both forced to a lesson verdict like case 3; and
-// the Accept taps (2, 5) act on the offered card/job. There is no digest (case 6 asserts that); case 12 plants a rating card and three degraded tick dates.
+// the Accept tap (5) acts on the offered card; case 2 checks the hint row is code-built. There is no digest (case 6 asserts that); case 12 plants a rating card and three degraded tick dates.
 // A planner-side outage, Ollama down, a Jev fallback, a `fail` rung or a model down-route makes the affected case INCONCLUSIVE, never PASS.
 // Exit: 0 PASS · 1 FAIL (also a planted-token or injection-phrase egress) · 2 setup error · 3 INCONCLUSIVE. Never prints raw historical text or an exception message.
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { join, resolve } from "node:path";
 
@@ -43,7 +43,7 @@ function parseArgs(argv) {
 
 async function load() {
   const paths = ["config/load-env.js", "domain/error-code.js", "domain/types.js", "run/run-store.js", "run/schedule-spec.js", "gateway/gateway.js", "gateway/improvement-commands.js",
-    "jev/jev-client.js", "llm/embeddings.js", "llm/registry.js", "skills/skill-store.js", "core/skill-job.js", "core/evolution-lane.js", "decisions/egress.js", "decisions/digest.js", "improve/degraded.js", "notifications/topics.js",
+    "jev/jev-client.js", "llm/embeddings.js", "llm/registry.js", "decisions/egress.js", "decisions/digest.js", "improve/degraded.js", "notifications/topics.js",
     "decisions/improve-signals.js", "decisions/entries/improve-route.js", "improve/tick.js"];
   return Object.assign({}, ...(await Promise.all(paths.map((p) => import(join(DIST, p))))));
 }
@@ -94,7 +94,6 @@ async function prepare(args) {
   const seat = (name, role) => { const s = m.tickSeat(store, name, role, process.env); return (i) => { g.seatInputs.push({ name, text: `${i.question}\n${i.system}` }); return s(i); }; };
   g.llm = { pick: seat("improve_pick", "improve_pick"), distill: seat("improve_distill", "distill"), classify: seat("improve_gate_a", "classify"), compose: seat("improve_author", "compose"), verify: seat("improve_gate_b", "verify") };
   const cfg = m.resolveEmbedConfig(process.env); g.embedModel = cfg.model; g.embed = (t) => m.embedText(t, cfg);
-  g.skills = new m.SkillStore({ root: join(temp.root, "skills") });
   g.gateway = new m.Gateway(store, undefined, undefined, undefined, undefined, { dataDir: temp.root });
   return g;
 }
@@ -106,6 +105,8 @@ function isolate(g) {
   if (last) g.store.setImproveCursorForTest({ outcome_created_at: last.created_at, outcome_rowid: last.rid });
   g.baseSignalId = g.q.get(`SELECT COALESCE(MAX(signal_id), 0) AS n FROM improve_signals`).n;
   g.baseRouteIds = new Set(g.q.all(`SELECT decision_id FROM decisions WHERE entry_id = 'improve.route'`).map((r) => r.decision_id));
+  g.baseHintEventId = g.q.get(`SELECT COALESCE(MAX(id), 0) AS n FROM grow_events`).n; // only the gate's own hint rows are judged
+  g.baseJobs = g.q.get(`SELECT COUNT(*) AS n FROM improvement_jobs`).n; // the old pipeline must add none
   g.baseProposalIds = new Set(g.q.all(`SELECT proposal_id FROM improvement_proposals`).map((r) => r.proposal_id)); // case 4: a rewrite against one of these is the copy's, not the gate's
 }
 
@@ -160,17 +161,15 @@ function plantDay1(g) {
   return f;
 }
 
-// job endings are stamped with the wall clock (final fix C1): on the gate that is the gate's clock plus the real time since the tick began
-const deps = (g, now) => { const t0 = Date.now(); return { store: g.store, env: process.env, now, signal: g.ac.signal, chatId: CHAT, client: g.client, llm: g.llm, embed: g.embed, embedModel: g.embedModel, skills: g.skills, jobs: g.m.skillJobHooks,
-  wallNow: () => new Date(Date.parse(now) + Date.now() - t0).toISOString() }; };
+const deps = (g, now) => ({ store: g.store, env: process.env, now, signal: g.ac.signal, chatId: CHAT, client: g.client, llm: g.llm, embed: g.embed, embedModel: g.embedModel });
 
-/** One local date's tick, resumed while it stops on the cycle budget; the evolution lane is awaited after each run so job end states are final. */
+/** One local date's tick, resumed while it stops on the cycle budget. */
 async function runTick(g, now) {
   const runs = [];
   for (let i = 0; i < 4; i++) {
     const r = await g.m.runImproveTick(deps(g, now));
     if (!r.ran) break;
-    runs.push(r); g.ticks += 1; await g.m.evolutionLaneSettled();
+    runs.push(r); g.ticks += 1;
     if (r.result !== "stopped") break;
   }
   return runs;
@@ -188,11 +187,12 @@ async function forcingLesson(g, marks, fn) {
 
 /** The gate's own improve.route rows: the window reaches back into the copy's real history (d1 is 20 days ahead), so the live daemon's rows are excluded by id. */
 const routeRows = (g) => g.store.listDecisionsBetween(g.c.at(g.c.addDays(g.c.d1, -30), "00:00"), g.c.at(g.c.addDays(g.c.d1, 30), "00:00")).filter((d) => d.entry_id === "improve.route" && !g.baseRouteIds.has(d.decision_id));
-const jobsOf = (g) => g.q.all(`SELECT * FROM improvement_jobs ORDER BY created_at ASC, rowid ASC`);
+const hintsOf = (g) => g.store.listGrowEvents({ sinceId: g.baseHintEventId, actions: ["hint"] });
+const newJobs = (g) => g.q.get(`SELECT COUNT(*) AS n FROM improvement_jobs`).n - g.baseJobs;
 const outboxText = (g, key) => { const r = g.q.get(`SELECT payload_json FROM notification_outbox WHERE idempotency_key = ?`, key); return r ? JSON.parse(r.payload_json) : null; };
 const excerpt = (g, t) => Array.from(g.redact(String(t)).replace(/\s+/g, " ")).slice(0, 80).join("");
 
-/** Case 1: the recurrence rule makes a job on the lane that ends pending_review with a pending file and its two cards. Returns the job. */
+/** Case 1: the recurrence rule records one grow hint for the chat (a grow_events `hint` row and its grow_hints row) and starts no job. Returns the hint row. */
 function case1(g, f, tickRuns, now) {
   const c = "1 recurrence"; const counts = tickRuns.at(-1)?.counts;
   if (!counts || counts.embed_unavailable > 0) { unsure(c, "tick", `embedder unavailable (${counts?.embed_unavailable ?? "no tick"})`); return null; }
@@ -200,17 +200,19 @@ function case1(g, f, tickRuns, now) {
   check(c, "a recurrence inbox row, consumed", sig.length >= 1 && sig.every((s) => s.consumed_at !== null), `rows=${sig.length}`);
   const row = routeRows(g).find((d) => d.verdict === "skill");
   check(c, "improve.route skill/recurrence by the rule rung", row?.rung === "rule" && row?.reason_code === "recurrence", `rung=${row?.rung} reason=${row?.reason_code}`);
-  const job = jobsOf(g).find((j) => j.created_at === now);
-  if (!job) { check(c, "a job was queued", false, "no job row"); return null; }
-  if (job.state === "failed" && ["author_failed", "timeout"].includes(job.result_code)) { unsure(c, "job ending", `the writer seat failed (${job.result_code}); no_text and error are code failures and FAIL below`); return job; }
-  if (job.state === "suggested") { unsure(c, "job ending", `Gate A down-routed to ${job.gate_a} (a model judgment, not a skill)`); return job; }
-  check(c, "the job ends pending_review", job.state === "pending_review", `state=${job.state} result=${job.result_code ?? "-"}`);
-  const pending = g.skills.listPending().some((p) => p.scope === job.pending_scope && p.name === job.pending_name);
-  const file = job.pending_scope ? join(g.root, "skills", "_pending", job.pending_scope, `${job.pending_name}.md`) : "";
-  check(c, "a _pending file under the temp root", pending && file !== "" && existsSync(file), `scope=${job.pending_scope} name=${job.pending_name}`);
-  const run = outboxText(g, `improve_job:${job.job_id}:1:running`); const done = outboxText(g, `improve_job:${job.job_id}:1:pending_review`);
-  check(c, "started and drafted cards in the outbox, dec:sk: buttons", run !== null && done !== null && (done.buttons ?? []).length === 2 && done.buttons.every((b) => b.data.startsWith("dec:sk:")), `started=${run !== null} drafted=${done !== null}`);
-  void f; return job;
+  const ev = hintsOf(g).filter((e) => e.at === now);
+  const hint = row ? g.q.get(`SELECT * FROM grow_hints WHERE decision_id = ?`, row.decision_id) : undefined;
+  check(c, "one grow_events hint row for the chat, and its grow_hints row on the skill decision", ev.length === 1 && ev[0].chat_id === CHAT && hint !== undefined && hint.chat_id === CHAT, `hint_events=${ev.length} hint_row=${hint !== undefined} hints_count=${counts.hints}`);
+  check(c, "no improvement job was created (the old pipeline does not run)", newJobs(g) === 0, `new_jobs=${newJobs(g)}`);
+  void f; return hint ? { event: ev[0], row: hint } : null;
+}
+
+/** Case 2: the hint is code-built: its event code is the category enum, its name `-`, no run, and the grow_hints row carries no user text. */
+function case2(g, hint) {
+  const c = "2 hint row"; if (!hint) { unsure(c, "hint", "case 1 recorded no hint"); return; }
+  check(c, "the hint event: action hint, result ok, code = the category, name '-', no run", hint.event.action === "hint" && hint.event.result === "ok" && hint.event.code === hint.row.category && hint.event.name === "-" && hint.event.run_id === null, `code=${hint.event.code} name=${hint.event.name}`);
+  const turns = JSON.parse(hint.row.turn_ids_json);
+  check(c, "the grow_hints row: key category:<first turn>, turn ids only (no text)", hint.row.category === "answer" && Array.isArray(turns) && turns.length >= 3 && hint.row.idempotency_key === `${hint.row.category}:${turns[0]}`, `category=${hint.row.category} turns=${turns.length}`);
 }
 
 /** Case 3: the memlane_fix correction applies at the tick: accepted with the ids, a lessons row (source improve), one improve_applied /changes row, NO chat row, and an empty prior at the distill. Returns the proposal or null. */
@@ -267,18 +269,8 @@ let cb = 0;
 const tapEvent = (g, kind, id, action) => { cb += 1; const callback = `gateimp${cb}`;
   return g.m.buildTypedTaskEvent({ source: "telegram", type: "improvement_tap", requested_by: { kind: "user", id: "paco" }, notify: { kind: "telegram", chat_id: CHAT }, idempotency_key: `telegram:${900 + cb}:callback:${callback}`,
     source_reference: `telegram:update:${900 + cb}:callback:${callback}`, metadata: { telegram_update_id: 900 + cb, telegram_callback_id: callback, kind, id, action } }); };
-const tapPayload = (g, kind, id, action, now) => { const e = tapEvent(g, kind, id, action); g.m.handleImprovementTap(g.store, g.skills, e, now); return outboxText(g, `${e.idempotency_key}:improvement_tap`); };
+const tapPayload = (g, kind, id, action, now) => { const e = tapEvent(g, kind, id, action); g.m.handleImprovementTap(g.store, e, now); return outboxText(g, `${e.idempotency_key}:improvement_tap`); };
 const tap = (g, kind, id, action, now) => tapPayload(g, kind, id, action, now)?.text ?? "";
-
-/** Case 2: Accept promotes the draft; a second tap on a new callback id is "Already handled.". */
-function case2(g, job, now) {
-  const c = "2 promote"; if (!job || job.state !== "pending_review") { unsure(c, "promotion", "case 1 produced no pending_review job"); return; }
-  const text = tap(g, "sk", job.job_id, "accept", now); const after = g.store.getImprovementJob(job.job_id);
-  const active = join(g.root, "skills", after.pending_scope ?? "", `${after.pending_name}.md`); const registry = existsSync(join(g.root, "skills", "REGISTRY.md")) ? readFileSync(join(g.root, "skills", "REGISTRY.md"), "utf8") : "";
-  check(c, "Accept: active file, REGISTRY.md entry, pending copy gone, job promoted", existsSync(active) && registry.includes(after.pending_name) && !g.skills.pendingExists(job.pending_scope, job.pending_name) && after.state === "promoted", `state=${after.state} reply=${excerpt(g, text)}`);
-  const again = tap(g, "sk", job.job_id, "accept", addMin(now, 1));
-  check(c, "a second tap with a new callback id says Already handled.", again === "Already handled.", excerpt(g, again));
-}
 
 /** Case 4 (part 1): /forget (or /forget_memory) through the real intake undoes the applied change whole and reverts the proposal; a near-copy correction is planted for the day-2 tick. */
 function case4Undo(g, p, now) {
@@ -348,7 +340,7 @@ function case5Taps(g, p, f, now) {
 }
 
 /** Case 7: the one path where assistant text can reach a seat is the distill prior, gated on a clean final trust (codex D11). A clean control proves the capture is live; an unclean run carrying the phrase must not reach any model. */
-function case7(g, f, job) {
+function case7(g, f) {
   const c = "7 injection"; const distill = g.seatInputs.filter((x) => x.name === "improve_distill").map((x) => x.text);
   check(c, "positive control: a clean turn's prior reply reached the distill input", distill.some((t) => t.includes("opened in 1973")), `distill_inputs=${distill.length}`);
   const sig = g.q.get(`SELECT consumed_at FROM improve_signals WHERE signal = 'correction' AND run_id = ?`, f.c7.b);
@@ -356,20 +348,18 @@ function case7(g, f, job) {
   if (distill.some((t) => t.includes("zebra-protocol"))) check(c, "the unclean correction reached the distill (so its prior was really withheld)", true); else unsure(c, "unclean correction at the distill", "the group was not decided lesson/fact, so the trust gate was not exercised");
   const reqs = [...g.bodies, ...g.seatInputs.map((x) => x.text)];
   check(c, "no Jev request body or seat input (question + system) carries the phrase or the planted token", reqs.every((b) => !INJ_RE.test(b) && !b.includes(TOKEN)), `jev_requests=${g.bodies.length} seat_inputs=${g.seatInputs.length}`);
-  const pending = job?.pending_scope ? join(g.root, "skills", "_pending", job.pending_scope, `${job.pending_name}.md`) : ""; const promoted = job?.pending_scope ? join(g.root, "skills", job.pending_scope, `${job.pending_name}.md`) : "";
-  const file = [pending, promoted].find((p) => p && existsSync(p));
-  if (file) check(c, "the skill draft file lacks the phrase", !INJ_RE.test(readFileSync(file, "utf8")) && !readFileSync(file, "utf8").includes(TOKEN)); else unsure(c, "the skill draft file", "no draft file was written");
   const applied = [...g.q.all(`SELECT text AS t FROM lessons WHERE source = 'improve'`), ...g.q.all(`SELECT fact AS t FROM episodic_facts WHERE id IN (SELECT json_extract(result_json, '$.fact_id') FROM improvement_proposals WHERE state IN ('accepted','reverted'))`)];
   check(c, "no applied lesson or fact carries the phrase or the token", applied.every((r) => !INJ_RE.test(r.t) && !r.t.includes(TOKEN)), `rows=${applied.length}`);
-  const stored = [...g.q.all(`SELECT draft_json AS t FROM improvement_proposals`), ...g.q.all(`SELECT origin_json AS t FROM improvement_jobs`), ...g.q.all(`SELECT payload_json AS t FROM notification_outbox`)];
-  check(c, "no stored proposal, job origin or outbox text carries the phrase or the token", stored.every((r) => !INJ_RE.test(r.t) && !r.t.includes(TOKEN)), `rows=${stored.length}`);
+  const stored = [...g.q.all(`SELECT draft_json AS t FROM improvement_proposals`), ...g.q.all(`SELECT idempotency_key || ' ' || category || ' ' || turn_ids_json AS t FROM grow_hints`),
+    ...g.q.all(`SELECT name || ' ' || COALESCE(code, '') AS t FROM grow_events WHERE id > ?`, g.baseHintEventId), ...g.q.all(`SELECT payload_json AS t FROM notification_outbox`)];
+  check(c, "no stored proposal, grow hint or outbox text carries the phrase or the token", stored.every((r) => !INJ_RE.test(r.t) && !r.t.includes(TOKEN)), `rows=${stored.length}`);
 }
 
-/** Four fresh clusters on a later date: three jobs, the fourth cluster deferred and unconsumed. */
+/** Four fresh clusters on a later date: three hints, the fourth cluster deferred and unconsumed. */
 async function case8(g, f, now1) {
-  const c = "8 idempotency and rate"; const before = jobsOf(g).length;
+  const c = "8 idempotency and rate"; const before = hintsOf(g).length;
   const again = await g.m.runImproveTick(deps(g, addMin(now1, 30)));
-  check(c, "a second tick on the same date does nothing", again.ran === false && jobsOf(g).length === before, `ran=${again.ran} jobs=${jobsOf(g).length}`);
+  check(c, "a second tick on the same date does nothing", again.ran === false && hintsOf(g).length === before, `ran=${again.ran} hints=${hintsOf(g).length}`);
   const topics = [["Convert the attached meeting notes into a bullet list of action items with an owner for each", "Turn these meeting notes into action items and name an owner for every item", "Please convert my meeting notes to a bulleted action item list with owners"],
     ["Translate this contract paragraph into plain English and flag any risky clauses", "Rewrite the contract paragraph in plain English and point out the risky clauses", "Put this contract clause into plain English and flag anything risky"],
     ["Plan a three day itinerary for a trip to Kyoto with vegetarian restaurants", "Please plan three days in Kyoto with vegetarian friendly restaurants each day", "Draft a three day Kyoto trip itinerary including vegetarian restaurants"],
@@ -381,13 +371,12 @@ async function case8(g, f, now1) {
   if (!r || r.counts.embed_unavailable > 0) { unsure(c, "fresh-date tick", `no tick or embedder unavailable (${r?.counts.embed_unavailable ?? "n/a"})`); return { now2, deferred }; }
   const want = 4 + (g.c4?.ok ? 1 : 0); // R11: case 4's near-copy correction is its own group in this tick
   if (groups !== want) { unsure(c, "four clusters", `the tick formed ${groups} group(s), ${want} expected (four planted topics${g.c4?.ok ? " and case 4's correction" : ""})`); return { now2, deferred }; }
-  const made = jobsOf(g).filter((j) => j.created_at === now2);
-  check(c, "exactly 3 jobs created, deferred >= 1, the 4th cluster's row unconsumed", made.length === 3 && r.counts.deferred >= 1 && open.length === 1, `jobs=${made.length} deferred=${r.counts.deferred} unconsumed=${open.length} queued=${r.counts.jobs_queued} started=${r.counts.jobs_started}`);
-  check(c, "at most one job started while the lane was busy", made.filter((j) => j.started_at !== null).length <= 1, `started=${made.filter((j) => j.started_at !== null).length}`);
+  const made = hintsOf(g).filter((e) => e.at === now2);
+  check(c, "exactly 3 grow hints recorded, deferred >= 1, the 4th cluster's row unconsumed", made.length === 3 && r.counts.deferred >= 1 && open.length === 1, `hints=${made.length} deferred=${r.counts.deferred} unconsumed=${open.length} counted=${r.counts.hints}`);
   return { now2, deferred };
 }
 
-/** Case 9: silent degradation: nothing consumed without an outcome, every job transition has its event, ticks bracketed, no fallback, nothing unattached. */
+/** Case 9: silent degradation: nothing consumed without an outcome, every hint event has its row and no job ran, ticks bracketed, no fallback, nothing unattached. */
 function case9(g, deferred) {
   const c = "9 silent degradation"; const rows = g.q.all(`SELECT * FROM improve_signals WHERE signal_id > ?`, g.baseSignalId);
   const open = rows.filter((s) => s.consumed_at === null && !deferred.includes(s.signal_id));
@@ -395,10 +384,9 @@ function case9(g, deferred) {
   const ids = routeRows(g).map((d) => d.decision_id); const pool = ids.flatMap((id) => g.store.listDecisionOutcomes(id)).map((o) => `${o.signal}|${o.value}`);
   const missing = []; for (const r of rows.filter((x) => x.consumed_at !== null)) { const k = `${r.signal}|${r.value}`; const at = pool.indexOf(k); if (at < 0) missing.push(r.signal); else pool.splice(at, 1); }
   check(c, "every consumed row has exactly one outcome (signal, value) on the gate's own improve.route decisions", missing.length === 0 && pool.length === 0, `missing=${missing.length} extra_outcomes=${pool.length}`);
-  const ev = g.store.listLedgerEventsByTypeSince("improvement_job", g.realStart).sort((a, b) => a.sequence - b.sequence);
-  const shapeOk = ev.every((e) => e.run_id == null && e.correlation_id === "improve" && ["job_id", "from", "to", "attempt"].every((k) => e.payload[k] !== undefined) && Object.keys(e.payload).every((k) => ["job_id", "from", "to", "attempt", "result_code"].includes(k)));
-  const chains = jobsOf(g).every((j) => { const own = ev.filter((e) => e.payload.job_id === j.job_id); if (own.length === 0) return j.state === "queued"; return own.at(-1).payload.to === j.state && own[0].payload.from === "queued" && own.every((e, i) => i === 0 || e.payload.from === own[i - 1].payload.to); });
-  check(c, "every improvement_job transition has its run-less ledger event, chained to the job's state", shapeOk && chains && ev.length > 0, `events=${ev.length} jobs=${jobsOf(g).length}`);
+  const hintRows = g.q.all(`SELECT created_at FROM grow_hints`).map((h) => h.created_at); const hintEvents = hintsOf(g);
+  const paired = hintEvents.every((e) => hintRows.includes(e.at)); const jobEvents = g.store.listLedgerEventsByTypeSince("improvement_job", g.realStart);
+  check(c, "every hint event has its grow_hints row, and no improvement job or job transition came from the gate's ticks", hintEvents.length > 0 && paired && newJobs(g) === 0 && jobEvents.length === 0, `hint_events=${hintEvents.length} paired=${paired} new_jobs=${newJobs(g)} job_events=${jobEvents.length}`);
   const ticks = g.store.listLedgerEventsByTypeSince("improve_tick", g.realStart); const starts = ticks.filter((e) => e.payload.phase === "start").length; const ends = ticks.filter((e) => e.payload.phase === "end");
   check(c, "an improve_tick start and end per tick run", starts === g.ticks && ends.length === g.ticks && ends.every((e) => typeof e.payload.local_date === "string" && ["done", "stopped", "failed"].includes(e.payload.result)), `runs=${g.ticks} starts=${starts} ends=${ends.length} results=${ends.map((e) => e.payload.result).join(",")}`);
   const fb = routeRows(g).filter((d) => d.fallback_reason || d.fallback_rung);
@@ -448,7 +436,7 @@ async function case12(g) {
   check(c, "a healthy date resolves it", judge(9, "done", { decided: 1, groups: 1 }) === "resolved" && !g.store.listOpenIncidents().some(isDegraded));
 }
 
-const TITLES = ["1 recurrence", "2 promote", "3 correction applies", C4, "5 schedule", "6 no digest", "7 injection", "8 idempotency and rate", "9 silent degradation", "10 memory lane unchanged", "11 tiny rung", "12 rating card and degraded page"];
+const TITLES = ["1 recurrence", "2 hint row", "3 correction applies", C4, "5 schedule", "6 no digest", "7 injection", "8 idempotency and rate", "9 silent degradation", "10 memory lane unchanged", "11 tiny rung", "12 rating card and degraded page"];
 
 /**
  * Case 11 (Paco 2026-11-07): the Tiny rung, live. Every live improve.route row failed for two weeks because the pick
@@ -488,12 +476,12 @@ async function main() {
   say(`tick ${g.c.d1}: ${runs.map((r) => r.result).join(" -> ") || "did not run"}; counts ${JSON.stringify(last?.counts ?? {})}`);
   if (!last) throw coded("TICK_DID_NOT_RUN");
   if (last.result === "failed") { say("FAIL tick ended failed (a product failure, not a setup error)"); console.log(out.join("\n")); return 1; }
-  const job = case1(g, f, runs, NOW1); progress("case 1 done");
+  const hint = case1(g, f, runs, NOW1); progress("case 1 done");
   if (last.counts.deferred_outage > 0 && !routeRows(g).some((d) => d.run_id === f.c3.a)) { g.c3Outage = true; unsure("3 correction applies", "the distill or pick seat failed on the planted group", "deferred_outage: an outage, not a result"); }
   const applied = case3(g, f); const schedProposal = case5Propose(g, f); progress("cases 3 and 5 (propose) done");
-  case6(g); case2(g, job, addMin(NOW1, 10)); case4Undo(g, applied, addMin(NOW1, 15)); case5Taps(g, schedProposal, f, addMin(NOW1, 20)); progress("taps done");
+  case6(g); case2(g, hint); case4Undo(g, applied, addMin(NOW1, 15)); case5Taps(g, schedProposal, f, addMin(NOW1, 20)); progress("taps done");
   const eight = await forcingLesson(g, [C4_NEAR], () => case8(g, f, NOW1)); case4Block(g); progress("case 8 done");
-  case7(g, f, job); case9(g, eight.deferred); case10(g, args);
+  case7(g, f); case9(g, eight.deferred); case10(g, args);
   case4PlantDifferent(g); await forcingLesson(g, [C4_DIFF], () => case11(g)); case4Different(g); progress("case 11 done");
   await case12(g); progress("case 12 done");
   g.store.close?.();
