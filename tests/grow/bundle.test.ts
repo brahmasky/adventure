@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { bundlePathFor, ensureGrowBundle } from "../../src/grow/bundle.js";
@@ -33,5 +33,14 @@ describe("grow bundle", () => {
     rmSync(join(s.dir, "grow", ".git"), { recursive: true, force: true });
     expect(await ensureGrowBundle({ zone: s.zone, backupDir })).toBe("failed");
     expect(readdirSync(backupDir)).toEqual(["houge-20261110T000000Z.sqlite"]);
+  });
+
+  it("replaces a *.tmp a crashed run left behind, and leaves only the bundle", async () => {
+    const s = await growSetup(); const backupDir = mkTmp();
+    writeFileSync(join(backupDir, "houge-20261110T000000Z.sqlite"), "new");
+    writeFileSync(join(backupDir, "houge-20261110T000000Z.grow.bundle.tmp"), "half a bundle from a crash");
+    expect(await ensureGrowBundle({ zone: s.zone, backupDir })).toBe("written");
+    expect(readdirSync(backupDir).sort()).toEqual(["houge-20261110T000000Z.grow.bundle", "houge-20261110T000000Z.sqlite"]);
+    expect(readFileSync(join(backupDir, "houge-20261110T000000Z.grow.bundle")).subarray(0, 16).toString()).toContain("git bundle");
   });
 });

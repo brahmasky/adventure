@@ -50,7 +50,7 @@ import { NotificationOutbox } from "../notifications/notification-outbox.js";
 import { ensureGrowBundle } from "../grow/bundle.js";
 import { resolveGrowEnabled } from "../grow/flags.js";
 import { EXEMPLAR_NAME, legacySkillsDir, migrateLegacySkills, seedExemplars } from "../grow/seed.js";
-import { runGrowTick } from "../grow/tick.js";
+import { GROW_CLAIM_STALE_MS, runGrowTick } from "../grow/tick.js";
 import { spawnOneShot } from "../llm/providers/omp.js";
 import { turnTrustFinal } from "../decisions/trust.js";
 import { BACKUP_DIR_NAME, resolveBackupEnabled, runDbBackupTick } from "../run/db-backup.js";
@@ -372,7 +372,7 @@ export async function runTelegramDaemon(
       // ⓪·3 S2: the signal path rides the poll loop (before the outbox flush, so a
       // rating ask enqueued this cycle is delivered this cycle). B10b threads the
       // gateway + worker in so the scheduler tick fires due tasks down the SAME path.
-      await runSignalPathTick(options, gateway, worker, t, rolesTick, mailTick, growTick);
+      await runSignalPathTick(options, gateway, worker, t, { roles: rolesTick, mail: mailTick, grow: growTick });
       await flushLogged({ retry: true }); // a failed drain is logged + incident'd, never a poll failure: the next flush retries
 
       options.store.recordPollHeartbeat({ now: now(), ok: true });
@@ -461,6 +461,9 @@ export async function bootGrowZone(options: RunTelegramDaemonOptions, worker: Co
     const moved = await migrateLegacySkills({ store: options.store, svc, legacyDir: legacySkillsDir(options.projectRoot), now: at });
     if (seed.failed.length + moved.invalid.length > 0) {
       openAlertedIncident(options.store, { kind: "grow_seed_failed", subject: "boot", detail: { exemplars: seed.failed.length, legacy: moved.invalid.length }, now: at });
+    } else {   // a clean boot closes the incident an earlier bad one opened
+      const open = options.store.findOpenIncident(options.store.incidentFingerprint("grow_seed_failed", "boot"));
+      if (open) options.store.resolveIncident(open.incident_id, at);
     }
   } catch (error) { console.error(`[telegram-daemon] grow boot failed: ${errorCode(error)}`); }
 }
@@ -476,6 +479,9 @@ async function growBundleStep(options: RunTelegramDaemonOptions, worker: CoreWor
   } catch (error) { console.error(`[telegram-daemon] grow bundle failed: ${errorCode(error)}`); }
 }
 
+/** A review stops this long before the claim goes stale (GROW_CLAIM_STALE_MS, counted from the claim at `now`), so the stale release can never free a row whose review is still running. */
+export const GROW_REVIEW_MARGIN_MS = 60_000;
+
 /** One grow poll (spec §5.4): review and publish, then the bundle. Its own catch: a failed tick logs a code and the next poll retries. Exported for its test. */
 export async function runGrowTickSafe(options: RunTelegramDaemonOptions, worker: CoreWorker, now: string): Promise<void> {
   if (options.stopSignal.aborted) return;
@@ -483,7 +489,7 @@ export async function runGrowTickSafe(options: RunTelegramDaemonOptions, worker:
     const svc = worker.growService(); const cfg = resolveOmpConfig(process.env, worker.modelRoles().chains());
     await runGrowTick({ store: options.store, svc, env: process.env, now, signal: options.stopSignal,
       chain: () => worker.modelRoles().candidates("grow_review"),
-      spawn: (input) => spawnOneShot(input, { cfg, audit: options.store.llmAuditSink({ correlation_id: input.correlationId, role: "grow_review" }) }),
+      spawn: (input) => spawnOneShot({ ...input, deadlineAt: Date.parse(now) + GROW_CLAIM_STALE_MS - GROW_REVIEW_MARGIN_MS }, { cfg, audit: options.store.llmAuditSink({ correlation_id: input.correlationId, role: "grow_review" }) }),
       exemplar: async () => (await svc.zone.readHead(EXEMPLAR_NAME)) ?? "", settled: (id) => turnTrustFinal(options.store, id) !== null });
   } catch (error) { console.error(`[telegram-daemon] grow tick failed: ${errorCode(error)}`); }
   await growBundleStep(options, worker, now);
@@ -632,9 +638,7 @@ async function runSignalPathTick(
   gateway: Gateway,
   worker: CoreWorker,
   now: string,
-  rolesTick: DetachedJob,
-  mailTick: DetachedJob,
-  growTick: DetachedJob
+  jobs: { roles: DetachedJob; mail: DetachedJob; grow: DetachedJob }
 ): Promise<void> {
   try {
     options.store.runLessonDecayTick(now);
@@ -656,8 +660,8 @@ async function runSignalPathTick(
     // Spec 2026-11-02 §5 (B3, N5): the daily reminder, before the model ticks and independent of HOUGE_MODEL_ROLES, so a
     // slow or stopped model tick (or a catalog outage) cannot delay that day's reminder. Its own catch.
     runReminderStep(options.store, chatId, now);
-    await runModelTicks(options, gateway, worker, now, chatId, rolesTick);
-    runMailSteps(options, chatId, mailTick);
+    await runModelTicks(options, gateway, worker, now, chatId, jobs.roles);
+    runMailSteps(options, chatId, jobs.mail);
     // ADR 0019: the metered-$ ceiling check — drives the alert-dedupe latch (the chain
     // builder's cheap enforcement read) once per cycle; the 0→1 transition enqueues ONE
     // alert, delivered by the outbox flush right after this tick.
@@ -671,7 +675,7 @@ async function runSignalPathTick(
     // ticks so it observes this cycle's work, self-throttles to 5 min, and alerts at most
     // once per incident transition. Flag-gated OFF; pure reads + incident bookkeeping —
     // it can never act on what it finds.
-    growTick.start(() => runGrowTickSafe(options, worker, now)); // one tick in flight; serial, never awaited by the poll loop
+    jobs.grow.start(() => runGrowTickSafe(options, worker, now)); // one tick in flight; serial, never awaited by the poll loop
     sweepAndRearm(invariantSweepInput(options, now), worker);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

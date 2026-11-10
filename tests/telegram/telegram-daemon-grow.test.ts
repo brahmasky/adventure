@@ -1,12 +1,15 @@
-import { cpSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ModelString } from "../../src/omp/model-string.js";
 
 const tick = vi.hoisted(() => ({ run: vi.fn() }));
-vi.mock("../../src/grow/tick.js", () => ({ runGrowTick: tick.run }));
+vi.mock("../../src/grow/tick.js", async (orig) => ({ ...(await orig<typeof import("../../src/grow/tick.js")>()), runGrowTick: tick.run }));
+const oneShot = vi.hoisted(() => ({ spawn: vi.fn() }));
+vi.mock("../../src/llm/providers/omp.js", async (orig) => ({ ...(await orig<typeof import("../../src/llm/providers/omp.js")>()), spawnOneShot: oneShot.spawn }));
 
 import { EXEMPLAR_NAME } from "../../src/grow/seed.js";
+import { GROW_CLAIM_STALE_MS } from "../../src/grow/tick.js";
 import { bootGrowZone, runGrowTickSafe, type RunTelegramDaemonOptions } from "../../src/telegram/telegram-daemon.js";
 import { growSetup, mkTmp } from "../helpers/grow.js";
 import { pinOmpEnv } from "../helpers/omp-env.js";
@@ -22,7 +25,7 @@ const opts = (s: Setup, projectRoot: string, signal = new AbortController().sign
 const openKinds = (s: Setup): string[] => s.store.listOpenIncidents().map((i) => i.kind);
 
 let saved: string | undefined;
-beforeEach(() => { saved = process.env.HOUGE_BACKUP_ENABLED; tick.run.mockReset(); tick.run.mockResolvedValue({ requests: 0, reviewed: null }); });
+beforeEach(() => { oneShot.spawn.mockReset(); saved = process.env.HOUGE_BACKUP_ENABLED; tick.run.mockReset(); tick.run.mockResolvedValue({ requests: 0, reviewed: null }); });
 afterEach(() => { if (saved === undefined) delete process.env.HOUGE_BACKUP_ENABLED; else process.env.HOUGE_BACKUP_ENABLED = saved; vi.restoreAllMocks(); });
 
 describe("bootGrowZone", () => {
@@ -49,6 +52,26 @@ describe("bootGrowZone", () => {
     expect(s.svc.disabledReason()).toBeNull();
   });
 
+  it("a clean boot closes the grow_seed_failed incident an earlier bad boot opened", async () => {
+    const s = await growSetup(); const root = mkTmp();
+    const bad = join(root, "grow-seed", "skills", "bad-one"); mkdirSync(bad, { recursive: true });
+    writeFileSync(join(bad, "SKILL.md"), "---\nname: bad-one\ndescription: \"x\"\nexample: \"y\"\norigin: exemplar\n---\n\nshort\n");
+    await bootGrowZone(opts(s, root), fakeWorker(s), NOW);
+    expect(openKinds(s)).toContain("grow_seed_failed");
+    rmSync(bad, { recursive: true });   // the seed folder stays, now with nothing failing in it
+    await bootGrowZone(opts(s, root), fakeWorker(s), NOW);
+    expect(openKinds(s)).not.toContain("grow_seed_failed");
+  });
+
+  it("an invalid legacy file counts: it opens grow_seed_failed even when every exemplar passes", async () => {
+    const s = await growSetup(); const root = mkTmp();
+    mkdirSync(join(root, "grow-seed", "skills"), { recursive: true });   // an empty seed folder: no exemplar can have failed
+    mkdirSync(join(root, "skills", "paco"), { recursive: true });
+    writeFileSync(join(root, "skills", "paco", "broken.md"), "not a skill file");
+    await bootGrowZone(opts(s, root), fakeWorker(s), NOW);
+    expect(openKinds(s)).toContain("grow_seed_failed");
+  });
+
   it("logs a code, never a message, when the boot itself throws", async () => {
     const s = await growSetup(); const err = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const worker = { growService: () => { throw new Error("secret-path /Users/x"); } } as never;
@@ -73,6 +96,34 @@ describe("runGrowTickSafe", () => {
     const deps = tick.run.mock.calls[0]![0] as { chain(): ModelString[] };
     expect(deps.chain()).toBe(CHAIN);
     expect(candidates).toHaveBeenCalledWith("grow_review");
+  });
+
+  it("hands the tick the stop signal, an audit sink scoped to grow_review with the call's correlation id, and a deadline inside the claim bound", async () => {
+    const s = await growSetup(); const c = new AbortController();
+    const sink = vi.spyOn(s.store, "llmAuditSink");
+    oneShot.spawn.mockResolvedValue({ ok: true, provider: "omp", answer: "x" });
+    await runGrowTickSafe(opts(s, mkTmp(), c.signal), fakeWorker(s), NOW);
+    const deps = tick.run.mock.calls[0]![0] as { signal: AbortSignal; spawn(i: unknown): Promise<unknown> };
+    expect(deps.signal).toBe(c.signal);
+    await deps.spawn({ correlationId: "grow_review:7:1:t", seat: "reader", chain: CHAIN, prompt: "p" });
+    expect(sink).toHaveBeenCalledWith({ correlation_id: "grow_review:7:1:t", role: "grow_review" });
+    const passed = oneShot.spawn.mock.calls[0]![0] as { deadlineAt: number };
+    expect(passed.deadlineAt).toBeLessThan(Date.parse(NOW) + GROW_CLAIM_STALE_MS);   // the stale release can never free a row mid-review
+    expect(passed.deadlineAt).toBeGreaterThan(Date.parse(NOW));
+  });
+
+  it("still runs the bundle step when the tick rejects: a failing bundle opens the incident, a good one is written", async () => {
+    process.env.HOUGE_BACKUP_ENABLED = "1";
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    tick.run.mockRejectedValue(new Error("boom"));
+    const bad = await growSetup(); const root = mkTmp();
+    mkdirSync(join(root, "backups")); writeFileSync(join(root, "backups", SNAP), "snap");
+    rmSync(join(bad.dir, "grow", ".git"), { recursive: true, force: true });
+    await runGrowTickSafe(opts(bad, root), fakeWorker(bad), NOW);
+    expect(openKinds(bad)).toContain("grow_backup_failed");
+    const good = await growSetup();
+    await runGrowTickSafe(opts(good, root), fakeWorker(good), NOW);
+    expect(existsSync(join(root, "backups", SNAP.replace(".sqlite", ".grow.bundle")))).toBe(true);
   });
 
   it("opens grow_backup_failed once while the bundle keeps failing, and a later written bundle resolves it", async () => {

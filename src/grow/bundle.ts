@@ -1,10 +1,9 @@
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { BACKUP_FILE_PATTERN } from "../run/db-backup.js";
+import { BACKUP_FILE_PATTERN, bundlePathFor } from "../run/db-backup.js";
 import type { GrowZone } from "./zone.js";
 
-/** The zone bundle that sits beside a DB snapshot: one name rule for the writer, the pruner and the CLI. */
-export const bundlePathFor = (snapshotPath: string): string => snapshotPath.replace(/\.sqlite$/, ".grow.bundle");
+export { bundlePathFor };
 
 /**
  * Pair the newest DB snapshot with a bundle of the zone (spec §5.1). Run every poll: a crash or a failure between the

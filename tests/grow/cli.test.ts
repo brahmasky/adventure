@@ -64,13 +64,13 @@ describe("houge grow CLI", () => {
     await s.live(growFields());
     for (let i = 0; i < 35; i++) s.store.appendGrowEvent({ at: `2026-11-10T11:00:${String(i).padStart(2, "0")}.000Z`, run_id: null, chat_id: null, action: "undo", name: `skill-${i}`, result: "ok", code: null, reviewer_model: null, commit_id: null });
     const backups = mkTmp();
-    for (const f of ["houge-2026-11-09.sqlite", "houge-2026-11-09.grow.bundle", "houge-2026-11-10.sqlite", "notes.txt"]) writeFileSync(join(backups, f), "x");
+    for (const f of ["houge-20261109T000000Z.sqlite", "houge-20261109T000000Z.grow.bundle", "houge-20261110T000000Z.sqlite", "notes.txt"]) writeFileSync(join(backups, f), "x");
     mkdirSync(join(backups, "sub"));
     const lines = (await s.run("log", "", "", backups)).split("\n");
     expect(lines).toHaveLength(32);
     expect(lines[0]).toBe("2026-11-10T11:00:05.000Z undo skill-5 ok");
     expect(lines[29]).toBe("2026-11-10T11:00:34.000Z undo skill-34 ok");
-    expect(lines.slice(30)).toEqual(["houge-2026-11-09.sqlite  bundle: yes", "houge-2026-11-10.sqlite  bundle: no"]);
+    expect(lines.slice(30)).toEqual(["houge-20261109T000000Z.sqlite  bundle: yes", "houge-20261110T000000Z.sqlite  bundle: no"]);
   });
 
   it("trust clears the mark and says so, then has nothing left to clear", async () => {

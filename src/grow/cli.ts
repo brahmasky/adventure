@@ -2,8 +2,8 @@ import { existsSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { errorCode } from "../domain/error-code.js";
+import { BACKUP_FILE_PATTERN, bundlePathFor } from "../run/db-backup.js";
 import type { RunStore } from "../run/run-store.js";
-import { bundlePathFor } from "./bundle.js";
 import { checkFields, fieldScrub, parseSkillFile } from "./checks.js";
 import { resolveGrowDir } from "./flags.js";
 import { trustItem } from "./service.js";
@@ -17,7 +17,8 @@ const QUEUED = "queued: the daemon runs it within a minute";
  * writer). The zone is the checkout's sibling data, so the CLI avoids its own cwd the way the daemon avoids the data dir.
  */
 export async function runGrowCli(store: RunStore, sub: string, name: string, rest: string, env: NodeJS.ProcessEnv, now: string, backupDir: string): Promise<string> {
-  const zone = new GrowZone(resolveGrowDir(env, homedir(), [process.cwd()]));
+  const root = process.cwd();   // the daemon runs from the checkout and its omp data dir defaults to it: the same avoid list, so both processes resolve one dir
+  const zone = new GrowZone(resolveGrowDir(env, homedir(), [root, root]));
   if (sub === "list") return store.listGrowItems().map((i) => `${i.name}  ${i.state}  ${i.origin}  ${i.uses}`).join("\n") || "(empty)";
   if (sub === "show") return show(zone, name);
   if (sub === "log") return log(store, backupDir);
@@ -42,7 +43,7 @@ function log(store: RunStore, backupDir: string): string {
 /** One line per database snapshot: does it have its zone bundle beside it? */
 function backups(dir: string): string[] {
   if (!existsSync(dir)) return [];
-  return readdirSync(dir).filter((f) => /^houge-.*\.sqlite$/.test(f)).sort()
+  return readdirSync(dir).filter((f) => BACKUP_FILE_PATTERN.test(f)).sort()
     .map((f) => `${f}  bundle: ${existsSync(bundlePathFor(join(dir, f))) ? "yes" : "no"}`);
 }
 

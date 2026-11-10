@@ -52,6 +52,9 @@ export const BACKUP_DIR_NAME = "backups";
 /** Final snapshot names: houge-<YYYYMMDDTHHmmss>Z.sqlite (lexicographic = chronological). */
 export const BACKUP_FILE_PATTERN = /^houge-\d{8}T\d{6}Z\.sqlite$/;
 
+/** The zone bundle that sits beside a DB snapshot: one name rule for the writer, the pruner and the CLI (grow zone spec §5.1). */
+export const bundlePathFor = (snapshotPath: string): string => snapshotPath.replace(/\.sqlite$/, ".grow.bundle");
+
 /** The snapshot filename for a given UTC instant. Throws on a non-ISO input — the
  * stamp becomes a filesystem path segment, so its shape is validated, never trusted. */
 export function backupFileName(nowIso: string): string {
@@ -165,7 +168,7 @@ function pruneOldSnapshots(dir: string, keep: number, spare: string): number {
   for (const name of snapshots) {
     if (!keepSet.has(name)) {
       unlinkSync(join(dir, name));
-      rmSync(join(dir, name.replace(/\.sqlite$/, ".grow.bundle")), { force: true }); // the zone bundle paired with it (grow zone spec §5.1)
+      rmSync(bundlePathFor(join(dir, name)), { force: true }); // the zone bundle paired with it (grow zone spec §5.1)
     }
   }
   return Math.min(snapshots.length, keepSet.size);

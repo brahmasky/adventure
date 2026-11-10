@@ -143,6 +143,7 @@ export class GrowZone {
     if (!isAbsolute(toPath)) throw new GrowZoneError("bad_name");
     await this.assertToplevel();
     const tmp = `${toPath}.tmp`;
+    rmSync(tmp, { force: true });   // a crash mid-bundle left it behind: start from nothing
     try {
       await this.git(["bundle", "create", "-q", tmp, "--all"]);
       await this.git(["bundle", "verify", "-q", tmp]);
