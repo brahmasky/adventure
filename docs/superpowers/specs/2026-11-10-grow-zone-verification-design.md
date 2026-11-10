@@ -1,11 +1,11 @@
 # Grow zone, slice 1a — a place Houge writes itself, and the checks that decide what goes live
 
-**Rev 1.2 · 2026-11-10 · status: REVIEWED; P1–P3 DECIDED by Paco 2026-11-10 (§2a); awaiting the re-review and his
-approval of the whole.** Rev 1.0 was
-reviewed against the live code by spec-review-senior (Opus 5.5: 8 BLOCKER, 15 WARNING, 6 SUGGESTION) and a codex
-design pass (6 BLOCKER, 4 WARNING, 1 SUGGESTION). The orchestrator verified the cited lines first-hand. Every
-blocker and warning is answered in this revision; §14 is the change log with confirmed and rejected findings. No
-code until Paco approves. This spec changes what ADR 0011, ADR 0032 and ADR 0034 mean (§9): Tier C, his hand.
+**Rev 1.3 · 2026-11-10 · status: REVIEWED TWICE; P1–P3 and the AGENTS.md wording decided by Paco 2026-11-10;
+awaiting his acceptance of one named residual (§5.7, R1) and his approval of the whole.** Rev 1.0 was reviewed
+against the live code by spec-review-senior (Opus 5.5: 8 BLOCKER, 15 WARNING, 6 SUGGESTION) and a codex design
+pass (6 BLOCKER, 4 WARNING, 1 SUGGESTION); Rev 1.2 by a codex re-review (5 BLOCKER, 6 WARNING, 1 SUGGESTION). The
+orchestrator verified the cited lines first-hand. §14 is the record of confirmed and rejected findings. No code
+until Paco approves. This spec changes what ADR 0011, ADR 0032 and ADR 0034 mean (§9): Tier C, his hand.
 
 ## 1. Why
 
@@ -144,8 +144,11 @@ discovery can never climb into the public repository and a `git clean` there can
 - Every git call goes through `git-hardened.ts` with explicit `--git-dir` / `--work-tree`,
   `GIT_CEILING_DIRECTORIES` set to the zone's parent, and no inherited `GIT_*` variables. Before any operation
   that discards or rewrites, the code asserts `rev-parse --show-toplevel` equals the grow root.
-- Backup: the nightly DB backup (ADR 0021) also writes a `git bundle` of the zone beside the DB snapshot, under
-  the same retention.
+- Backup: after the nightly DB snapshot (ADR 0021) lands, the same step writes `<snapshot basename>.grow.bundle`
+  (`git bundle create --all` to a `.tmp`, `git bundle verify`, rename). The DB backup is never held hostage by
+  the zone: the latch advances once the DB snapshot is verified, whatever the bundle did; a failed bundle opens
+  the incident `grow_backup_failed` and is retried the next night. Retention prunes a snapshot and its bundle
+  together; a snapshot without a bundle is valid and is listed as such by `houge grow log`.
 
 ### 5.2 A skill item
 
@@ -170,7 +173,10 @@ grow_submit({ name, description, example, body, anchors? })
 ```
 
 The content arrives as tool arguments. No file is copied from the workspace, so there is no path, symlink or
-check-to-copy race to defend. The call runs the formal checks (§5.4) in milliseconds and returns one of:
+check-to-copy race to defend. Each field and the serialized total (16 KB) are capped before anything is stored.
+The ledger and the bridge audit record counts, hashes and the fixed result code only, as they do for every
+bridge call; the body exists in exactly two places, the `grow_staged` row and, once live, the repository. A
+schema or check failure never echoes a submitted value. The call runs the formal checks (§5.4) in milliseconds and returns one of:
 
 - `LIVE` — a small update (P3); committed.
 - `STAGED` — accepted, review pending; the result says the item is not live yet.
@@ -193,9 +199,13 @@ The door never waits for a model, so it cannot outrun the frame watchdog.
 
 **Review (model), asynchronous, after the turn ends**, for every `STAGED` item:
 
-- A one-shot seat on the `reviewer` role, no tools. Its family must differ from every model family that
-  answered in the authoring run (plumbed from the supervisor's per-message model record). If no leg of another
-  family is available, the item stays staged; the reviewer never collapses onto the author's family.
+- A one-shot seat on a new role, `grow_review`, no tools: legs Kimi (high), Gemini pro, Codex. None is of the
+  Claude family, which runs the planner, and none draws on the Anthropic pool; three families remain two when
+  Kimi leaves. (The existing `reviewer` role is Kimi then Opus through Antigravity: after Kimi it would have no
+  leg that differs from a Claude-authored turn.)
+- The author's families are fixed at staging: the set of `family` values on that run's successful `llm_attempt`
+  rows. A leg whose family is in the set is skipped. An unknown or missing family on any row fails closed: the
+  item stays staged and ends `review_unavailable`. If every leg is skipped, the same.
 - Input, passed through the store's secret redaction: the item, the diff against the live version, the
   exemplar, the index of live items, and every stored undo reason for that name. The prompt frames all of it as
   data.
@@ -204,10 +214,17 @@ The door never waits for a model, so it cannot outrun the frame watchdog.
   Paco (exfiltration, hidden recipients, instructions to ignore rules); overlap with a live item.
 - Output: strict JSON `{ "pass": boolean, "findings": [{ "step", "problem" }] }`, validated. Anything else is
   a seat failure.
-- `pass: true` publishes. `pass: false` marks the item `failed` and stores the findings. A seat failure or
-  outage leaves it `staged`; the review is retried at the next daily tick, three times, then `failed` with
-  code `review_unavailable`. Nothing goes live unreviewed, and a pending review older than a day shows in
-  `/status`.
+- `pass: true` publishes. `pass: false` marks the item `failed` and stores the findings. Nothing goes live
+  unreviewed.
+
+**Who runs the review.** A persistent queue, not an in-memory lane: `grow_staged` rows in state `staged` with
+`next_attempt_at <= now`. The daemon's poll loop (the one that drives the daily tick) starts at most one review
+at a time as a detached task under the daemon's stop signal; it never waits for it, so Telegram polling is
+unaffected. A claim is one transaction (`claimed_at = now`, `attempts + 1`). The first attempt is due when the
+authoring turn finalizes. A seat failure or outage sets `next_attempt_at` to +1 h, then +6 h, then +24 h; after
+the fourth failure the item is `failed` with `review_unavailable`. A claim older than 10 minutes with no outcome
+(a crash, a restart, a shutdown that killed the leg) is released at the next poll, which is also the boot scan.
+`/disarm` and `HOUGE_GROW_ENABLED=false` stop new claims. A review pending over a day shows in `/status`.
 
 The reviewer's only power is a boolean. A reviewer talked into `pass: true` lets through an item that already
 passed the formal checks; under P2-C a born-untrusted item it lets through still taints whoever reads it.
@@ -216,7 +233,10 @@ passed the formal checks; under P2-C a born-untrusted item it lets through still
 
 The next turn's `[context]` block (per turn, not the system prompt) carries one line per outcome since the last
 turn, once: `grow: <name> is live` or `grow: <name> failed review (grow_read it to see why)`. A failed item's
-findings are returned by `grow_read({ name, what: "review" })`. Paco sees the same in `/grow`.
+findings are returned by `grow_read({ name, what: "review" })`. Paco sees the same in `/grow`. The lines are
+code-built (a name and a fixed phrase), escaped like every `[context]` entry, and do not touch the system prompt
+or its fingerprint. "Once" is a per-chat cursor over `grow_events`, advanced only after the prompt that carried
+the lines was accepted by the planner; a failed turn or a restart shows them again.
 
 ### 5.6 The read door, the index, and use
 
@@ -227,7 +247,9 @@ findings are returned by `grow_read({ name, what: "review" })`. Paco sees the sa
 - `grow_read({ name })` returns the committed body from the repository's HEAD. It is kernel text that passed
   the door, like a lesson: it is not judged for injection (a procedure would read as one) and, for an item with
   `origin: clean` or `exemplar`, does not raise trust. For `origin: untrusted` it raises the turn to
-  `untrusted` exactly as a wall read does (P2-C).
+  `untrusted` before the result returns, through a new trust cause `grow_read_untrusted` (`CAUSE_LEVEL` and
+  `CARRY_LEVEL` both `untrusted`). `grow_read` is registered on the bridge's plain branch, the one
+  `houge_status` uses (ADR 0032 §4.6), never on the wall or judged-read branches; a test pins that.
 - Each successful `grow_read` of a live item counts one **use** for that item in that run. `/grow` shows uses
   and the last-used date. 1a only counts; acting on the count belongs to slice 3.
 - Skills no longer ride in the prompt as whole bodies. The two schedules that relied on that are covered by a
@@ -241,23 +263,41 @@ findings are returned by `grow_read({ name, what: "review" })`. Paco sees the sa
   with `origin: untrusted`. An item once born untrusted stays so until Paco clears it
   (`houge grow trust <name>`), whatever a later clean turn submits over it.
 - `clean` conversation: `origin: clean`.
-- What this does not close, stated: memory. Episodic facts and wiki pages distilled from untrusted turns reach
-  a clean turn's context today without a mark (only `src/improve/proposals.ts` checks the turn's final trust),
-  and a clean turn may read a workspace file an untrusted turn wrote if the injection judge passes it. A clean
-  turn could therefore submit outside-derived text as `origin: clean`. That path exists today for lessons; this
-  spec does not widen it beyond lessons and names it in §7.
+- **R1 — a residual for Paco to accept or refuse (Tier C).** Trust is carried by the conversation, not by
+  facts or files (`src/decisions/trust.ts`). Episodic facts and wiki pages distilled from untrusted turns reach
+  a clean turn's context without a mark (only `src/improve/proposals.ts` checks a turn's final trust), and a
+  clean turn may read a workspace file an untrusted turn wrote if the injection judge passes it. So outside
+  text can be laundered through memory into a clean turn and submitted as `origin: clean`; once reviewed, it is
+  read back without taint. The same path reaches `lesson_write` today with no review at all, so the grow zone
+  is no worse than lessons and adds a different-family review. Closing it means provenance on memory itself,
+  which is a slice of its own. The only way to close it inside 1a is to mark every Houge-written item
+  `untrusted`, which would turn every skill read into a trust downgrade and bring back the taps of ADR 0034
+  §8.2 on most turns. *Recommended: accept R1 for 1a, recorded in `tasks/todo.md` as an accepted gap, and open
+  "provenance for memory" as a named item on the roadmap.*
 
 ### 5.8 Publishing, concurrency and crashes
 
 - One daemon-wide grow mutex covers every write to the zone and its tables. A second caller gets `busy`.
-- Staged content lives in SQLite (`grow_staged`), not in a directory: nothing to sweep, nothing a child can
-  touch, and it survives restarts.
-- Publish, under the mutex: (1) mark the staged row `publishing` with the content hash; (2) write
-  `skills/.<name>.tmp`, rename it over `SKILL.md`; (3) commit with the hash and run id in the message trailer;
-  (4) in one transaction set the item `live` with the commit id and delete the staged row.
-- Boot repair, after the toplevel assertion: remove any `.tmp`; if the tree is dirty, restore it to HEAD; for
-  each `publishing` row, if HEAD's file hash equals the row's hash finish step 4, otherwise redo from step 2. A
-  review is never re-run at boot.
+- Staged content lives in SQLite (`grow_staged`): nothing to sweep, nothing a child can touch, and it survives
+  restarts. **Every** publish goes through a staged row, the small-update path included (it only skips review),
+  so there is one state machine:
+
+  `staged` → (review passes, or the update is small) → `publishing` → row deleted, item `live`
+  `staged` → `failed` (review said no, or `review_unavailable`)
+
+- Publish, under the mutex:
+  1. One transaction: the row becomes `publishing`, carrying the content hash.
+  2. `mkdir -p skills/<name>`; write `skills/<name>/SKILL.md.tmp`; rename it to `SKILL.md`.
+  3. `git add` + `git commit`, the hash and run id in the message trailer.
+  4. One transaction: the item becomes `live` with the commit id and hash; the staged row is deleted; the
+     event is written.
+- A failure at step 2 or 3 while the daemon is up: restore the tree to HEAD (after the toplevel assertion),
+  leave the row `publishing`, retry once at the next poll. A second failure disables the write door with the
+  incident `grow_publish_failed`; reading continues from HEAD.
+- A failure of step 4 after a successful commit, or a crash anywhere: reconcile, at the next poll and at boot.
+  For each `publishing` row: if HEAD's `SKILL.md` hash equals the row's hash, do step 4; otherwise remove any
+  `.tmp`, restore the tree to HEAD and redo from step 2. Both branches are idempotent, and neither re-runs a
+  review.
 - Git is the truth for content. The DB is the truth for state, origin, uses, undo reasons and review findings;
   those are never rebuilt from git. An item present in git and missing from the DB is listed as `orphan` in
   `/grow` and excluded from the index until Paco runs `houge grow adopt <name>`.
@@ -291,14 +331,27 @@ gets every stored reason, and the next submit of that name is reviewed whatever 
   verified under the old gate and accepted by Paco). The old `skills/` folder is renamed
   `skills.migrated-2026-11`, and a test asserts nothing recreates `<repo>/skills/`.
 
-### 5.12 The old pipeline is removed, not unarmed
+### 5.12 The old pipeline: a removal matrix
 
-One door means no second writer. 1a deletes: the `skill_author` tool and its arming, `skill-author`,
-`skill-router`, `skill-reverify`, `skills/promote`, `core/skill-job`, the tick's skill proposals and recurrence
-jobs, `acceptSkill` and the job taps, boot job reconcile, `SkillStore`'s writers, `/skills retire|restore`, and
-the env vars `HOUGE_SKILL_MAX_PER_SCOPE`, `HOUGE_SKILL_REFINE_PASSES`, `HOUGE_SKILL_REVERIFY_*`. The
-`improvement_jobs` table stays (0 rows) and is no longer written. Consequence, stated: the recurrence → skill
-trigger (ADR 0034 §10.3/10.4), which has fired zero times, is gone until slice 3 rewires the tick to the door.
+One door means no second writer. What goes, what is rewired, what stays:
+
+| Thing | 1a |
+|---|---|
+| Authoring machinery: `capabilities/skill-author`, `skill-router`, `skill-reverify`, `skills/promote`, `core/skill-job`, the job cards and taps in `gateway/improvement-commands`, boot job reconcile and the weekly re-verify in `telegram-daemon`, the `skill_reverify` notification topic | **Deleted**, with their tests |
+| `skill_author` tool: `omp/tools/skill_author.json`, `capability-map`, `tool-arming`, `core/omp-turn-wiring`, `contracts/task-contract`, `prompt/composer`, `decisions/trust-ask`, `jev/labels`, `jev/triage-replay` | **Removed** from each; `grow_submit` / `grow_read` added where the chain needs them |
+| `SkillStore` | **Replaced** by the grow store; the composer's `skillsReader` becomes the index |
+| `/skills` (parser and gateway) | **Replaced** by `/grow`; `/skills` answers with the hint for one release |
+| `improve.route` (the registry entry, its targets, reasons, Jev question, golden runs) | **Kept unchanged.** A `skill` verdict stays a valid outcome |
+| The tick's effect for a `skill` verdict (rule-rung recurrence, or a `skill` proposal Paco accepts) | **Rewired**: it no longer starts a job. It writes one `grow_events` hint, which reaches the planner as a `[context]` line in that chat's next turn: `grow: a task of kind <category> keeps recurring; consider grow_submit`. Code-built text, no Paco text, at most three hints a day (the old queue cap), once per recurrence key. The planner decides, and the door's rules apply as for any submit |
+| `skillExists` / `alreadyAuthored` in `improve/groups` | **Rewired** to `grow_items` and to the hint's idempotency key |
+| `HOUGE_RECURRENCE_COSINE_GATE` | **Kept** (it still gates recurrence); its docs row is corrected |
+| `HOUGE_SKILL_MAX_PER_SCOPE`, `HOUGE_SKILL_REFINE_PASSES`, `HOUGE_SKILL_REVERIFY_*` | **Removed**, with their docs rows |
+| Tables `improvement_jobs` (0 rows), `skill_reverify_state` | **Kept** for migration compatibility; no live reader or writer |
+| Live-gate scripts that assert the old path (`live-gate-omp`, `live-gate-improve-route`, `improve-sanity`) | **Updated** to the new effect |
+| Reference docs (README, CONTEXT, `configuration.md`, `decision-map.md`, `jev-decision-layer.md`, ROADMAP) | **Re-read and corrected** (docs sync); dated specs and plans stay as history |
+
+The hint is the first trigger of the grow zone: the recurrence sensor that fed a job nobody ran now feeds the
+planner. The post-turn nudge and the tick submitting on its own remain slice 3.
 
 ### 5.13 State
 
@@ -306,8 +359,10 @@ One dated migration (`2026-11-xx-grow-zone`):
 
 - `grow_items(name PK, state CHECK IN ('live','removed','orphan'), origin CHECK IN ('clean','untrusted',
   'exemplar'), uses, last_used_at, head_commit, content_hash, created_at, updated_at)`
-- `grow_staged(id PK, name, run_id, chat_id, origin, author_families, fields_json, content_hash, state CHECK IN
-  ('staged','publishing','failed'), attempts, code, findings_json, created_at, updated_at)`
+- `grow_staged(id PK, name, run_id, chat_id, origin, author_families, fields_json, content_hash, needs_review,
+  state CHECK IN ('staged','publishing','failed'), attempts, claimed_at, next_attempt_at, code, findings_json,
+  created_at, updated_at)`
+- `grow_context_cursor(chat_id PK, last_event_id)`
 - `grow_events(id PK, at, run_id, name, action, result, code, reviewer_model, commit_id)`
 - `grow_undo_reasons(id PK, name, at, reason)`
 
@@ -357,13 +412,19 @@ message only as an incident (a door disabled).
   stronger one.
 - **ADR 0034 — amended.** §1.5 (`promote.ts` leaves the protected list with its deletion; "nothing reaches the
   active skills tree without Paco's tap" is replaced by G3); §2.1 (a lasting skill change derived from tool
-  input: no longer a proposal for a tap, governed by G4); §5.1 and §10.3/10.4 (skill authoring after a
-  recurrence is removed until slice 3); §7.1 (`grow_read` output is kernel text, not a judged local read);
+  input: no longer a proposal for a tap, governed by G4); §5.1 (skill authoring into a pending area on
+  Paco's tap is replaced by the door); §7.1 (`grow_read` output is kernel text, not a judged local read);
   §8.2 (`skill_author` leaves the ask list; `grow_submit` is refused at `hostile` and never asks; a new line: reading
-  a born-untrusted grow item raises the turn to `untrusted`).
+  a born-untrusted grow item raises the turn to `untrusted`); §2.4 (stated precisely: refusing and publishing
+  are code decisions; the reviewer's `pass` is an admission check on content, not a gate on an action, so the
+  one named exception stays the only one); §8.1 and §8.3 (the new cause `grow_read_untrusted` and its carry);
+  §10.3–10.5 (recurrence → a grow hint to the planner, never a job; an accepted `skill` proposal → the same
+  hint).
 - **ADR 0032 — amended.** D8 (tool set: `skill_author` out, `grow_submit` and `grow_read` in); §4.2 (skills
   are no longer composer-injected bodies; the index is); §4.3 (the fingerprint now covers the index); §5.1 (the
-  grow root joins the write-denied paths).
+  grow root joins the write-denied paths, placed after the `$HOME` allow in the profile and before the workspace
+  allow in `isDeniedWrite`); §6 (`grow_read` is a named exception to the read wall, on the §4.6 precedent of
+  `houge_status`); §7 (the new role `grow_review`).
 - **ADR 0018 / 0031 — touched.** `HOUGE_GROW_ENABLED` joins the disarm flags; the "failing skill re-check asks
   for `/skills retire`" line is removed; the door-disabled incident gets its route.
 - **ADR 0013 — restated, not changed.** Code owns the gates; the model now also owns the grow zone's content.
@@ -371,7 +432,7 @@ message only as an incident (a door disabled).
   publisher, the seeder and the migration; nothing writes `<repo>/skills/`), `0035-g4-trust` (the §5.7
   table, carried levels included), `0035-g5-pipeline-protected`, `0035-g6-review-by-size`,
   `0035-g7-schedule-no-submit`, `0035-grow-flag-in-disarm`, `0035-index-stable-order`,
-  `0032-grow-root-denied` (run with data dir ≠ repo, so it cannot pass on the existing repo deny), and the
+  `0032-grow-root-denied` (run with data dir ≠ repo, so it cannot pass on the existing repo deny), `0035-grow-read-plain-branch`, `0035-recurrence-hint-not-job`, and the
   existing `0034-8.2` trust-table test updated in the same commit.
 - **`AGENTS.md` — wording APPROVED by Paco 2026-11-10; applied on the 1a branch in the same merge as the code**
   (the text names ADR 0035, `HOUGE_GROW_DIR`, `grow_submit`, `src/grow` and `grow-seed/`, none of which exist
@@ -400,26 +461,37 @@ docs parity for commands, tools and env vars.
 
 ## 11. Live gate (`scripts/live-gate-grow.mjs`, real daemon, Paco's chat)
 
-PASS only if every line holds.
+PASS only if every line holds. Evidence is read from the grow tables, `llm_attempt` and trust events, not from
+the reply text.
 
-1. After `/fresh`, Paco asks for a prose skill. `grow_submit` returns `STAGED`; after the turn the reviewer
-   runs on a family that did not answer in that run; the item is live with one commit; `/grow` shows it.
-2. A deliberately wrong skill (a false conversion factor in a step) is submitted the same way and **fails**
-   review with a finding naming that step. A reviewer that passes it fails the gate.
-3. In a later turn a matching request makes the planner call `grow_read` for the skill; uses = 1; the daemon
-   pid is the one from line 1; the run's final trust is `clean`.
-4. A turn that ran `web_search` submits a skill: it is staged, reviewed, live with `origin: untrusted`, no
-   trust card is sent, and a later clean turn that reads it ends `untrusted`.
+1. After `/fresh`, Paco asks for a prose skill. `grow_submit` returns `STAGED`; a `grow_review` attempt exists
+   whose request hash covers the staged content hash and whose family is not in the run's author families; the
+   item is live with one commit whose trailer carries that hash.
+2. A deliberately wrong skill (a false conversion factor in one step) fails review with a finding naming that
+   step. A reviewer that passes it fails the gate.
+3. In a later turn a matching request makes the planner call `grow_read`; the returned body's hash equals the
+   committed hash; the reply uses a value that appears only in the skill; uses = 1; the daemon pid is the one
+   from line 1; the run's final trust is `clean`.
+4. After `/fresh`, a turn that ran `web_search` submits a skill: staged, reviewed, live with
+   `origin: untrusted`, no trust card sent. After another `/fresh`, a turn whose only outside contact is
+   `grow_read` of that item shows a trust event with cause `grow_read_untrusted` and ends `untrusted`.
 5. A conversation made `hostile` gets `turn_hostile`, and no trust card is sent.
-6. A small edit to the live clean skill returns `LIVE` with no review; an edit over the size rule is staged.
+6. A small edit to the live clean skill returns `LIVE` and **no** `grow_review` attempt exists for it; an edit
+   over the size rule is staged and reviewed.
 7. `/grow undo <name> <reason>` restores the previous version; the next submit of that name is staged whatever
-   its size, and the reviewer input (from the audit record) contains the reason.
-8. With the reviewer role's legs forced to a missing model by a role override, a new skill stays staged, is not
-   in the index, and `/status` shows it after the threshold is lowered for the test.
-9. The daily news schedule is fired once: its run calls `grow_read` for the news-brief skill.
+   its size, and its review's stored input record (kept in `grow_staged` for the gate) contains the reason.
+8. With `grow_review` overridden to a missing model, a new skill stays staged and is absent from the index; the
+   daemon is restarted; the claim is released and retried (attempts = 2); `/status` shows the pending review
+   once the threshold is lowered for the test; restoring the role lets it publish.
+9. A one-off schedule created for the gate fires in its own slot with a goal matching the exemplar: the
+   schedule-born run calls `grow_read` for it, and a `grow_submit` from that run is not offered (the tool is
+   absent from its manifest). The next real 08:00 news fire is then observed and recorded in `tasks/todo.md`:
+   it must call `grow_read` for the news-brief skill; if it does not, the slice is reopened.
 10. `/disarm` makes `grow_submit` return `grow_disabled`; `grow_read` still works. `skill_author` is absent from
-    the bridge manifest. `<repo>/skills/` does not exist after the run. A direct write into the grow root from
-    the planner's `bash` is denied (data dir ≠ repo in the gate).
+    the bridge manifest. `<repo>/skills/` does not exist after the run. With the grow dir outside the repo, a
+    `bash` write, a built-in `write`, and a write through a symlink alias into the grow root are all denied.
+11. A recurrence planted in the inbox produces one hint event and one `[context]` line in the next turn, and no
+    `improvement_jobs` row.
 
 ## 12. How we know it works (30 days after 1a and 1b are live)
 
@@ -475,3 +547,22 @@ rollup.
 
 **Not verified:** how often the injection judge would flag the three skills (moot under `grow_read`); whether
 the planner reliably calls `grow_read` in schedule turns (gate line 9 decides).
+
+**Rev 1.2 → 1.3, codex re-review (5 BLOCKER, 6 WARNING, 1 SUGGESTION), all confirmed and answered:**
+
+| Finding | Answer |
+|---|---|
+| Laundering through memory still open | Not closable in 1a without provenance on memory; put to Paco as residual R1 (§5.7) |
+| Publish: impossible rename path; no handling for a failed commit while up, a failed final transaction, or the small-update path | One state machine and exact paths (§5.8) |
+| No owner for the after-turn review (the evolution lane is in-memory) | A persistent queue claimed from the poll loop (§5.4) |
+| Deleting jobs breaks `improve.route`'s recurrence rung and ADR 0034 §10.3–10.5 | The entry is kept; its effect is rewired to a hint (§5.12); §9 amended |
+| Backup pairing and latch order | §5.1; the DB backup is not made to wait for the bundle (codex suggested advancing the latch only after both: rejected, a zone fault must not stop DB backups) |
+| Argument caps; body never in ledger or audit | §5.3 |
+| `grow_read` needs a named trust cause and the plain branch | §5.6, §9 |
+| Outcome line "once" across failures | Per-chat cursor (§5.5) |
+| Reviewer families: only Kimi and Opus in `reviewer` | New role `grow_review` with three non-Claude legs (§5.4) |
+| Grow-root deny is needed (`$HOME` is writable) and rule order matters | §9 (ADR 0032 §5.1), gate line 10 |
+| ADR 0034 §2.4, §8.3, §10.5 and ADR 0032 §6, §4.6 missing | §9 |
+| Gate lines that pass while broken | §11 rewritten on stored evidence; line 9 no longer fires a real schedule out of its slot |
+| Deletion inventory incomplete | Removal matrix (§5.12) |
+
