@@ -62,6 +62,17 @@ describe("routes", () => {
   });
 });
 
+describe("grow_zone_unavailable by subject", () => {
+  it("the zone subject says the zone cannot be written; the apply subject says one change's database half is retried and writing continues", () => {
+    expect(incidentNotice("grow_zone_unavailable", "zone")?.text).toContain("cannot be written");
+    const apply = incidentNotice("grow_zone_unavailable", "apply")?.text ?? "";
+    expect(apply).not.toContain("cannot be written");
+    expect(apply).toContain("writing continues");
+    expect(incidentResolvedNotice("grow_zone_unavailable", "apply", 3)?.text).toContain("writing continues");
+    expect(incidentResolvedNotice("grow_zone_unavailable", "zone", 3)?.text).toContain("cannot be written");
+  });
+});
+
 describe("maskSubject", () => {
   it.each([
     ["chat:-1001234567890", "a chat"], ["8123456789", "a chat"], ["run:run_0f6c-uuid", "a run"], ["run_0f6c1b2a", "a run"],

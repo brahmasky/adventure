@@ -113,9 +113,15 @@ export function maskSubject(s: string): string {
 
 type Notice = { topic: "incident_page" | "incident_log"; text: string };
 
+/** The grow zone's apply subject is one change's database half being retried, not the zone being unwritable: the page says what the code does. */
+const GROW_APPLY_RULE: IncidentRule = page("A skill write finished but I could not record it in my database yet; I retry it and writing continues.");
+function ruleFor(kind: string, subject: string): IncidentRule {
+  return kind === "grow_zone_unavailable" && subject === "apply" ? GROW_APPLY_RULE : ruleOf(kind);
+}
+
 /** What an opened incident says and where; null for a card kind (its caller sends the card). */
 export function incidentNotice(kind: string, subject: string): Notice | null {
-  const rule = ruleOf(kind);
+  const rule = ruleFor(kind, subject);
   if (rule.route === "card") return null;
   const tag = `\`${kind}\` · ${maskSubject(subject)}`;
   if (rule.route === "log") return { topic: "incident_log", text: `${rule.says} (${tag})` };
@@ -124,9 +130,8 @@ export function incidentNotice(kind: string, subject: string): Notice | null {
 
 /** The fixed notice: same words, page kinds to chat, log kinds to the log; null for a card kind. */
 export function incidentResolvedNotice(kind: string, subject: string, open_minutes: number): Notice | null {
-  const rule = ruleOf(kind);
+  const rule = ruleFor(kind, subject);
   if (rule.route === "card") return null;
-  void subject;
   return { topic: rule.route === "log" ? "incident_log" : "incident_page", text: `✅ Fixed: ${rule.says} — open ${open_minutes} min` };
 }
 

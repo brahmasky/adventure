@@ -46,9 +46,35 @@ describe("/grow", () => {
     const html = markdownToTelegramHtml(text);
     expect(html).not.toContain("<a ");
     const spans = [...html.matchAll(/<code>([^<]*)<\/code>/g)].map((m) => m[1]!);
-    const mine = spans.find((c) => c.includes("evil.example/x"))!;
-    for (const part of ["evil.example", "/kill", "@x", "#x"]) expect(mine).toContain(part);
-    expect(html.replace(mine, "")).not.toContain("/kill");   // the command appears only inside the code span
+    const mine = spans.find((c) => c.includes("evil"))!;
+    expect(mine).toBeDefined();
+    expect(html.replace(mine, "")).not.toContain("/kill");
+    // the adapter resends plain text on a send error, and plain text auto-links: the text itself must be link-free
+    for (const bad of ["://", "evil.example", "/kill", "@x", "#x"]) { expect(text).not.toContain(bad); expect(html).not.toContain(bad); }
+  });
+
+  it("stops at whole entries under the message bound and says how many it left out", async () => {
+    const s = await growSetup();
+    for (let i = 0; i < 200; i++) {
+      s.store.upsertGrowItem({ name: `skill-${i}`, state: "live", origin: "clean", description: `d${i} ${"x".repeat(190)}`, example: "x", head_commit: null, content_hash: "h", body_hash: "b" }, NOW);
+    }
+    const text = formatGrowList(s.store, NOW);
+    const m = /… and (\d+) more — run houge grow list on the Mac/.exec(text);
+    expect(m).not.toBeNull();
+    const shown = (text.match(/\*\*skill-\d+\*\*/g) ?? []).length;
+    expect(shown + Number(m![1])).toBe(200);
+    expect(shown).toBeGreaterThan(0);
+    expect(text.length).toBeLessThanOrEqual(3800 + 120);
+    for (const line of text.split("\n")) expect((line.match(/`/g) ?? []).length % 2).toBe(0);
+  });
+
+  it("lists a row being published as publishing, not as waiting for review", async () => {
+    const s = await growSetup();
+    await s.svc.submit(growFields(), CLEAN);
+    s.store.patchGrowStaged(s.store.listGrowStaged("staged")[0]!.id, { state: "publishing" }, NOW);
+    const text = formatGrowList(s.store, NOW);
+    expect(text).toContain("**unit-convert** · publishing");
+    expect(text).not.toContain("waiting for review");
   });
 
   it("labels and hints by the mark, not by the stored origin", async () => {
@@ -78,7 +104,7 @@ describe("/grow", () => {
     expect(await s.svc.publishStaged(s.store.listGrowStaged("approved")[0]!.id)).toBe("failed");
     const text = formatGrowList(s.store, NOW);
     expect(text).toContain("**cap-victim** · failed (zone_full)");
-    expect(text).toContain("**bad-steps** · failed (review_failed)\n`step 3: says to [click](https://evil.example)`");
+    expect(text).toContain("**bad-steps** · failed (review_failed)\n`step 3: says to [click](https:∕∕evil․example)`");   // defanged: link-free in plain text too
     expect(text).not.toContain("failed review");
   });
 

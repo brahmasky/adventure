@@ -37,7 +37,7 @@ const UNDO_TEXT = { unknown_skill: "No live skill of that name. /grow lists them
 /** Only these mean the reply is in the outbox (I7). */
 const IN_OUTBOX: ReadonlySet<NotificationQueueResult["status"]> = new Set(["queued", "duplicate"]);
 /** Failed rows that say nothing about the submission's content: never "the last failed review", never an outcome line. */
-const NOT_A_FAILURE: ReadonlySet<string> = new Set(["superseded", "undone"]);
+export const NOT_A_FAILURE: ReadonlySet<string> = new Set(["superseded", "undone"]);
 const NOTE_RUNS_MAX = 200;
 /** HEAD sync's events: the event table has no sync action, so they are `publish` events with this code (never an outcome line). */
 const HEAD_SYNC = "head_sync";

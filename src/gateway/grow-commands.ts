@@ -1,15 +1,19 @@
 import type { TypedTaskEvent } from "../domain/types.js";
-import { trustItem } from "../grow/service.js";
+import { NOT_A_FAILURE, trustItem } from "../grow/service.js";
 import type { GrowItemRow, RunStore } from "../run/run-store.js";
 import type { GatewayIntakeResult } from "./gateway.js";
 import { oncePerTrigger, replyTo } from "./memory-commands.js";
 
 const DAY_MS = 86_400_000;
-const NOT_A_FAILURE: ReadonlySet<string> = new Set(["superseded", "undone"]);
+const MAX_LIST_CHARS = 3800;
 const FINDINGS_SHOWN = 3;
-/** Houge or a reviewer wrote these lines: one inline-code span, so no link, command or mention in them is tappable. Backticks are stripped, so a span cannot be left early. */
+/**
+ * Houge or a reviewer wrote these lines: one inline-code span, so no link, command or mention in them is tappable. Backticks are stripped, so a span cannot be left early.
+ * The shared adapter resends plain text when the rich send fails, and plain text auto-links, so the characters that start a link, command or mention are swapped for look-alikes first.
+ */
+const defang = (s: string): string => s.replace(/\//g, "\u2215").replace(/@/g, "\uFF20").replace(/#/g, "\uFF03").replace(/(?<=[A-Za-z0-9])\.(?=[A-Za-z0-9])/g, "\u2024");
 const code = (s: string): string => {
-  const t = s.replace(/[`\r\n]+/g, " ").replace(/\s+/g, " ").trim();
+  const t = defang(s.replace(/[`\r\n]+/g, " ").replace(/\s+/g, " ").trim());
   return t === "" ? "" : `\`${t}\``;
 };
 
@@ -33,13 +37,29 @@ export function formatGrowList(store: RunStore, now: string): string {
     const hint = store.isGrowMarked(i.name) ? `\n/grow trust ${i.name} clears the mark` : "";
     return `**${i.name}** · ${liveLabel(store, i)} · used ${i.uses}×\n${code(i.description)}${hint}`;
   });
-  const waiting = store.listGrowStaged().filter((r) => r.state !== "failed").map((r) => `**${r.name}** · waiting for review`);
+  const waiting = store.listGrowStaged().filter((r) => r.state !== "failed").map((r) => `**${r.name}** · ${r.state === "publishing" ? "publishing" : "waiting for review"}`);
   const failed = store.listGrowStaged("failed")
     .filter((r) => !NOT_A_FAILURE.has(r.code ?? "") && Date.parse(now) - Date.parse(r.updated_at) < 14 * DAY_MS)
     .map((r) => `**${r.name}** · failed (${r.code ?? "review_failed"})${findingsOf(r.findings_json)}`);
   const orphans = store.listGrowItems("orphan").map((i) => `**${i.name}** · in the repository but unknown to me · \`houge grow adopt ${i.name}\``);
-  const all = [...live, ...waiting, ...failed, ...orphans];
-  return all.length === 0 ? "🌱 **Grow zone**\nNo skills yet." : `🌱 **Grow zone**\n${all.join("\n\n")}\n\nUndo one: /grow undo <name> [reason]`;
+  const all = [...failed, ...waiting, ...live, ...orphans]; // what needs a look comes first: the length cut drops live skills before a failure
+  if (all.length === 0) return "🌱 **Grow zone**\nNo skills yet.";
+  const shown = fitEntries(all);
+  const more = all.length - shown.length;
+  const tail = more > 0 ? [`… and ${more} more — run houge grow list on the Mac`] : [];
+  return `🌱 **Grow zone**\n${[...shown, ...tail].join("\n\n")}\n\nUndo one: /grow undo <name> [reason]`;
+}
+
+/** Whole entries only, so a code span is never split; stops before the text would pass the Telegram message bound. */
+function fitEntries(all: string[]): string[] {
+  const out: string[] = [];
+  let len = 0;
+  for (const e of all) {
+    if (len + e.length + 2 > MAX_LIST_CHARS) break;
+    out.push(e);
+    len += e.length + 2;
+  }
+  return out;
 }
 
 /** The `/status` lines: nothing when the zone is healthy. Only a latched zone pauses writing; a dropped publish or an unrecorded write does not. */
