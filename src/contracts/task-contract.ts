@@ -152,7 +152,7 @@ export function compileCodeSelfWriteContract(objective: string): CompiledTaskCon
 /** The omp turn envelope (spec §9): the planner's Houge tools plus the omp built-ins and bash. */
 export const TURN_ACTIONS: readonly string[] = [
   "web_search", "http_fetch", "to_local_time", "lesson_write", "schedule_task", "wiki_build", "wiki_refine",
-  "self_diagnose", "self_write_propose", "skill_author", "gmail_read", "google_api", "houge_status", "memory_correct", "memory_correct_write",
+  "self_diagnose", "self_write_propose", "skill_author", "gmail_read", "google_api", "houge_status", "memory_correct", "memory_correct_write", "grow_submit", "grow_read",
   "fs_read", "fs_write", "shell", "shell_external", "shell_destructive", "write_report"
 ];
 
@@ -169,7 +169,9 @@ function compileTurnContract(event: TypedTaskEvent): TaskContractResult {
   // Scheduler v2 provenance strip: a run BORN FROM a schedule fire must not create or
   // mutate schedules — its goal text is replayed schedule data, not a fresh user ask
   // (2026-07-19: the weekly AI周报 fire minted a duplicate row).
-  const turnActions = TURN_ACTIONS.filter((action) => !(event.source === "schedule" && action === "schedule_task"));
+  // A schedule-born run also may not write the grow zone (ADR 0035 G7); reading it stays.
+  const SCHEDULE_STRIPPED: ReadonlySet<string> = new Set(["schedule_task", "grow_submit"]);
+  const turnActions = TURN_ACTIONS.filter((action) => !(event.source === "schedule" && SCHEDULE_STRIPPED.has(action)));
 
   const base = {
     objective: event.goal,

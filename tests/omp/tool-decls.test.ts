@@ -6,11 +6,11 @@ import { loadToolDeclarations, TOOL_DECLS_DIR, validateInput } from "../../src/o
 import { isToolArmed } from "../../src/omp/tool-arming.js";
 
 describe("tool declarations — data the daemon validates; nothing self-writable runs in the planner (spec §5.1)", () => {
-  it("loads all 15 shipped declarations", () => {
+  it("loads all 17 shipped declarations", () => {
     const r = loadToolDeclarations(TOOL_DECLS_DIR);
     expect(r.ok).toBe(true);
     if (r.ok) expect(r.decls.map((d) => d.name).sort()).toEqual([
-      "bash", "gmail_read", "google_api", "houge_status", "http_fetch", "lesson_write", "memory_correct", "schedule_task", "self_diagnose",
+      "bash", "gmail_read", "google_api", "grow_read", "grow_submit", "houge_status", "http_fetch", "lesson_write", "memory_correct", "schedule_task", "self_diagnose",
       "self_write_propose", "skill_author", "to_local_time", "web_search", "wiki_build", "wiki_refine"
     ]);
   });
@@ -48,6 +48,38 @@ describe("tool declarations — data the daemon validates; nothing self-writable
     expect(isToolArmed("schedule_task", {})).toBe(false);
     expect(isToolArmed("schedule_task", { HOUGE_SCHEDULER_ENABLED: "1" })).toBe(true);
     expect(isToolArmed("bash", {})).toBe(true);
+  });
+
+  const growDecl = (name: string) => {
+    const r = loadToolDeclarations(TOOL_DECLS_DIR);
+    if (!r.ok) throw new Error(r.error);
+    return r.decls.find((d) => d.name === name)!.parameters;
+  };
+  const okSubmit = { name: "ab-c", description: "d", example: "e", body: "1. do it" };
+
+  it("grow_submit bounds what the planner may hand the grow door: body required, no extra keys, name and body capped", () => {
+    const p = growDecl("grow_submit");
+    expect(validateInput(p, okSubmit)).toEqual([]);
+    expect(validateInput(p, { name: "ab-c", description: "d", example: "e" })).not.toEqual([]);
+    expect(validateInput(p, { ...okSubmit, extra: 1 })).not.toEqual([]);
+    expect(validateInput(p, { ...okSubmit, name: "a".repeat(49) })).not.toEqual([]);
+    expect(validateInput(p, { ...okSubmit, body: "x".repeat(8_001) })).not.toEqual([]);
+    expect(validateInput(p, { ...okSubmit, body: "x".repeat(8_000) })).toEqual([]);
+  });
+
+  it("grow_read takes a name and only the two documented views", () => {
+    const p = growDecl("grow_read");
+    expect(validateInput(p, { name: "ab-c" })).toEqual([]);
+    expect(validateInput(p, { name: "ab-c", what: "review" })).toEqual([]);
+    expect(validateInput(p, { name: "ab-c", what: "other" })).not.toEqual([]);
+    expect(validateInput(p, {})).not.toEqual([]);
+  });
+
+  it("both grow tools leave the armed set when HOUGE_SKILLS_ENABLED is off", () => {
+    for (const t of ["grow_submit", "grow_read"]) {
+      expect(isToolArmed(t, {})).toBe(true);
+      expect(isToolArmed(t, { HOUGE_SKILLS_ENABLED: "false" })).toBe(false);
+    }
   });
 
   it("houge_status is armed with no flag and takes no parameters (Houge must always be able to see its own runtime)", () => {

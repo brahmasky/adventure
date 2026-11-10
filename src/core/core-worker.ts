@@ -3739,6 +3739,7 @@ export class CoreWorker {
       // Paco's memory (2026-10-02): every trust limit is code-owned in the adapter (re-checked after his tap); no LLM call.
       return (input) => executeMemoryCorrect({ ...this.memoryDeps(claim, turnCtx), gated: name === "memory_correct_write" }, input);
     }
+    if (name === "grow_submit" || name === "grow_read") return async () => ({ ok: true, output: { answer: "REFUSED zone_unavailable" } }); // the grow service is wired in by the next unit of this task
     // Only the fifteen bridge entries reach here (OMP_LOOP_TOOL_META); `llm_answer` left the tool set (D8).
     return async () => ({ ok: false, error: `unknown loop tool: ${name}` });
   }
@@ -4704,6 +4705,9 @@ function loopToolTimeoutMs(name: string, seat: (role: LlmCallRole) => number): n
     case "memory_correct_write":
       // Store work plus at most one query embedding (search), which carries its own timeout.
       return resolveEmbedConfig(process.env).timeoutMs + RUNNER_TIMEOUT_BUFFER_MS;
+    case "grow_submit":
+    case "grow_read":
+      return RUNNER_TIMEOUT_BUFFER_MS + 30_000;
     case "to_local_time":
     case "houge_status":
       // Pure in-process compute — no LLM call; the runner buffer is ample headroom.

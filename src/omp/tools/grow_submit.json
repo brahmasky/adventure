@@ -1,0 +1,16 @@
+{
+  "name": "grow_submit",
+  "description": "Add or improve one of your own procedures (a skill) in your grow zone. Pass the whole skill: it replaces any live version of that name. Code checks it; a new skill or a large change is then reviewed by another model after this turn and goes live only if it passes, so report 'staged', not 'saved'. Use it when a kind of task repeats or went badly. Prose only: no scripts.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "name": { "type": "string", "maxLength": 48, "description": "3-48 chars of a-z, 0-9 and hyphen" },
+      "description": { "type": "string", "maxLength": 200, "description": "One line: when to use this skill" },
+      "example": { "type": "string", "maxLength": 300, "description": "One line: a request this skill answers" },
+      "body": { "type": "string", "maxLength": 8000, "description": "The procedure, as numbered steps in prose" },
+      "anchors": { "type": "array", "items": { "type": "string", "maxLength": 300 }, "description": "Optional world facts the procedure rests on" }
+    },
+    "required": ["name", "description", "example", "body"],
+    "additionalProperties": false
+  }
+}

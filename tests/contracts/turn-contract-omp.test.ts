@@ -20,6 +20,11 @@ describe("turn contract under omp (spec §9, plan deviation 4)", () => {
     expect(c("schedule").allowed_actions).not.toContain("schedule_task");
     expect(c("telegram").allowed_actions).toContain("schedule_task");
   });
+  it("strips grow_submit but not grow_read from a schedule-born run: replayed goal text may not write the grow zone", () => {
+    expect(c("schedule").allowed_actions).not.toContain("grow_submit");
+    expect(c("schedule").allowed_actions).toContain("grow_read");
+    expect(c("telegram").allowed_actions).toEqual(expect.arrayContaining(["grow_submit", "grow_read", "schedule_task"]));
+  });
   it("raises the per-turn cap to 40 now that reads are not budgeted", () => {
     expect(c("telegram").budget.max_tool_calls).toBe(40);
   });

@@ -142,6 +142,8 @@ declaration under `src/omp/tools/` plus a daemon-side adapter:
 | `wiki_build` · `wiki_refine` | Save or improve a durable knowledge page ([ADR 0020](docs/decisions/0020-llm-wiki.md)). |
 | `self_diagnose` · `self_write_propose` | Read Houge's own source, or propose a code change through the self-write pipeline. Both run in the background and end the turn. |
 | `skill_author` | Author or refine a skill (Gate A routing, Gate B verification). Runs in the background. |
+| `grow_submit` | Add or improve one of Houge's own procedures; checked by code, reviewed by another model before it goes live. |
+| `grow_read` | Read one of Houge's own procedures by name. |
 | `houge_status` | Read-only view of Houge's own runtime (uptime, why he booted, live build, open incidents, kill and park state); the planner calls it before answering a question about a restart or his health. |
 | `memory_correct` | Search, then retire or correct one remembered fact when Paco asks. Every change waits for his tap and has an Undo. |
 

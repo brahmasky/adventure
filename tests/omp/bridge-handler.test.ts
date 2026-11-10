@@ -26,7 +26,7 @@ afterEach(() => { for (const k of PINNED_ENV) { if (saved[k] === undefined) dele
 
 /** The omp-era turn envelope (plan Task 13); the real turn contract is rewritten there. */
 const ENVELOPE = ["web_search", "http_fetch", "to_local_time", "lesson_write", "schedule_task", "wiki_build", "wiki_refine",
-  "self_diagnose", "self_write_propose", "skill_author", "gmail_read", "google_api", "fs_read", "fs_write",
+  "self_diagnose", "self_write_propose", "skill_author", "gmail_read", "google_api", "grow_submit", "grow_read", "fs_read", "fs_write",
   "shell", "shell_external", "shell_destructive", "write_report"];
 
 const DECLS: ToolDeclaration[] = (() => {

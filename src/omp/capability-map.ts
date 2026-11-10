@@ -4,11 +4,12 @@ export type RegistryEntry =
   | "shell" | "shell_external" | "shell_destructive" | "fs_read" | "fs_write"
   | "web_search" | "http_fetch" | "to_local_time" | "lesson_write" | "schedule_task" | "wiki_build" | "wiki_refine"
   | "self_diagnose" | "self_write_propose" | "skill_author" | "gmail_read" | "google_api" | "houge_status"
-  | "memory_correct" | "memory_correct_write";
+  | "memory_correct" | "memory_correct_write" | "grow_submit" | "grow_read";
 
 const same = (e: RegistryEntry) => () => e;
 const ONE_TO_ONE: RegistryEntry[] = ["web_search", "http_fetch", "to_local_time", "lesson_write", "schedule_task",
-  "wiki_build", "wiki_refine", "self_diagnose", "self_write_propose", "skill_author", "gmail_read", "google_api", "houge_status"];
+  "wiki_build", "wiki_refine", "self_diagnose", "self_write_propose", "skill_author", "gmail_read", "google_api", "houge_status",
+  "grow_submit", "grow_read"];
 
 export const CAPABILITY_MAP: ReadonlyMap<string, (input: Record<string, unknown>) => RegistryEntry> = new Map([
   ["bash", (input: Record<string, unknown>): RegistryEntry => {
