@@ -637,11 +637,25 @@ None changes a decision of §2 or §2a; where the text above differs, this secti
 26. **Schedule-born turns get no grow outcome or hint lines (§5.5).** They cannot submit, and they would use up
     lines meant for Paco's next conversation.
 27. **Orphans (§5.8).** A boot scan compares HEAD with the database; an orphan is adopted as untrusted.
-28. **Bundle pairing (§5.1).** The grow tick writes the bundle for the newest snapshot that lacks one, every poll,
+28. **Bundle pairing (§5.1).** The grow tick writes the bundle for the newest snapshot, when it has none, every poll
+    (a bundle is the zone as it is now, so it is never paired with an older snapshot),
     so a crash between snapshot and bundle repairs itself; the DB backup tick is unchanged apart from pruning a
     bundle with its snapshot.
 29. **Migration (§5.11).** Migrated skills pass the formal checks; the old folder is renamed only when every file
     migrated, and the renamed folder is gitignored.
 30. **Build.** The asset copy clears `dist/omp/tools/` first, so a removed tool declaration cannot survive a rebuild
     and stop every turn.
+31. **Failed publishes end (§5.8).** A publish that fails twice becomes `failed` (`publish_failed`) with an incident
+    and an outcome line for Houge; it is not retried on later polls. The write door is disabled only when the zone
+    itself cannot be asserted.
+32. **One version in motion per name (§5.8).** A submit or an undo first settles a publish in motion for that name;
+    Paco's undo cancels one that has not landed.
+33. **The mark is per name (§5.7).** It is kept in its own table, so a removed item, a failed submission or a row in
+    flight cannot lose it. `/grow trust` clears it for the item and for pending submissions.
+34. **Undo (§5.9).** Idempotent across a crash; each undo steps back one published version, so two in a row never
+    restore the version just undone.
+35. **The switch (§5.14).** With `HOUGE_GROW_ENABLED` off, a publish whose commit already landed is still recorded;
+    approved content that has not been committed waits.
+36. **`HOUGE_GROW_DIR`** is accepted only when absolute, at least three segments deep, and not the home directory
+    or an ancestor of it.
 
