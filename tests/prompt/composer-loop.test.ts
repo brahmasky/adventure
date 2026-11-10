@@ -89,7 +89,7 @@ describe("the `omp` composer surface (ADR 0002 V2: the planner acts through real
   it("the other surfaces stay byte-identical (goldens safe): GUARDRAILS unchanged, no planner text", () => {
     const root = memoryRoot();
     const now = new Date("2026-07-02T00:00:00.000Z");
-    for (const surface of ["ask", "research", "research-critique", "selfcode", "skill-author"]) {
+    for (const surface of ["ask", "research", "research-critique", "selfcode"]) {
       const prompt = composeSystemPrompt(root, surface, { now });
       expect(prompt).toContain(GUARDRAILS);
       expect(prompt).not.toContain(OMP_LOOP_DISCIPLINE);

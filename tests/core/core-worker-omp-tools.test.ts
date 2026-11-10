@@ -23,7 +23,7 @@ import { bridgeTurn, ompWorker } from "../helpers/omp-worker.js";
 pinOmpEnv();
 pinEnabledFlags();
 const PINNED = ["HOUGE_SCHEDULER_ENABLED", "HOUGE_SCHEDULER_MAX_PER_CHAT", "HOUGE_SKILLS_ENABLED", "HOUGE_WIKI_ENABLED", "HOUGE_WIKI_MIN_SOURCES",
-  "HOUGE_WIKI_VERIFY_PASSES", "HOUGE_WIKI_MAX_PAGES", "HOUGE_DUAL_LLM_ENABLED", "HOUGE_EPISODIC_ENABLED", "HOUGE_GATE_B_ENABLED", "HOUGE_TOMBSTONE_PATH"] as const;
+  "HOUGE_WIKI_VERIFY_PASSES", "HOUGE_WIKI_MAX_PAGES", "HOUGE_DUAL_LLM_ENABLED", "HOUGE_EPISODIC_ENABLED", "HOUGE_TOMBSTONE_PATH"] as const;
 const saved: Record<string, string | undefined> = {};
 let tmp: { dir: string; cleanup: () => void };
 let store: RunStore;

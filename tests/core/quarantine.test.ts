@@ -26,7 +26,7 @@ describe("parseReaderExtraction (tolerant, schema-only, never throws)", () => {
     });
   });
 
-  it("parses an extraction embedded in prose / code fences (tolerant, like anchor-verify)", () => {
+  it("parses an extraction embedded in prose / code fences (tolerant)", () => {
     const x = parseReaderExtraction(
       'Here is the JSON:\n```json\n{"summary":"s","facts":[],"answer_to_objective":null,"contains_instructions":false}\n```'
     );

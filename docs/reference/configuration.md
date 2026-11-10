@@ -540,12 +540,6 @@ good skills 0.28–0.89 from broken ones ≤0.06).
 A Gate B parse failure / LLM error **never** blocks a turn: it is treated as *unscored* and falls
 back to an advisory write with a noted error (only a real **low score** blocks, never an error).
 
-| Variable | Default | Purpose |
-|----------|---------|---------|
-| `HOUGE_GATE_B_ENABLED` | `on` | Kill switch for Gate B. Off → every skill is treated as unscored/advisory (commanded and auto both write). Only `0`/`false`/`no`/`off` disables it. |
-| `HOUGE_GATE_B_PASSES` | `3` | Number of independent Gate B passes averaged into the score (the ensemble that tamed single-pass noise in the spike). |
-| `HOUGE_GATE_B_THRESHOLD` | `0.15` | Pass threshold on the mean score — the good/bad **separation** gap from the spike, not an absolute quality bar. |
-
 ## Self-evolution (Phase 3) — code self-write
 
 Houge can write a **diff to his own source** to fix a bug. When the planner decides the fix belongs in
