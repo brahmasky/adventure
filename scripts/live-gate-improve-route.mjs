@@ -94,7 +94,7 @@ async function prepare(args) {
   const seat = (name, role) => { const s = m.tickSeat(store, name, role, process.env); return (i) => { g.seatInputs.push({ name, text: `${i.question}\n${i.system}` }); return s(i); }; };
   g.llm = { pick: seat("improve_pick", "improve_pick"), distill: seat("improve_distill", "distill") };
   const cfg = m.resolveEmbedConfig(process.env); g.embedModel = cfg.model; g.embed = (t) => m.embedText(t, cfg);
-  g.gateway = new m.Gateway(store, undefined, undefined, undefined, undefined, { dataDir: temp.root });
+  g.gateway = new m.Gateway(store, undefined, undefined, undefined, { dataDir: temp.root });
   return g;
 }
 

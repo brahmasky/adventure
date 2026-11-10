@@ -34,7 +34,7 @@ async function gateway(answer: ProbeOutcome, calls: string[] = []) {
   const roles = new RoleResolver({ store, env: () => ({ HOUGE_MODEL_ROLES: "resolved" }), readCatalog: async () => FIX() });
   await roles.refreshCatalog();
   const probe: ProbeFn = async (sel) => { calls.push(sel); return answer; };
-  return { gw: new Gateway(store, undefined, undefined, undefined, undefined, { roles, modelProbe: probe }), roles };
+  return { gw: new Gateway(store, undefined, undefined, undefined, { roles, modelProbe: probe }), roles };
 }
 const probeRows = () => store.getLedgerEvents().filter((e) => e.event_type === "model_probe").map((e) => e.payload);
 
@@ -109,7 +109,7 @@ describe("a tap", () => {
     const roles = new RoleResolver({ store, env: () => ({ HOUGE_MODEL_ROLES: "resolved" }), readCatalog: async () => FIX() }); await roles.refreshCatalog();
     let release!: (o: ProbeOutcome) => void;
     const probe: ProbeFn = () => new Promise((r) => { release = r; });
-    const gw = new Gateway(store, undefined, undefined, undefined, undefined, { roles, modelProbe: probe });
+    const gw = new Gateway(store, undefined, undefined, undefined, { roles, modelProbe: probe });
     gw.intake(tap(tierCallbackData("gemini-pro", "gemini-exp-1")));
     store.recordModelRoleOverride({ key: "judges:2", pattern: "gpt-oss-120b", actor: "paco" });
     release({ result: "pass", kind: "ok" }); await gw.whenTierTapsSettled();
@@ -121,7 +121,7 @@ describe("a tap", () => {
     const calls: string[] = [];
     const down = new RoleResolver({ store, env: () => ({ HOUGE_MODEL_ROLES: "resolved" }), readCatalog: async () => null }); await down.refreshCatalog();
     const probe: ProbeFn = async (sel) => { calls.push(sel); return { result: "pass", kind: "ok" }; };
-    const gw = new Gateway(store, undefined, undefined, undefined, undefined, { roles: down, modelProbe: probe });
+    const gw = new Gateway(store, undefined, undefined, undefined, { roles: down, modelProbe: probe });
     gw.intake(tap(tierCallbackData("gemini-pro", "gemini-exp-1"))); await gw.whenTierTapsSettled();
     vi.stubEnv("HOUGE_MODEL_ROLES", "static"); // a catalog in hand, but static applies no override: writing one would be a silent no-op
     const { gw: gw2 } = await gateway({ result: "pass", kind: "ok" }, calls);
@@ -137,7 +137,7 @@ describe("a tap", () => {
     const ac = new AbortController(); let seen: AbortSignal | undefined;
     const roles = new RoleResolver({ store, env: () => ({ HOUGE_MODEL_ROLES: "resolved" }), readCatalog: async () => FIX() }); await roles.refreshCatalog();
     const probe: ProbeFn = (_sel, signal) => { seen = signal; return new Promise((r) => signal?.addEventListener("abort", () => r("aborted"), { once: true })); };
-    const gw = new Gateway(store, undefined, undefined, undefined, undefined, { roles, modelProbe: probe, stopSignal: ac.signal });
+    const gw = new Gateway(store, undefined, undefined, undefined, { roles, modelProbe: probe, stopSignal: ac.signal });
     gw.intake(tap(tierCallbackData("gemini-pro", "gemini-exp-1")));
     ac.abort(); await gw.whenTierTapsSettled();
     expect(seen).toBe(ac.signal);
@@ -147,7 +147,7 @@ describe("a tap", () => {
     const ac = new AbortController(); let release!: (o: ProbeOutcome) => void;
     const roles = new RoleResolver({ store, env: () => ({ HOUGE_MODEL_ROLES: "resolved" }), readCatalog: async () => FIX() }); await roles.refreshCatalog();
     const probe: ProbeFn = () => new Promise((r) => { release = r; }); // ignores its signal, as a child that outlives the kill would
-    const gw = new Gateway(store, undefined, undefined, undefined, undefined, { roles, modelProbe: probe, stopSignal: ac.signal });
+    const gw = new Gateway(store, undefined, undefined, undefined, { roles, modelProbe: probe, stopSignal: ac.signal });
     gw.intake(tap(tierCallbackData("gemini-pro", "gemini-exp-1")));
     ac.abort(); release({ result: "pass", kind: "ok" }); await gw.whenTierTapsSettled();
     expect([probeRows(), store.latestModelRoleOverrides().has("judges:2")]).toEqual([[], false]);

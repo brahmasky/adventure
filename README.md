@@ -200,7 +200,7 @@ merged lesson and supersedes the originals; it never deletes. Preview with
 Slash commands keep it inspectable (idempotent, no run, no budget unless noted):
 
 - `/lessons [scope]` view lessons · `/forget <scope|id>` retire them (a reversible status flip; one the improvement check saved has its whole change undone).
-- `/skills [scope]` view skills; `/skills retire|restore <name>`, `/skills retired`, `/skills pending`.
+- `/grow` lists the skills Houge wrote for himself; `/grow undo <name> [reason]` removes one (queued, the daemon confirms); `/grow trust <name>` clears the "from outside content" mark.
 - `/schedule` · `/schedule cancel <N>` list or cancel this chat's schedules. Schedules are created and
   updated conversationally through `schedule_task`.
 - `/status` health digest (with a `Jev front door: armed` or `off (cause)` line, plus 24 h decision counts, the settle health line, per-entry Jev skips when there were any, and the Improvement (7 d) line) · `/status decisions` the last 10 decisions · `/changes` background changes of the last 30 days in plain words (model switches, internal self-checks, routine Jev notices — what no longer comes to chat) · `/usage` token use per model (omp rows show "sub", never dollars).

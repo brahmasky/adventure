@@ -195,7 +195,7 @@ function admit(side, item, clock, attempt) {
       created_at: new Date(clock.t - p.gapMs).toISOString() });
   }
   const upd = 900_000 + item.k * 10 + attempt;
-  const r = new side.m.Gateway(side.store, undefined, undefined, undefined, undefined, { dataDir: side.dir }).intake(side.m.buildTypedTaskEvent({
+  const r = new side.m.Gateway(side.store, undefined, undefined, undefined, { dataDir: side.dir }).intake(side.m.buildTypedTaskEvent({
     source: "telegram", type: "turn", program: "turn", goal: item.text, requested_by: { kind: "user", id: "p6" }, notify: { kind: "telegram", chat_id: chat },
     idempotency_key: `telegram:${upd}:${item.k}`, source_reference: `telegram:update:${upd}:message:${item.k}`, metadata: { telegram_update_id: upd, telegram_message_id: item.k } }));
   if (!r.ok || r.status !== "created") return { refused: JSON.stringify({ ...r, run_id: undefined }) };

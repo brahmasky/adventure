@@ -15,7 +15,7 @@ import {
 } from "../../src/gateway/gateway.js";
 import { formatScheduleListText, visibleSchedules } from "../../src/run/schedule-spec.js";
 import { RunStore } from "../../src/run/run-store.js";
-import { SkillStore } from "../../src/skills/skill-store.js";
+import { CLEAN, growFields, growSetup } from "../helpers/grow.js";
 import { isSelfWriteActionEvent, normalizeTelegramUpdate } from "../../src/triggers/telegram-trigger-adapter.js";
 
 // PINNED_ENV (ROADMAP §3.5): the radar flags change what /schedule lists (the system ticks are shown
@@ -24,6 +24,14 @@ const RADAR_FLAGS = ["HOUGE_RADAR_ENABLED", "HOUGE_RADAR_PANEL_ENABLED"] as cons
 const savedRadarFlags: Record<string, string | undefined> = {};
 beforeEach(() => { for (const k of RADAR_FLAGS) { savedRadarFlags[k] = process.env[k]; delete process.env[k]; } });
 afterEach(() => { for (const k of RADAR_FLAGS) { if (savedRadarFlags[k] === undefined) delete process.env[k]; else process.env[k] = savedRadarFlags[k]; } });
+
+function growEvent(program: string, key: string, metadata?: Record<string, string>) {
+  return buildTypedTaskEvent({
+    source: "telegram", type: "grow", program, requested_by: { kind: "user", id: "paco" },
+    notify: { kind: "telegram", chat_id: "222" }, idempotency_key: key, source_reference: `telegram:update:${key}:message:1`,
+    ...(metadata ? { metadata } : {})
+  });
+}
 
 function seedWaitingApprovalRun(store: RunStore): string {
   const gateway = new Gateway(store);
@@ -273,275 +281,56 @@ describe("Gateway telegram events", () => {
     }
   });
 
-  it("/skills lists a seeded skill and is idempotent on redelivery", () => {
-    const store = RunStore.openInMemory();
-    const root = mkdtempSync(join(tmpdir(), "houge-gw-skills-"));
-    try {
-      mkdirSync(join(root, "research"), { recursive: true });
-      writeFileSync(
-        join(root, "research", "cross-check.md"),
-        "---\nname: cross-check-figures\nscope: research\nwhen: comparing numbers\nversion: 2\n---\nmethod body",
-        "utf8"
-      );
-      const gateway = new Gateway(store, undefined, undefined, new SkillStore({ root }));
-
-      const event = buildTypedTaskEvent({
-        source: "telegram",
-        type: "skills",
-        program: "research", // scope (optional) rides program
-        requested_by: { kind: "user", id: "paco" },
-        notify: { kind: "telegram", chat_id: "222" },
-        idempotency_key: "telegram:skills-1",
-        source_reference: "telegram:update:20:message:1"
-      });
-
-      const first = gateway.intake(event);
-      const second = gateway.intake(event); // redelivered update
-
-      expect(first).toEqual({ ok: true, status: "skills_returned", run_id: "" });
-      expect(second).toEqual(first); // replayed, not re-applied
-      expect(store.countNotificationsByIdempotencyKey("telegram:skills-1:skills")).toBe(1);
-      const note = store.claimNextNotification("test", 30);
-      expect(note?.payload.text).toContain("cross-check-figures");
-      expect(note?.payload.text).toContain("when: comparing numbers");
-      expect(note?.payload.text).toContain("v2");
-    } finally {
-      store.close();
-      rmSync(root, { recursive: true, force: true });
-    }
+  it("/grow lists a live skill and is idempotent on redelivery", async () => {
+    const s = await growSetup();
+    await s.live(growFields());
+    const gateway = new Gateway(s.store);
+    const event = growEvent("list", "telegram:grow-1");
+    const first = gateway.intake(event);
+    const second = gateway.intake(event); // redelivered update
+    expect(first).toEqual({ ok: true, status: "grow_returned", run_id: "" });
+    expect(second).toEqual(first); // replayed, not re-applied
+    expect(s.store.countNotificationsByIdempotencyKey("telegram:grow-1:grow")).toBe(1);
+    const note = s.store.claimNextNotification("test", 30);
+    expect(note?.payload.text).toContain("**unit-convert** · written by Houge · used 0×");
   });
 
-  it("/skills reports emptiness when no skills exist for the scope", () => {
-    const store = RunStore.openInMemory();
-    const root = mkdtempSync(join(tmpdir(), "houge-gw-skills-empty-"));
-    try {
-      const gateway = new Gateway(store, undefined, undefined, new SkillStore({ root }));
-      const event = buildTypedTaskEvent({
-        source: "telegram",
-        type: "skills",
-        program: "research",
-        requested_by: { kind: "user", id: "paco" },
-        notify: { kind: "telegram", chat_id: "222" },
-        idempotency_key: "telegram:skills-empty",
-        source_reference: "telegram:update:21:message:1"
-      });
-      expect(gateway.intake(event)).toEqual({ ok: true, status: "skills_returned", run_id: "" });
-      const note = store.claimNextNotification("test", 30);
-      expect(note?.payload.text).toContain('No skills for "research" yet.');
-    } finally {
-      store.close();
-      rmSync(root, { recursive: true, force: true });
-    }
+  it("/grow reports emptiness when nothing has been written", async () => {
+    const s = await growSetup();
+    expect(new Gateway(s.store).intake(growEvent("list", "telegram:grow-empty"))).toEqual({ ok: true, status: "grow_returned", run_id: "" });
+    expect(s.store.claimNextNotification("test", 30)?.payload.text).toBe("🌱 **Grow zone**\nNo skills yet.");
   });
 
-  it("/skills pending lists parked drafts and never the active library", () => {
-    const store = RunStore.openInMemory();
-    const root = mkdtempSync(join(tmpdir(), "houge-gw-skills-pending-"));
-    try {
-      const skillStore = new SkillStore({ root });
-      // One active skill + one parked draft.
-      skillStore.writeSkill("research", "good-skill", "---\nname: good-skill\nscope: research\nwhen: w\n---\nbody");
-      skillStore.writePending("ask", "blocked-skill", "---\nname: blocked-skill\nscope: ask\nwhen: trigger\n---\nbody");
-      const gateway = new Gateway(store, undefined, undefined, skillStore);
-      const event = buildTypedTaskEvent({
-        source: "telegram",
-        type: "skills",
-        program: "pending",
-        requested_by: { kind: "user", id: "paco" },
-        notify: { kind: "telegram", chat_id: "222" },
-        idempotency_key: "telegram:skills-pending",
-        source_reference: "telegram:update:22:message:1"
-      });
-      expect(gateway.intake(event)).toEqual({ ok: true, status: "skills_returned", run_id: "" });
-      const note = store.claimNextNotification("test", 30);
-      expect(note?.payload.text).toContain("blocked-skill");
-      expect(note?.payload.text).toContain("Pending (blocked) skills");
-      expect(note?.payload.text).not.toContain("good-skill"); // active skill not listed under pending
-    } finally {
-      store.close();
-      rmSync(root, { recursive: true, force: true });
-    }
+  it("/grow undo through intake queues one request, answers at once, and the tick's run removes the skill", async () => {
+    const s = await growSetup();
+    await s.live(growFields());
+    const gateway = new Gateway(s.store);
+    const event = growEvent("undo unit-convert", "telegram:grow-undo", { grow_reason: "wrong unit" });
+    gateway.intake(event);
+    gateway.intake(event); // redelivered update: still one request
+    expect(s.store.dueGrowRequests()).toMatchObject([{ kind: "undo", name: "unit-convert", reason: "wrong unit", chat_id: "222" }]);
+    expect(s.store.getGrowItem("unit-convert")?.state).toBe("live"); // intake itself never touches git
+    expect(s.store.claimNextNotification("test", 30)?.payload.text).toBe("⏳ Undoing unit-convert; I will confirm in a moment.");
+    expect(await s.svc.runRequests()).toBe(1);
+    expect(s.store.getGrowItem("unit-convert")?.state).toBe("removed");
   });
 
-  it("/skills retire <name> moves the skill to the graveyard and confirms with a restore hint", () => {
-    const store = RunStore.openInMemory();
-    const root = mkdtempSync(join(tmpdir(), "houge-gw-skills-retire-"));
-    try {
-      const skillStore = new SkillStore({ root });
-      skillStore.writeSkill("research", "old-skill", "---\nname: old-skill\nscope: research\nwhen: w\n---\nbody");
-      const gateway = new Gateway(store, undefined, undefined, skillStore);
-      const event = buildTypedTaskEvent({
-        source: "telegram",
-        type: "skills",
-        program: "retire old-skill",
-        requested_by: { kind: "user", id: "paco" },
-        notify: { kind: "telegram", chat_id: "222" },
-        idempotency_key: "telegram:skills-retire-1",
-        source_reference: "telegram:update:23:message:1"
-      });
-      expect(gateway.intake(event)).toEqual({ ok: true, status: "skills_returned", run_id: "" });
-      const note = store.claimNextNotification("test", 30);
-      expect(note?.payload.text).toContain("Retired");
-      expect(note?.payload.text).toContain("old-skill");
-      expect(note?.payload.text).toContain("/skills restore");
-      // The skill is gone from the active library.
-      expect(skillStore.list().map((m) => m.name)).not.toContain("old-skill");
-      expect(skillStore.listRetired().map((m) => m.name)).toContain("old-skill");
-    } finally {
-      store.close();
-      rmSync(root, { recursive: true, force: true });
-    }
+  it("/grow trust through intake clears the outside-content mark", async () => {
+    const s = await growSetup();
+    await s.live(growFields(), { ...CLEAN, level: "untrusted" });
+    new Gateway(s.store).intake(growEvent("trust unit-convert", "telegram:grow-trust"));
+    expect(s.store.getGrowItem("unit-convert")?.origin).toBe("clean");
+    expect(s.store.claimNextNotification("test", 30)?.payload.text).toContain("now reads as Houge's own");
   });
 
-  it("/skills retire with an unknown name answers with the available actives, no mutation", () => {
-    const store = RunStore.openInMemory();
-    const root = mkdtempSync(join(tmpdir(), "houge-gw-skills-retire-miss-"));
-    try {
-      const skillStore = new SkillStore({ root });
-      skillStore.writeSkill("research", "old-skill", "---\nname: old-skill\nscope: research\nwhen: w\n---\nbody");
-      const gateway = new Gateway(store, undefined, undefined, skillStore);
-      const event = buildTypedTaskEvent({
-        source: "telegram",
-        type: "skills",
-        program: "retire nope",
-        requested_by: { kind: "user", id: "paco" },
-        notify: { kind: "telegram", chat_id: "222" },
-        idempotency_key: "telegram:skills-retire-miss",
-        source_reference: "telegram:update:24:message:1"
-      });
-      expect(gateway.intake(event)).toEqual({ ok: true, status: "skills_returned", run_id: "" });
-      const note = store.claimNextNotification("test", 30);
-      expect(note?.payload.text).toContain('No active skill matches "nope"');
-      expect(note?.payload.text).toContain("research/old-skill");
-      expect(skillStore.list().map((m) => m.name)).toContain("old-skill"); // untouched
-    } finally {
-      store.close();
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  it("/skills retired renders the graveyard with retire stamps and bold headers (no ##)", () => {
-    const store = RunStore.openInMemory();
-    const root = mkdtempSync(join(tmpdir(), "houge-gw-skills-retired-"));
-    try {
-      const skillStore = new SkillStore({ root });
-      skillStore.writeSkill("research", "old-skill", "---\nname: old-skill\nscope: research\nwhen: w\n---\nbody");
-      const retired = skillStore.retireSkill("research", "old-skill", { date: "2026-07-29", by: "paco" });
-      expect(retired.ok).toBe(true);
-      const gateway = new Gateway(store, undefined, undefined, skillStore);
-      const event = buildTypedTaskEvent({
-        source: "telegram",
-        type: "skills",
-        program: "retired",
-        requested_by: { kind: "user", id: "paco" },
-        notify: { kind: "telegram", chat_id: "222" },
-        idempotency_key: "telegram:skills-retired-view",
-        source_reference: "telegram:update:25:message:1"
-      });
-      expect(gateway.intake(event)).toEqual({ ok: true, status: "skills_returned", run_id: "" });
-      const note = store.claimNextNotification("test", 30);
-      expect(note?.payload.text).toContain("**old-skill**");
-      expect(note?.payload.text).toContain("retired 2026-");
-      expect(note?.payload.text).toContain("by paco");
-      expect(note?.payload.text).not.toContain("##");
-    } finally {
-      store.close();
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  it("/skills restore <name> brings a retired skill back to the active library", () => {
-    const store = RunStore.openInMemory();
-    const root = mkdtempSync(join(tmpdir(), "houge-gw-skills-restore-"));
-    try {
-      const skillStore = new SkillStore({ root });
-      skillStore.writeSkill("research", "old-skill", "---\nname: old-skill\nscope: research\nwhen: w\n---\nbody");
-      expect(skillStore.retireSkill("research", "old-skill", { date: "2026-07-29", by: "paco" }).ok).toBe(true);
-      const gateway = new Gateway(store, undefined, undefined, skillStore);
-      const event = buildTypedTaskEvent({
-        source: "telegram",
-        type: "skills",
-        program: "restore old-skill",
-        requested_by: { kind: "user", id: "paco" },
-        notify: { kind: "telegram", chat_id: "222" },
-        idempotency_key: "telegram:skills-restore-1",
-        source_reference: "telegram:update:26:message:1"
-      });
-      expect(gateway.intake(event)).toEqual({ ok: true, status: "skills_returned", run_id: "" });
-      const note = store.claimNextNotification("test", 30);
-      expect(note?.payload.text).toContain("Restored");
-      expect(note?.payload.text).toContain("old-skill");
-      expect(skillStore.list().map((m) => m.name)).toContain("old-skill");
-      expect(skillStore.listRetired()).toEqual([]);
-    } finally {
-      store.close();
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  it("/skills restore surfaces the superseded_by lineage note (read before restore strips it)", () => {
-    const store = RunStore.openInMemory();
-    const root = mkdtempSync(join(tmpdir(), "houge-gw-skills-restore-lineage-"));
-    try {
-      const skillStore = new SkillStore({ root });
-      skillStore.writeSkill("research", "old-skill", "---\nname: old-skill\nscope: research\nwhen: w\n---\nbody");
-      expect(
-        skillStore.retireSkill("research", "old-skill", { date: "2026-07-29", by: "refine", supersededBy: "new-skill" }).ok
-      ).toBe(true);
-      const gateway = new Gateway(store, undefined, undefined, skillStore);
-      const event = buildTypedTaskEvent({
-        source: "telegram",
-        type: "skills",
-        program: "restore old-skill",
-        requested_by: { kind: "user", id: "paco" },
-        notify: { kind: "telegram", chat_id: "222" },
-        idempotency_key: "telegram:skills-restore-lineage",
-        source_reference: "telegram:update:28:message:1"
-      });
-      expect(gateway.intake(event)).toEqual({ ok: true, status: "skills_returned", run_id: "" });
-      const note = store.claimNextNotification("test", 30);
-      expect(note?.payload.text).toContain("Restored");
-      expect(note?.payload.text).toContain("superseded by new-skill");
-      expect(note?.payload.text).toContain("both are now active");
-      // Restored for real, and the stamp is stripped from the file itself.
-      expect(skillStore.list().map((m) => m.name)).toContain("old-skill");
-      expect(skillStore.listRetired()).toEqual([]);
-    } finally {
-      store.close();
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  it("/skills retire with an ambiguous substring asks instead of guessing", () => {
-    const store = RunStore.openInMemory();
-    const root = mkdtempSync(join(tmpdir(), "houge-gw-skills-retire-ambig-"));
-    try {
-      const skillStore = new SkillStore({ root });
-      skillStore.writeSkill("research", "cross-check", "---\nname: cross-check\nscope: research\nwhen: w\n---\nbody");
-      skillStore.writeSkill("ask", "fact-check", "---\nname: fact-check\nscope: ask\nwhen: w\n---\nbody");
-      const gateway = new Gateway(store, undefined, undefined, skillStore);
-      const event = buildTypedTaskEvent({
-        source: "telegram",
-        type: "skills",
-        program: "retire check",
-        requested_by: { kind: "user", id: "paco" },
-        notify: { kind: "telegram", chat_id: "222" },
-        idempotency_key: "telegram:skills-retire-ambig",
-        source_reference: "telegram:update:27:message:1"
-      });
-      expect(gateway.intake(event)).toEqual({ ok: true, status: "skills_returned", run_id: "" });
-      const note = store.claimNextNotification("test", 30);
-      expect(note?.payload.text).toContain("ambiguous");
-      expect(note?.payload.text).toContain("<scope>/<name>");
-      expect(note?.payload.text).toContain("research/cross-check");
-      expect(note?.payload.text).toContain("ask/fact-check");
-      // Nothing was retired.
-      expect(skillStore.listRetired()).toEqual([]);
-      expect(skillStore.list()).toHaveLength(2);
-    } finally {
-      store.close();
-      rmSync(root, { recursive: true, force: true });
-    }
+  it("/status carries the grow zone's warning when writing is paused", async () => {
+    const s = await growSetup();
+    const gateway = new Gateway(s.store);
+    const now = "2026-11-10T12:00:00.000Z";
+    s.store.openIncident({ kind: "grow_zone_unavailable", subject: "zone", detail: {}, now });
+    gateway.intake(buildTypedTaskEvent({ source: "telegram", type: "status", requested_by: { kind: "user", id: "paco" },
+      notify: { kind: "telegram", chat_id: "222" }, idempotency_key: "telegram:grow-status", source_reference: "telegram:update:31:message:1" }), now);
+    expect(s.store.claimNextNotification("test", 30)?.payload.text).toContain("Grow zone: writing is paused");
   });
 
   it("/schedule lists THIS chat's schedules in the documented row shape, idempotent on redelivery (B10b)", () => {

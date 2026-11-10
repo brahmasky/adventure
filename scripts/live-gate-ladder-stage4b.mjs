@@ -243,7 +243,7 @@ function bridgeEnv(name) {
   e.handle = d.createBridgeHandler({ store, cfg, ctx, decls: decls.decls, env: {}, turnEnvelopeActions: [...m.TURN_ACTIONS], activeTurn: () => e.turn });
   const event = { source: "schedule", type: "turn", program: "turn", goal: "stage4b gate", requested_by: { kind: "schedule", id: schedule_id }, notify: { kind: "telegram", chat_id: CHAT },
     idempotency_key: `schedule:${schedule_id}:s4b:${nextN()}`, source_reference: `scheduled_tasks.${schedule_id}` };
-  const r = new d.Gateway(store, undefined, undefined, undefined, undefined, { dataDir: data }).intake(d.buildTypedTaskEvent(event));
+  const r = new d.Gateway(store, undefined, undefined, undefined, { dataDir: data }).intake(d.buildTypedTaskEvent(event));
   if (!r.ok || !r.run_id) throw new Error(`intake failed: ${JSON.stringify(r)}`);
   const claim = store.claimRun(r.run_id, `planner:${CHAT}:gate`, 600); if (!claim) throw new Error("claim failed");
   e.run = r.run_id;

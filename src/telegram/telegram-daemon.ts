@@ -233,7 +233,6 @@ export async function runTelegramDaemon(
     options.store,
     undefined,
     options.projectRoot,
-    undefined,
     { ...(options.requestShutdown ? { requestShutdown: options.requestShutdown } : {}),
       // `/mail off`: both Paco auth clients (the worker's, for on-demand reads, and the poller's) drop their cached access token.
       onMailOff: () => { worker.invalidatePacoGmail(); pacoAuthClient(options).invalidate(); } },

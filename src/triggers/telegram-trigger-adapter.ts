@@ -502,12 +502,9 @@ function buildTelegramEvent(command: TelegramCommand, base: TelegramEventBase): 
     case "lessons":
       // scope (optional) rides `program`; absent → list all scopes.
       return buildTypedTaskEvent({ ...base, type: "lessons", ...(command.scope ? { program: command.scope } : {}) });
-    case "skills": {
-      // scope (optional) rides `program`; absent → list all scopes. Lifecycle verbs ride
-      // `program` too, as `"<action> <name>"` — the gateway splits and dispatches.
-      const skillsProgram = command.action ? `${command.action} ${command.name}` : command.scope;
-      return buildTypedTaskEvent({ ...base, type: "skills", ...(skillsProgram ? { program: skillsProgram } : {}) });
-    }
+    case "grow":
+      return buildTypedTaskEvent({ ...base, type: "grow", program: command.action === "list" ? "list" : `${command.action} ${command.name}`,
+        ...(command.reason ? { metadata: { ...base.metadata, grow_reason: command.reason } } : {}) });
     case "forget":
       // scope rides `program`.
       return buildTypedTaskEvent({ ...base, type: "forget", program: command.scope });

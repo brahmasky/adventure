@@ -66,7 +66,7 @@ function judgeClient(m, store, bodies) {
 
 function intakeRun(m, store, root, source, text) {
   const n = Date.now() + Math.floor(Math.random() * 1e6);
-  const r = new m.Gateway(store, undefined, undefined, undefined, undefined, { dataDir: root }).intake(m.buildTypedTaskEvent({
+  const r = new m.Gateway(store, undefined, undefined, undefined, { dataDir: root }).intake(m.buildTypedTaskEvent({
     source, type: "turn", program: "turn", goal: text, requested_by: source === "schedule" ? { kind: "schedule", id: "gate" } : { kind: "user", id: "gate" },
     notify: { kind: "telegram", chat_id: "-4200" }, idempotency_key: `gate2a:${source}:${n}`, source_reference: `gate2a:${n}` }));
   if (!r.ok || !r.run_id) throw new Error(`intake failed: ${JSON.stringify(r)}`);

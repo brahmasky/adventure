@@ -105,7 +105,7 @@ const MARKER_LINE = "houge.jev-disarmed marker";
 
 function statusReply(g) {
   const key = `gate-nos-${Date.now()}`;
-  const gw = new g.m.Gateway(g.store, undefined, undefined, undefined, undefined, { dataDir: g.root });
+  const gw = new g.m.Gateway(g.store, undefined, undefined, undefined, { dataDir: g.root });
   const r = gw.intake(g.m.buildTypedTaskEvent({ source: "telegram", type: "status", requested_by: { kind: "user", id: "gate" },
     notify: { kind: "telegram", chat_id: g.chat }, idempotency_key: `telegram:${key}`, source_reference: `telegram:update:${key}` }));
   if (!r.ok) throw new Error("status intake failed");
@@ -150,7 +150,7 @@ async function check5(g) {
   const worker = new g.m.CoreWorker(g.store, g.repo, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
     undefined, undefined, { dataDir: g.root, distDir: DIST });
   const msg = 9_000_000 + Math.floor(Math.random() * 1_000_000); const upd = 8_000_000_000 + msg;
-  const r = new g.m.Gateway(g.store, undefined, undefined, undefined, undefined, { dataDir: g.root }).intake(g.m.buildTypedTaskEvent({
+  const r = new g.m.Gateway(g.store, undefined, undefined, undefined, { dataDir: g.root }).intake(g.m.buildTypedTaskEvent({
     source: "telegram", type: "turn", program: "turn", goal: STATUS_Q, requested_by: { kind: "user", id: "gate" },
     notify: { kind: "telegram", chat_id: g.chat }, idempotency_key: `telegram:${upd}:${msg}`, source_reference: `telegram:update:${upd}:message:${msg}`,
     metadata: { telegram_update_id: upd, telegram_message_id: msg } }));

@@ -13,7 +13,7 @@ export type TelegramCommand =
   | { type: "help" }
   | { type: "unknown_command"; attempted: string }
   | { type: "lessons"; scope?: string }
-  | { type: "skills"; scope?: string; action?: "retire" | "restore"; name?: string }
+  | { type: "grow"; action: "list" | "undo" | "trust"; name?: string; reason?: string }
   | { type: "forget"; scope: string }
   | { type: "schedule_admin"; action: "list" }
   | { type: "schedule_admin"; action: "cancel"; schedule_id: string }
@@ -66,7 +66,8 @@ export function parseTelegramCommand(text: string): TelegramCommandParseResult {
   if (command === "/idea") return parseIdea(rest);
   if (command === "/help") return { ok: true, command: { type: "help" } };
   if (command === "/lessons") return parseLessons(rest);
-  if (command === "/skills") return parseSkills(rest);
+  if (command === "/grow") return parseGrow(rest);
+  if (command === "/skills") return { ok: true, command: { type: "grow", action: "list" } }; // one-release alias of /grow
   if (command === "/forget") return parseForget(rest);
   if (command === "/schedule") return parseSchedule(rest);
   if (command === "/approve") return requiredApproval("approve", rest);
@@ -144,17 +145,14 @@ function parseLessons(words: string[]): TelegramCommandParseResult {
     : { ok: true, command: { type: "lessons" } };
 }
 
-function parseSkills(words: string[]): TelegramCommandParseResult {
-  if (words.length === 0) return { ok: true, command: { type: "skills" } };
-  const first = words[0]!.toLowerCase();
-  // Lifecycle verbs (`retire`/`restore <name>`) take exactly one name; everything else is
-  // the scope-arg form — including `/skills retired` (the graveyard view), deliberately.
-  if (first === "retire" || first === "restore") {
-    if (words.length !== 2) return invalid(`/skills ${first} requires exactly one skill name`);
-    return { ok: true, command: { type: "skills", action: first, name: words[1]! } };
-  }
-  if (words.length > 1) return invalid("/skills requires at most one scope");
-  return { ok: true, command: { type: "skills", scope: words[0]! } };
+function parseGrow(words: string[]): TelegramCommandParseResult {
+  if (words.length === 0) return { ok: true, command: { type: "grow", action: "list" } };
+  const action = words[0]!.toLowerCase();
+  if (action !== "undo" && action !== "trust") return invalid("/grow takes nothing, or: undo <name> [reason], or: trust <name>");
+  const name = words[1] ?? "";
+  if (!/^[a-z0-9-]{3,48}$/.test(name)) return invalid("/grow undo|trust requires a skill name");
+  const reason = action === "undo" ? words.slice(2).join(" ") : "";
+  return { ok: true, command: { type: "grow", action, name, ...(reason ? { reason } : {}) } };
 }
 
 function parseForget(words: string[]): TelegramCommandParseResult {

@@ -156,7 +156,7 @@ async function closeEnv(e) {
 
 function intakeRun(e, text) {
   const n = Date.now() + Math.floor(Math.random() * 1e6);
-  const r = new e.m.Gateway(e.store, undefined, undefined, undefined, undefined, { dataDir: e.data }).intake(e.m.buildTypedTaskEvent({
+  const r = new e.m.Gateway(e.store, undefined, undefined, undefined, { dataDir: e.data }).intake(e.m.buildTypedTaskEvent({
     source: "telegram", type: "turn", program: "turn", goal: text, requested_by: { kind: "user", id: "gate" },
     notify: { kind: "telegram", chat_id: CHAT }, idempotency_key: `gate2b:telegram:${n}`, source_reference: `gate2b:${n}` }));
   if (!r.ok || !r.run_id) throw new Error(`intake failed: ${JSON.stringify(r)}`);

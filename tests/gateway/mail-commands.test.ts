@@ -143,7 +143,7 @@ describe("/mail", () => {
     s.setMailState({ last_error_code: "auth", failing_since: "2026-11-08T00:00:00.000Z", backoff_n: 4 });
     const onMailOff = vi.fn();
     vi.stubEnv("HOUGE_PACO_GMAIL_ADDRESS", "paco@example.com");
-    const g = new Gateway(s, undefined, undefined, undefined, { onMailOff });
+    const g = new Gateway(s, undefined, undefined, { onMailOff });
     g.intake(msg("/mail on"), NOW);
     vi.unstubAllEnvs();
     expect(s.mailState()).toMatchObject({ enabled: true, enabled_at: NOW, last_error_code: null, failing_since: null, backoff_n: 0 });
@@ -157,7 +157,7 @@ describe("/mail", () => {
     const s = RunStore.openInMemory();
     s.setMailState({ enabled: true });
     const spy = vi.spyOn(console, "error").mockImplementation(() => undefined);
-    new Gateway(s, undefined, undefined, undefined, { onMailOff: () => { throw new Error("boom with user@example.com"); } }).intake(msg("/mail off"), NOW);
+    new Gateway(s, undefined, undefined, { onMailOff: () => { throw new Error("boom with user@example.com"); } }).intake(msg("/mail off"), NOW);
     expect(s.mailState().enabled).toBe(false);
     expect(out(s)).toHaveLength(1);
     expect(spy.mock.calls.flat().join(" ")).not.toContain("example.com");

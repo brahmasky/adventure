@@ -211,49 +211,28 @@ describe("parseTelegramCommand", () => {
     });
   });
 
-  it("parses /skills (optional scope) and rejects more than one scope", () => {
-    expect(parseTelegramCommand("/skills")).toEqual({
-      ok: true,
-      command: { type: "skills" }
+  it("parses /grow: bare is the list, undo takes a name and a free-text reason, trust takes a name", () => {
+    expect(parseTelegramCommand("/grow")).toEqual({ ok: true, command: { type: "grow", action: "list" } });
+    expect(parseTelegramCommand("/grow undo unit-convert wrong unit")).toEqual({
+      ok: true, command: { type: "grow", action: "undo", name: "unit-convert", reason: "wrong unit" }
     });
-    expect(parseTelegramCommand("/skills research")).toEqual({
-      ok: true,
-      command: { type: "skills", scope: "research" }
-    });
-    expect(parseTelegramCommand("/skills a b")).toEqual({
-      ok: false,
-      error: { code: "TELEGRAM_COMMAND_INVALID", message: "/skills requires at most one scope" }
-    });
-    // `/skills pending` rides the scope slot (handled specially by the gateway).
-    expect(parseTelegramCommand("/skills pending")).toEqual({
-      ok: true,
-      command: { type: "skills", scope: "pending" }
-    });
+    expect(parseTelegramCommand("/grow undo unit-convert")).toEqual({ ok: true, command: { type: "grow", action: "undo", name: "unit-convert" } });
+    expect(parseTelegramCommand("/grow trust unit-convert")).toEqual({ ok: true, command: { type: "grow", action: "trust", name: "unit-convert" } });
+    // a trust never carries a reason: trailing words are dropped, not smuggled into the event
+    expect(parseTelegramCommand("/grow trust unit-convert please")).toEqual({ ok: true, command: { type: "grow", action: "trust", name: "unit-convert" } });
   });
 
-  it("parses /skills retire|restore <name> lifecycle verbs and /skills retired as a scope", () => {
-    expect(parseTelegramCommand("/skills retire old-skill")).toEqual({
-      ok: true,
-      command: { type: "skills", action: "retire", name: "old-skill" }
-    });
-    // A scope-qualified name rides through intact — the gateway's resolver splits it.
-    expect(parseTelegramCommand("/skills restore research/old-skill")).toEqual({
-      ok: true,
-      command: { type: "skills", action: "restore", name: "research/old-skill" }
-    });
-    expect(parseTelegramCommand("/skills retire")).toEqual({
-      ok: false,
-      error: { code: "TELEGRAM_COMMAND_INVALID", message: "/skills retire requires exactly one skill name" }
-    });
-    expect(parseTelegramCommand("/skills retire a b")).toEqual({
-      ok: false,
-      error: { code: "TELEGRAM_COMMAND_INVALID", message: "/skills retire requires exactly one skill name" }
-    });
-    // `/skills retired` rides the scope slot (graveyard view — handled by the gateway).
-    expect(parseTelegramCommand("/skills retired")).toEqual({
-      ok: true,
-      command: { type: "skills", scope: "retired" }
-    });
+  it("rejects /grow undo|trust without a well-formed skill name, and any other /grow word", () => {
+    const bad = { ok: false, error: { code: "TELEGRAM_COMMAND_INVALID", message: "/grow undo|trust requires a skill name" } };
+    for (const text of ["/grow undo", "/grow trust", "/grow undo Bad_Name", "/grow trust ab", "/grow undo ../etc"]) {
+      expect(parseTelegramCommand(text)).toEqual(bad);
+    }
+    expect(parseTelegramCommand("/grow nonsense")).toMatchObject({ ok: false, error: { code: "TELEGRAM_COMMAND_INVALID" } });
+  });
+
+  it("keeps /skills one release as an alias of the /grow list", () => {
+    expect(parseTelegramCommand("/skills")).toEqual({ ok: true, command: { type: "grow", action: "list" } });
+    expect(parseTelegramCommand("/skills retire old")).toEqual({ ok: true, command: { type: "grow", action: "list" } });
   });
 
   it("parses /schedule (bare = list) and /schedule cancel <编号或 id> (B10b)", () => {

@@ -47,7 +47,7 @@ const RESOLVED: ResolvedRole[] = [
 ];
 const stub = (catalog: CatalogModel[] | null = CATALOG, resolved: ResolvedRole[] = RESOLVED): ModelsRoles =>
   ({ catalog: () => catalog, resolveAll: () => resolved });
-const gateway = (roles: ModelsRoles = stub()) => new Gateway(store, undefined, undefined, undefined, undefined, { roles });
+const gateway = (roles: ModelsRoles = stub()) => new Gateway(store, undefined, undefined, undefined, { roles });
 // The CLI's shape: no resolver at all (an explicit `undefined` argument would take the default above, hence a separate helper).
 const bareGateway = () => new Gateway(store);
 const overrides = () => store.getLedgerEvents().filter((e) => e.event_type === "model_role_override");
