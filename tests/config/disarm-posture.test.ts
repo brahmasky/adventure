@@ -72,7 +72,9 @@ describe("DISARM_FLAGS", () => {
       // 2b-ii follow-up: the improvement tick turns Paco's taps into proposals and skill jobs — an evolution surface.
       "HOUGE_IMPROVE_ENABLED",
       // SP2 mail triage: polls Paco's inbox unattended.
-      "HOUGE_MAIL_ENABLED"
+      "HOUGE_MAIL_ENABLED",
+      // grow zone writes (ADR 0035): Houge adding or changing his own skills.
+      "HOUGE_GROW_ENABLED"
     ]);
     expect(DISARM_FLAGS).not.toContain("HOUGE_EPISODIC_ENABLED");
   });

@@ -57,7 +57,9 @@ export const DISARM_FLAGS: readonly string[] = [
   // 2b-ii follow-up: the improvement tick turns Paco's taps into proposals and skill jobs — an evolution surface the STOP switch covers.
   "HOUGE_IMPROVE_ENABLED",
   // SP2 mail triage (spec 2026-11-09): polls Paco's own inbox unattended and pushes cards — unattended autonomy the STOP switch covers.
-  "HOUGE_MAIL_ENABLED"
+  "HOUGE_MAIL_ENABLED",
+  // grow zone writes (ADR 0035): /disarm stops Houge adding or changing his own skills
+  "HOUGE_GROW_ENABLED"
   // omp runtime (spec 2026-09-30, D2): the money track (extwork, bounty) and the live Jev shadow
   // are deleted, so their flags left this set; omp itself has no arming flag (the cutover is hard).
 ];

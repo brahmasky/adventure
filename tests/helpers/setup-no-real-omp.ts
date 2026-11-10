@@ -22,6 +22,9 @@ const dataDir = mkdtempSync(join(tmpdir(), "houge-test-data-"));
 setDaemonDataDir(dataDir);
 const savedDaemonTmp = process.env.HOUGE_DAEMON_TMP_DIR;
 process.env.HOUGE_DAEMON_TMP_DIR = join(dataDir, "daemon-tmp"); // never the developer's ~/Library/Caches (round 2 N1)
+// The grow zone (a git repo of skills) must never resolve to the developer's real ~/Library/Application Support/houge/grow.
+const savedGrowDir = process.env.HOUGE_GROW_DIR;
+process.env.HOUGE_GROW_DIR = join(dataDir, "grow");
 const stubDir = mkdtempSync(join(tmpdir(), "houge-stub-bin-"));
 for (const name of ["omp", "agy"]) {
   const file = join(stubDir, name);
@@ -35,5 +38,6 @@ afterAll(() => {
   if (pathBefore === undefined) delete process.env.PATH; else process.env.PATH = pathBefore;
   rmSync(stubDir, { recursive: true, force: true });
   if (savedDaemonTmp === undefined) delete process.env.HOUGE_DAEMON_TMP_DIR; else process.env.HOUGE_DAEMON_TMP_DIR = savedDaemonTmp;
+  if (savedGrowDir === undefined) delete process.env.HOUGE_GROW_DIR; else process.env.HOUGE_GROW_DIR = savedGrowDir;
   rmSync(dataDir, { recursive: true, force: true });
 });
