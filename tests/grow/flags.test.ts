@@ -21,6 +21,13 @@ describe("grow flags", () => {
     for (const bad of ["/", "/Users", "/Users/x", "/tmp/x"]) expect(resolveGrowDir({ HOUGE_GROW_DIR: bad }, "/Users/x")).toBe(DEFAULT);
     expect(resolveGrowDir({ HOUGE_GROW_DIR: "/private/tmp/a/grow" }, "/Users/x")).toBe("/private/tmp/a/grow");
   });
+  it("refuses an override that overlaps the checkout, the data dir or ~/.omp, which the sandbox would cut off from every child", () => {
+    const repo = "/Users/x/Projects/adventure", data = "/Users/x/Library/Application Support/houge/data", avoid = [repo, data];
+    const pick = (dir: string): string => resolveGrowDir({ HOUGE_GROW_DIR: dir }, "/Users/x", avoid);
+    for (const bad of [repo, "/Users/x/Projects", `${repo}/grow`, `${data}/omp/workspace/grow`, "/Users/x/.omp/x", "/Users/x/.omp"]) expect(pick(bad), bad).toBe(DEFAULT);
+    expect(pick("/private/tmp/a/grow")).toBe("/private/tmp/a/grow");
+    expect(pick(`${repo}-other/grow`)).toBe(`${repo}-other/grow`);
+  });
   it("returns the normalised path it validated, never the raw override", () => {
     expect(resolveGrowDir({ HOUGE_GROW_DIR: "/data/a/../grow/zone/" }, "/Users/x")).toBe("/data/grow/zone");
     expect(resolveGrowDir({ HOUGE_GROW_DIR: "/data/a/b/../../../../Users/x" }, "/Users/x")).toBe(DEFAULT);

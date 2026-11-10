@@ -14,15 +14,26 @@ function coversHome(dir: string, home: string): boolean {
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
 
+/** True when `child` is `parent` or inside it, compared by path segment (`/a/b` is not inside `/a/bc`). */
+function isWithin(child: string, parent: string): boolean {
+  const rel = relative(resolve(parent), resolve(child));
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+}
+
+/** True when `dir` equals, contains, or sits inside `other`: a deny on one would cut off the other. */
+const overlaps = (dir: string, other: string): boolean => isWithin(dir, other) || isWithin(other, dir);
+
 /**
  * The grow zone's own git repository, outside the code checkout (spec §5.1). An override must be absolute, at least
- * three segments deep, and not the home directory or an ancestor of it; anything else falls back to the default.
+ * three segments deep, and not the home directory or an ancestor of it, and overlapping none of `avoid` (the checkout, the data dir) nor ~/.omp; anything else falls back to the default.
  */
-export function resolveGrowDir(env: NodeJS.ProcessEnv, home: string): string {
+export function resolveGrowDir(env: NodeJS.ProcessEnv, home: string, avoid: readonly string[] = []): string {
   const fallback = join(home, "Library", "Application Support", "houge", "grow");
   const raw = env.HOUGE_GROW_DIR?.trim();
   if (!raw || !isAbsolute(raw)) return fallback;
   const dir = resolve(raw);
   if (dir.split(sep).filter(Boolean).length < 3 || coversHome(dir, home)) return fallback;
+  // the grow dir is read+write-denied: refuse one that overlaps the checkout, the data dir, or ~/.omp (the planner profile exempts it)
+  if ([...avoid, join(home, ".omp")].some((a) => overlaps(dir, a))) return fallback;
   return dir;
 }
