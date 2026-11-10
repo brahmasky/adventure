@@ -6,8 +6,9 @@ import { resolveDaemonTmpDir } from "../run/daemon-tmp.js";
 /**
  * `binDirs`: the directories holding the binaries the daemon later runs OUTSIDE the sandbox (omp, codex, agy,
  * node): see installedBinaryDirs. Absent means none are known (unit tests); the $HOME install trees still apply.
+ * `grow`: the grow zone's own git repository (ADR 0035); read- and write-denied to every child. Absent in unit tests.
  */
-export interface PathContext { home: string; repo: string; data: string; binDirs?: string[] }
+export interface PathContext { home: string; repo: string; data: string; binDirs?: string[]; grow?: string }
 
 /** Credential stores under $HOME: read- and write-denied in both profiles (the planner keeps ~/.omp, D11). */
 export const HOME_SECRETS: readonly string[] = [
@@ -33,6 +34,10 @@ export function secretPaths(ctx: PathContext): string[] {
     join(ctx.repo, ".env"), join(ctx.data, "houge.sqlite"), join(ctx.data, "houge.sqlite-wal"), join(ctx.data, "houge.sqlite-shm"),
     // the daemon temp root holds Paco's media downloads and codex out-files: no child reads or writes it (N1)
     resolveDaemonTmpDir(process.env, ctx.home),
+    // the grow zone holds born-untrusted skill text and its own git history; the backup folder holds full copies of the
+    // database (read-denied itself) and the zone's bundle (ADR 0035 G2, G4)
+    ...(ctx.grow ? [ctx.grow] : []),
+    ...[...new Set([join(ctx.repo, "backups"), join(ctx.data, "backups")])],
     ...HOME_SECRETS.map((p) => join(ctx.home, p))
   ];
 }

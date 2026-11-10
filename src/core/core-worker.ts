@@ -185,6 +185,7 @@ import { buildSystemPrompt, quotedLine, type TurnContextDeps, type TurnRetrieval
 import { noRetrieval, telemetryOf, type GatedRetrieval } from "../run/relevance-gate.js";
 import { readTombstone } from "../run/tombstone.js";
 import { chatWorkspace } from "../omp/workspace.js";
+import { resolveGrowDir } from "../grow/flags.js";
 import { installedBinaryDirs, type PathContext } from "../omp/protected-paths.js";
 import { hardenedGit } from "../run/git-hardened.js";
 import {
@@ -2386,7 +2387,7 @@ export class CoreWorker {
 
   /** Floor A's path context; the binary dirs are resolved each time a supervisor or shell tool is built. */
   private ompPathContext(): PathContext {
-    return { home: homedir(), repo: this.projectRoot, data: this.ompDataDir(), binDirs: installedBinaryDirs(process.env, process.execPath) };
+    return { home: homedir(), repo: this.projectRoot, data: this.ompDataDir(), binDirs: installedBinaryDirs(process.env, process.execPath), grow: resolveGrowDir(process.env, homedir()) };
   }
 
   private supervisorDeps(chatId: string): SupervisorDeps {
