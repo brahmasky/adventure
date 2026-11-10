@@ -105,3 +105,12 @@ describe("the `omp` composer surface (ADR 0002 V2: the planner acts through real
     expect(Object.keys(DISCIPLINES)).not.toContain("loop");
   });
 });
+
+describe("grow index precedence", () => {
+  it("when both a grow index and a skills reader are given, only the grow section renders and no skill body does", () => {
+    const text = composeSystemPrompt(memoryRoot(), "omp", { growIndex: () => "- unit-convert — converting", skillsReader: () => "### s — when: x\nSKILL-BODY-9917" });
+    expect(text).toContain("## Your procedures (grow zone)\n- unit-convert — converting");
+    expect(text).not.toContain("SKILL-BODY-9917");
+    expect(text).not.toContain("## Skills — apply when relevant");
+  });
+});

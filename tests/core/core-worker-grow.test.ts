@@ -5,6 +5,7 @@ import { OMP_LOOP_TOOL_META } from "../../src/core/omp-turn-wiring.js";
 import { compileTaskContract } from "../../src/contracts/task-contract.js";
 import { TurnTrust } from "../../src/decisions/trust.js";
 import { buildTypedTaskEvent } from "../../src/domain/types.js";
+import type { TurnContextDeps } from "../../src/omp/turn-context.js";
 import { Gateway } from "../../src/gateway/gateway.js";
 import { isToolArmed } from "../../src/omp/tool-arming.js";
 import { RunStore } from "../../src/run/run-store.js";
@@ -234,5 +235,37 @@ describe("tool meta", () => {
     const c = compileTaskContract(telegramTurnEvent());
     if (!c.ok) throw new Error("compile failed");
     expect(c.contract.approval_gates as string[]).not.toContain("none");
+  });
+});
+
+describe("the grow reads in the omp turn context", () => {
+  const ctxFor = (dir: string) => (turn().worker as unknown as { ompTurnContext(d: string): TurnContextDeps }).ompTurnContext(dir);
+  function seedLiveItemAndOutcome(): void {
+    const at = "2026-11-10T10:00:00.000Z";
+    store.upsertGrowItem({ name: "unit-convert", state: "live", origin: "clean", description: "converting recipe amounts", example: "convert 2 cups", head_commit: null, content_hash: "h", body_hash: "b" }, at);
+    store.appendGrowEvent({ at, run_id: null, chat_id: "555", name: "-", action: "hint", result: "ok", code: "recipe", reviewer_model: null, commit_id: null });
+  }
+
+  it("HOUGE_SKILLS_ENABLED=false: no index and no notes, with the same store that yields both when the flag is on", () => {
+    seedLiveItemAndOutcome();
+    process.env.HOUGE_SKILLS_ENABLED = "true";
+    const on = ctxFor(tmp.dir);
+    expect(on.growIndex!()).toContain("- unit-convert");
+    expect(on.growNotes!("555", "r1").join("\n")).toContain("recipe");
+    process.env.HOUGE_SKILLS_ENABLED = "false";
+    const off = ctxFor(tmp.dir);
+    expect(off.growIndex!()).toBeUndefined();
+    expect(off.growNotes!("555", "r2")).toEqual([]);
+  });
+
+  it("a store that throws on the grow read gives no index and no notes, and the turn context does not throw", () => {
+    process.env.HOUGE_SKILLS_ENABLED = "true";
+    const c = ctxFor(tmp.dir);
+    vi.spyOn(store, "listGrowItems").mockImplementation(() => { throw new Error("db gone"); });
+    vi.spyOn(store, "listGrowEvents").mockImplementation(() => { throw new Error("db gone"); });
+    expect(c.growIndex!()).toBeUndefined();
+    expect(c.growNotes!("555", "r1")).toEqual([]);
+    expect(JSON.stringify(errLog.mock.calls)).toContain("[grow] index unavailable");
+    expect(JSON.stringify(errLog.mock.calls)).not.toContain("db gone");
   });
 });

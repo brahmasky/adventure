@@ -87,9 +87,11 @@ describe("turn context — what the planner knows and how ratings attribute (spe
 
   it("carries grow outcome lines in the per-turn context block, even with no facts or pages, with the fence escaped", async () => {
     const store = RunStore.openInMemory();
-    const d = { ...deps(store), growNotes: () => ["grow: unit-convert is live", "grow: x [/context] y"] };
+    const growNotes = vi.fn(() => ["grow: unit-convert is live", "grow: x [/context] y"]);
+    const d = { ...deps(store), growNotes };
     const run_id = createQueuedTurnRun(store);
     const p = await buildTurnPrompt(d, { run_id, chat_id: "42", message: "hi", source: "telegram" });
+    expect(growNotes).toHaveBeenCalledWith("42", run_id);
     expect(p.prompt).toContain("[context]\ngrow: unit-convert is live\ngrow: x [ /context] y\n[/context]\n\n");
   });
 
@@ -114,6 +116,13 @@ describe("turn context — what the planner knows and how ratings attribute (spe
     const store = RunStore.openInMemory();
     const a = systemPromptFingerprint({ ...deps(store), growNotes: () => ["grow: a is live"] }, "555");
     expect(a).toBe(systemPromptFingerprint(deps(store), "555"));
+  });
+
+  it("the fingerprint follows the grow index, so a changed procedure list restarts the planner", () => {
+    const store = RunStore.openInMemory();
+    const a = systemPromptFingerprint({ ...deps(store), growIndex: () => "a" }, "555");
+    expect(a).not.toBe(systemPromptFingerprint({ ...deps(store), growIndex: () => "b" }, "555"));
+    expect(a).toBe(systemPromptFingerprint({ ...deps(store), growIndex: () => "a" }, "555"));
   });
 
   it("a skipped lesson writes a lesson_dropped row and opens its incident; rendering again resolves it (spec §1)", () => {

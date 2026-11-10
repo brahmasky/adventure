@@ -141,8 +141,9 @@ describe("ADR 0035: index stable order", () => {
     const block = s.svc.indexBlock() ?? "";
     expect(block.indexOf("- alpha")).toBeGreaterThan(-1);
     expect(block.indexOf("- alpha")).toBeLessThan(block.indexOf("- zebra"));
+    // Only zebra is read, twice: an order by recency or by use count would now put it first.
     expect((await s.svc.read("zebra", { run_id: "run_1" })).ok).toBe(true);
-    expect((await s.svc.read("alpha", { run_id: "run_1" })).ok).toBe(true);
+    expect((await s.svc.read("zebra", { run_id: "run_2" })).ok).toBe(true);
     expect(s.svc.indexBlock()).toBe(block);
   });
 });

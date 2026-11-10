@@ -2435,8 +2435,14 @@ export class CoreWorker {
   private ompTurnContext(dataDir: string): TurnContextDeps {
     return {
       store: this.runStore, memoryRoot: memoryRootFor(this.projectRoot), dataDir,
-      growIndex: () => (resolveSkillsEnabled(process.env) ? this.growService().indexBlock() : undefined),
-      growNotes: (chatId, runId) => (resolveSkillsEnabled(process.env) ? this.growService().contextNotes(chatId, runId) : []),
+      growIndex: () => {
+        if (!resolveSkillsEnabled(process.env)) return undefined;
+        try { return this.growService().indexBlock(); } catch { console.error("[grow] index unavailable"); return undefined; }
+      },
+      growNotes: (chatId, runId) => {
+        if (!resolveSkillsEnabled(process.env)) return [];
+        try { return this.growService().contextNotes(chatId, runId); } catch { console.error("[grow] notes unavailable"); return []; }
+      },
       growNotesCommit: (runId) => this.growService().commitNotes(runId),
       coreBlock: (chatId) => {
         const core = this.renderedCore(chatId);

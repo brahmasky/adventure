@@ -152,9 +152,14 @@ describe("PlannerSupervisor — detached turns (spec §7)", () => {
   });
 
   it("a throwing grow-notes commit does not fail the turn", async () => {
+    const err = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const h = harness(fakeSession(), {}, {}, { turnContext: { growNotesCommit: () => { throw new Error("boom"); } } });
     h.sup.submit(req(createQueuedTurnRun(h.store))); await h.sup.whenIdle();
     expect(h.outcome.done).toHaveLength(1);
+    expect(h.outcome.failed).toHaveLength(0);
+    expect(h.outcome.incidents).not.toContainEqual(expect.objectContaining({ k: "planner_turn_crashed" }));
+    expect(err.mock.calls.map((c) => String(c[0]))).toContainEqual(expect.stringContaining("grow notes not committed"));
+    err.mockRestore();
   });
 
   it("fails every planner string exhausted as no_planner_leg and opens an incident", async () => {
