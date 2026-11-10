@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { openAlertedIncident } from "../run/incident-alert.js";
 import type { RoutedIncidentKind } from "../run/incident-route.js";
 import type { GrowEventRow, GrowOpRow, GrowStagedRow, NotificationQueueResult, RunStore } from "../run/run-store.js";
-import { bodyHash, checkFields, contentHash, fieldScrub, isSmallUpdate, parseSkillFile, type GrowFailCode, type GrowFields } from "./checks.js";
+import { bodyHash, checkFields, contentHash, fieldScrub, isSmallUpdate, parseSkillFile, renderSkillFile, type GrowFailCode, type GrowFields } from "./checks.js";
 import { resolveGrowEnabled } from "./flags.js";
 import { failOp, runOp, type OpDeps } from "./ops.js";
 import { GrowZoneError, type GrowZone } from "./zone.js";
@@ -34,8 +34,6 @@ const refused = (code: Extract<SubmitResult, { status: "REFUSED" }>["code"]): Su
 /** Incident subjects: the latched door, a commit whose effects could not be recorded, a publish that was dropped. */
 const ZONE = "zone"; const APPLY = "apply"; const PUBLISH = "publish";
 const UNDO_TEXT = { unknown_skill: "No live skill of that name. /grow lists them.", is_exemplar: "That one is an exemplar and cannot be undone." } as const;
-const undoneText = (name: string, removed: boolean): string =>
-  removed ? `↩️ ${name} removed. Its next version will be reviewed.` : `↩️ ${name} restored to its previous version. Its next version will be reviewed.`;
 /** Only these mean the reply is in the outbox (I7). */
 const IN_OUTBOX: ReadonlySet<NotificationQueueResult["status"]> = new Set(["queued", "duplicate"]);
 /** Failed rows that say nothing about the submission's content: never "the last failed review", never an outcome line. */
@@ -341,8 +339,9 @@ export class GrowService {
     const { store } = this.d;
     if (!(await this.settle(f.name, true))) return "failed";        // an earlier boot's operation is finished, never duplicated
     const item = store.getGrowItem(f.name);
-    // A removed exemplar is restored: only a live item with the same content is unchanged (a migration never restores).
-    if ((source === "migrate" && item) || (item?.state === "live" && item.content_hash === contentHash(f))) return "unchanged";
+    if (source === "migrate" && item) return "unchanged";                // a migration never restores a name the zone knows
+    // An exemplar is unchanged only when its row AND the committed file are; a removed or hand-edited one is restored.
+    if (item?.state === "live" && item.content_hash === contentHash(f) && (await this.d.zone.readHead(f.name)) === renderSkillFile(f, "exemplar")) return "unchanged";
     if (this.disabled) return "failed";
     const op = store.insertGrowOp({ id: randomUUID(), kind: "publish", source, name: f.name, staged_id: null, request_id: null, target_json: JSON.stringify(f), reason: null, undo_version_id: null, now: this.d.now() });
     return (await runOp(this.opDeps(), op, true)) === "done" ? "published" : "failed";
@@ -378,7 +377,8 @@ export class GrowService {
     const { store } = this.d;
     const settled = await this.cancelOrSettle(name);
     if (settled === false) return "busy";
-    if (settled !== true) return settled;                                // a pending undo just finished: that was the step back
+    // The same owner's pending undo just finished: that was this call's step back. Another owner's undo is its own step.
+    if (settled !== true && settled.request_id === (requestId ?? null)) return settled;
     const item = store.getGrowItem(name);                                // read after settling: a finished publish may have changed it
     if (!item || item.state !== "live") return "unknown_skill";
     if (item.origin === "exemplar") return "is_exemplar";
@@ -422,10 +422,12 @@ export class GrowService {
     if (kind === "adopt") {
       try { this.adopt(name, id); } catch { console.error("[grow] requests: adopt_failed"); }
     } else {
+      // A request with an operation is finished only inside that operation's transaction (applyUndo or failOp, I7).
       const r = await this.undoLocked(name, reason, id);
       try {
-        if (r.ok) store.finishGrowRequest(id, undoneText(name, r.removed), this.d.now());   // a no-op when applyUndo already finished it
-        else if (r.code === "unknown_skill" || r.code === "is_exemplar") store.finishGrowRequest(id, UNDO_TEXT[r.code], this.d.now());
+        const op = store.getGrowOpByRequest(id);
+        if (!r.ok && !op && (r.code === "unknown_skill" || r.code === "is_exemplar")) store.finishGrowRequest(id, UNDO_TEXT[r.code], this.d.now());
+        else if (op?.state === "done" && store.dueGrowRequests().some((q) => q.id === id)) console.error("[grow] requests: done_op_queued");
       } catch { console.error("[grow] requests: finish_failed"); }
     }
     // Finished is whatever left `queued`, by whichever path (failOp also finishes a request whose operation failed for good).

@@ -283,17 +283,72 @@ describe("E. undo and requests", () => {
     expect(err).toHaveBeenCalledWith("[grow] undo: zone_unavailable");
   });
 
-  it("I7: a request whose own undo is already done is answered from it, never by running another pending undo of the name", async () => {
-    const s = await twoVersions(); const { f } = s;
+  it("I7: a request whose own undo is already done is never answered by running another pending undo of the name", async () => {
+    const s = await twoVersions(); const { f } = s; const err = errSpy();
     const id = request(s, "undo", f.name);
     const mine = s.store.insertGrowOp({ id: randomUUID(), kind: "undo", source: "undo", name: f.name, staged_id: null, request_id: id, target_json: null, reason: null, undo_version_id: null, now: s.now() });
     s.store.finishGrowOp(mine.id, "done", "c0ffee", s.now());
     const otherUndo = s.store.insertGrowOp({ id: randomUUID(), kind: "undo", source: "undo", name: f.name, staged_id: null, request_id: null, target_json: null, reason: null, undo_version_id: null, now: s.now() });
     const n = commitCount(s.zone);
-    expect(await s.svc.runRequests()).toBe(1);
+    // A done operation whose request is still queued cannot arise (applyUndo finishes both in one transaction); it is
+    // reported, and the request is never finished outside its operation's transaction or by another operation.
+    expect(await s.svc.runRequests()).toBe(0);
     expect(s.store.getGrowOp(otherUndo.id)?.state).toBe("pending");
     expect(commitCount(s.zone)).toBe(n);
-    expect(outboxTexts(s.store, `grow:req:${id}`)).toEqual(["↩️ unit-convert removed. Its next version will be reviewed."]);
+    expect(requestRow(s.store, id).state).toBe("queued");
+    expect(err).toHaveBeenCalledWith("[grow] requests: done_op_queued");
+  });
+
+  /** v1, v2, v3 live: three versions to step back through. */
+  async function threeVersions(): Promise<Setup & { f: GrowFields; v: Array<{ id: number; fields_json: string; content_hash: string }> }> {
+    const s = await twoVersions(); const { f } = s;
+    const v3 = { ...f, body: small(f).body.replace("Step 5 of", "Step five of") };
+    expect(await s.svc.submit(v3, CLEAN)).toEqual({ status: "LIVE", name: f.name });
+    return { ...s, v: s.store.listGrowVersions(f.name) };
+  }
+  /** The finishGrowRequest calls, each with whether it ran inside a store transaction. */
+  function watchFinishes(store: RunStore): Array<{ id: number; inTx: boolean }> {
+    const calls: Array<{ id: number; inTx: boolean }> = [];
+    const orig = store.finishGrowRequest.bind(store);
+    vi.spyOn(store, "finishGrowRequest").mockImplementation((id, result, now) => {
+      calls.push({ id, inTx: (store as unknown as { outerTxDepth: number }).outerTxDepth > 0 });
+      orig(id, result, now);
+    });
+    return calls;
+  }
+
+  it("I8: a direct undo while a request's undo is pending finishes that request's step, then takes its own", async () => {
+    const s = await threeVersions(); const { f, v } = s;
+    const r1 = request(s, "undo", f.name);
+    s.store.insertGrowOp({ id: randomUUID(), kind: "undo", source: "undo", name: f.name, staged_id: null, request_id: r1, target_json: v[1]!.fields_json, reason: "r1 reason", undo_version_id: v[2]!.id, now: s.now() });
+    const finishes = watchFinishes(s.store);
+    expect(await s.svc.undo(f.name, "direct reason")).toEqual({ ok: true, removed: false });
+    expect(s.store.getGrowItem(f.name)?.content_hash).toBe(v[0]!.content_hash);    // two steps: v3 → v2 (R1) → v1 (this call)
+    expect(s.store.listGrowVersions(f.name).map((x) => x.undone)).toEqual([false, true, true]);
+    expect(s.store.listGrowUndoReasons(f.name).map((x) => x.reason)).toEqual(["r1 reason", "direct reason"]);
+    expect(requestRow(s.store, r1)).toMatchObject({ state: "done", result: "↩️ unit-convert restored to its previous version. Its next version will be reviewed." });
+    expect(finishes).toEqual([{ id: r1, inTx: true }]);
+  });
+
+  it("I7 + I8: a second request while the first request's undo is pending: each finished once in its own transaction, two steps back", async () => {
+    const s = await threeVersions(); const { f, v } = s;
+    const r1 = request(s, "undo", f.name, "k1");
+    s.store.insertGrowOp({ id: randomUUID(), kind: "undo", source: "undo", name: f.name, staged_id: null, request_id: r1, target_json: v[1]!.fields_json, reason: "r1 reason", undo_version_id: v[2]!.id, now: s.now() });
+    s.store.enqueueGrowRequest({ idempotency_key: "k2", kind: "undo", name: f.name, reason: "r2 reason", chat_id: "555", now: s.now() });
+    const r2 = s.store.dueGrowRequests().find((r) => r.idempotency_key === "k2")!.id;
+    const finishes = watchFinishes(s.store);
+    expect(await s.svc.undo(f.name, "r2 reason", r2)).toEqual({ ok: true, removed: false });
+    expect(s.store.getGrowOpByRequest(r2)).toMatchObject({ state: "done", kind: "undo" });
+    expect(s.store.getGrowItem(f.name)?.content_hash).toBe(v[0]!.content_hash);
+    expect(s.store.listGrowUndoReasons(f.name).map((x) => x.reason)).toEqual(["r1 reason", "r2 reason"]);
+    expect(finishes).toEqual([{ id: r1, inTx: true }, { id: r2, inTx: true }]);
+    expect(await s.svc.runRequests()).toBe(0);                          // both already finished; this run only replies
+    expect(outboxTexts(s.store, `grow:req:${r1}`)).toHaveLength(1);
+    expect(outboxTexts(s.store, `grow:req:${r2}`)).toHaveLength(1);
+    expect([requestRow(s.store, r1).state, requestRow(s.store, r2).state]).toEqual(["replied", "replied"]);
+    expect(await s.svc.runRequests()).toBe(0);
+    expect(s.store.countNotificationsByIdempotencyKey(`grow:req:${r1}`) + s.store.countNotificationsByIdempotencyKey(`grow:req:${r2}`)).toBe(2);
+    expect(finishes).toHaveLength(2);
   });
 
   it("adopt changes the item, marks the name, writes the event and finishes the request in one transaction", async () => {
@@ -413,6 +468,26 @@ describe("F. sync, index, notes", () => {
     expect(s.store.getGrowItem(ex.name)).toMatchObject({ state: "live", origin: "exemplar" });
     expect(await s.zone.readHead(ex.name)).toBe(renderSkillFile(ex, "exemplar"));
     expect(await s.svc.seed(ex, "exemplar", "seed")).toBe("unchanged");
+  });
+
+  it("the seeder restores an exemplar removed or edited by hand at HEAD, and publishes changed exemplar content", async () => {
+    const s = await growSetup();
+    const ex = other("option-comparison", "options");
+    await s.svc.seed(ex, "exemplar", "seed");
+    await s.zone.removeAndCommit(ex.name, "skill(option-comparison): removed by hand");
+    expect(s.store.getGrowItem(ex.name)?.state).toBe("live");            // the row alone still says live
+    expect(await s.svc.seed(ex, "exemplar", "seed")).toBe("published");
+    expect(await s.zone.readHead(ex.name)).toBe(renderSkillFile(ex, "exemplar"));
+    await s.zone.writeAndCommit(ex.name, renderSkillFile({ ...ex, body: growBody(40, " edited") }, "exemplar"), "skill(option-comparison): edited by hand");
+    expect(await s.svc.seed(ex, "exemplar", "seed")).toBe("published");
+    expect(await s.zone.readHead(ex.name)).toBe(renderSkillFile(ex, "exemplar"));
+    const n = commitCount(s.zone);
+    expect(await s.svc.seed(ex, "exemplar", "seed")).toBe("unchanged");
+    expect(commitCount(s.zone)).toBe(n);
+    const next = { ...ex, body: growBody(40, " in the new release") };
+    expect(await s.svc.seed(next, "exemplar", "seed")).toBe("published");
+    expect(s.store.getGrowItem(ex.name)).toMatchObject({ state: "live", origin: "exemplar", content_hash: contentHash(next) });
+    expect(await s.zone.readHead(ex.name)).toBe(renderSkillFile(next, "exemplar"));
   });
 
   it("the index is alphabetical and byte-identical after a read", async () => {
