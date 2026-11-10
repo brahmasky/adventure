@@ -35,6 +35,10 @@ describe("grow flags", () => {
     expect(pick(`${repo}-other/grow`)).toBe(`${repo}-other/grow`);
     expect(pick("/Private/Tmp/A/grow")).toBe("/Private/Tmp/A/grow");
   });
+  it("refuses a mixed-case spelling of a deep home or its ancestor, which would deny the whole home", () => {
+    const home = "/Users/x/Home/me", fallback = `${home}/Library/Application Support/houge/grow`;
+    for (const bad of ["/USERS/X/Home/me", "/USERS/X/Home"]) expect(resolveGrowDir({ HOUGE_GROW_DIR: bad }, home), bad).toBe(fallback);
+  });
   it("returns the normalised path it validated, never the raw override", () => {
     expect(resolveGrowDir({ HOUGE_GROW_DIR: "/data/a/../grow/zone/" }, "/Users/x")).toBe("/data/grow/zone");
     expect(resolveGrowDir({ HOUGE_GROW_DIR: "/data/a/b/../../../../Users/x" }, "/Users/x")).toBe(DEFAULT);
