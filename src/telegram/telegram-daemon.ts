@@ -484,7 +484,7 @@ export async function runGrowTickSafe(options: RunTelegramDaemonOptions, worker:
     const cfg = (): ReturnType<typeof resolveOmpConfig> => resolveOmpConfig(process.env, worker.modelRoles().chains());
     await runGrowTick({ store: options.store, svc, env: process.env, now, signal: options.stopSignal,
       chain: () => worker.modelRoles().candidates("grow_review"),
-      spawn: (input) => spawnOneShot({ ...input, deadlineAt: Date.parse(now) + GROW_CLAIM_STALE_MS - GROW_REVIEW_MARGIN_MS }, { cfg: cfg(), audit: options.store.llmAuditSink({ correlation_id: input.correlationId, role: "grow_review" }) }),
+      spawn: async (input) => spawnOneShot({ ...input, deadlineAt: Date.parse(now) + GROW_CLAIM_STALE_MS - GROW_REVIEW_MARGIN_MS }, { cfg: cfg(), audit: options.store.llmAuditSink({ correlation_id: input.correlationId, role: "grow_review" }) }),
       exemplar: async () => (await svc.zone.readHead(EXEMPLAR_NAME)) ?? "", settled: (id) => turnTrustFinal(options.store, id) !== null });
   } catch (error) { console.error(`[telegram-daemon] grow tick failed: ${errorCode(error)}`); }
   await growBundleStep(options, worker, now);
