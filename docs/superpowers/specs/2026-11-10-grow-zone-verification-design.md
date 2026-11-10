@@ -1,6 +1,6 @@
 # Grow zone, slice 1a — a place Houge writes itself, and the checks that decide what goes live
 
-**Rev 1.3.1 · 2026-11-10 · status: APPROVED by Paco 2026-11-10 (Rev 1.3); 1.3.1 adds §15, plan-time errata that change no decision** (the whole spec, including the changes of meaning to
+**Rev 1.3.2 · 2026-11-10 · status: APPROVED by Paco 2026-11-10 (Rev 1.3); 1.3.1 and 1.3.2 add §15, plan-time errata that change no decision, and one addition he asked for (`/grow trust`)** (the whole spec, including the changes of meaning to
 ADR 0011, 0032 and 0034, new ADR 0035, decisions P1–P3, the AGENTS.md wording, and residual R1 accepted for 1a). Rev 1.0 was reviewed
 against the live code by spec-review-senior (Opus 5.5: 8 BLOCKER, 15 WARNING, 6 SUGGESTION) and a codex design
 pass (6 BLOCKER, 4 WARNING, 1 SUGGESTION); Rev 1.2 by a codex re-review (5 BLOCKER, 6 WARNING, 1 SUGGESTION). The
@@ -594,9 +594,54 @@ None changes a decision of §2 or §2a; where the text above differs, this secti
     line follows at that item's next publish.
 11. **Migration (§5.11).** A migrated skill's `example` is derived from its `when` line. Nothing about Paco's
     existing skills is written into the public repository.
-12. **Exemplar.** One prose exemplar, `weekly-digest-brief`. `houge grow drop-case` belongs to 1c and is not built.
+12. **Exemplar.** One prose exemplar, `option-comparison` (a topic that overlaps none of Paco's live skills). `houge grow drop-case` belongs to 1c and is not built.
 13. **`/skills`** stays for one release as an alias of `/grow`.
 14. **Other switches.** `HOUGE_SKILL_REVERIFY_ENABLED` leaves `DISARM_FLAGS` with its tick; the Gate B variables go
     with Gate B if nothing else reads them.
 15. **Backup bundle retention (§5.1).** `houge grow log` lists DB snapshots and whether each has its bundle.
+
+**Rev 1.3.2, from the plan reviews (spec-review-senior on Opus 5.5 and codex, both against the live code):**
+
+16. **`/grow trust <name>` (Paco, 2026-11-10).** Most skills will be born untrusted, because his conversation usually
+    is. Clearing the mark is available in Telegram as well as in the CLI. It stays his act: a passed review never
+    clears it.
+17. **`/disarm` (§5.14, §11.10).** `HOUGE_SKILLS_ENABLED` is already a disarm flag and arms both grow tools, so
+    under `/disarm` the index and both tools are off. `grow_disabled` is the answer when only `HOUGE_GROW_ENABLED`
+    is off. Gate line 10 asserts both cases.
+18. **The grow zone is read-denied to the sandbox as well as write-denied (§5.1).** Otherwise a shell `cat` of a
+    born-untrusted skill file would read it without the taint `grow_read` applies. The backup folder is read-denied
+    too: the zone's bundle sits beside the DB snapshots there. This also closes a hole that predates this slice:
+    `houge.sqlite` was read-denied while its nightly copies in `backups/` were not.
+19. **Review is an enforced gate (§5.4, §5.8).** A passing review is stored (`grow_reviews`, with the content hash,
+    the hash of exactly what was sent, the reviewing model, the author's families and the number of undo reasons
+    shown) and moves the row to a new state, `approved`. Publishing refuses a row that needs review and has no
+    passing review of its exact content. The review row outlives the staged row: it is the evidence gate lines 1, 6
+    and 7 read.
+20. **One pending submission per name (§5.8).** A newer submit supersedes an older pending one; an undo cancels
+    any pending one. Two versions can never publish out of order, and nothing republishes after an undo.
+21. **Origin can only become untrusted on its own (§5.7).** A name's mark survives every later submit, pending or
+    live; only `/grow trust` or `houge grow trust` clears it.
+22. **Undo and adopt are queued (§5.9, §5.10).** The gateway handles commands synchronously and the zone has one
+    git writer, so `/grow undo`, `houge grow undo` and `houge grow adopt` record a request that the daemon's grow
+    tick runs within one poll cycle; `/grow undo` answers "queued" and then confirms. The request key is the
+    Telegram trigger's, so a redelivered update cannot undo twice.
+23. **A lost `.git` is a fault (§5.8).** A repository is created only for an empty zone. If items exist and the
+    repository is gone, the door is disabled with an incident; an empty zone never silently replaces a real one.
+24. **Formal checks (§5.4).** The secret check uses the judge redactor without link-token and code masking (those
+    would reject an ordinary source URL or a quantity) plus the secret paths of ADR 0032 §3.2 as literals;
+    `redactForImprove` remains the scrubber for reviewer input. The duplicate check compares bodies. The small-update
+    rule counts changed lines in order, so a reordering is a change. The fence rule covers `~~~` and spares fences
+    marked as prose.
+25. **Review output (§5.4).** The verdict must be the reviewer's whole reply (one optional code fence allowed);
+    JSON found inside other text is a seat failure.
+26. **Schedule-born turns get no grow outcome or hint lines (§5.5).** They cannot submit, and they would use up
+    lines meant for Paco's next conversation.
+27. **Orphans (§5.8).** A boot scan compares HEAD with the database; an orphan is adopted as untrusted.
+28. **Bundle pairing (§5.1).** The grow tick writes the bundle for the newest snapshot that lacks one, every poll,
+    so a crash between snapshot and bundle repairs itself; the DB backup tick is unchanged apart from pruning a
+    bundle with its snapshot.
+29. **Migration (§5.11).** Migrated skills pass the formal checks; the old folder is renamed only when every file
+    migrated, and the renamed folder is gitignored.
+30. **Build.** The asset copy clears `dist/omp/tools/` first, so a removed tool declaration cannot survive a rebuild
+    and stop every turn.
 
