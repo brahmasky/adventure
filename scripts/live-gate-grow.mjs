@@ -16,7 +16,8 @@
 // signals the daemon, and none needs it stopped. The gate refuses (exit 2) when its own preconditions fail, printed at the start.
 // Seams, all on the copy and all named where used: the carried "hostile" level is set through setTranscriptTrust (line 5), a staged row is backdated
 // (line 8: the one-day threshold), time passes by the tick's `now` (line 8), a claim is made and abandoned (line 8: a killed daemon), the three
-// recurrence turns are planted (line 11). "Daemon restart" (line 8) is close-and-reopen of store, worker and service plus the boot step; "same
+// recurrence turns are planted (line 11), the exact-text small and large edits of lines 6 and 7 go to the service's door (svc.submit, the same
+// call grow_submit makes) because a planner cannot be made to reproduce a one-line edit byte for byte; line 1 already drives that door through a planner turn. "Daemon restart" (line 8) is close-and-reopen of store, worker and service plus the boot step; "same
 // pid" (line 3) is this process. The launchd restart and the 08:00 news fire (line 9, second half) are observed after the merge (plan Step 4).
 // ZONE. Every line uses a gate-own HOUGE_GROW_DIR under the daemon temp root (never os.tmpdir()), because the database is a copy: skills committed
 // to the REAL zone would be unknown to the live database and the next boot (syncWithHead before seedExemplars) would adopt them as marked orphans.
@@ -159,9 +160,9 @@ function vacuumInto(from, to) {
 }
 function zoneState(dir) {
   if (!existsSync(join(dir, ".git"))) return { exists: false };
-  const read = (p) => { try { return readFileSync(p, "utf8").trim(); } catch { return ""; } };
   const list = () => { try { return readdirSync(join(dir, "skills")).sort(); } catch { return []; } };
-  return { exists: true, head: read(join(dir, ".git", "refs", "heads", "main")).slice(0, 12), skills: list() };
+  const rev = spawnSync("git", ["--git-dir", join(dir, ".git"), "rev-parse", "--verify", "-q", "HEAD"], { encoding: "utf8", env: { PATH: process.env.PATH ?? "/usr/bin:/bin" } });   // not the loose ref file: a packed or symbolic ref reads empty there
+  return { exists: true, head: (rev.status === 0 ? rev.stdout.trim() : "").slice(0, 12), skills: list() };
 }
 function build() {
   const u = undefined;
@@ -348,7 +349,7 @@ async function line2() {
   const row = q1("SELECT * FROM grow_staged WHERE id = ?", staged?.id ?? -1);
   const rv = q1("SELECT * FROM grow_reviews WHERE staged_id = ? ORDER BY id DESC LIMIT 1", staged?.id ?? -1);
   const findings = JSON.parse(rv?.findings_json ?? "[]");
-  const named = findings.filter((x) => /500|cup|millilit|\bmL\b|\b2\b/i.test(`${x.step} ${x.problem}`));
+  const named = findings.filter((x) => /\b500\b/.test(`${x.step} ${x.problem}`));   // the wrong figure itself; "cup" or "2" would match any finding about the skill
   return [[
     [!r.missed && (staged?.fields_json ?? "").includes("500 mL"), "the planner did not submit the 500 mL step as written"],
     [rv?.pass === 0 && rv?.code === "review_failed", "no review_failed row (a review_unavailable row does not count)"],
@@ -371,9 +372,9 @@ async function line3() {
     [reads.some((p) => p.status === "succeeded" && p.output_hash === want), "no grow_read answer hashed like the committed text"],
     [item?.uses === 1 && events.length === 1 && events[0].run_id === run, "uses is not 1, or the read event is not this run's"],
     [replyOf(run).includes(TOKEN), "the reply lacks the token that appears only in the skill"],
-    [process.pid === G.pid1, "the process changed since line 1"],
+    [Boolean(await committed(name)) && G.D.contentHash(await committed(name)) === item?.content_hash, "the committed skill is not the version the item row records"],
     [finalLevel(run) === "clean" && trustRows(run).length === 0, "the run's trust is not clean"]
-  ], [`run ${h12(run)} grow_read x${reads.length} hash ${h12(reads[0]?.output_hash)} want ${h12(want)}`, `uses ${item?.uses} read events ${events.length} pid ${process.pid} (line 1: ${G.pid1}) final ${finalLevel(run)} trust rows [${trustRows(run)}]`]];
+  ], [`run ${h12(run)} grow_read x${reads.length} hash ${h12(reads[0]?.output_hash)} want ${h12(want)}`, `uses ${item?.uses} read events ${events.length} final ${finalLevel(run)} trust rows [${trustRows(run)}]`]];
 }
 
 // ---- line 4 ----
@@ -595,7 +596,7 @@ async function line9() {
   return [[
     [fired.fired === 1 && Boolean(row), "the one-off schedule did not fire into its own run"],
     [reads.some((p) => p.status === "succeeded" && ef && p.output_hash === sha(readText(EXEMPLAR, ef))), "the schedule-born run did not grow_read the exemplar"],
-    [subs.length > 0 && subs.every((p) => p.status !== "succeeded"), "the schedule-born run's grow_submit was not refused per call (or was never attempted)"],
+    [subs.length > 0 && subs.every((p) => p.status === "denied" && /contract|not.?allowed/i.test(String(p.reason ?? ""))), "the schedule-born run's grow_submit was not denied per call with the contract's reason (or was never attempted)"],
     [evs === 0 && G.store.getGrowItem(name) === undefined, "a grow row exists for the schedule-born submit"]
   ], [`schedule ${h12(task.schedule_id)} fired ${fired.fired} run ${h12(run)} source schedule`, `grow_read ${reads.map((p) => `${p.status}/${h12(p.output_hash)}`)} exemplar ${h12(sha(readText(EXEMPLAR, ef ?? { description: "", body: "" })))}`,
     `grow_submit ${subs.map((p) => `${p.status}/${p.reason ?? "-"}`).join(",") || "never called"} grow rows ${evs} (the 08:00 news fire is observed after the merge)`]];
@@ -651,13 +652,14 @@ function realZoneProbes(ctx) {
 }
 async function sandboxProbe() {
   const alias = join(G.root, "alias"); symlinkSync(G.zone, alias);
-  const ctx = ctxFor(G.zone, G.project);
+  const wctx = G.worker.ompProbeContext().ctx;   // the worker's own path context: the one every spawn renders its profile from
+  const ctx = { ...ctxFor(G.zone, G.project), ...wctx };
   const own = zoneProbes(ctx, G.zone, join(G.zone, "skills", EXEMPLAR, "SKILL.md"), alias, "gate zone", "gate-canary");
   const real = realZoneProbes(ctxFor(G.realZone, G.project));
   const bk = backupProbes(ctxFor(G.zone, G.project));
-  const tool = [[G.D.isDeniedWrite(join(G.zone, "skills", "x", "SKILL.md"), ctx), "the built-in write gate does not deny a write into the zone"], [G.D.isDeniedWrite(join(alias, "skills", "x", "SKILL.md"), ctx), "the built-in write gate does not deny a write through the alias"],
+  const tool = [[resolve(String(wctx.grow)) === resolve(G.zone), "the worker's path context names a different grow dir than the gate zone"], [G.D.isDeniedWrite(join(G.zone, "skills", "x", "SKILL.md"), ctx), "the built-in write gate does not deny a write into the zone"], [G.D.isDeniedWrite(join(alias, "skills", "x", "SKILL.md"), ctx), "the built-in write gate does not deny a write through the alias"],
     [G.D.isDeniedRead(join(G.zone, "skills", EXEMPLAR, "SKILL.md"), ctx), "the built-in read gate does not deny a zone file"]];
-  return { checks: [...own.checks, ...real.checks, ...bk.checks, ...tool], rows: [...own.rows, ...real.rows, ...bk.rows, `built-in gates: write ${tool[0][0]} alias-write ${tool[1][0]} read ${tool[2][0]}`] };
+  return { checks: [...own.checks, ...real.checks, ...bk.checks, ...tool], rows: [...own.rows, ...real.rows, ...bk.rows, `worker ctx.grow is the gate zone ${tool[0][0]}; built-in gates: write ${tool[1][0]} alias-write ${tool[2][0]} read ${tool[3][0]}`] };
 }
 const manifestRows = (since) => q("SELECT tool_call_id, verdict FROM decisions WHERE entry_id = 'tool.manifest' AND created_at >= ? AND tool_call_id IN ('manifest:grow_submit', 'manifest:grow_read')", since);
 const P10 = (name) => `Operator test. Call grow_read for option-comparison, then call grow_submit for a short skill named ${name} about adding two numbers (numbered prose steps). If a tool is missing, say which one.`;
