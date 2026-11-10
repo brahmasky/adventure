@@ -61,6 +61,29 @@ describe("grow formal checks", () => {
     expect(code(ok({ description: 'when asked about "cups" or C:\\temp paths in recipes', body: `${body(8)}\n` }))).toBe("ok");
   });
 
+  it.each([
+    ["nine anchors", Array.from({ length: 9 }, (_, i) => `fact ${i}`)],
+    ["a 301-char anchor", ["x".repeat(301)]],
+    ["an anchor with a newline", ["line one\nline two"]]
+  ])("rejects %s with bad_anchors", (_n, anchors) => { expect(code(ok({ anchors }))).toBe("bad_anchors"); });
+
+  it("rejects a body that is under 8000 chars but over 16 KB serialized (CJK is three bytes a char)", () => {
+    expect(code(ok({ body: "字".repeat(8000) }))).toBe("too_large");
+  });
+
+  it("scrubs every field, not only the body", () => {
+    const hit = (s: string): string => s.replace("SECRETVALUE", "‹x›");
+    expect(code(ok({ anchors: ["the key is SECRETVALUE here"] }), [], hit)).toBe("secret_shape");
+    expect(code(ok({ description: "converting amounts, key SECRETVALUE included" }), [], hit)).toBe("secret_shape");
+  });
+
+  it.each([["right-to-left override", "\u202e"], ["zero-width space", "\u200b"], ["byte order mark", "\ufeff"], ["bidi isolate", "\u2066"]])(
+    "rejects %s, which hides text from a reviewer", (_n, ch) => { expect(code(ok({ body: `${body(8)}${ch}` }))).toBe("control_chars"); });
+
+  it("keeps the zero-width joiner, which emoji sequences need", () => {
+    expect(code(ok({ body: `${body(8)}\n👨\u200d👩\u200d👧 family` }))).toBe("ok");
+  });
+
   it("a small update is at most 20 changed lines and a quarter of the body, with description and example untouched", () => {
     const prev = ok({ body: body(40) });
     const edit = (n: number): GrowFields => ({ ...prev, body: prev.body.split("\n").map((l, i) => (i < n ? `${l} (edited)` : l)).join("\n") });

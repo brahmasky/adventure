@@ -21,6 +21,11 @@ describe("grow flags", () => {
     for (const bad of ["/", "/Users", "/Users/x", "/tmp/x"]) expect(resolveGrowDir({ HOUGE_GROW_DIR: bad }, "/Users/x")).toBe(DEFAULT);
     expect(resolveGrowDir({ HOUGE_GROW_DIR: "/private/tmp/a/grow" }, "/Users/x")).toBe("/private/tmp/a/grow");
   });
+  it("returns the normalised path it validated, never the raw override", () => {
+    expect(resolveGrowDir({ HOUGE_GROW_DIR: "/data/a/../grow/zone/" }, "/Users/x")).toBe("/data/grow/zone");
+    expect(resolveGrowDir({ HOUGE_GROW_DIR: "/data/a/b/../../../../Users/x" }, "/Users/x")).toBe(DEFAULT);
+    expect(resolveGrowDir({ HOUGE_GROW_DIR: "/Users/x/Library/../" }, "/Users/x")).toBe(DEFAULT);
+  });
   it("is pinned away from the real home directory for the whole suite", () => {
     expect(resolveGrowDir(process.env, homedir()).startsWith(join(homedir(), "Library"))).toBe(false);
   });

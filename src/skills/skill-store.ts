@@ -62,10 +62,7 @@ export interface SkillStoreOptions {
 /** Whether the ambient skills layer is enabled (`HOUGE_SKILLS_ENABLED`). Default ON —
  * skills are read-only/low-risk, so only an explicit `0|false|no|off` disables them
  * (the kill switch). Mirrors the `resolveCodexEnabled` idiom, inverted to default-on. */
-export function resolveSkillsEnabled(env: NodeJS.ProcessEnv): boolean {
-  const raw = env.HOUGE_SKILLS_ENABLED?.trim().toLowerCase();
-  return !(raw === "0" || raw === "false" || raw === "no" || raw === "off");
-}
+export { resolveSkillsEnabled } from "../grow/flags.js";
 
 /** Max skills folded in per scope (`HOUGE_SKILL_MAX_PER_SCOPE`, default 4). */
 export function resolveSkillMaxPerScope(env: NodeJS.ProcessEnv): number {

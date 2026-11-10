@@ -14,7 +14,7 @@ export const EXEMPLAR_HINT = "see the exemplar option-comparison (grow_read it) 
 const fail = (code: GrowFailCode, message: string): CheckResult => ({ ok: false, code, message: `${message}; ${EXEMPLAR_HINT}` });
 const oneLine = (s: string, min: number, max: number): boolean => s.length >= min && s.length <= max && !/[\r\n]/.test(s);
 // eslint-disable-next-line no-control-regex
-const CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f\u0085\u2028\u2029]/;
+const CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f\u0085\u2028\u2029\u200b\u200c\u2060\ufeff\u202a-\u202e\u2066-\u2069]/;
 const norm = (s: string): string => s.trim().toLowerCase().replace(/\s+/g, " ");
 const texts = (f: GrowFields): string[] => [f.name, f.description, f.example, f.body, ...(f.anchors ?? [])];
 
@@ -49,6 +49,7 @@ export function checkFields(f: GrowFields, live: ReadonlyArray<{ name: string; d
   const s = shape(f);
   if (!s.ok) return s;
   if (texts(f).some((t) => CONTROL.test(t))) return fail("control_chars", "a field contains control characters");
+  // Backstop: the control-character rule above currently pre-empts every input that could fail this.
   const back = parseSkillFile(renderSkillFile(f, "clean"));
   if (!back || contentHash(back) !== contentHash(f)) return fail("control_chars", "a field does not survive the skill file format (an unusual line break or control character)");
   if (texts(f).some((t) => scrub(t) !== t)) return { ok: false, code: "secret_shape", message: "a field contains something shaped like a secret or a secret path; remove it" };

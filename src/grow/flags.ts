@@ -24,5 +24,5 @@ export function resolveGrowDir(env: NodeJS.ProcessEnv, home: string): string {
   if (!raw || !isAbsolute(raw)) return fallback;
   const dir = resolve(raw);
   if (dir.split(sep).filter(Boolean).length < 3 || coversHome(dir, home)) return fallback;
-  return raw;
+  return dir;
 }
