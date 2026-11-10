@@ -201,6 +201,18 @@ describe("grow tick", () => {
     expect(s.store.getGrowStaged(s.id)).toMatchObject({ state: "staged", attempts: 0, claimed_at: null });
   });
 
+  it("I9: a /disarm that lands while a review runs stops the publish; the row stays approved for the next armed reconcile", async () => {
+    const s = await staged();
+    const env: NodeJS.ProcessEnv = {};
+    const disarmMidReview = async (): Promise<LlmResult> => { env.HOUGE_GROW_ENABLED = "false"; return pass(); };
+    expect((await s.tick(disarmMidReview, { env })).reviewed).toBe(s.id);
+    expect(s.store.getGrowStaged(s.id)?.state).toBe("approved");
+    expect(s.store.getGrowItem("unit-convert")).toBeUndefined();
+    delete env.HOUGE_GROW_ENABLED;
+    await s.svc.reconcile(true);
+    expect(s.store.getGrowItem("unit-convert")?.state).toBe("live");
+  });
+
   it("releases a claim older than ten minutes but not one nine minutes old", async () => {
     const s = await staged();
     s.store.claimGrowReview(s.id, "2026-11-10T10:51:00.000Z");   // 9 min before 11:00

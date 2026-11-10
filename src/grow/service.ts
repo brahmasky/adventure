@@ -259,9 +259,10 @@ export class GrowService {
     });
   }
 
-  async publishStaged(id: number): Promise<PublishOutcome> {
+  /** With `commit` false (the switch is off) nothing is created or committed: an approved row stays `approved` (I9). */
+  async publishStaged(id: number, commit = true): Promise<PublishOutcome> {
     return this.withLockWait(async () => {
-      try { return await this.publishLocked(id, true); } catch (e) { this.latchOnZoneError(e); throw e; }
+      try { return await this.publishLocked(id, commit); } catch (e) { this.latchOnZoneError(e); throw e; }
     });
   }
 

@@ -57,6 +57,7 @@ async function reviewOne(d: GrowTickDeps, row: GrowStagedRow): Promise<void> {
 async function finishVerdict(d: GrowTickDeps, id: number, base: { author_families: string[]; undo_reasons_n: number }, o: Extract<ReviewOutcome, { kind: "verdict" }>): Promise<void> {
   d.svc.recordReview(id, { ...base, pass: o.verdict.pass, findings: o.verdict.findings, reviewer_model: o.model, input_hash: o.inputHash, code: o.verdict.pass ? "review_passed" : "review_failed" });
   if (!o.verdict.pass) return;
-  // any answer but 'published' leaves the row 'approved'; the next poll's reconcile publishes it
-  try { await d.svc.publishStaged(id); } catch (error) { console.error(`[grow] tick: publish_failed ${errorCode(error)}`); }
+  // any answer but 'published' leaves the row 'approved'; the next poll's reconcile publishes it. The switch is read
+  // again here: a /disarm that landed during the review must stop this publish too (I9).
+  try { await d.svc.publishStaged(id, resolveGrowEnabled(d.env)); } catch (error) { console.error(`[grow] tick: publish_failed ${errorCode(error)}`); }
 }
