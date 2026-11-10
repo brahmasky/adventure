@@ -225,6 +225,28 @@ describe("grow tick", () => {
     expect(index).toContain("- bbb-clean — a clean procedure that Houge wrote for itself");
   });
 
+  it("a row whose run ended with no final trust (failed by lease expiry after a crash) fails run_unsettled, unreviewed", async () => {
+    const s = await staged();
+    vi.spyOn(s.store, "getRunStatus").mockReturnValue({ state: "failed" } as ReturnType<typeof s.store.getRunStatus>);
+    const spawn = vi.fn(pass);
+    expect((await s.tick(spawn, { settled: false })).reviewed).toBeNull();
+    expect(spawn).not.toHaveBeenCalled();
+    expect(s.store.getGrowStaged(s.id)).toMatchObject({ state: "failed", code: "run_unsettled" });
+    expect(s.store.listGrowReviews("unit-convert")).toEqual([]);
+    expect(s.store.getGrowItem("unit-convert")).toBeUndefined();
+    expect(s.svc.contextNotes("555", "run_2")).toEqual(['grow: unit-convert failed review (grow_read it with what "review" to see why)']);
+  });
+
+  it("a row unsettled for over a day fails run_unsettled; a younger one whose run still runs waits", async () => {
+    const s = await staged();
+    vi.spyOn(s.store, "getRunStatus").mockReturnValue({ state: "running" } as ReturnType<typeof s.store.getRunStatus>);
+    const dayAfter = (ms: number) => new Date(Date.parse(s.store.getGrowStaged(s.id)!.created_at) + 86_400_000 + ms).toISOString();
+    expect((await s.tick(pass, { settled: false, now: dayAfter(-1000) })).reviewed).toBeNull();
+    expect(s.store.getGrowStaged(s.id)?.state).toBe("staged");
+    expect((await s.tick(pass, { settled: false, now: dayAfter(1000) })).reviewed).toBeNull();
+    expect(s.store.getGrowStaged(s.id)).toMatchObject({ state: "failed", code: "run_unsettled" });
+  });
+
   it("releases a claim older than ten minutes but not one nine minutes old", async () => {
     const s = await staged();
     s.store.claimGrowReview(s.id, "2026-11-10T10:51:00.000Z");   // 9 min before 11:00

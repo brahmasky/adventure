@@ -286,7 +286,7 @@ export class GrowService {
     if (row.needs_review && !store.getPassingGrowReview(row.id, row.content_hash)) return "not_approved";
     if (!this.canWrite(commit) || store.pendingGrowOps(row.name).length > 0) return "held";
     const stop = this.revalidate(JSON.parse(row.fields_json) as GrowFields);
-    if (stop) { this.failRow(row, stop); return "failed"; }
+    if (stop) { this.failRow(row.id, "approved", stop); return "failed"; }
     return store.inTransaction(() => {
       store.patchGrowStaged(row.id, { state: "publishing", claimed_at: null }, now);
       return store.insertGrowOp({ id: randomUUID(), kind: "publish", source: "submit", name: row.name, staged_id: row.id, request_id: null, target_json: row.fields_json, reason: null, undo_version_id: null, now });
@@ -302,9 +302,15 @@ export class GrowService {
     return !check.ok && check.code === "duplicate" ? "duplicate" : null;
   }
 
-  private failRow(row: GrowStagedRow, code: "zone_full" | "duplicate" | "name_is_exemplar"): void {
+  /** A staged row whose authoring turn will never settle: failed `run_unsettled`, never reviewed (the tick decides when). */
+  failUnsettled(id: number): void { this.failRow(id, "staged", "run_unsettled"); }
+
+  /** One transaction; the row is reread and failed only while it is still in the expected state. */
+  private failRow(id: number, expected: "staged" | "approved", code: "zone_full" | "duplicate" | "name_is_exemplar" | "run_unsettled"): void {
     const { store } = this.d; const now = this.d.now();
     store.inTransaction(() => {
+      const row = store.getGrowStaged(id);
+      if (!row || row.state !== expected) return;
       store.patchGrowStaged(row.id, { state: "failed", code, claimed_at: null }, now);
       store.appendGrowEvent({ at: now, run_id: row.run_id, chat_id: row.chat_id, name: row.name, action: "review_failed", result: "failed", code, reviewer_model: null, commit_id: null });
     });

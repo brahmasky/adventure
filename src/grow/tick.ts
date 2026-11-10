@@ -3,7 +3,7 @@ import { errorCode } from "../domain/error-code.js";
 import type { OneShotInput } from "../llm/providers/omp.js";
 import type { LlmResult } from "../llm/types.js";
 import type { ModelString } from "../omp/model-string.js";
-import type { GrowStagedRow, RunStore } from "../run/run-store.js";
+import { isTerminalRunState, type GrowStagedRow, type RunStore } from "../run/run-store.js";
 import { type GrowFields, parseSkillFile } from "./checks.js";
 import { resolveGrowEnabled } from "./flags.js";
 import { type ReviewOutcome, runReview } from "./review.js";
@@ -12,6 +12,8 @@ import type { GrowService } from "./service.js";
 export const GROW_CLAIM_STALE_MS = 10 * 60_000;
 /** Wait after outage 1, 2, 3; the fourth ends `review_unavailable`. */
 export const GROW_RETRY_AFTER_MS = [3_600_000, 21_600_000, 86_400_000] as const;
+/** A staged row whose authoring turn has not settled after this long never will be reviewed. */
+export const GROW_UNSETTLED_MS = 86_400_000;
 export interface GrowTickDeps { store: RunStore; svc: GrowService; env: NodeJS.ProcessEnv; now: string; signal: AbortSignal;
   chain: () => ModelString[]; spawn: (input: OneShotInput) => Promise<LlmResult>; exemplar: () => Promise<string>; settled: (run_id: string) => boolean }
 const plus = (iso: string, ms: number): string => new Date(Date.parse(iso) + ms).toISOString();
@@ -23,10 +25,25 @@ export async function runGrowTick(d: GrowTickDeps): Promise<{ requests: number; 
   const requests = await d.svc.runRequests();
   d.store.releaseStaleGrowClaims(plus(d.now, -GROW_CLAIM_STALE_MS));
   if (!resolveGrowEnabled(d.env) || d.signal.aborted) return { requests, reviewed: null };
-  const row = d.store.dueGrowReviews(d.now).find((r) => r.run_id === null || d.settled(r.run_id));
+  const row = reviewable(d);
   if (!row || !d.store.claimGrowReview(row.id, d.now)) return { requests, reviewed: null };
   await reviewOne(d, row);
   return { requests, reviewed: row.id };
+}
+
+/**
+ * The first due row whose authoring turn has settled (its final trust level is written). A row whose turn never will —
+ * its run is terminal with no final level (a crash, then a lease expiry), or it has waited a day — is failed
+ * `run_unsettled`: it is never reviewed at its submit-time level, which may be lower than the turn ended at.
+ */
+function reviewable(d: GrowTickDeps): GrowStagedRow | undefined {
+  let first: GrowStagedRow | undefined;
+  for (const r of d.store.dueGrowReviews(d.now)) {
+    if (r.run_id === null || d.settled(r.run_id)) { first ??= r; continue; }
+    const state = d.store.getRunStatus(r.run_id)?.state;
+    if ((state !== undefined && isTerminalRunState(state)) || Date.parse(d.now) - Date.parse(r.created_at) > GROW_UNSETTLED_MS) d.svc.failUnsettled(r.id);
+  }
+  return first;
 }
 
 async function reviewOne(d: GrowTickDeps, row: GrowStagedRow): Promise<void> {
