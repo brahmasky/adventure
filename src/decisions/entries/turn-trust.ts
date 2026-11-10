@@ -14,12 +14,13 @@ export const TRUST_ORDER: readonly TrustLevel[] = ["clean", "untrusted", "hostil
  * text from outside, which reached the planner inside the not-checked frame (security final I-2): hostile, since a plain
  * write would otherwise run tap-free beside text no judge read. `carried_untrusted` / `carried_hostile`: the turn starts at
  * the level its planner transcript carries from the last dispatched turn (security final I-3: that text is still in context).
+ * `grow_read_untrusted`: the turn read a grow-zone skill (or its review findings) born from outside content (ADR 0035 G4).
  */
 export type TrustCause = "wall_read" | "shell_netread" | "judge_timeout" | "injection_withheld" | "unjudged_outside" | "unjudged_local" | "judge_lost_outside"
-  | "carried_untrusted" | "carried_hostile";
+  | "carried_untrusted" | "carried_hostile" | "grow_read_untrusted";
 export const CAUSE_LEVEL: Readonly<Record<TrustCause, TrustLevel>> = { wall_read: "untrusted", shell_netread: "untrusted", judge_timeout: "untrusted",
   injection_withheld: "hostile", unjudged_outside: "hostile", unjudged_local: "untrusted", judge_lost_outside: "hostile",
-  carried_untrusted: "untrusted", carried_hostile: "hostile" };
+  carried_untrusted: "untrusted", carried_hostile: "hostile", grow_read_untrusted: "untrusted" };
 /**
  * D2-A (spec 2026-11-02 §6.1): the level a cause leaves on the planner transcript after its turn. A withheld passage was
  * replaced by WITHHELD_TEXT before the planner saw it, so it carries `untrusted`; every other cause carries its own level.
@@ -47,5 +48,5 @@ export const TURN_TRUST: Entry<TurnTrustState, TrustLevel> = {
   effects: { clean: { kind: "none", reversible: true, announced: "none" },
     untrusted: tighten("lesson_write, schedule_task, self_write_propose and skill_author ask"),
     hostile: tighten("every shell command off the read-only list and every write asks; built-in edit/write redirect to bash") },
-  reasonCodes: ["wall_read", "shell_netread", "judge_timeout", "injection_withheld", "unjudged_outside", "unjudged_local", "judge_lost_outside", "carried_untrusted", "carried_hostile"]
+  reasonCodes: ["wall_read", "shell_netread", "judge_timeout", "injection_withheld", "unjudged_outside", "unjudged_local", "judge_lost_outside", "carried_untrusted", "carried_hostile", "grow_read_untrusted"]
 };

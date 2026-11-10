@@ -94,7 +94,9 @@ export interface TriageInput { claim: ClaimedRun; text: string; userText: string
 export interface SupervisorDeps {
   chatId: string; store: RunStore; cfg: OmpConfig; ctx: PathContext; distDir: string; decls: ToolDeclaration[];
   env: NodeJS.ProcessEnv; turnEnvelopeActions: string[]; turnContext: TurnContextDeps;
-  buildTools: (claim: ClaimedRun) => { registry: ToolRegistry; quarantine: ActiveTurn["quarantine"]; preflight?: ActiveTurn["preflight"]; judge?: InjectionJudge };
+  buildTools: (claim: ClaimedRun) => { registry: ToolRegistry; quarantine: ActiveTurn["quarantine"]; preflight?: ActiveTurn["preflight"]; judge?: InjectionJudge;
+    /** ADR 0035 G4: hands the worker the live turn's trust level (read first; the ledger is its fallback). */
+    bindTrust?: (level: () => TrustLevel) => void };
   posture: () => string | null; outcome: TurnOutcomeSink;
   /**
    * Model roles (Jev tree spec §4-5): the child spawns on "default"'s candidates; each turn pins its own routed role's.
@@ -587,6 +589,7 @@ export class PlannerSupervisor {
       ...(req.approver ? { approver: req.approver } : {}), ...(tools.preflight ? { preflight: tools.preflight } : {}),
       ...(tools.judge ? { judge: tools.judge } : {})
     };
+    tools.bindTrust?.(() => active.trust?.level() ?? "clean");
     // read at call time: the turn's child may spawn after this (first turn) or respawn mid-turn, each with a fresh token
     Object.defineProperty(active, "secretValues", { enumerable: true, get: () => (this.bridgeToken ? [this.bridgeToken] : undefined) });
     const heartbeat = setInterval(() => this.renewLeases(), PLANNER_HEARTBEAT_MS);

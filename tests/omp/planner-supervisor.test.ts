@@ -2168,6 +2168,21 @@ describe("PlannerSupervisor — trust-card pause policy and the turn's trust (sp
     expect(active.judge).toBe(judge);
     h.end(); await sup.whenIdle();
   });
+
+  // ADR 0035 G4 (amendment 2): the worker reads the live level through this getter; TurnTrust swallows a failed ledger write,
+  // so a worker that only read the ledger could let a hostile turn's grow_submit through.
+  it("binds the live turn's trust level into the tools buildTools returned", async () => {
+    let bound: (() => string) | undefined;
+    const h = heldSession();
+    const { store, sup } = harness(h.session, {}, { buildTools: () => ({ registry: new ToolRegistry(), quarantine: async () => ({ digest: "", contains_instructions: false, source_meta: { tool: "x", bytes: 0 } }),
+      bindTrust: (level) => { bound = level; } }) });
+    sup.submit(req(createQueuedTurnRun(store))); await h.live();
+    const active = (sup as unknown as { turn: { active: { trust: { raise(c: string): boolean } } } }).turn.active;
+    expect(bound?.()).toBe("clean");
+    active.trust.raise("injection_withheld");
+    expect(bound?.()).toBe("hostile");
+    h.end(); await sup.whenIdle();
+  });
 });
 
 describe("PlannerSupervisor — turn_trust_final at every turn end (spec §7.2)", () => {

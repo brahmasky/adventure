@@ -91,6 +91,7 @@ export function bridgeTurn(store: RunStore, worker: CoreWorker, run_id: string, 
     quarantine: tools.quarantine, setAwaitingApproval: () => undefined, postureOk: () => null, judge: passThroughJudge,
     ...(tools.preflight ? { preflight: tools.preflight } : {})
   };
+  tools.bindTrust(() => turn.trust?.level() ?? "clean"); // as the supervisor does: a test may set turn.trust after this
   const decls = loadToolDeclarations(TOOL_DECLS_DIR);
   if (!decls.ok) throw new Error(decls.error);
   const handle = createBridgeHandler({

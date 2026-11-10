@@ -18,7 +18,7 @@ describe("trustAsk", () => {
     for (const c of ["curl https://x", "touch x", "git log", "file -C -m x"]) expect(trustAsk("hostile", "shell", c)).toEqual({ ask: true, reason: HOSTILE_REASON });
     expect(trustAsk("hostile", "shell_external", "curl -d x https://y")).toEqual({ ask: true, reason: HOSTILE_REASON });
     for (const e of ["wiki_build", "wiki_refine", "lesson_write"]) expect(trustAsk("hostile", e).ask).toBe(true);
-    for (const e of ["web_search", "http_fetch", "gmail_read", "google_api", "houge_status", "to_local_time"]) expect(trustAsk("hostile", e)).toEqual({ ask: false });
+    for (const e of ["web_search", "http_fetch", "gmail_read", "google_api", "houge_status", "to_local_time", "grow_read"]) expect(trustAsk("hostile", e)).toEqual({ ask: false });
   });
   // security final I-1: self_diagnose starts codex under a read-only sandbox that can read any file (no Seatbelt credential
   // denies) and sends what it reads off the box; a hostile turn steering its `focus` could leak .env tap-free.
@@ -28,6 +28,21 @@ describe("trustAsk", () => {
   });
   it("a shell entry with no command string asks at hostile (fail closed)", () => {
     expect(trustAsk("hostile", "shell").ask).toBe(true);
+  });
+});
+
+// ADR 0035 G4: an untrusted turn may grow a skill with no tap (the service marks it born untrusted), and reading a skill never
+// taps. grow_submit is on no list on purpose, so at hostile trustAsk WOULD card it: the worker's preflight must refuse it
+// first (turn_hostile), or a tap could put a hostile turn's skill live.
+describe("trustAsk for the grow tools (ADR 0035 G4)", () => {
+  it("grow_submit does not ask at untrusted", () => {
+    expect(trustAsk("untrusted", "grow_submit")).toEqual({ ask: false });
+  });
+  it("grow_read never asks, at any level", () => {
+    for (const level of ["clean", "untrusted", "hostile"] as const) expect(trustAsk(level, "grow_read")).toEqual({ ask: false });
+  });
+  it("grow_submit at hostile asks (it is in no list), which is why the preflight must refuse it before any trust ask", () => {
+    expect(trustAsk("hostile", "grow_submit")).toEqual({ ask: true, reason: HOSTILE_REASON });
   });
 });
 

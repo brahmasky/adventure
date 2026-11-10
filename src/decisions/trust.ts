@@ -104,3 +104,17 @@ export function turnTrustFinal(store: RunStore, run_id: string): TrustLevel | nu
   const lvl = (e?.payload as { max_level?: unknown } | undefined)?.max_level;
   return lvl === "clean" || lvl === "untrusted" || lvl === "hostile" ? lvl : null;
 }
+
+/**
+ * The level a running turn has reached so far, from its ledger: the same rows `raise` writes (a carried level is one of
+ * them). The fallback when no live level is bound (ADR 0035 G4): a lost ledger write reads lower, so prefer the live turn.
+ */
+export function turnTrustNow(store: RunStore, run_id: string): TrustLevel {
+  let level: TrustLevel = "clean";
+  for (const e of store.getLedgerEvents(run_id)) {
+    if (e.event_type !== "turn_trust") continue;
+    const l = (e.payload as { level?: unknown }).level;
+    if ((l === "untrusted" || l === "hostile") && rankOf(l) > rankOf(level)) level = l;
+  }
+  return level;
+}

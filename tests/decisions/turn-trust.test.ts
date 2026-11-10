@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { entryById, entryProblems } from "../../src/decisions/registry.js";
 import { CARRY_LEVEL, CAUSE_LEVEL, TRUST_ORDER, trustRule, type TrustCause, type TrustLevel } from "../../src/decisions/entries/turn-trust.js";
-import { HOSTILE_CARD_TEXT, resolveTrustAskTtlMs, TRUST_ASK_TTL_DEFAULT_MS, TurnTrust, turnTrustFinal } from "../../src/decisions/trust.js";
+import { HOSTILE_CARD_TEXT, resolveTrustAskTtlMs, TRUST_ASK_TTL_DEFAULT_MS, TurnTrust, turnTrustFinal, turnTrustNow } from "../../src/decisions/trust.js";
 import type { AnyEntry } from "../../src/decisions/types.js";
 import { RunStore } from "../../src/run/run-store.js";
 import { createQueuedTurnRun } from "../helpers/runs.js";
@@ -134,8 +134,37 @@ describe("carry level (D2-A)", () => {
     const { trust } = setup(); trust.raise("injection_withheld"); trust.finalize(); trust.raise("unjudged_outside");
     expect(trust.carryLevel()).toBe("untrusted");
   });
+  // ADR 0035 G4(d): a skill born from outside content still carries what it read, so reading it leaves the transcript untrusted
+  it("grow_read_untrusted raises untrusted in the turn and carries untrusted after it", () => {
+    expect(CAUSE_LEVEL.grow_read_untrusted).toBe("untrusted");
+    expect(carryOf(["grow_read_untrusted"])).toEqual(["untrusted", "untrusted"]);
+  });
   it("CARRY_LEVEL differs from CAUSE_LEVEL only at injection_withheld", () => {
     expect(Object.keys(CAUSE_LEVEL).filter((c) => CARRY_LEVEL[c as TrustCause] !== CAUSE_LEVEL[c as TrustCause])).toEqual(["injection_withheld"]);
+  });
+});
+
+// ADR 0035 G4: the worker reads the level a running turn reached from its ledger when no live getter is bound (unit 8c's
+// grow_submit stamps the skill with it, the preflight refuses on it), so the ledger rows `raise` writes must be counted.
+describe("turnTrustNow", () => {
+  it("is clean with no turn_trust rows", () => {
+    const { store, run_id } = setup();
+    expect(turnTrustNow(store, run_id)).toBe("clean");
+  });
+  it("is untrusted after a wall read and hostile after a withheld passage", () => {
+    const { store, run_id, trust } = setup();
+    trust.raise("wall_read"); expect(turnTrustNow(store, run_id)).toBe("untrusted");
+    trust.raise("injection_withheld"); expect(turnTrustNow(store, run_id)).toBe("hostile");
+  });
+  it("counts a carried level: a turn that starts carrying untrusted text is untrusted", () => {
+    const { store, run_id, trust } = setup();
+    trust.carry("untrusted");
+    expect(turnTrustNow(store, run_id)).toBe("untrusted");
+  });
+  it("reads only its own run: another run's hostile row does not leak in", () => {
+    const a = setup(); const other = createQueuedTurnRun(a.store);
+    new TurnTrust({ store: a.store, run_id: other, chat_id: "555", born: "telegram", env: { HOUGE_TELEGRAM_CHAT_ID: "555" } }).raise("injection_withheld");
+    expect(turnTrustNow(a.store, a.run_id)).toBe("clean");
   });
 });
 

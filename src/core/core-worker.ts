@@ -167,6 +167,8 @@ import { isSkipReason, TURN_HANDLER, type TurnHandlerState, type TurnHandlerVerd
 import { TURN_GEAR, type TurnGearState, type TurnGearVerdict } from "../decisions/entries/turn-gear.js";
 import { SETTLE_JEV_MS } from "../decisions/entries/turn-settle.js";
 import { SELF_WRITE_GUARD } from "../decisions/entries/selfwrite-guard.js";
+import type { TrustLevel } from "../decisions/entries/turn-trust.js";
+import { turnTrustNow } from "../decisions/trust.js";
 import { storeRecorder } from "../decisions/record.js";
 import { decisionOf, recordTapOutcome } from "../decisions/tap-outcomes.js";
 import { recordCorrection, skipImproveSignal } from "../decisions/improve-signals.js";
@@ -282,6 +284,8 @@ export interface OmpTurnState {
   triageFinalized?: boolean;
   /** The stored turn this message quotes (spec §2.2.1), resolved at claim; absent when not a reply or unresolved. */
   quote?: { role: "houge" | "user"; turn: ChatTurnRow };
+  /** The live turn's trust level, bound by the supervisor (ADR 0035 G4); absent until bound, then the ledger answers. */
+  trustLevel?: () => TrustLevel;
 }
 
 /** What one tree finalisation writes (spec §6): decision rows (or the skipped row), the verdict row, the triage event. Never text. */
@@ -588,12 +592,19 @@ export class CoreWorker {
     this.googleAuths.paco?.invalidate();
   }
 
-  /** Code-owned refusals before any execution: Paco's mail off (the text reaches the planner), memory-write trust limits. */
-  private ompPreflight(claim: ClaimedRun, state: { turnCtx: LoopTurnContext }, entry: string, input: Record<string, unknown>): ReturnType<NonNullable<ActiveTurn["preflight"]>> {
+  /** Code-owned refusals before any execution: a hostile turn's grow_submit, Paco's mail off (the text reaches the planner), memory-write trust limits. */
+  private ompPreflight(claim: ClaimedRun, state: Pick<OmpTurnState, "turnCtx" | "trustLevel">, entry: string, input: Record<string, unknown>): ReturnType<NonNullable<ActiveTurn["preflight"]>> {
+    // ADR 0035 G4: refused before any trust ask, so no approval card can ever put a hostile turn's skill live
+    if (entry === "grow_submit" && this.growTrustLevel(claim, state) === "hostile") return { refused: { reason: "turn_hostile", text: GROW_HOSTILE_TEXT } };
     if ((entry === "gmail_read" || entry === "google_api") && input.account === "paco" && !pacoMailReadable(process.env, this.runStore)) {
       return { refused: { reason: "mail_off", text: PACO_MAIL_OFF_ERROR } };
     }
     return entry === "memory_correct_write" ? memoryWritePreflight(this.memoryDeps(claim, state.turnCtx), input) : null;
+  }
+
+  /** ADR 0035 G4 (amendment 2): the live turn's level when bound; the ledger otherwise (TurnTrust swallows a failed ledger write). */
+  private growTrustLevel(claim: ClaimedRun, state: Pick<OmpTurnState, "trustLevel">): TrustLevel {
+    return state.trustLevel?.() ?? turnTrustNow(this.runStore, claim.run_id);
   }
 
   async executeOnce(worker_id: string): Promise<CoreWorkerResult> {
@@ -2494,6 +2505,7 @@ export class CoreWorker {
    */
   buildOmpTools(claim: ClaimedRun, chatId = this.chatOf(claim.run_id)): {
     registry: ToolRegistry; quarantine: ActiveTurn["quarantine"]; preflight: NonNullable<ActiveTurn["preflight"]>; judge: InjectionJudge;
+    bindTrust: (level: () => TrustLevel) => void;
   } {
     const state = this.ompTurnState(claim, chatId);
     const registry = new ToolRegistry();
@@ -2517,6 +2529,7 @@ export class CoreWorker {
       registry, quarantine: (tool, output) => this.ompQuarantine(claim, state, tool, output),
       // memory_correct writes: the trust limits refuse before any card, else the card shows exactly what changes
       preflight: (entry, input) => this.ompPreflight(claim, state, entry, input),
+      bindTrust: (level) => { state.trustLevel = level; },
       // tool.injection (spec §7.1): every shell and wall result of this turn is judged before a model reads it
       judge: createInjectionJudge({ store: this.runStore, client: this.injectionClient(claim.run_id), home: this.ompPathContext().home })
     };
@@ -4749,6 +4762,8 @@ function savedLessonLine(saved: LessonSaveResult | undefined, savedLine: string,
 
 /** Tool error for `account: "paco"` while the mail switch is off. */
 const PACO_MAIL_OFF_ERROR = "Paco's mail is off (/mail on to allow)";
+/** ADR 0035 G4: what the planner reads when a hostile turn's grow_submit is refused (fixed code `turn_hostile`). */
+const GROW_HOSTILE_TEXT = "REFUSED turn_hostile: this conversation read text aimed at the assistant, so nothing from it can become a skill. /fresh starts a clean conversation.";
 
 /**
  * ⓪·3g: the kickoff digest the evolution tool adapter returns IMMEDIATELY after
