@@ -7813,7 +7813,9 @@ export class RunStore {
   }
 
   bumpGrowOpFailure(id: string): number {
-    return this.db.prepare(`UPDATE grow_ops SET failures = failures + 1 WHERE id = ? RETURNING failures`).get<{ failures: number }>(id)?.failures ?? 0;
+    const r = this.db.prepare(`UPDATE grow_ops SET failures = failures + 1 WHERE id = ? RETURNING failures`).get<{ failures: number }>(id);
+    if (!r) throw new Error("grow op not found");
+    return r.failures;
   }
 
   finishGrowOp(id: string, state: "done" | "failed", commit_id: string | null, now: string): void {

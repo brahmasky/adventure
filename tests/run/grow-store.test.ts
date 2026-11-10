@@ -117,7 +117,7 @@ describe("grow store", () => {
 
   it("insertGrowStaged is due immediately and listGrowStaged is in ascending id", () => {
     const s = mem(); const a = staged(s, "one"); const b = staged(s, "two");
-    expect(s.getGrowStaged(a)).toMatchObject({ state: "staged", next_attempt_at: NOW, needs_review: true, });
+    expect(s.getGrowStaged(a)).toMatchObject({ state: "staged", next_attempt_at: NOW, needs_review: true });
     expect(s.listGrowStaged("staged").map((r) => r.id)).toEqual([a, b]);
     s.patchGrowStaged(a, { state: "failed", code: "bad" }, LATER);
     expect(s.listGrowStaged("failed").map((r) => r.id)).toEqual([a]);
@@ -252,7 +252,7 @@ describe("grow store", () => {
   it("a second operation for one request id is rejected, and getGrowOpByRequest finds it in any state", () => {
     const s = mem();
     op(s, "op1", { kind: "undo", source: "undo", request_id: 7 });
-    expect(() => op(s, "op2", { request_id: 7 })).toThrow();
+    expect(() => op(s, "op2", { request_id: 7 })).toThrow(/UNIQUE/);
     s.finishGrowOp("op1", "failed", null, LATER);
     expect(s.getGrowOpByRequest(7)).toMatchObject({ id: "op1", state: "failed" });
     expect(s.getGrowOpByRequest(8)).toBeUndefined();
@@ -263,12 +263,14 @@ describe("grow store", () => {
     expect(s.bumpGrowOpFailure("op1")).toBe(1);
     expect(s.bumpGrowOpFailure("op1")).toBe(2);
     expect(s.getGrowOp("op1")?.failures).toBe(2);
+    expect(() => s.bumpGrowOpFailure("missing")).toThrow("grow op not found");
   });
 
   it("latest and previous versions skip undone ones, and one op id yields one version", () => {
     const s = mem();
-    const v = (op_id: string) => s.insertGrowVersion({ name: "unit-convert", op_id, commit_id: `c-${op_id}`, content_hash: "h", fields_json: "{}", at: NOW });
-    const a = v("o1"); const b = v("o2"); const c = v("o3");
+    const v = (op_id: string, name = "unit-convert") => s.insertGrowVersion({ name, op_id, commit_id: `c-${op_id}`, content_hash: "h", fields_json: "{}", at: NOW });
+    const a = v("o1"); v("x1", "other"); const b = v("o2"); const c = v("o3");
+    expect(s.previousGrowVersion("unit-convert", b)?.id).toBe(a);
     expect(s.latestGrowVersion("unit-convert")?.id).toBe(c);
     expect(s.previousGrowVersion("unit-convert", c)?.id).toBe(b);
     s.markGrowVersionUndone(c); s.markGrowVersionUndone(b);
@@ -276,7 +278,9 @@ describe("grow store", () => {
     expect(s.previousGrowVersion("unit-convert", b)?.id).toBe(a);
     expect(s.previousGrowVersion("unit-convert", a)).toBeUndefined();
     expect(s.listGrowVersions("unit-convert").map((x) => x.undone)).toEqual([false, true, true]);
+    s.markGrowVersionUndone(a);
+    expect(s.latestGrowVersion("unit-convert")).toBeUndefined();
     expect(s.latestGrowVersion("nope")).toBeUndefined();
-    expect(() => v("o1")).toThrow();
+    expect(() => v("o1")).toThrow(/UNIQUE/);
   });
 });
