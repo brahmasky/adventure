@@ -35,10 +35,11 @@ describe("grow bundle", () => {
     expect(readdirSync(backupDir)).toEqual(["houge-20261110T000000Z.sqlite"]);
   });
 
-  it("replaces a *.tmp a crashed run left behind, and leaves only the bundle", async () => {
+  it("replaces a *.tmp and its git lock a killed run left behind, and leaves only the bundle", async () => {
     const s = await growSetup(); const backupDir = mkTmp();
     writeFileSync(join(backupDir, "houge-20261110T000000Z.sqlite"), "new");
     writeFileSync(join(backupDir, "houge-20261110T000000Z.grow.bundle.tmp"), "half a bundle from a crash");
+    writeFileSync(join(backupDir, "houge-20261110T000000Z.grow.bundle.tmp.lock"), "");   // a SIGKILLed git leaves its lock: create then fails "File exists"
     expect(await ensureGrowBundle({ zone: s.zone, backupDir })).toBe("written");
     expect(readdirSync(backupDir).sort()).toEqual(["houge-20261110T000000Z.grow.bundle", "houge-20261110T000000Z.sqlite"]);
     expect(readFileSync(join(backupDir, "houge-20261110T000000Z.grow.bundle")).subarray(0, 16).toString()).toContain("git bundle");

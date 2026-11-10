@@ -144,6 +144,7 @@ export class GrowZone {
     await this.assertToplevel();
     const tmp = `${toPath}.tmp`;
     rmSync(tmp, { force: true });   // a crash mid-bundle left it behind: start from nothing
+    rmSync(`${tmp}.lock`, { force: true });   // a killed git leaves its lock and the next create fails; the daemon is the only bundle writer
     try {
       await this.git(["bundle", "create", "-q", tmp, "--all"]);
       await this.git(["bundle", "verify", "-q", tmp]);
