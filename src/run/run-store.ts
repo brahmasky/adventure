@@ -71,6 +71,7 @@ import { scheduleDisplayName } from "./schedule-spec.js";
 export type LlmCallRole =
   | "writer"
   | "reviewer"
+  | "grow_review"
   | "classify"
   | "frame"
   | "answer"

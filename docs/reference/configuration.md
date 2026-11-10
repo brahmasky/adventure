@@ -137,6 +137,7 @@ names it once at boot (`[omp-config] … no longer read`). Delete them from `.en
 | `judges` | idea-panel judges, one tier head per seat index, never a chain | seat 0 `kimi`, seat 1 `codex-sol`, seat 2 `gemini-pro` |
 | `chair` | idea-panel chair | `opus@anthropic:low` |
 | `reviewer` | self-write checker 3 | `kimi:high`, `opus@antigravity:medium` |
+| `grow_review` | Reviews a skill Houge wrote before it goes live (ADR 0035). No Claude-family leg, so it always differs from a Claude-authored turn; a leg of the author's family is skipped. | `kimi:high`, `gemini-pro:high`, `codex-sol:high` |
 
 **Tiers (spec 2026-11-02, [ADR 0032 7.2](../decisions/0032-omp-runtime-consolidated.md)).** A leg names a tier, not a version:
 `opus@anthropic`, `opus@antigravity`, `sonnet@anthropic`, `sonnet@antigravity`, `gemini-flash`, `gemini-pro`, `codex-sol`, `kimi`
@@ -512,7 +513,7 @@ most, it can never break a turn. Use `/skills [scope]` to view the loaded skills
 |----------|---------|---------|
 | `HOUGE_SKILLS_ENABLED` | `on` | Kill switch for the ambient skills layer. Skills are read-only/low-risk, so this defaults **on** — only an explicit `0`/`false`/`no`/`off` disables it, in which case the composer omits the skills section (composing byte-identically to a no-skills run). |
 | `HOUGE_GROW_ENABLED` | `on` | Switch for writes to the grow zone (ADR 0035). Only `0`/`false`/`no`/`off` disable it: `grow_submit` then answers `grow_disabled` and the index drops its sentence about writing; the index and `grow_read` keep working. In `DISARM_FLAGS`. |
-| `HOUGE_GROW_DIR` | `~/Library/Application Support/houge/grow` | The grow zone: Houge's own local git repository of skills, outside the code checkout and never pushed. An absolute path of at least three segments that is neither the home directory nor an ancestor of it; anything else falls back to the default. Write-denied to every sandboxed child. |
+| `HOUGE_GROW_DIR` | `~/Library/Application Support/houge/grow` | The grow zone: Houge's own local git repository of skills, outside the code checkout and never pushed. An override is ignored, and the default used, when it is not absolute, is fewer than three path segments deep, is the home directory or an ancestor of it, overlaps the code checkout or the data directory in either direction (compared case-insensitively), or is `~/.omp` or inside it. Write-denied to every sandboxed child. |
 | `HOUGE_SKILL_MAX_PER_SCOPE` | `4` | Max skills folded into a prompt per scope (alphabetical by filename; the rest are dropped). Bounds the prompt and keeps self-selection precise. |
 | `HOUGE_SKILL_REFINE_PASSES` | `3` | Max **guided-refine** passes for a blocked auto-authored skill (the paper peaks at 3). Each pass re-authors the draft against Gate B's specific failing criteria, then re-verifies. |
 | `HOUGE_SKILL_REVERIFY_ENABLED` | `off` | Arms the **weekly re-verify advisor** (skill-retirement spec 2026-07-29): stale skills get a fresh Gate B ensemble; passers are re-stamped, failers are flagged to you with the failing criteria and the exact `/skills retire <name>` command. **Suggest-only — it never moves a file.** In `DISARM_FLAGS`. First armed tick fires immediately (a first sweep today), then weekly at the slot. |
@@ -629,7 +630,7 @@ absent, not null. Payload fields:
 | Field | Required | Notes |
 |-------|----------|-------|
 | `provider` | yes | The leg. Since 2026-10: an omp provider (`anthropic`, `google-antigravity`, `kimi-code`, `openai-codex`), `agy-cli` (voice), `codex`, or `jev`. Older rows also carry `pi`, `kimi-api`, `gemini-api`, `kimi-cli` and `claude`. |
-| `role` | yes | The call's purpose, set by the scoped sink (the chain does not know it): `answer` \| `compose` \| `classify` \| `frame` \| `reader` \| `writer` \| `reviewer` \| `distill` \| `consolidate` \| `extract` \| `judge` \| `chair` \| `verify` \| `attribution`. |
+| `role` | yes | The call's purpose, set by the scoped sink (the chain does not know it): `answer` \| `compose` \| `classify` \| `frame` \| `reader` \| `writer` \| `reviewer` \| `grow_review` \| `distill` \| `consolidate` \| `extract` \| `judge` \| `chair` \| `verify` \| `attribution`. |
 | `outcome` | yes | `ok` \| `error` \| `unavailable`. *Unavailable* = the provider was not constructively callable (binary absent, not authenticated, model retired, key unset); timeout, non-zero exit, over-cap and parse failures are `error`. Both fall through the chain identically. |
 | `model` | on `ok` | The model that answered (`unknown` + a warning if a provider ever omits it). |
 | `latency_ms` | optional | Wall-clock for this leg. |

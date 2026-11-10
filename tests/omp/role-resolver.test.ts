@@ -13,7 +13,7 @@ const openCatalogIncidents = (store: RunStore) => store.listOpenIncidents().filt
 const listChains = (): RoleChains => {
   const s = (k: string) => SEED_LISTS[k]!.map(parseModelString);
   return { planner: s("default"), reader: s("reader"), media: s("vision"), ticks: s("tiny"), judges: [s("judges:0")[0]!, s("judges:1")[0]!, undefined as unknown as ModelString], // seat 2 is a hole (RoleChains.judges keeps its index): the gemini-pro tier is empty and static seat 2 is empty (D4-A)
-    chair: s("chair"), reviewer: s("reviewer") };
+    chair: s("chair"), reviewer: s("reviewer"), growReview: s("grow_review") };
 };
 
 // Spec 2026-10-06 §4 / §9: every seat now runs on this service. The tests pin what surrounds the pure resolution:
@@ -192,7 +192,7 @@ describe("RoleResolver", () => {
     const store = RunStore.openInMemory();
     const roles = await pinnedRoles(store, fixtureCatalog(), { vision: "gemini-3.1-pro" });
     const all = roles.resolveAll();
-    expect(all.map((r) => r.key)).toEqual(["fast", "default", "thinking", "reader", "vision", "tiny", "judges:0", "judges:1", "judges:2", "chair", "reviewer"]);
+    expect(all.map((r) => r.key)).toEqual(["fast", "default", "thinking", "reader", "vision", "tiny", "judges:0", "judges:1", "judges:2", "chair", "reviewer", "grow_review"]);
     expect(all.find((r) => r.key === "vision")).toEqual({ key: "vision", head: "google-antigravity/gemini-3.1-pro:low",
       candidates: ["google-antigravity/gemini-3.1-pro:low", "google-antigravity/gemini-3.8-flash:low"], source: "override" });
     expect(all.find((r) => r.key === "default")?.source).toBe("list");

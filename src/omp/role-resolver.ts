@@ -97,7 +97,7 @@ export class RoleResolver {
     return {
       planner: or("default"), reader: or("reader"), media: or("vision"), ticks: or("tiny"),
       judges: Array.from({ length: JUDGE_SEATS }, (_, seat) => or("judges", seat)[0] as ModelString),
-      chair: or("chair"), reviewer: or("reviewer")
+      chair: or("chair"), reviewer: or("reviewer"), growReview: or("grow_review")
     };
   }
 
