@@ -17,8 +17,11 @@ export const HIDDEN_CLASSES: ReadonlyArray<readonly [label: string, re: RegExp]>
   ["an unassigned code point", /\p{Cn}/u],
   ["a lone surrogate", /\p{Cs}/u]
 ];
+const HIDDEN_ANY = new RegExp(HIDDEN_CLASSES.map(([, re]) => re.source).join("|"), "gu");
+/** The text a reader sees: hidden characters dropped, compatibility forms folded (fullwidth `ｇｈｐ_` reads as `ghp_`). */
+export const visibleView = (s: string): string => s.replace(HIDDEN_ANY, "").normalize("NFKC");
 
-const esc =(s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const esc = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const NAME_CHAR = "[A-Za-z0-9_-]";
 /** ADR 0032 §3.2 as literals: a path into a credential store under a home directory. A match ends where the name does, so sentence punctuation after it still matches. */
 const HOME_SECRET_PATH = new RegExp(`(?:~|\\$HOME|\\$\\{HOME\\}|/Users/[^/\\s]+|/home/[^/\\s]+)/(?:${HOME_SECRETS.map(esc).join("|")})(?!${NAME_CHAR})`);
@@ -26,10 +29,22 @@ const HOME_SECRET_PATH = new RegExp(`(?:~|\\$HOME|\\$\\{HOME\\}|/Users/[^/\\s]+|
 const DOTENV_PATH = new RegExp(`(?:^|[\\s/"'\`(])\\.env(?!\\.(?:example|sample|template)(?!${NAME_CHAR}))(?:\\.${NAME_CHAR}+)?(?!${NAME_CHAR})`, "im");
 const isSecretPath = (s: string): boolean => HOME_SECRET_PATH.test(s) || DOTENV_PATH.test(s);
 
-/** What a skill field may not contain: a known secret value, a secret-shaped token, or a secret path. Changes the text when it finds one. */
+/**
+ * What a skill field may not contain: a known secret value, a secret-shaped token, or a secret path. Changes the text
+ * when it finds one, in the text as given or in its visible view (a secret split by a soft hyphen, or spelled
+ * fullwidth). Text whose view differs but holds no secret comes back unchanged: `½` or `…` is not a secret.
+ */
 export function fieldScrub(store: Pick<RunStore, "redactSecretValues">): (s: string) => string {
-  return (s) => {
+  const one = (s: string): string => {
     const r = redactForJudge(s, { brokerRedact: (x) => store.redactSecretValues(x) });
     return isSecretPath(r) ? `${r} ‹secret path›` : r;
+  };
+  return (s) => {
+    const r = one(s);
+    if (r !== s) return r;
+    const v = visibleView(s);
+    if (v === s) return s;
+    const w = one(v);
+    return w === v ? s : `${w} ‹secret›`;
   };
 }
