@@ -1,6 +1,7 @@
 # Grow zone, slice 1a — a place Houge writes itself, and the checks that decide what goes live
 
-**Rev 1.1 · 2026-11-10 · status: REVIEWED, awaiting Paco's decisions P1–P3 (§2a) and his approval.** Rev 1.0 was
+**Rev 1.2 · 2026-11-10 · status: REVIEWED; P1–P3 DECIDED by Paco 2026-11-10 (§2a); awaiting the re-review and his
+approval of the whole.** Rev 1.0 was
 reviewed against the live code by spec-review-senior (Opus 5.5: 8 BLOCKER, 15 WARNING, 6 SUGGESTION) and a codex
 design pass (6 BLOCKER, 4 WARNING, 1 SUGGESTION). The orchestrator verified the cited lines first-hand. Every
 blocker and warning is answered in this revision; §14 is the change log with confirmed and rejected findings. No
@@ -46,7 +47,7 @@ without verification produces volume, and the human pays for it in review.
 - **D9** Slice 1 is split: 1a proves the grow zone and its verification on skills; 1b adds `delegate`.
 - **D10** Success is measured after 30 days by the grow zone's own numbers (§12), not by slices shipped.
 
-## 2a. Decisions this revision needs from Paco
+## 2a. Decided by Paco 2026-11-10 after the reviews: P1 accepted, P2 reading C, P3 accepted
 
 **P1 — 1a is prose skills only; skills with scripts become their own slice (1c).** Both reviews found that the
 script half of Rev 1.0 rested on things the live system does not have:
@@ -59,7 +60,7 @@ script half of Rev 1.0 rested on things the live system does not have:
 
 Script skills are where deterministic verification lives, so they are not dropped. They need a case executor
 that really denies network and a rule for what a script may do at run time; that is a kernel security build and
-gets its own spec. *Recommended:* 1a prose, 1b delegation, 1c scripts and cases. All three existing skills are
+gets its own spec. **Decided:** 1a prose, 1b delegation, 1c scripts and cases. All three existing skills are
 prose, so 1a still proves the point: Houge writes a verified skill with no build and no human gate.
 
 **P2 — what a conversation that has read outside content may do.** Rev 1.0 said "a turn that saw raw network
@@ -79,11 +80,11 @@ Three readings:
 | **B** | `untrusted` asks Paco by tap (today's rule for `skill_author`); `hostile` refused | Consistent with ADR 0034 as written. Puts Paco back as the gate for most writes, against D4 |
 | **C** | `untrusted` is allowed with no tap, always reviewed, and the item is **marked born-untrusted: reading it makes that turn `untrusted`**. `hostile` refused | No human gate. The taint follows the content, so outside-derived text never gains trusted standing; every existing rule for untrusted turns then applies to whoever reads it |
 
-*Recommended: C.* It keeps D4, and it closes the one thing that makes persistence dangerous: text that came from
+**Decided: C.** It keeps D4, and it closes the one thing that makes persistence dangerous: text that came from
 outside being read back later as if Houge's own. It changes ADR 0034 §8.2 (one entry leaves the ask list, one
-rule is added), which is why it is Paco's decision.
+rule is added), which is why it was Paco's decision.
 
-**P3 — review of prose (was O1).** Every new item is reviewed by a different-model seat. An update is unreviewed
+**P3 — review of prose (was O1), decided as written.** Every new item is reviewed by a different-model seat. An update is unreviewed
 only when it is small: at most 20 changed lines and at most 25% of the body, with `description` and `example`
 unchanged. Anything larger is reviewed as new. (The senior review showed the Rev 1.0 rule could be routed
 around: submit a stub, then rewrite it.) Under P2-C a born-untrusted item is reviewed on every change.
@@ -174,7 +175,7 @@ check-to-copy race to defend. The call runs the formal checks (§5.4) in millise
 - `LIVE` — a small update (P3); committed.
 - `STAGED` — accepted, review pending; the result says the item is not live yet.
 - `FAIL <code>: <message>` — a formal check failed; the message names the rule and the exemplar's name.
-- A refusal with a fixed code: `grow_disabled`, `turn_hostile` (and `turn_untrusted` under P2-A),
+- A refusal with a fixed code: `grow_disabled`, `turn_hostile`,
   `name_is_exemplar`, `rate_capped` (20 submits per local day), `zone_full` (200 items), `busy`.
 
 The door never waits for a model, so it cannot outrun the frame watchdog.
@@ -232,7 +233,7 @@ findings are returned by `grow_read({ name, what: "review" })`. Paco sees the sa
 - Skills no longer ride in the prompt as whole bodies. The two schedules that relied on that are covered by a
   live-gate line (§11.9).
 
-### 5.7 Trust (as recommended in P2-C; replaced by the chosen reading)
+### 5.7 Trust (P2, reading C)
 
 - `hostile` conversation: `grow_submit` is refused with `turn_hostile`, in a preflight that runs before any
   trust ask. It is in no ask list, so no card can put a hostile turn's skill live.
@@ -347,8 +348,7 @@ message only as an incident (a door disabled).
 ## 9. Rules this changes
 
 - **New ADR 0035, "Grow zone and its verification".** Rules: G1 the kernel test; G2 one write door and one read
-  door, the daemon the only writer; G3 staged, then live on checks, no human gate; G4 the trust rule as Paco
-  decides P2; G5 the verifier is protected and Houge cannot delete an undo reason; G6 what is reviewed is
+  door, the daemon the only writer; G3 staged, then live on checks, no human gate; G4 the trust rule of §5.7 (hostile refused; untrusted reviewed and marked; a marked item taints its reader); G5 the verifier is protected and Houge cannot delete an undo reason; G6 what is reviewed is
   decided by code (P3); G7 schedule-born runs and (from 1b) delegated children cannot submit.
 - **ADR 0011 — amended.** The skills gate changes from "anchor assertions by a walled model, then the user" to
   "formal checks, then a different-family reviewer". Its reason for rejecting trajectory-distilled skills (they
@@ -359,7 +359,8 @@ message only as an incident (a door disabled).
   active skills tree without Paco's tap" is replaced by G3); §2.1 (a lasting skill change derived from tool
   input: no longer a proposal for a tap, governed by G4); §5.1 and §10.3/10.4 (skill authoring after a
   recurrence is removed until slice 3); §7.1 (`grow_read` output is kernel text, not a judged local read);
-  §8.2 (`skill_author` leaves the ask list; `grow_submit` is refused at `hostile` and, under P2-C, never asks).
+  §8.2 (`skill_author` leaves the ask list; `grow_submit` is refused at `hostile` and never asks; a new line: reading
+  a born-untrusted grow item raises the turn to `untrusted`).
 - **ADR 0032 — amended.** D8 (tool set: `skill_author` out, `grow_submit` and `grow_read` in); §4.2 (skills
   are no longer composer-injected bodies; the index is); §4.3 (the fingerprint now covers the index); §5.1 (the
   grow root joins the write-denied paths).
@@ -367,7 +368,7 @@ message only as an incident (a door disabled).
   for `/skills retire`" line is removed; the door-disabled incident gets its route.
 - **ADR 0013 — restated, not changed.** Code owns the gates; the model now also owns the grow zone's content.
 - **Conformance tests in `tests/adr/`:** `0035-g2-one-door` (no code path writes the grow root but the
-  publisher, the seeder and the migration; nothing writes `<repo>/skills/`), `0035-g4-trust` (the chosen P2
+  publisher, the seeder and the migration; nothing writes `<repo>/skills/`), `0035-g4-trust` (the §5.7
   table, carried levels included), `0035-g5-pipeline-protected`, `0035-g6-review-by-size`,
   `0035-g7-schedule-no-submit`, `0035-grow-flag-in-disarm`, `0035-index-stable-order`,
   `0032-grow-root-denied` (run with data dir ≠ repo, so it cannot pass on the existing repo deny), and the
@@ -399,9 +400,8 @@ PASS only if every line holds.
    review with a finding naming that step. A reviewer that passes it fails the gate.
 3. In a later turn a matching request makes the planner call `grow_read` for the skill; uses = 1; the daemon
    pid is the one from line 1; the run's final trust is `clean`.
-4. A turn that ran `web_search` submits a skill: under P2-C it is staged, reviewed, live with
-   `origin: untrusted`, and a later clean turn that reads it ends `untrusted`. (Under A or B: the chosen
-   behaviour.)
+4. A turn that ran `web_search` submits a skill: it is staged, reviewed, live with `origin: untrusted`, no
+   trust card is sent, and a later clean turn that reads it ends `untrusted`.
 5. A conversation made `hostile` gets `turn_hostile`, and no trust card is sent.
 6. A small edit to the live clean skill returns `LIVE` with no review; an edit over the size rule is staged.
 7. `/grow undo <name> <reason>` restores the previous version; the next submit of that name is staged whatever
@@ -460,10 +460,10 @@ rollup.
 
 - *Keep bash scripts in 1a with a new "cases" clean room (senior S1).* The executor is a security build of its
   own (a new Seatbelt profile, a live network matrix, room seeding); taken together with codex's opposite
-  suggestion, it is cut to 1c so 1a stays buildable. Subject to P1.
+  suggestion, it is cut to 1c so 1a stays buildable (P1, decided).
 - *Require every submitted file to be modified in the current run (senior B2 fix).* Moot: there is no file door.
-- *Refuse whenever the level is not `clean` (senior B1 fix).* Presented as P2-A and not recommended: on the
-  live data it leaves Houge almost never able to write. Paco decides.
+- *Refuse whenever the level is not `clean` (senior B1 fix).* Put to Paco as P2-A with the live data (the
+  conversation `untrusted` since 2026-11-06, so Houge could almost never write); he chose reading C.
 
 **Not verified:** how often the injection judge would flag the three skills (moot under `grow_read`); whether
 the planner reliably calls `grow_read` in schedule turns (gate line 9 decides).
