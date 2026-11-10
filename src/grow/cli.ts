@@ -6,7 +6,7 @@ import type { RunStore } from "../run/run-store.js";
 import { checkFields, fieldScrub, parseSkillFile } from "./checks.js";
 import { resolveGrowDir } from "./flags.js";
 import { trustItem } from "./service.js";
-import { GrowZone } from "./zone.js";
+import { GrowZone, GrowZoneError } from "./zone.js";
 
 export const GROW_CLI_USAGE = "Usage: houge grow list | show <name> | check [name] | log | undo <name> [reason] | trust <name> | adopt <name>";
 const QUEUED = "queued: the daemon runs it within a minute";
@@ -30,7 +30,7 @@ export async function runGrowCli(store: RunStore, sub: string, name: string, res
 
 async function show(zone: GrowZone, name: string): Promise<string> {
   try { return (await zone.readHead(name)) ?? `no skill named ${name} at HEAD`; }
-  catch (error) { return `cannot read ${name}: ${errorCode(error)}`; }
+  catch (error) { return `cannot read ${name}: ${error instanceof GrowZoneError ? error.code : errorCode(error)}`; }
 }
 
 function log(store: RunStore, backupDir: string): string {

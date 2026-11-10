@@ -1,4 +1,5 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { GROW_CLI_USAGE, runGrowCli } from "../../src/grow/cli.js";
@@ -38,7 +39,7 @@ describe("houge grow CLI", () => {
   it("show of a broken zone prints a short code, not a stack", async () => {
     const s = await setup();
     const out = await runGrowCli(s.store, "show", "unit-convert", "", { HOUGE_GROW_DIR: join(s.dir, "not-a-repo", "x") }, NOW, s.dir);
-    expect(out).toMatch(/^cannot read unit-convert: \S+$/);
+    expect(out).toMatch(/^cannot read unit-convert: git_failed$/);
     expect(out).not.toContain("\n");
   });
 
@@ -90,5 +91,22 @@ describe("houge grow CLI", () => {
     expect(await s.zone.head()).toBe(head);
     const due = s.store.dueGrowRequests();
     expect(due.map((r) => [r.kind, r.name, r.reason, r.chat_id])).toEqual([["undo", "unit-convert", "too vague", null], ["adopt", "stray-skill", null, null]]);
+  });
+
+  it("no subcommand creates or changes the zone: a missing dir stays missing, a real one stays clean", async () => {
+    const s = await setup();
+    await s.live(growFields());
+    const file = join(s.zone.dir, "skills", "unit-convert", "SKILL.md");
+    const before = readFileSync(file, "utf8");
+    const missing = join(s.dir, "never-created", "grow");
+    for (const sub of ["list", "show", "check", "log", "trust", "undo", "adopt"]) {
+      await runGrowCli(s.store, sub, "unit-convert", "", { HOUGE_GROW_DIR: missing }, NOW, s.dir);
+      await runGrowCli(s.store, sub, "unit-convert", "", { HOUGE_GROW_DIR: s.zone.dir }, `${NOW}-${sub}`, s.dir);
+    }
+    expect(existsSync(missing)).toBe(false);
+    expect(existsSync(join(s.dir, "never-created"))).toBe(false);
+    const porcelain = execFileSync("git", ["--git-dir", join(s.zone.dir, ".git"), "--work-tree", s.zone.dir, "status", "--porcelain"], { encoding: "utf8" });
+    expect(porcelain).toBe("");
+    expect(readFileSync(file, "utf8")).toBe(before);
   });
 });
