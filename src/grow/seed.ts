@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, readdirSync, renameSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import type { RunStore } from "../run/run-store.js";
-import { type GrowFields, checkFields, fieldScrub, parseSkillFile } from "./checks.js";
+import { type GrowFields, checkFields, contentHash, fieldScrub, parseSkillFile } from "./checks.js";
 import type { GrowService } from "./service.js";
 
 export const EXEMPLAR_NAME = "option-comparison";
@@ -14,7 +14,7 @@ export async function seedExemplars(d: { store: RunStore; svc: GrowService; seed
   const root = join(d.seedDir, "skills");
   if (!existsSync(root)) return { seeded: [], failed: ["(seed folder missing)"] };
   const seeded: string[] = []; const failed: string[] = [];
-  for (const name of readdirSync(root).sort()) {
+  for (const name of readdirSync(root, { withFileTypes: true }).filter((e) => e.isDirectory() && !e.name.startsWith(".")).map((e) => e.name).sort()) {
     const parsed = parseSkillFile(readOrNull(join(root, name, "SKILL.md")) ?? "");
     const others = d.store.listGrowItems("live").filter((i) => i.name !== name);
     if (!parsed || parsed.name !== name || !checkFields(parsed, others, fieldScrub(d.store)).ok) { failed.push(name); continue; }
@@ -27,39 +27,63 @@ export async function seedExemplars(d: { store: RunStore; svc: GrowService; seed
 
 const unquote = (raw: string): string => { if (!raw.startsWith('"')) return raw; try { const v: unknown = JSON.parse(raw); return typeof v === "string" ? v : raw; } catch { return raw; } };
 
-/** The old layout's frontmatter: `name`, `when`, an optional `anchors` list. */
-function parseLegacy(text: string): GrowFields | null {
-  const m = /^---\n([\s\S]*?)\n---\n+([\s\S]*)$/.exec(text);
+/** The old layout's frontmatter: `name`, `when`, an optional `anchors` list (only the `  - ` lines under the `anchors:` key). */
+function parseLegacy(raw: string): GrowFields | null {
+  const m = /^---\n([\s\S]*?)\n---\n+([\s\S]*)$/.exec(raw.replace(/\r\n/g, "\n"));
   if (!m) return null;
   const line = (k: string): string | undefined => new RegExp(`^${k}: (.*)$`, "m").exec(m[1]!)?.[1]?.trim();
   const name = line("name"); const when = line("when");
   if (!name || !when) return null;
-  const anchors = [...m[1]!.matchAll(/^ {2}- (.*)$/gm)].map((x) => unquote(x[1]!.trim()));
+  const block = /^anchors:[ \t]*\n((?: {2}- .*(?:\n|$))*)/m.exec(m[1]!)?.[1] ?? "";
+  const anchors = [...block.matchAll(/^ {2}- (.*)$/gm)].map((x) => unquote(x[1]!.trim()));
   return { name, description: when, example: `a request about ${when}`.slice(0, 300), body: m[2]!.trim(), ...(anchors.length > 0 ? { anchors } : {}) };
 }
 
-function legacyFiles(dir: string): string[] {
-  const out: string[] = [];
-  for (const scope of readdirSync(dir, { withFileTypes: true }).filter((e) => e.isDirectory() && !e.name.startsWith("_"))) {
-    for (const file of readdirSync(join(dir, scope.name)).filter((n) => n.endsWith(".md")).sort()) out.push(join(dir, scope.name, file));
+/** Real `.md` files of real scope folders; a symlink (scope or file) is never followed, it is returned as `bad` so the folder stays. */
+function legacyFiles(dir: string): { files: Array<{ path: string; label: string }>; bad: string[] } {
+  const files: Array<{ path: string; label: string }> = []; const bad: string[] = [];
+  const skip = (n: string): boolean => n.startsWith("_") || n.startsWith(".");
+  for (const scope of readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+    if (skip(scope.name)) continue;
+    if (scope.isSymbolicLink()) { bad.push(scope.name); continue; }
+    if (!scope.isDirectory()) continue;
+    for (const e of readdirSync(join(dir, scope.name), { withFileTypes: true }).filter((x) => x.name.endsWith(".md")).sort((a, b) => a.name.localeCompare(b.name))) {
+      const label = join(scope.name, e.name);
+      if (e.isFile()) files.push({ path: join(dir, label), label }); else bad.push(label);
+    }
   }
-  return out;
+  return { files, bad };
+}
+
+/** The first free `skills.migrated-<YYYY-MM>[-n]` beside the old folder. */
+function migratedTarget(dir: string, month: string): string {
+  const base = join(dirname(dir), `skills.migrated-${month}`);
+  let target = base;
+  for (let n = 2; existsSync(target); n += 1) target = `${base}-${n}`;
+  return target;
 }
 
 /**
  * One-shot, idempotent: the skills Paco accepted under the old gate become live clean items after the formal checks, only
- * through `svc.seed` (which skips any name the zone knows, in any state). The folder is renamed only when no file was invalid.
+ * through `svc.seed` (which skips any name the zone knows, in any state). The folder is renamed only when no file was invalid:
+ * a repeated name, a live item with different content, a symlink, a failed publish all keep it.
  */
 export async function migrateLegacySkills(d: { store: RunStore; svc: GrowService; legacyDir: string; now: string }): Promise<{ migrated: string[]; invalid: string[]; renamed: boolean }> {
   if (!existsSync(d.legacyDir)) return { migrated: [], invalid: [], renamed: false };
-  const migrated: string[] = []; const invalid: string[] = [];
-  for (const path of legacyFiles(d.legacyDir)) {
+  const migrated: string[] = []; const seen = new Set<string>();
+  const { files, bad } = legacyFiles(d.legacyDir);
+  const invalid: string[] = [...bad];
+  for (const { path, label } of files) {
     const f = parseLegacy(readOrNull(path) ?? "");
-    if (!f || !checkFields(f, d.store.listGrowItems("live"), fieldScrub(d.store)).ok) { invalid.push(path.slice(path.lastIndexOf("/") + 1)); continue; }
+    if (!f || f.name !== basename(path, ".md") || seen.has(f.name)) { invalid.push(label); continue; }
+    seen.add(f.name);
+    const known = d.store.getGrowItem(f.name);
+    if (known) { if (known.state === "live" && known.content_hash !== contentHash(f)) invalid.push(label); continue; }   // a removed (undone) or identical one stays in neither list
+    if (!checkFields(f, d.store.listGrowItems("live"), fieldScrub(d.store)).ok) { invalid.push(label); continue; }
     const r = await d.svc.seed(f, "clean", "migrate");
-    if (r === "published") migrated.push(f.name); else if (r === "failed") invalid.push(path.slice(path.lastIndexOf("/") + 1));
+    if (r === "published") migrated.push(f.name); else if (r === "failed") invalid.push(label);
   }
   if (invalid.length > 0) return { migrated, invalid, renamed: false };
-  renameSync(d.legacyDir, join(dirname(d.legacyDir), `skills.migrated-${d.now.slice(0, 7)}`));
+  renameSync(d.legacyDir, migratedTarget(d.legacyDir, d.now.slice(0, 7)));
   return { migrated, invalid, renamed: true };
 }
