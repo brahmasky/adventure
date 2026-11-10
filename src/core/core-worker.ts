@@ -187,7 +187,7 @@ import { buildSystemPrompt, quotedLine, type TurnContextDeps, type TurnRetrieval
 import { noRetrieval, telemetryOf, type GatedRetrieval } from "../run/relevance-gate.js";
 import { readTombstone } from "../run/tombstone.js";
 import { chatWorkspace } from "../omp/workspace.js";
-import { resolveGrowDir } from "../grow/flags.js";
+import { resolveGrowDir, resolveGrowEnabled } from "../grow/flags.js";
 import { GrowService, submitText } from "../grow/service.js";
 import { GrowZone } from "../grow/zone.js";
 import { installedBinaryDirs, type PathContext } from "../omp/protected-paths.js";
@@ -562,6 +562,7 @@ export class CoreWorker {
   /** The front door's ladder rows, queued at decide time and written by settleTriage (ruling 14); cleared when triageTurn returns. */
   private readonly pendingLadder = new Map<string, PendingLadderRow[]>();
   private recorderCache?: DecisionRecorder;
+  private growCache?: GrowService;
   /** Lazy: a field initializer cannot read the runStore parameter property (it is assigned after class fields). */
   private get decisionRecorder(): DecisionRecorder { return (this.recorderCache ??= storeRecorder(this.runStore)); }
   private readonly ompDecls: { ok: true; decls: ToolDeclaration[] } | { ok: false; error: string };
@@ -2407,7 +2408,6 @@ export class CoreWorker {
   /** The one grow-directory expression: the sandbox denies it and the service writes it, so they can never differ. */
   private growDir(): string { return resolveGrowDir(process.env, homedir(), [this.projectRoot, this.ompDataDir()]); }
 
-  private growCache?: GrowService;
   /** One grow service per worker, built on first use. */
   growService(): GrowService {
     return (this.growCache ??= new GrowService({ store: this.runStore, zone: new GrowZone(this.growDir()), env: process.env, now: () => new Date().toISOString() }));
@@ -2569,11 +2569,12 @@ export class CoreWorker {
       console.error("[grow] submit: bad_input");
       return answer("REFUSED zone_unavailable");
     }
+    if (!resolveGrowEnabled(process.env)) return answer("REFUSED grow_disabled"); // a disarmed door never touches (or pages about) the zone
     const svc = this.growService();
     if (!(await svc.ensureZone({ wait: false }))) return answer(svc.disabledReason() === null ? "REFUSED busy" : "REFUSED zone_unavailable");
     const fields = { name, description, example, body, ...(anchors !== undefined ? { anchors: anchors as string[] } : {}) };
     const level = this.growTrustLevel(claim, state);
-    return answer(submitText(await svc.submit(fields, { run_id: claim.run_id, chat_id: this.chatOf(claim.run_id), level })));
+    return answer(submitText(await svc.submit(fields, { run_id: claim.run_id, chat_id: this.chatOf(claim.run_id) || null, level })));
   }
 
   /** grow_read: a skill or its last failed review as plain text; `tainted` lets the bridge raise the turn. */

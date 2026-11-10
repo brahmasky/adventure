@@ -1,4 +1,5 @@
-import { join } from "node:path";
+import { writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { OMP_LOOP_TOOL_META } from "../../src/core/omp-turn-wiring.js";
 import { compileTaskContract } from "../../src/contracts/task-contract.js";
@@ -22,20 +23,26 @@ const BODY_LINE = "ZEBRA-QUILL-7731 rinse the filter twice";
 const SUBMIT = { name: "web-notes", description: "taking structured notes on a web page the user shares", example: "summarise this page for me", body: `${growBody(20)}\n${BODY_LINE}` };
 const saved: Record<string, string | undefined> = {};
 let tmp: { dir: string; cleanup: () => void };
+/** The grow zone lives in its own root: inside the worker's data dir the resolver refuses the override and falls back to the REAL home zone. */
+let growRoot: { dir: string; cleanup: () => void };
+let errLog: ReturnType<typeof vi.spyOn>;
 let store: RunStore;
 beforeEach(() => {
   for (const k of PINNED) { saved[k] = process.env[k]; delete process.env[k]; }
   tmp = shortTmp("hgw-");
+  growRoot = shortTmp("hgz-");
+  errLog = vi.spyOn(console, "error").mockImplementation(() => undefined);
   process.env.HOUGE_TOMBSTONE_PATH = join(tmp.dir, "houge.kill");
   process.env.HOUGE_PARK_MARKER_PATH = join(tmp.dir, "houge.parked");
   process.env.HOUGE_DISARM_PATH = join(tmp.dir, "houge.disarm");
-  process.env.HOUGE_GROW_DIR = join(tmp.dir, "grow"); // a git repo per test: the file-level pin would share one across tests
+  process.env.HOUGE_GROW_DIR = join(growRoot.dir, "grow"); // a git repo per test, outside the data dir
   process.env.HOUGE_TRUST_ASK_TTL_MS = "50";
   store = RunStore.openInMemory();
 });
 afterEach(() => {
   store.close();
   tmp.cleanup();
+  growRoot.cleanup();
   vi.restoreAllMocks();
   delete process.env.HOUGE_TRUST_ASK_TTL_MS;
   for (const k of PINNED) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]; }
@@ -70,6 +77,7 @@ describe("grow_submit over the bridge", () => {
     expect(r.content).toMatch(/^STAGED:/);
     expect(store.listGrowStaged("staged").map((x) => x.name)).toEqual(["web-notes"]);
     expect(JSON.stringify(store.getLedgerEvents(t.run_id))).not.toContain("ZEBRA-QUILL-7731");
+    expect(JSON.stringify(errLog.mock.calls)).not.toContain("ZEBRA-QUILL-7731");
     expect(t.cards()).toEqual([]);
   });
   it("an untrusted turn submits with no approval card and the staged row is born untrusted", async () => {
@@ -93,18 +101,33 @@ describe("grow_submit over the bridge", () => {
     expect(JSON.stringify(r)).toContain("REFUSED turn_hostile");
     expect(store.listGrowStaged("staged")).toEqual([]);
   });
-  it("while another holder has the service lock it answers REFUSED busy and does not wait", async () => {
+  it("on a worker whose zone was never ensured, a held service lock answers REFUSED busy at once (ensureZone does not wait)", async () => {
     const t = turn();
     const svc = t.worker.growService();
-    expect(await svc.ensureZone()).toBe(true);
     let release!: () => void;
     const held = svc.withLockWait(() => new Promise<void>((res) => { release = res; }));
     try {
-      const r = await Promise.race([t.call("grow_submit", SUBMIT), new Promise<null>((res) => setTimeout(() => res(null), 3000))]);
+      const r = await Promise.race([t.call("grow_submit", SUBMIT), new Promise<null>((res) => setTimeout(() => res(null), 1500))]);
       expect(r).not.toBeNull();
       expect(r?.content).toContain("REFUSED busy");
       expect(store.listGrowStaged("staged")).toEqual([]);
     } finally { release(); await held; }
+  });
+  it("a zone whose repository config is not canonical answers REFUSED zone_unavailable (not busy)", async () => {
+    expect(await turn().worker.growService().ensureZone()).toBe(true);
+    writeFileSync(join(process.env.HOUGE_GROW_DIR as string, ".git", "config"), "[core]\n\thooksPath = /tmp/x\n");
+    const t = turn();
+    const r = await t.call("grow_submit", SUBMIT);
+    expect(r.content).toContain("REFUSED zone_unavailable");
+    expect(store.listGrowStaged("staged")).toEqual([]);
+  });
+  it("a disarmed door (HOUGE_GROW_ENABLED=false) answers grow_disabled without touching a broken zone, and pages nobody", async () => {
+    expect(await turn().worker.growService().ensureZone()).toBe(true);
+    writeFileSync(join(process.env.HOUGE_GROW_DIR as string, ".git", "config"), "[core]\n\thooksPath = /tmp/x\n");
+    process.env.HOUGE_GROW_ENABLED = "false";
+    const r = await turn().call("grow_submit", SUBMIT);
+    expect(r.content).toContain("REFUSED grow_disabled");
+    expect(store.listOpenIncidents().filter((i) => i.kind === "grow_zone_unavailable")).toEqual([]);
   });
   it("HOUGE_GROW_ENABLED=false refuses a submit (grow_disabled) while grow_read still works", async () => {
     const t = turn();
@@ -176,6 +199,17 @@ describe("grow_read over the bridge", () => {
     const none = await turn({ worker: t.worker }).call("grow_read", { name: "other", what: "review" });
     expect(none.content).toBe("No failed review is stored for other.");
   });
+  it("a failed review of a CLEAN-born name is not tainted: reading it leaves the turn clean", async () => {
+    const t = turn();
+    await t.call("grow_submit", SUBMIT);
+    const row = store.listGrowStaged("staged")[0];
+    if (!row) throw new Error("not staged");
+    t.worker.growService().recordReview(row.id, { ...PASS, pass: false, code: "review_failed", findings: [{ step: "2", problem: "vague" }] });
+    const reader = turn({ worker: t.worker });
+    const r = await reader.call("grow_read", { name: "web-notes", what: "review" });
+    expect(r.content).toContain("vague");
+    expect(reader.trust.level()).toBe("clean");
+  });
   it("an unknown skill answers REFUSED unknown_skill and does not raise the turn", async () => {
     const t = turn();
     const r = await t.call("grow_read", { name: "nope" });
@@ -187,6 +221,7 @@ describe("grow_read over the bridge", () => {
 describe("the service and the sandbox share one directory", () => {
   it("growService().zone.dir equals the grow field of the sandbox path context", () => {
     const worker = ompWorker(store, tmp.dir, { project: join(tmp.dir, "project") });
+    expect(worker.growService().zone.dir).toBe(resolve(process.env.HOUGE_GROW_DIR as string)); // the override was accepted, not the home fallback
     expect(worker.growService().zone.dir).toBe(worker.ompProbeContext().ctx.grow);
     expect(worker.growService()).toBe(worker.growService());
   });

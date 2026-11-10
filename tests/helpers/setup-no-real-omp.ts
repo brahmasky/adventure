@@ -1,5 +1,5 @@
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { afterAll } from "vitest";
 import { setDaemonDataDir } from "../../src/run/daemon-tmp.js";
@@ -25,6 +25,9 @@ process.env.HOUGE_DAEMON_TMP_DIR = join(dataDir, "daemon-tmp"); // never the dev
 // The grow zone (a git repo of skills) must never resolve to the developer's real ~/Library/Application Support/houge/grow.
 const savedGrowDir = process.env.HOUGE_GROW_DIR;
 process.env.HOUGE_GROW_DIR = join(dataDir, "grow");
+// Guard: an override the resolver refuses (inside the data dir, say) silently falls back to the real path. A test must never create it.
+const realGrowZone = join(homedir(), "Library", "Application Support", "houge", "grow");
+const realGrowZoneExisted = existsSync(realGrowZone);
 const stubDir = mkdtempSync(join(tmpdir(), "houge-stub-bin-"));
 for (const name of ["omp", "agy"]) {
   const file = join(stubDir, name);
@@ -34,6 +37,7 @@ for (const name of ["omp", "agy"]) {
 const pathBefore = process.env.PATH;
 process.env.PATH = `${stubDir}${delimiter}${pathBefore ?? ""}`;
 afterAll(() => {
+  if (!realGrowZoneExisted && existsSync(realGrowZone)) throw new Error(`a test wrote the real grow zone (${realGrowZone}): its HOUGE_GROW_DIR override was refused and fell back to the home default`);
   // Threads reuse process.env across files: restore PATH so stub dirs never pile up.
   if (pathBefore === undefined) delete process.env.PATH; else process.env.PATH = pathBefore;
   rmSync(stubDir, { recursive: true, force: true });
