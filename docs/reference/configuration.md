@@ -516,9 +516,6 @@ most, it can never break a turn. Use `/grow` to view the skills.
 | `HOUGE_GROW_DIR` | `~/Library/Application Support/houge/grow` | The grow zone: Houge's own local git repository of skills, outside the code checkout and never pushed. An override is ignored, and the default used, when it is not absolute, is fewer than three path segments deep, is the home directory or an ancestor of it, overlaps the code checkout or the data directory in either direction (compared case-insensitively), or is `~/.omp` or inside it. Write-denied to every sandboxed child. |
 | `HOUGE_SKILL_MAX_PER_SCOPE` | `4` | Max skills folded into a prompt per scope (alphabetical by filename; the rest are dropped). Bounds the prompt and keeps self-selection precise. |
 | `HOUGE_SKILL_REFINE_PASSES` | `3` | Max **guided-refine** passes for a blocked auto-authored skill (the paper peaks at 3). Each pass re-authors the draft against Gate B's specific failing criteria, then re-verifies. |
-| `HOUGE_SKILL_REVERIFY_ENABLED` | `off` | Arms the **weekly re-verify advisor** (skill-retirement spec 2026-07-29): stale skills get a fresh Gate B ensemble; passers are re-stamped, failers are flagged to you with the failing criteria and the exact `/skills retire <name>` command. **Suggest-only — it never moves a file.** In `DISARM_FLAGS`. First armed tick fires immediately (a first sweep today), then weekly at the slot. |
-| `HOUGE_SKILL_REVERIFY_AT` | `sun 10:00` | The advisor's weekly slot (same `"<weekday> HH:MM"` grammar as `HOUGE_RADAR_PANEL_AT`, rendered in the radar tz). `off` disables the slot; malformed falls back to the default. Shown in the `/schedule` 系统任务 footer when armed. |
-| `HOUGE_SKILL_REVERIFY_AGE_DAYS` | `28` | A skill is **stale** (a re-verify candidate) when `last_verified` is missing or older than this many days. Positive integers only — `0` is rejected back to the default, so use `1` to force staleness at a live gate. ≤12 skills re-verified per tick (`REVERIFY_MAX_PER_TICK`); excess picked up next week. |
 
 ### Gate B — the anchor verifier (Phase 2c)
 
@@ -623,7 +620,7 @@ panel judges, the self-write reviewer's fallback legs) recorded nothing (defect 
 
 Scopes: a run (`run_id`) or a run-less correlation — `tick:episodic_distill`,
 `tick:episodic_consolidate`, `tick:lesson_consolidate`, `tick:idea_radar`, `tick:idea_panel`,
-`tick:skill_reverify`, `cli:lessons-consolidate`, `cli:radar`, `cli:radar-panel`,
+`cli:lessons-consolidate`, `cli:radar`, `cli:radar-panel`,
 `rating:attribution`, `gate:b` (skill Gate B verify). Run-less rows read back with `run_id`
 absent, not null. Payload fields:
 

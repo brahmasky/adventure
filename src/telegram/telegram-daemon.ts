@@ -7,7 +7,6 @@ import { runIdeaPanelTick } from "../capabilities/idea-panel.js";
 import { buildOmpPanelSeats, type PanelSeatBindings } from "../capabilities/idea-panel-seats.js";
 import { runIdeaRadarTick } from "../capabilities/idea-radar.js";
 import { runLessonConsolidateTick } from "../capabilities/lesson-consolidate.js";
-import { runSkillReverifyTick } from "../capabilities/skill-reverify.js";
 import { resolveWikiEnabled } from "../capabilities/wiki.js";
 import { settleDeliveredReport } from "../decisions/standing-approval.js";
 import { reportOmpCheck, tickCorrelationId, tickSeat } from "../llm/registry.js";
@@ -907,17 +906,6 @@ async function runIdeaTicks(options: RunTelegramDaemonOptions, now: string, chat
   await runIdeaPanelTick({
     store: options.store, ...(options.panelSeats ?? buildPanelSeatBindings(options, roles)),
     env: process.env, now, chatId, projectRoot: options.projectRoot, signal
-  });
-  if (signal.aborted) return;
-  const reverifyLlm = tickLlm(options, "skill_reverify", "verify", roles);
-  await runSkillReverifyTick({
-    store: options.store,
-    skills: new SkillStore({ root: join(options.projectRoot, "skills") }),
-    anchorLlm: async (system, question) => {
-      const read = await reverifyLlm({ question, system });
-      return read.ok ? read.answer : undefined;
-    },
-    env: process.env, now, chatId, signal
   });
 }
 

@@ -41,7 +41,6 @@ import { queryStatus } from "../status/status-query.js";
 import { formatUsageTable } from "../status/usage-report.js";
 import { resolveRadarAt, resolveRadarEnabled, resolveRadarTz } from "../capabilities/idea-radar.js";
 import { CHAIR_FALLBACK_RATIONALE, resolvePanelEnabled } from "../capabilities/idea-panel.js";
-import { resolveSkillReverifyAt, resolveSkillReverifyEnabled } from "../capabilities/skill-reverify.js";
 import { resolvePanelAt } from "../capabilities/week-key.js";
 import { escapeForTelegram } from "../capabilities/text-hygiene.js";
 import { toolApprovalWaiters } from "../omp/tool-approval-sink.js";
@@ -1886,15 +1885,6 @@ export function formatSystemScheduleSection(env: NodeJS.ProcessEnv, now: string)
       const spec = { kind: "weekly", day: panelAt.day, at: panelAt.at } as const;
       lines.push(
         `· idea panel · ${describeScheduleSpec(spec)} (${city})${nextSuffix(computeNextRunAt(spec, tz, now))}`
-      );
-    }
-  }
-  if (resolveSkillReverifyEnabled(env)) {
-    const reverifyAt = resolveSkillReverifyAt(env);
-    if (reverifyAt !== null) {
-      const spec = { kind: "weekly", day: reverifyAt.day, at: reverifyAt.at } as const;
-      lines.push(
-        `· skill re-verify · ${describeScheduleSpec(spec)} (${city})${nextSuffix(computeNextRunAt(spec, tz, now))}`
       );
     }
   }

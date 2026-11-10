@@ -4443,34 +4443,6 @@ export class RunStore {
     this.db.prepare(`UPDATE radar_panel_state SET last_run_at = ? WHERE id = 1`).run(previous);
   }
 
-  // --- Skill re-verify advisor (skill retirement spec, 2026-07-29) -------------
-
-  /** Last executed re-verify tick (single-row weekly latch, like radar_panel_state). */
-  getSkillReverifyLastRun(): string | null {
-    const row = this.db.prepare(`
-      SELECT last_run_at FROM skill_reverify_state WHERE id = 1
-    `).get<{ last_run_at: string | null }>();
-    return row?.last_run_at ?? null;
-  }
-
-  /** Stamped BEFORE any Gate B call (M3 posture) — a crashing tick never retry-storms. */
-  setSkillReverifyLastRun(now: string): void {
-    this.db.prepare(`UPDATE skill_reverify_state SET last_run_at = ? WHERE id = 1`).run(now);
-  }
-
-  /** One summary event per weekly re-verify tick — counts only, no skill text. */
-  recordSkillReverifyTick(payload: { checked: number; passed: number; flagged: number }): void {
-    this.appendLedgerEvent(
-      createLedgerEvent({
-        correlation_id: "skill-reverify",
-        event_type: "skill_reverify_tick",
-        actor: "system",
-        sequence: this.nextLedgerSequence(),
-        payload
-      })
-    );
-  }
-
   /**
    * Guarded status write — the ONLY path the panel and `/idea pick` use. Allowed
    * transitions are exactly {@link IDEA_STATUS_TRANSITIONS}; anything else (same-status,
