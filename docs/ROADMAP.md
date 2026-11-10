@@ -186,6 +186,20 @@ OS user for the planner, quota invariant) → **SP4 self-evolution v2** (weaknes
 Phase R below is subsumed by SP1 (a real agent loop replaces the step-cap fallback work); episodic/wiki stay as
 knowledge Houge owns; Earn is parked behind SP1.
 
+**Delta 2026-11-10: direction change — a small kernel and a grow zone (Paco; decided, not shipped).** The finding:
+capability lands as hand-written TypeScript that only the build orchestrator touches, so Houge does not evolve
+himself (3 skills, 0 improvement jobs ever). From here new capability starts in a **grow zone** Houge writes
+himself (its own local git repository), goes live on code-owned checks with no human gate, and moves into `src/`
+only when it fails the kernel test (can it weaken a floor, leak a secret, or stop Houge running?). Multi-agent
+arrives by delegation. Sequence, each its own spec: **1a** grow zone + verification on prose skills (spec
+`docs/superpowers/specs/2026-11-10-grow-zone-verification-design.md`, approved 2026-11-10, ADR 0035 to come with
+the code) → **1b** sync `delegate`, agent files, quota broker over the subscription pools (children barred from
+the Anthropic pool) → **1c** script skills with a sealed case executor → **2** standing agents and async jobs →
+**3** post-turn nudge, the tick writing through the door, pruning by use. This re-scopes SP4 (self-evolution v2)
+and pulls SP3's quota broker forward into 1b; the SP2 Workspace-MCP slice keeps its place in the queue.
+**Named open item — provenance for memory:** trust is carried per conversation, not per fact, so outside text can
+reach a clean turn through episodic facts or wiki pages (accepted for 1a as residual R1 of that spec).
+
 **Delta 2026-10-06: Jev lane 1 is built** (`feat/jev-lane1`, not merged; 3438 tests green, live gate PASS). It cannot act until Paco commits calibration rows after the replay, labelling sitting and shadow period; see `tasks/todo.md` for what he owes. Lane 2 starts after lane 1 is armed or Paco reorders.
 
 **Delta 2026-10-09: Jev decision tree, stage A, is merged and armed** (`feat/jev-tree-stage-a` → main; spec Rev 9,

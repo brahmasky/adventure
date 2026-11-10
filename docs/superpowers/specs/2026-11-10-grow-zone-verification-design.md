@@ -1,7 +1,7 @@
 # Grow zone, slice 1a — a place Houge writes itself, and the checks that decide what goes live
 
-**Rev 1.3 · 2026-11-10 · status: REVIEWED TWICE; P1–P3 and the AGENTS.md wording decided by Paco 2026-11-10;
-awaiting his acceptance of one named residual (§5.7, R1) and his approval of the whole.** Rev 1.0 was reviewed
+**Rev 1.3 · 2026-11-10 · status: APPROVED by Paco 2026-11-10** (the whole spec, including the changes of meaning to
+ADR 0011, 0032 and 0034, new ADR 0035, decisions P1–P3, the AGENTS.md wording, and residual R1 accepted for 1a). Rev 1.0 was reviewed
 against the live code by spec-review-senior (Opus 5.5: 8 BLOCKER, 15 WARNING, 6 SUGGESTION) and a codex design
 pass (6 BLOCKER, 4 WARNING, 1 SUGGESTION); Rev 1.2 by a codex re-review (5 BLOCKER, 6 WARNING, 1 SUGGESTION). The
 orchestrator verified the cited lines first-hand. §14 is the record of confirmed and rejected findings. No code
@@ -263,7 +263,7 @@ the lines was accepted by the planner; a failed turn or a restart shows them aga
   with `origin: untrusted`. An item once born untrusted stays so until Paco clears it
   (`houge grow trust <name>`), whatever a later clean turn submits over it.
 - `clean` conversation: `origin: clean`.
-- **R1 — a residual for Paco to accept or refuse (Tier C).** Trust is carried by the conversation, not by
+- **R1 — residual, ACCEPTED by Paco 2026-11-10 for 1a (Tier C).** Trust is carried by the conversation, not by
   facts or files (`src/decisions/trust.ts`). Episodic facts and wiki pages distilled from untrusted turns reach
   a clean turn's context without a mark (only `src/improve/proposals.ts` checks a turn's final trust), and a
   clean turn may read a workspace file an untrusted turn wrote if the injection judge passes it. So outside
@@ -272,8 +272,8 @@ the lines was accepted by the planner; a failed turn or a restart shows them aga
   is no worse than lessons and adds a different-family review. Closing it means provenance on memory itself,
   which is a slice of its own. The only way to close it inside 1a is to mark every Houge-written item
   `untrusted`, which would turn every skill read into a trust downgrade and bring back the taps of ADR 0034
-  §8.2 on most turns. *Recommended: accept R1 for 1a, recorded in `tasks/todo.md` as an accepted gap, and open
-  "provenance for memory" as a named item on the roadmap.*
+  §8.2 on most turns. It is recorded in `tasks/todo.md` as an accepted gap, and "provenance for memory" is a
+  named roadmap item.
 
 ### 5.8 Publishing, concurrency and crashes
 
