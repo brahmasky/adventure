@@ -113,7 +113,7 @@ export function turnTrustNow(store: RunStore, run_id: string): TrustLevel {
   let level: TrustLevel = "clean";
   for (const e of store.getLedgerEvents(run_id)) {
     if (e.event_type !== "turn_trust") continue;
-    const l = (e.payload as { level?: unknown }).level;
+    const l = (e.payload as { level?: unknown } | null)?.level;
     if ((l === "untrusted" || l === "hostile") && rankOf(l) > rankOf(level)) level = l;
   }
   return level;

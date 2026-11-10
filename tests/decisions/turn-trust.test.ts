@@ -167,6 +167,15 @@ describe("turnTrustNow", () => {
     trust.carry("untrusted");
     expect(turnTrustNow(store, run_id)).toBe("untrusted");
   });
+  it("ignores a turn_trust row whose payload is null instead of throwing (a bad row must not blind the preflight)", () => {
+    const { store, run_id, trust } = setup();
+    trust.raise("wall_read");
+    trust.raise("injection_withheld");
+    // the write path validates payloads, so a null one can only come from a damaged row: damage the newest turn_trust row directly
+    (store as unknown as { db: { prepare(s: string): { run(): unknown } } }).db
+      .prepare("UPDATE ledger_events SET payload_json = 'null' WHERE event_id = (SELECT event_id FROM ledger_events WHERE event_type = 'turn_trust' ORDER BY sequence DESC LIMIT 1)").run();
+    expect(turnTrustNow(store, run_id)).toBe("untrusted");
+  });
   it("reads only its own run: another run's hostile row does not leak in", () => {
     const a = setup(); const other = createQueuedTurnRun(a.store);
     new TurnTrust({ store: a.store, run_id: other, chat_id: "555", born: "telegram", env: { HOUGE_TELEGRAM_CHAT_ID: "555" } }).raise("injection_withheld");

@@ -188,6 +188,8 @@ import { noRetrieval, telemetryOf, type GatedRetrieval } from "../run/relevance-
 import { readTombstone } from "../run/tombstone.js";
 import { chatWorkspace } from "../omp/workspace.js";
 import { resolveGrowDir } from "../grow/flags.js";
+import { GrowService, submitText } from "../grow/service.js";
+import { GrowZone } from "../grow/zone.js";
 import { installedBinaryDirs, type PathContext } from "../omp/protected-paths.js";
 import { hardenedGit } from "../run/git-hardened.js";
 import {
@@ -284,7 +286,7 @@ export interface OmpTurnState {
   triageFinalized?: boolean;
   /** The stored turn this message quotes (spec §2.2.1), resolved at claim; absent when not a reply or unresolved. */
   quote?: { role: "houge" | "user"; turn: ChatTurnRow };
-  /** The live turn's trust level, bound by the supervisor (ADR 0035 G4); absent until bound, then the ledger answers. */
+  /** The live turn's trust level, bound by the supervisor (ADR 0035 G4). The ledger answers only when no getter is bound. */
   trustLevel?: () => TrustLevel;
 }
 
@@ -602,7 +604,7 @@ export class CoreWorker {
     return entry === "memory_correct_write" ? memoryWritePreflight(this.memoryDeps(claim, state.turnCtx), input) : null;
   }
 
-  /** ADR 0035 G4 (amendment 2): the live turn's level when bound; the ledger otherwise (TurnTrust swallows a failed ledger write). */
+  /** ADR 0035 G4 (amendment 2): the live turn's level when a getter is bound; the ledger answers ONLY when none is (TurnTrust swallows a failed ledger write). */
   private growTrustLevel(claim: ClaimedRun, state: Pick<OmpTurnState, "trustLevel">): TrustLevel {
     return state.trustLevel?.() ?? turnTrustNow(this.runStore, claim.run_id);
   }
@@ -2399,7 +2401,16 @@ export class CoreWorker {
   /** Floor A's path context; the binary dirs are resolved each time a supervisor or shell tool is built. */
   private ompPathContext(): PathContext {
     const data = this.ompDataDir();
-    return { home: homedir(), repo: this.projectRoot, data, binDirs: installedBinaryDirs(process.env, process.execPath), grow: resolveGrowDir(process.env, homedir(), [this.projectRoot, data]) };
+    return { home: homedir(), repo: this.projectRoot, data, binDirs: installedBinaryDirs(process.env, process.execPath), grow: this.growDir() };
+  }
+
+  /** The one grow-directory expression: the sandbox denies it and the service writes it, so they can never differ. */
+  private growDir(): string { return resolveGrowDir(process.env, homedir(), [this.projectRoot, this.ompDataDir()]); }
+
+  private growCache?: GrowService;
+  /** One grow service per worker, built on first use. */
+  growService(): GrowService {
+    return (this.growCache ??= new GrowService({ store: this.runStore, zone: new GrowZone(this.growDir()), env: process.env, now: () => new Date().toISOString() }));
   }
 
   private supervisorDeps(chatId: string): SupervisorDeps {
@@ -2540,11 +2551,41 @@ export class CoreWorker {
     return async (input) => {
       const objective = state.objective;
       const effective = objective ? { ...claim, contract: { ...claim.contract, objective } } : claim;
+      if (name === "grow_submit") return this.growSubmitExecute(claim, state, input);
+      if (name === "grow_read") return this.growReadExecute(claim, input);
       const r = await this.loopToolExecute(name, effective, state.turnCtx)(input);
       // Code-owned surfacing (⓪·2): a failed evolution step is appended to the reply, never model-mediated.
       if (!r.ok && EVOLUTION_TOOLS.has(name)) state.turnCtx.evolutionNotices.push(`${name} step failed: ${r.error}`);
       return r;
     };
+  }
+
+  /** grow_submit: the service decides; the level is read now, not when the tools were built (a card may have waited). Codes only in logs. */
+  private async growSubmitExecute(claim: ClaimedRun, state: OmpTurnState, input: Record<string, unknown>): Promise<ToolAdapterResult> {
+    const answer = (text: string): ToolAdapterResult => ({ ok: true, output: { answer: text } });
+    const { name, description, example, body, anchors } = input;
+    if (typeof name !== "string" || typeof description !== "string" || typeof example !== "string" || typeof body !== "string"
+      || (anchors !== undefined && !(Array.isArray(anchors) && anchors.every((a) => typeof a === "string")))) {
+      console.error("[grow] submit: bad_input");
+      return answer("REFUSED zone_unavailable");
+    }
+    const svc = this.growService();
+    if (!(await svc.ensureZone({ wait: false }))) return answer(svc.disabledReason() === null ? "REFUSED busy" : "REFUSED zone_unavailable");
+    const fields = { name, description, example, body, ...(anchors !== undefined ? { anchors: anchors as string[] } : {}) };
+    const level = this.growTrustLevel(claim, state);
+    return answer(submitText(await svc.submit(fields, { run_id: claim.run_id, chat_id: this.chatOf(claim.run_id), level })));
+  }
+
+  /** grow_read: a skill or its last failed review as plain text; `tainted` lets the bridge raise the turn. */
+  private async growReadExecute(claim: ClaimedRun, input: Record<string, unknown>): Promise<ToolAdapterResult> {
+    const name = typeof input.name === "string" ? input.name : "";
+    const svc = this.growService();
+    if (input.what === "review") {
+      const v = svc.readReview(name);
+      return { ok: true, output: v.ok ? { answer: v.text, tainted: v.tainted } : { answer: `No failed review is stored for ${name}.`, tainted: false } };
+    }
+    const v = await svc.read(name, { run_id: claim.run_id });
+    return { ok: true, output: v.ok ? { answer: v.text, tainted: v.tainted } : { answer: `REFUSED ${v.code}`, tainted: false } };
   }
 
   /**
@@ -3752,8 +3793,7 @@ export class CoreWorker {
       // Paco's memory (2026-10-02): every trust limit is code-owned in the adapter (re-checked after his tap); no LLM call.
       return (input) => executeMemoryCorrect({ ...this.memoryDeps(claim, turnCtx), gated: name === "memory_correct_write" }, input);
     }
-    if (name === "grow_submit" || name === "grow_read") return async () => ({ ok: true, output: { answer: "REFUSED zone_unavailable" } }); // the grow service is wired in by the next unit of this task
-    // Only the fifteen bridge entries reach here (OMP_LOOP_TOOL_META); `llm_answer` left the tool set (D8).
+    // Only the seventeen bridge entries reach here (OMP_LOOP_TOOL_META); `llm_answer` left the tool set (D8).
     return async () => ({ ok: false, error: `unknown loop tool: ${name}` });
   }
 
