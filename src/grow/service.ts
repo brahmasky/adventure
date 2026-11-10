@@ -30,6 +30,7 @@ export const GROW_INDEX_CHARS = 4000;
 const DAY_MS = 86_400_000;
 const INDEX_HEAD = "These are your own procedures, written by you. Before a task that matches one, read it with grow_read.";
 const INDEX_WRITE = "When a kind of task repeats or went badly, add or improve a procedure with grow_submit.";
+const INDEX_MARKED = "(from outside content; grow_read it to see it)";
 const refused = (code: Extract<SubmitResult, { status: "REFUSED" }>["code"]): SubmitResult => ({ status: "REFUSED", code });
 /** Incident subjects: the latched door, a commit whose effects could not be recorded, a publish that was dropped. */
 const ZONE = "zone"; const APPLY = "apply"; const PUBLISH = "publish";
@@ -568,13 +569,17 @@ export class GrowService {
     return { ok: true, text, tainted: this.d.store.isGrowMarked(name) };
   }
 
-  /** Live items in name order under the line and char caps, plus the write sentence while writing is possible. */
+  /**
+   * Live items in name order under the line and char caps, plus the write sentence while writing is possible. A marked
+   * item shows its name and a label only: its description is outside text, and the index rides in every system prompt
+   * and in the reviewer's LIVE_INDEX unread, where the taint of `grow_read` cannot follow it (G4).
+   */
   indexBlock(): string | undefined {
     const write = resolveGrowEnabled(this.d.env) && !this.disabled;
     const lines = [INDEX_HEAD];
     let chars = INDEX_HEAD.length;
     for (const i of this.d.store.listGrowItems("live")) {
-      const line = `- ${i.name} — ${i.description}`;
+      const line = `- ${i.name} — ${this.d.store.isGrowMarked(i.name) ? INDEX_MARKED : i.description}`;
       if (lines.length > GROW_INDEX_LINES || chars + 1 + line.length > GROW_INDEX_CHARS) break;
       lines.push(line); chars += 1 + line.length;
     }

@@ -432,7 +432,8 @@ describe("F. sync, index, notes", () => {
     expect(s.svc.indexBlock() ?? "").not.toContain("stray-skill");
     expect(s.svc.adopt(g.name)).toBe(true);
     expect(s.store.getGrowItem(g.name)).toMatchObject({ state: "live", origin: "untrusted" });
-    expect(s.svc.indexBlock()).toContain(`- stray-skill — ${g.description}`);
+    expect(s.svc.indexBlock()).toContain("- stray-skill — (from outside content; grow_read it to see it)");   // marked: name only (G4)
+    expect(s.svc.indexBlock()).not.toContain(g.description);
   });
 
   it("outcome lines go to the writing chat until a turn that carried them commits, and never to another chat", async () => {
