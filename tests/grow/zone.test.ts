@@ -3,7 +3,7 @@ import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { GrowZone, GrowZoneError } from "../../src/grow/zone.js";
+import { CANONICAL_CONFIG, GrowZone, GrowZoneError } from "../../src/grow/zone.js";
 
 const dirs: string[] = [];
 const tmp = (): string => { const d = mkdtempSync(join(tmpdir(), "grow-zone-")); dirs.push(d); return d; };
@@ -108,16 +108,22 @@ describe("grow zone repository", () => {
     await expect(new GrowZone(dir).ensure(false)).resolves.toBeUndefined();
   });
 
-  it("fails closed on config planted in .git, so a filter can never run a command", async () => {
-    const dir = join(tmp(), "grow"); const z = new GrowZone(dir); await z.ensure(true);
-    const marker = join(dir, "..", "filter-ran");
-    appendFileSync(join(dir, ".git", "config"), `[filter "x"]\n\tclean = touch ${marker}\n`);
-    writeFileSync(join(dir, ".gitattributes"), "* filter=x\n");
+  it("fails closed on config planted in .git alone, so a filter can never run a command", async () => {
+    const root = tmp(); const dir = join(root, "grow"); const z = new GrowZone(dir); await z.ensure(true);
+    const marker = join(root, "filter-ran"); const attrs = join(root, "evil-attributes");
+    writeFileSync(attrs, "* filter=evil\n");
+    appendFileSync(join(dir, ".git", "config"), `[core]\n\tattributesFile = ${attrs}\n[filter "evil"]\n\tclean = touch ${marker}\n`);
     await expect(z.writeAndCommit("unit-convert", "v1\n", "m")).rejects.toMatchObject({ code: "not_toplevel" });
     expect(existsSync(marker)).toBe(false);
   });
 
-  it("refuses attribute files even with a clean config", async () => {
+  it("refuses a root .gitattributes alone", async () => {
+    const dir = join(tmp(), "grow"); const z = new GrowZone(dir); await z.ensure(true);
+    writeFileSync(join(dir, ".gitattributes"), "* text\n");
+    await expect(z.assertToplevel()).rejects.toMatchObject({ code: "not_toplevel" });
+  });
+
+  it("refuses .git/info/attributes alone", async () => {
     const dir = join(tmp(), "grow"); const z = new GrowZone(dir); await z.ensure(true);
     mkdirSync(join(dir, ".git", "info"), { recursive: true });
     writeFileSync(join(dir, ".git", "info", "attributes"), "* text\n");
@@ -126,6 +132,7 @@ describe("grow zone repository", () => {
 
   it("refuses a .git that is a gitfile redirecting to another repository", async () => {
     const root = tmp(); const outer = join(root, "outer"); execFileSync("git", ["init", "-q", outer]);
+    writeFileSync(join(outer, ".git", "config"), CANONICAL_CONFIG);
     writeFileSync(join(outer, "untracked.txt"), "mine");
     const dir = join(root, "grow"); mkdirSync(dir);
     writeFileSync(join(dir, ".git"), `gitdir: ${join(outer, ".git")}\n`);
@@ -186,5 +193,27 @@ describe("grow zone repository", () => {
     const op = "0b6f3a52-1c1e-4d0a-9f55-3f2f4a7a9c11";
     await z.writeAndCommit("unit-convert", "v1\n", `skill: add\n\nsee Grow-Op: ${op} in the notes`);
     expect(await z.findOpCommit(op)).toBeNull();
+  });
+
+  it("finds the real trailer even when six newer commits quote it on a longer line", async () => {
+    const z = new GrowZone(join(tmp(), "grow")); await z.ensure(true);
+    const op = "0b6f3a52-1c1e-4d0a-9f55-3f2f4a7a9c11";
+    const c = await z.writeAndCommit("unit-convert", "v1\n", `skill: add\n\nGrow-Op: ${op}`);
+    for (let i = 0; i < 6; i++) await z.writeAndCommit("other", `x${i}\n`, `n${i}\n\nsee Grow-Op: ${op} in the notes`);
+    expect(await z.findOpCommit(op)).toBe(c);
+  });
+
+  it("finishes a half-initialised zone (default config, unborn HEAD) on ensure(true) only", async () => {
+    const dir = join(tmp(), "grow"); execFileSync("git", ["init", "-q", "-b", "main", dir]);
+    await expect(new GrowZone(dir).ensure(false)).rejects.toMatchObject({ code: "not_toplevel" });
+    const z = new GrowZone(dir); await z.ensure(true);
+    expect(await z.writeAndCommit("unit-convert", "v1\n", "m")).toMatch(/^[0-9a-f]{40}$/);
+  });
+
+  it("never rewrites the config of a repository that already has commits", async () => {
+    const dir = join(tmp(), "grow"); execFileSync("git", ["init", "-q", "-b", "main", dir]);
+    execFileSync("git", ["-C", dir, "-c", "user.name=a", "-c", "user.email=a@b", "commit", "-q", "--allow-empty", "-m", "x"]);
+    await expect(new GrowZone(dir).ensure(true)).rejects.toMatchObject({ code: "not_toplevel" });
+    expect(readFileSync(join(dir, ".git", "config"), "utf8")).not.toBe(CANONICAL_CONFIG);
   });
 });

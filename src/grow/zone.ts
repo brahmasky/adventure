@@ -12,7 +12,7 @@ const IDENTITY = ["-c", "user.name=Houge", "-c", "user.email=houge@localhost", "
  * The only repository config the zone accepts. `ensure(true)` writes it right after `git init`, and `assertToplevel`
  * fails closed unless `.git/config` is exactly this: a planted `[filter]`, `[core] hooksPath` or alias then never runs.
  */
-const CANONICAL_CONFIG = "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = true\n";
+export const CANONICAL_CONFIG = "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = true\n";
 const GIT_TIMEOUT_MS = 20_000;
 const OP_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
@@ -39,6 +39,11 @@ export class GrowZone {
       if (!allowInit) throw new GrowZoneError("not_toplevel");
       mkdirSync(this.dir, { recursive: true });
       await this.git(["init", "-q", "-b", "main"]);
+      writeFileSync(join(this.dir, ".git", "config"), CANONICAL_CONFIG);
+    }
+    // A crash between `git init` and the config write leaves an unborn repository with git's default config: it
+    // holds nothing, so it is safe to finish the initialisation. A repository with commits is never rewritten.
+    if (allowInit && lstatOrNull(join(this.dir, ".git"))?.isDirectory() && !(await this.hasHead())) {
       writeFileSync(join(this.dir, ".git", "config"), CANONICAL_CONFIG);
     }
     await this.assertToplevel();
@@ -120,13 +125,9 @@ export class GrowZone {
   /** The newest commit with a message line exactly `Grow-Op: <opId>`, null when none; a git failure throws, never "not found". */
   async findOpCommit(opId: string): Promise<string | null> {
     if (!OP_ID_RE.test(opId)) throw new GrowZoneError("bad_name");
-    const trailer = `Grow-Op: ${opId}`;
-    const out = await this.git(["log", "-n", "5", "--format=%H%x1f%B%x1e", "--fixed-strings", "--grep", trailer]);
-    for (const rec of out.split("\x1e")) {
-      const [id = "", body = ""] = rec.trim().split("\x1f");
-      if (id !== "" && body.split("\n").some((l) => l.trimEnd() === trailer)) return id;
-    }
-    return null;
+    // The UUID pattern holds no regex metacharacters; git matches the anchored pattern per message line.
+    const out = (await this.git(["log", "-n", "1", "--format=%H", "--grep", `^Grow-Op: ${opId}$`])).trim();
+    return out === "" ? null : out;
   }
 
   /** Discards staged and unstaged changes and untracked files; `reset --hard` also works when the only commit is empty. */
