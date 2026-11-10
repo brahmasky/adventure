@@ -9,8 +9,7 @@ export class GrowZoneError extends Error {
 export const skillPath = (name: string): string => `skills/${name}/SKILL.md`;
 const IDENTITY = ["-c", "user.name=Houge", "-c", "user.email=houge@localhost", "-c", "commit.gpgsign=false"];
 const GIT_TIMEOUT_MS = 20_000;
-const HISTORY_LIMIT = 50;
-const COMMIT_RE = /^[0-9a-f]{7,64}$/;
+const OP_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 /** The grow zone's git repository (spec §5.1). Every call names the git dir and work tree, and never inherits a GIT_* variable. */
 export class GrowZone {
@@ -53,7 +52,9 @@ export class GrowZone {
 
   async readHead(name: string): Promise<string | null> {
     this.checkName(name);
-    try { return await this.git(["show", `HEAD:${skillPath(name)}`]); } catch { return null; }
+    const present = (await this.git(["ls-tree", "--name-only", "HEAD", "--", skillPath(name)])).trim();
+    if (present === "") return null;
+    return this.git(["show", `HEAD:${skillPath(name)}`]);
   }
 
   async listHead(): Promise<string[]> {
@@ -81,21 +82,11 @@ export class GrowZone {
     return this.head();
   }
 
-  /** Commits that touched one skill, newest first, at most 50; includes the commit that removed it. */
-  async history(name: string): Promise<Array<{ id: string; subject: string }>> {
-    this.checkName(name);
-    const out = await this.git(["log", "-n", String(HISTORY_LIMIT), "--format=%H%x1f%s", "--", skillPath(name)]);
-    return out.split("\n").filter(Boolean).map((line) => {
-      const [id = "", subject = ""] = line.split("\x1f");
-      return { id, subject };
-    });
-  }
-
-  /** SKILL.md text of one skill at a given commit, null when that commit has no such file. */
-  async readAt(commit: string, name: string): Promise<string | null> {
-    this.checkName(name);
-    if (!COMMIT_RE.test(commit)) throw new GrowZoneError("bad_name");
-    try { return await this.git(["show", `${commit}:${skillPath(name)}`]); } catch { return null; }
+  /** The newest commit whose message carries `Grow-Op: <opId>`, null when none; a git failure throws, never "not found". */
+  async findOpCommit(opId: string): Promise<string | null> {
+    if (!OP_ID_RE.test(opId)) throw new GrowZoneError("bad_name");
+    const out = (await this.git(["log", "-n", "1", "--format=%H", "--fixed-strings", "--grep", `Grow-Op: ${opId}`])).trim();
+    return out === "" ? null : out;
   }
 
   /** Discards staged and unstaged changes and untracked files; `reset --hard` also works when the only commit is empty. */

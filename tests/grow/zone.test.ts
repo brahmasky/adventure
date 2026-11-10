@@ -64,25 +64,28 @@ describe("grow zone repository", () => {
     expect(existsSync(join(dir, "skills", "half-done", "SKILL.md"))).toBe(false);
   });
 
-  it("lists a skill's history newest first, including the commit that removed it, and reads each version", async () => {
+  it("finds the commit of an operation by its id and not by another id, so a retry can tell whether the first attempt landed", async () => {
     const z = new GrowZone(join(tmp(), "grow")); await z.ensure(true);
-    const c1 = await z.writeAndCommit("unit-convert", "v1\n", "m1");
+    const op = "0b6f3a52-1c1e-4d0a-9f55-3f2f4a7a9c11";
+    const c = await z.writeAndCommit("unit-convert", "v1\n", `skill: add\n\nGrow-Op: ${op}`);
     await z.writeAndCommit("other", "x\n", "unrelated");
-    const c2 = await z.writeAndCommit("unit-convert", "v2\n", "m2");
-    const c3 = await z.removeAndCommit("unit-convert", "m3");
-    expect(await z.history("unit-convert")).toEqual([{ id: c3, subject: "m3" }, { id: c2, subject: "m2" }, { id: c1, subject: "m1" }]);
-    expect(await z.readAt(c1, "unit-convert")).toBe("v1\n");
-    expect(await z.readAt(c2, "unit-convert")).toBe("v2\n");
-    expect(await z.readAt(c3, "unit-convert")).toBeNull();
-    expect(await z.readHead("unit-convert")).toBeNull();
-    expect(await z.history("never-existed")).toEqual([]);
+    expect(await z.findOpCommit(op)).toBe(c);
+    expect(await z.findOpCommit("0b6f3a52-1c1e-4d0a-9f55-3f2f4a7a9c12")).toBeNull();
   });
 
-  it("rejects a commit string that is not a hex id, so it cannot be read as an option or a ref expression", async () => {
+  it("rejects a malformed operation id, so it cannot be read as an option or a pattern", async () => {
     const z = new GrowZone(join(tmp(), "grow")); await z.ensure(true);
-    await expect(z.readAt("--help", "unit-convert")).rejects.toMatchObject({ code: "bad_name" });
-    await expect(z.readAt("HEAD", "unit-convert")).rejects.toMatchObject({ code: "bad_name" });
-    await expect(z.readAt("abc123", "unit-convert")).rejects.toMatchObject({ code: "bad_name" });
+    await expect(z.findOpCommit("--all")).rejects.toMatchObject({ code: "bad_name" });
+    await expect(z.findOpCommit("not-a-uuid")).rejects.toMatchObject({ code: "bad_name" });
+  });
+
+  it("throws instead of answering null when git cannot read the repository, so a fault never looks like absence", async () => {
+    const dir = join(tmp(), "grow"); const z = new GrowZone(dir); await z.ensure(true);
+    await z.writeAndCommit("unit-convert", "v1\n", "m");
+    expect(await z.readHead("missing")).toBeNull();
+    rmSync(join(dir, ".git"), { recursive: true, force: true });
+    await expect(z.readHead("unit-convert")).rejects.toMatchObject({ code: "git_failed" });
+    await expect(z.findOpCommit("0b6f3a52-1c1e-4d0a-9f55-3f2f4a7a9c11")).rejects.toMatchObject({ code: "git_failed" });
   });
 
   it("writes a verified bundle that a clone can read", async () => {
