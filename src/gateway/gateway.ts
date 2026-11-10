@@ -1856,7 +1856,7 @@ export function formatScheduleCancelledText(schedule_id: string): string {
 /** `/schedule cancel <N>` when there is no Nth row (out of range / empty list). */
 /**
  * Read-only "系统任务" footer for the `/schedule` command: the env-pinned built-in ticks
- * (idea radar daily, idea panel weekly, skill re-verify weekly) with a live-computed next
+ * (idea radar daily, idea panel weekly) with a live-computed next
  * fire. Unnumbered — they can never collide with `/schedule cancel <编号>` — and appended
  * ONLY on the /schedule command surface, never the schedule_task list verb (the model must
  * not reason about, or try to cancel, rows it cannot own). Empty string when no built-in

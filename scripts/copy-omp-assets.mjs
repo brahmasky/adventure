@@ -2,8 +2,9 @@
 // Optional argv[2]: the dist directory to write into (default ../dist/); lets a test run against a temp dist.
 import { copyFileSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
-const dist = process.argv[2] ?? new URL("../dist/", import.meta.url).pathname;
-const src = new URL("../src/omp/", import.meta.url).pathname;
+import { fileURLToPath } from "node:url";
+const dist = process.argv[2] ?? fileURLToPath(new URL("../dist/", import.meta.url));
+const src = fileURLToPath(new URL("../src/omp/", import.meta.url));
 mkdirSync(join(dist, "omp"), { recursive: true });
 copyFileSync(join(src, "shell-wrapper.sh"), join(dist, "omp/shell-wrapper.sh"));
 console.log("copied dist/omp/shell-wrapper.sh");

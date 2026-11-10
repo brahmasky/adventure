@@ -887,8 +887,8 @@ async function runMemoryTicks(options: RunTelegramDaemonOptions, now: string, si
 
 /**
  * Idea Radar R1 (daily sensing: fetch + ONE extract call), the R2 weekly panel (ADR 0027: seats
- * pinned per provider, NEVER a chain — a healthy-leg fallback would void the quorum), and the
- * weekly suggest-only skill re-verify. Each stamps its latch before its first model call.
+ * pinned per provider, NEVER a chain — a healthy-leg fallback would void the quorum). Each
+ * stamps its latch before its first model call.
  */
 async function runIdeaTicks(options: RunTelegramDaemonOptions, now: string, chatId: string | null, signal: AbortSignal, roles: Pick<RoleResolver, "chains">): Promise<void> {
   await runIdeaRadarTick({
