@@ -43,17 +43,26 @@ const NOTE_RUNS_MAX = 200;
 /** HEAD sync's events: the event table has no sync action, so they are `publish` events with this code (never an outcome line). */
 const HEAD_SYNC = "head_sync";
 
-/** I5: only Paco clears a mark: unmark, the item and its pending rows become clean, in one transaction. */
-export function trustItem(store: RunStore, name: string, now: string): boolean {
-  if (!store.isGrowMarked(name)) return false;
-  store.inTransaction(() => {
+export type TrustResult = "trusted" | "not_marked" | "pending";
+/** Both trust surfaces (`/grow trust`, `houge grow trust`) answer a refused trust with this. */
+export const trustPendingText = (name: string): string => `A new version of ${name} is waiting for review; trust it once it is live or failed.`;
+
+/**
+ * I5: only Paco clears a mark: unmark and the item becomes clean, in one transaction. Refused (`pending`) while any
+ * version of the name is in motion (a staged, approved or publishing row, or a pending operation): the mark would be
+ * cleared for text Paco has not seen, and it would publish clean. The check and the unmark share the transaction, so
+ * a submit in the daemon (the CLI is another process) cannot slip a row in between.
+ */
+export function trustItem(store: RunStore, name: string, now: string): TrustResult {
+  return store.inTransaction(() => {
+    if (!store.isGrowMarked(name)) return "not_marked";
+    if (store.listGrowStaged().some((r) => r.name === name && r.state !== "failed") || store.pendingGrowOps(name).length > 0) return "pending";
     store.unmarkGrowName(name);
     const item = store.getGrowItem(name);
     if (item && item.origin !== "exemplar") store.setGrowItemOrigin(name, "clean", now);
-    store.setGrowStagedOrigin(name, "clean", now);
     store.appendGrowEvent({ at: now, run_id: null, chat_id: null, name, action: "trust", result: "clean", code: null, reviewer_model: null, commit_id: null });
+    return "trusted";
   });
-  return true;
 }
 
 export function submitText(r: SubmitResult): string {

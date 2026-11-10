@@ -30,7 +30,7 @@ describe("/grow", () => {
     const text = formatGrowList(s.store, NOW);
     expect(text).toContain("**unit-convert** · from outside content · used 0×");
     expect(text).toContain("/grow trust unit-convert clears the mark");
-    expect(text).toContain("**second-skill** · waiting for review");
+    expect(text).toContain("**second-skill** · waiting for review · written by Houge");
   });
 
   it("says so when there is nothing yet", async () => {
@@ -144,6 +144,24 @@ describe("/grow", () => {
     handleGrow(s.store, growEvent("trust unit-convert", "tg:1"), NOW);
     expect(s.store.getGrowItem("unit-convert")?.origin).toBe("clean");
     expect(lastReply(s.store)).toBe("✅ unit-convert now reads as Houge's own. Reading it no longer marks the conversation.");
+  });
+
+  it("/grow trust while a new version waits for review keeps the mark and says to trust it once it is live or failed", async () => {
+    const s = await growSetup();
+    await s.live(growFields(), { ...CLEAN, level: "untrusted" });
+    await s.svc.submit(growFields({ body: growBody(40, " outside") }), { ...CLEAN, level: "untrusted" });
+    handleGrow(s.store, growEvent("trust unit-convert", "tg:p"), NOW);
+    expect(s.store.isGrowMarked("unit-convert")).toBe(true);
+    expect(lastReply(s.store)).toBe("A new version of unit-convert is waiting for review; trust it once it is live or failed.");
+  });
+
+  it("shows each pending row's origin next to its state", async () => {
+    const s = await growSetup();
+    await s.svc.submit(growFields({ name: "from-outside", description: "a skill submitted from an untrusted turn", body: growBody(40, " o") }), { ...CLEAN, level: "untrusted" });
+    await s.svc.submit(growFields({ name: "from-houge", description: "a skill submitted from a clean turn here", body: growBody(40, " h") }), CLEAN);
+    const text = formatGrowList(s.store, NOW);
+    expect(text).toContain("**from-outside** · waiting for review · from outside content");
+    expect(text).toContain("**from-houge** · waiting for review · written by Houge");
   });
 
   it("/grow trust on a skill that is not marked changes nothing and says so", async () => {

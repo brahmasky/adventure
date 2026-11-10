@@ -202,18 +202,6 @@ describe("grow store", () => {
     expect(s.isGrowMarked("n")).toBe(false);
   });
 
-  it("setGrowStagedOrigin touches only pending rows of that name", () => {
-    const s = mem();
-    const a = staged(s); const b = staged(s); const done = staged(s); const other = staged(s, "other");
-    s.patchGrowStaged(b, { state: "approved" }, NOW);
-    s.patchGrowStaged(done, { state: "failed" }, NOW);
-    expect(s.setGrowStagedOrigin("unit-convert", "untrusted", LATER)).toBe(2);
-    expect(s.getGrowStaged(a)?.origin).toBe("untrusted");
-    expect(s.getGrowStaged(b)?.origin).toBe("untrusted");
-    expect(s.getGrowStaged(done)?.origin).toBe("clean");
-    expect(s.getGrowStaged(other)?.origin).toBe("clean");
-  });
-
   it("events list ascending, newest option returns the newest rows still ascending, and counts by action since", () => {
     const s = mem();
     const ev = (name: string, at: string, action: "submit" | "publish" = "submit") =>

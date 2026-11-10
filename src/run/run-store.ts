@@ -7746,10 +7746,6 @@ export class RunStore {
     return this.db.prepare(`SELECT ${GROW_VERSION_COLUMNS} FROM grow_versions WHERE name = ? ORDER BY id`).all<GrowVersionDbRow>(name).map(toGrowVersion);
   }
 
-  setGrowStagedOrigin(name: string, origin: GrowOrigin, now: string): number {
-    return Number(this.db.prepare(`UPDATE grow_staged SET origin = ?, updated_at = ? WHERE name = ? AND state IN ('staged','approved')`).run(origin, now, name).changes);
-  }
-
   insertGrowReview(r: Omit<GrowReviewRow, "id">): number {
     const res = this.db.prepare(`INSERT INTO grow_reviews (staged_id, name, content_hash, pass, code, findings_json, reviewer_model, input_hash, author_families, undo_reasons_n, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(r.staged_id, r.name, r.content_hash, r.pass ? 1 : 0, r.code, r.findings_json, r.reviewer_model, r.input_hash, r.author_families, r.undo_reasons_n, r.at);

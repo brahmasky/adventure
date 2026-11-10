@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { GROW_CLI_USAGE, runGrowCli } from "../../src/grow/cli.js";
 import { renderSkillFile } from "../../src/grow/checks.js";
-import { CLEAN, growFields, growSetup, mkTmp } from "../helpers/grow.js";
+import { CLEAN, growBody, growFields, growSetup, mkTmp } from "../helpers/grow.js";
 
 const NOW = "2026-11-10T12:00:00.000Z";
 const setup = async () => {
@@ -79,6 +79,14 @@ describe("houge grow CLI", () => {
     expect(await s.run("trust", "unit-convert")).toBe("trusted unit-convert");
     expect(s.store.getGrowItem("unit-convert")?.origin).toBe("clean");
     expect(await s.run("trust", "unit-convert")).toBe("nothing to clear for unit-convert");
+  });
+
+  it("trust is refused while a new version of the name waits for review", async () => {
+    const s = await setup();
+    await s.live(growFields(), { ...CLEAN, level: "untrusted" });
+    await s.svc.submit(growFields({ body: growBody(40, " outside") }), { ...CLEAN, level: "untrusted" });
+    expect(await s.run("trust", "unit-convert")).toBe("A new version of unit-convert is waiting for review; trust it once it is live or failed.");
+    expect(s.store.isGrowMarked("unit-convert")).toBe(true);
   });
 
   it("undo and adopt only queue a request (no git write), once per instant", async () => {

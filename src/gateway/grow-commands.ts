@@ -1,5 +1,5 @@
 import type { TypedTaskEvent } from "../domain/types.js";
-import { NOT_A_FAILURE, trustItem } from "../grow/service.js";
+import { NOT_A_FAILURE, trustItem, trustPendingText } from "../grow/service.js";
 import type { GrowItemRow, RunStore } from "../run/run-store.js";
 import type { GatewayIntakeResult } from "./gateway.js";
 import { oncePerTrigger, replyTo } from "./memory-commands.js";
@@ -39,7 +39,8 @@ export function formatGrowList(store: RunStore, now: string): string {
     const hint = store.isGrowMarked(i.name) ? `\n/grow trust ${i.name} clears the mark` : "";
     return `**${i.name}** · ${liveLabel(store, i)} · used ${i.uses}×\n${code(i.description)}${hint}`;
   });
-  const waiting = store.listGrowStaged().filter((r) => r.state !== "failed").map((r) => `**${r.name}** · ${WAITING_LABEL[r.state] ?? "waiting for review"}`);
+  const waiting = store.listGrowStaged().filter((r) => r.state !== "failed")
+    .map((r) => `**${r.name}** · ${WAITING_LABEL[r.state] ?? "waiting for review"} · ${store.isGrowMarked(r.name) ? "from outside content" : "written by Houge"}`);
   const failed = store.listGrowStaged("failed")
     .filter((r) => !NOT_A_FAILURE.has(r.code ?? "") && Date.parse(now) - Date.parse(r.updated_at) < 14 * DAY_MS)
     .map((r) => `**${r.name}** · failed (${r.code ?? "review_failed"})${findingsOf(r.findings_json)}`);
@@ -83,7 +84,9 @@ function growText(store: RunStore, event: TypedTaskEvent, now: string): string {
   const [action, name] = (event.program ?? "list").split(" ");
   const chat_id = event.notify.kind === "telegram" ? event.notify.chat_id : null;
   if (action === "trust" && name) {
-    return trustItem(store, name, now) ? `✅ ${name} now reads as Houge's own. Reading it no longer marks the conversation.` : `Nothing to clear: ${name} is not a skill marked as outside content.`;
+    const r = trustItem(store, name, now);
+    if (r === "pending") return trustPendingText(name);
+    return r === "trusted" ? `✅ ${name} now reads as Houge's own. Reading it no longer marks the conversation.` : `Nothing to clear: ${name} is not a skill marked as outside content.`;
   }
   if (action === "undo" && name) {
     if (store.getGrowItem(name)?.state !== "live") return "No live skill of that name. /grow lists them.";

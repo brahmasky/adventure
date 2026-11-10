@@ -6,7 +6,7 @@ import { BACKUP_FILE_PATTERN, bundlePathFor } from "../run/db-backup.js";
 import type { RunStore } from "../run/run-store.js";
 import { checkFields, fieldScrub, parseSkillFile } from "./checks.js";
 import { resolveGrowDir } from "./flags.js";
-import { trustItem } from "./service.js";
+import { trustItem, trustPendingText } from "./service.js";
 import { GrowZone, GrowZoneError } from "./zone.js";
 
 export const GROW_CLI_USAGE = "Usage: houge grow list | show <name> | check [name] | log | undo <name> [reason] | trust <name> | adopt <name>";
@@ -22,7 +22,7 @@ export async function runGrowCli(store: RunStore, sub: string, name: string, res
   if (sub === "list") return store.listGrowItems().map((i) => `${i.name}  ${i.state}  ${i.origin}  ${i.uses}`).join("\n") || "(empty)";
   if (sub === "show") return show(zone, name);
   if (sub === "log") return log(store, backupDir);
-  if (sub === "trust") return trustItem(store, name, now) ? `trusted ${name}` : `nothing to clear for ${name}`;
+  if (sub === "trust") return { trusted: `trusted ${name}`, not_marked: `nothing to clear for ${name}`, pending: trustPendingText(name) }[trustItem(store, name, now)];
   if (sub === "undo" || sub === "adopt") {
     const fresh = store.enqueueGrowRequest({ idempotency_key: `cli:${sub}:${name}:${now}`, kind: sub, name, reason: sub === "undo" && rest ? rest : null, chat_id: null, now });
     return fresh ? QUEUED : "already queued";
