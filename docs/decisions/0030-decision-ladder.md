@@ -761,3 +761,13 @@ This file is protected (ADR 0011); this amendment is drafted for Paco's hand. Sp
 - **`decision_record_failed`, `decision_golden_drift`, `decision_fallback` → log** (reading of "and its alert" and "drift pages"). They are self-checks of the ladder's own bookkeeping; the decision still runs on its fallback. `/status` counts them as internal open incidents and `/changes` lists them. The `decision_fallback` card becomes a log row (topic `decision_internal`).
 - **`decision_health` is a card kind:** its urgent card is the page; the generic incident text is not sent.
 - **The daily reminder** (2026-11-02 amendment) keeps `role_unresolved` and `planner_session_reset_failed`; `static_list_stale` and `model_catalog_unavailable` leave it (log kinds); `omp_contract_drift` joins it at 7 days. This touches the unsigned 2026-11-02 amendment; the two sign together.
+
+## Amendment (2026-11-10): grow zone (carried by ADR 0034; signed by Paco 2026-11-10, spec approval)
+
+This ADR is superseded by [ADR 0034](0034-decision-ladder-consolidated.md); this block keeps the text above true. Amended 2026-11-10 by [ADR 0035](0035-grow-zone-verification.md).
+
+- **Protected surface (around line 572).** `src/skills/promote.ts` is deleted and no longer protected; "nothing reaches the active skills tree without Paco's tap" is replaced by ADR 0035 G3 (formal checks, then a reviewer of another model family, no tap). `src/grow` is protected.
+- **turn.trust cause list and ask list (around line 198).** A fourth route to `untrusted`: a `grow_read` of a grow item born from outside content (cause `grow_read_untrusted`). Untrusted asks before `lesson_write`, `schedule_task` and `self_write_propose`; `skill_author` is gone. `grow_submit` never asks: refused at `hostile`, staged, reviewed and marked at `untrusted`.
+- **Recurrence and skills (around lines 489 and 531).** A recurrence, or an accepted `skill` proposal, records a grow hint for the planner; it starts no skill-authoring job. The job states and endings described there (`_pending` drafts, Gate A, promote taps, `offer_expired`, `promote_failed`) no longer run.
+- **Carry paragraph (around line 719).** The cause set also holds `grow_read_untrusted`, which carries `untrusted` (`CAUSE_LEVEL` and `CARRY_LEVEL` both `untrusted`).
+
