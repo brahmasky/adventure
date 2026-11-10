@@ -2,7 +2,7 @@ import type { NotificationButton } from "../notifications/notification-types.js"
 
 /**
  * The evolution lane (⓪·3g "THE LANE FIX", ADR 0012). The daemon is single-threaded and
- * evolution pipelines (self_write_propose / self_diagnose / skill_author) take minutes;
+ * evolution pipelines (self_write_propose / self_diagnose) take minutes;
  * ⓪·3g backgrounds them so the poll loop keeps answering. This module is the SINGLETON
  * lane state: at most ONE pipeline runs at a time, tracked as one background promise.
  *

@@ -52,7 +52,7 @@ describe("proxyLabel (spec §7 precedence)", () => {
     ["a correction beats a rule", { memory_correct_write: 1, lesson_write: 1 }, null, "memory", "memory_correct_write"],
     ["a rule beats a search", { lesson_write: 1, web_search: 4 }, null, "memory", "lesson_write"],
     ["self-write beats shell", { self_write_propose: 1, shell: 2 }, null, "self_change", "self_change"],
-    ["skill_author is self_change", { skill_author: 1 }, null, "self_change", "self_change"],
+    ["grow_submit is self_change", { grow_submit: 1 }, null, "self_change", "self_change"],
     ["wiki beats schedule", { wiki_refine: 1, schedule_task: 1 }, null, "wiki", "wiki"],
     ["schedule beats mail", { schedule_task: 1, gmail_read: 1 }, null, "schedule", "schedule_task"],
     ["gmail_* is mail_calendar", { gmail_read: 1, web_search: 1 }, null, "mail_calendar", "mail_calendar"],

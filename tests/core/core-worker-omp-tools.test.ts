@@ -1,24 +1,20 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { GATE_A_DISCIPLINE } from "../../src/capabilities/skill-router.js";
-import { GATE_B_DISCIPLINE } from "../../src/capabilities/anchor-verify.js";
 import { buildWikiSavedDigest, WIKI_SYNTH_DISCIPLINE, WIKI_VERIFY_DISCIPLINE } from "../../src/capabilities/wiki.js";
 import {
-  buildEvolutionKickoffDigest, buildScheduleCancelledDigest, buildScheduleCapError, buildScheduleCreatedDigest, buildScheduleExistsDigest,
+  buildScheduleCancelledDigest, buildScheduleCapError, buildScheduleCreatedDigest, buildScheduleExistsDigest,
   buildScheduleUpdatedDigest, SCHEDULE_TASK_CANCEL_NOT_FOUND_ERROR, SCHEDULE_TASK_UPDATE_NOT_FOUND_ERROR
 } from "../../src/core/core-worker.js";
 import { evolutionLaneSettled, resetEvolutionLaneForTests } from "../../src/core/evolution-lane.js";
 import { buildTypedTaskEvent } from "../../src/domain/types.js";
 import { Gateway } from "../../src/gateway/gateway.js";
 import { decideCapability } from "../../src/policy/capability-policy.js";
-import { READER_DISCIPLINE, SKILL_AUTHOR_DISCIPLINE } from "../../src/prompt/composer.js";
+import { READER_DISCIPLINE } from "../../src/prompt/composer.js";
 import { RunStore } from "../../src/run/run-store.js";
 import { formatScheduleListText } from "../../src/run/schedule-spec.js";
-import { SkillStore } from "../../src/skills/skill-store.js";
 import type { ToolAdapterResult } from "../../src/tools/tool-registry.js";
 import { pinEnabledFlags, pinOmpEnv, shortTmp } from "../helpers/omp-env.js";
-import { bridgeTurn, drainOutbox, ompWorker } from "../helpers/omp-worker.js";
+import { bridgeTurn, ompWorker } from "../helpers/omp-worker.js";
 
 // Ported gate-stack coverage (Task 13 ruling 1): each case drives the omp path — bridge `call` →
 // the registry `buildOmpTools(claim)` built → `loopToolExecute` — and names the
@@ -181,221 +177,6 @@ describe("schedule_task over the bridge (B10b, ADR 0017)", () => {
     expect(r.isError).toBe(true);
     expect(r.content).toContain("not armed");
     expect(store.listScheduledTasks("555")).toEqual([]);
-  });
-});
-
-/** Serves the skill pipeline's inner passes: Gate A, the author draft, Gate B. Captures author questions. */
-function skillLlm(gateA: string, authored?: string, gateB?: string, authorQuestions: string[] = []): Llm {
-  return async (input) => {
-    const system = typeof input.system === "string" ? input.system : "";
-    const question = typeof input.question === "string" ? input.question : "";
-    let out = `ANSWER: ${question}`;
-    if (system.includes(GATE_A_DISCIPLINE)) out = gateA;
-    else if (system.includes(GATE_B_DISCIPLINE) && gateB !== undefined) out = gateB;
-    else if (system.includes(SKILL_AUTHOR_DISCIPLINE) && authored !== undefined) { authorQuestions.push(question); out = authored; }
-    return { ok: true, output: { question, answer: out, model: "f", provider: "f" } };
-  };
-}
-
-const skillFile = (name: string, scope: string, body = "1. Verify each figure against its source.", when = "comparing numbers across multiple sources") =>
-  ["---", `name: ${name}`, `scope: ${scope}`, `when: ${when}`, "anchors:", "  - a part never exceeds its whole", "version: 1", "origin: commanded", "---", "", body].join("\n");
-const CROSS_CHECK = skillFile("cross-check-figures", "research");
-const seedSkill = (scope: string, name: string, file: string) => {
-  mkdirSync(join(project(), "skills", scope), { recursive: true });
-  writeFileSync(join(project(), "skills", scope, `${name}.md`), file, "utf8");
-};
-const skillPath = (scope: string, name: string) => join(project(), "skills", scope, `${name}.md`);
-
-/** Kick off skill_author over the bridge, wait for the lane, return the gate-stack report. */
-async function authorSkill(message: string, llm: Llm, key?: string): Promise<string | undefined> {
-  const r = await turn(message, llm, key ? { key } : {}).call("skill_author", {});
-  expect(answer(r.content)).toBe(buildEvolutionKickoffDigest("skill_author"));
-  await evolutionLaneSettled();
-  return [...drainOutbox(store).values()].map((p) => String(p.text)).find((t) => t.includes("Skill attempt"));
-}
-
-describe("skill_author gate stack over the bridge (ported from the loop suite)", () => {
-  it("Gate A=skill: authors a valid skill, writes it under skills/, report carries the gate stack", async () => {
-    // replaces: skill_author gate stack on the loop › "Gate A=skill: authors a valid skill, writes it under skills/, report carries the gate stack"
-    const report = await authorSkill("write a skill for cross-checking figures in research", skillLlm('{"verdict":"skill","reason":"recurring method"}', CROSS_CHECK));
-    expect(readFileSync(skillPath("research", "cross-check-figures"), "utf8")).toContain("name: cross-check-figures");
-    expect(readFileSync(join(project(), "skills", "REGISTRY.md"), "utf8")).toContain("cross-check-figures");
-    expect(report).toContain("Gate A qualify: ✓");
-    expect(report).toContain("Wrote skills/research/cross-check-figures.md");
-  });
-
-  it("refine: bumps the version MECHANICALLY (v1→v2) even when the writer re-emits version:1", async () => {
-    // replaces: skill_author gate stack on the loop › "refine: bumps the version MECHANICALLY (v1→v2) even when the writer re-emits version:1"
-    await authorSkill("write a cross-check skill", skillLlm('{"verdict":"skill","reason":"recurring method"}', CROSS_CHECK));
-    expect(readFileSync(skillPath("research", "cross-check-figures"), "utf8")).toContain("version: 1");
-    const report = await authorSkill("improve the cross-check skill", skillLlm('{"verdict":"skill","reason":"recurring method"}', CROSS_CHECK), "t:refine2");
-    expect(readFileSync(skillPath("research", "cross-check-figures"), "utf8")).toContain("version: 2");
-    expect(report).toContain("v1→v2");
-  });
-
-  it("Gate A=code: reports a code-capability flag, writes no skill and no lesson", async () => {
-    // replaces: skill_author gate stack on the loop › "Gate A=code: reports a code-capability flag, writes no skill and no lesson"
-    expect(await authorSkill("write a skill that calls the GitHub API", skillLlm('{"verdict":"code","reason":"needs an API"}'))).toContain("CODE");
-    expect(store.readLessonBlock("ask")).toBeUndefined();
-  });
-
-  it("malformed author output retries once then fails cleanly (no garbage written)", async () => {
-    // replaces: skill_author gate stack on the loop › "malformed author output retries once then fails cleanly (no garbage written)"
-    const questions: string[] = [];
-    const report = await authorSkill("write a skill for verifying dates", skillLlm('{"verdict":"skill","reason":"ok"}', "sorry, I can't write that", undefined, questions));
-    expect(questions).toHaveLength(2);
-    expect(existsSync(join(project(), "skills", "research"))).toBe(false);
-    expect(report).toContain("did not produce a valid skill file");
-  });
-
-  it("commanded Gate B passes: writes active, stamps the score, shows it in the report", async () => {
-    // replaces: skill_author gate stack on the loop › "commanded Gate B passes: writes active, stamps the score, shows it in the report"
-    const report = await authorSkill("write a cross-check skill", skillLlm('{"verdict":"skill","reason":"recurring method"}', CROSS_CHECK,
-      '{"criteria":[{"text":"checks a source","ok":1},{"text":"sanity-checks","ok":1}]}'));
-    const file = readFileSync(skillPath("research", "cross-check-figures"), "utf8");
-    expect(file).toContain("score: 1.00");
-    expect(file).toMatch(/last_verified: \d{4}-\d{2}-\d{2}/);
-    expect(report).toContain("Gate B anchors: ✓ passed");
-  });
-
-  it("commanded Gate B low score: still writes active (advisory) with a ⚠ low-score note", async () => {
-    // replaces: skill_author gate stack on the loop › "commanded Gate B low score: still writes active (advisory) with a ⚠ low-score note"
-    const weak = skillFile("weak-skill", "ask", "1. Do a vague thing.", "something");
-    const report = await authorSkill("write a weak skill", skillLlm('{"verdict":"skill","reason":"ok"}', weak, '{"criteria":[{"text":"a","ok":0},{"text":"b","ok":0}]}'));
-    expect(existsSync(skillPath("ask", "weak-skill"))).toBe(true);
-    expect(report).toContain("⚠ low score");
-  });
-});
-
-describe("skill_author down-route and budget isolation over the bridge (fix round 1, I-4)", () => {
-  const DOWN_ROUTE = '{"verdict":"lesson","scope":"ask","lesson":"answer with the conclusion first","reason":"a tweak, not a procedure"}';
-
-  it("the commanded-skill path runs unchanged inside the tool: Gate A down-routes to a lesson", async () => {
-    // replaces: executeTurn — the inner loop › "skill_author (⓪·2): the commanded-skill path runs unchanged inside the tool (Gate A down-route → lesson)"
-    const report = await authorSkill("以后回答要先给结论再给理由", skillLlm(DOWN_ROUTE));
-    expect(store.readLessonBlock("ask")).toContain("answer with the conclusion first");
-    expect(report).toContain("LESSON");
-  });
-
-  it("a down-routed lesson the size cap refuses is reported as not saved, never as saved (memory A1 §2)", async () => {
-    const tooLong = "c".repeat(241);
-    const report = await authorSkill("from now on lead with the conclusion", skillLlm(`{"verdict":"lesson","scope":"ask","lesson":"${tooLong}","reason":"a tweak"}`));
-    expect(store.readLessonBlock("ask")).toBeUndefined();
-    expect(report).not.toContain("Saved a LESSON");
-    expect(report).toContain("Lesson NOT saved");
-  });
-
-  it("BUDGET ISOLATION: Gate A runs on the tool's own sub-ledger when the turn ledger has one unit left", async () => {
-    // replaces: executeTurn — the inner loop › "BUDGET ISOLATION: skill_author's Gate A internals run on their own sub-ledger under a drained turn ledger"
-    const t = turn("以后回答要先给结论再给理由", skillLlm(DOWN_ROUTE));
-    const cap = t.turn.contract.budget.max_tool_calls;
-    for (let i = 0; i < cap - 1; i++) expect(t.turn.budget.reserveToolCall().ok).toBe(true);
-    const r = await t.call("skill_author", {});
-    expect(answer(r.content)).toBe(buildEvolutionKickoffDigest("skill_author"));
-    await evolutionLaneSettled();
-    expect(store.readLessonBlock("ask")).toContain("answer with the conclusion first"); // Gate A drew from its own ledger
-    expect(t.turn.budget.usage().tool_calls).toBe(cap); // the turn paid exactly one unit for the step
-    expect((await t.call("skill_author", {})).isError).toBe(true); // …and is now drained
-  });
-});
-
-describe("true refine feed + rename auto-retire over the bridge (fed-refine gating)", () => {
-  const RENAMED = skillFile("verify-figures", "research", "1. Verify each figure and flag stale data.");
-  const SECOND = skillFile("verify-sources", "research", "1. Prefer primary sources.", "judging whether a source is trustworthy");
-
-  it("a request naming exactly ONE active skill feeds its raw file to the writer", async () => {
-    // replaces: true refine feed + rename auto-retire › "a request naming exactly ONE active skill feeds its raw file to the writer"
-    seedSkill("research", "cross-check-figures", CROSS_CHECK);
-    const q: string[] = [];
-    await authorSkill("improve the cross-check-figures skill to also flag stale data", skillLlm('{"verdict":"skill","reason":"refine"}', CROSS_CHECK, undefined, q));
-    expect(q[0]).toContain("This skill ALREADY EXISTS");
-    expect(q[0]).toContain("name: cross-check-figures");
-  });
-
-  it("fed-refine RENAME: auto-retires the predecessor with superseded_by lineage", async () => {
-    // replaces: true refine feed + rename auto-retire › "fed-refine RENAME: auto-retires the predecessor with superseded_by lineage"
-    seedSkill("research", "cross-check-figures", CROSS_CHECK);
-    const report = await authorSkill("refine the cross-check-figures skill so it flags stale data", skillLlm('{"verdict":"skill","reason":"refine"}', RENAMED));
-    const skills = new SkillStore({ root: join(project(), "skills") });
-    expect(existsSync(skillPath("research", "verify-figures"))).toBe(true);
-    expect(skills.listRetired()).toEqual([expect.objectContaining({ name: "cross-check-figures", retired_by: "refine", superseded_by: "verify-figures" })]);
-    expect(report).toContain("Retired predecessor");
-  });
-
-  it("same-name fed-refine: refines in place, retires NOTHING", async () => {
-    // replaces: true refine feed + rename auto-retire › "same-name fed-refine: refines in place, retires NOTHING"
-    seedSkill("research", "cross-check-figures", CROSS_CHECK);
-    const report = await authorSkill("tighten the cross-check-figures skill", skillLlm('{"verdict":"skill","reason":"refine"}', CROSS_CHECK));
-    expect(new SkillStore({ root: join(project(), "skills") }).listRetired()).toHaveLength(0);
-    expect(report).not.toContain("Retired predecessor");
-  });
-
-  it("MULTIPLE skills mentioned: no feed, and a rename never retires anything", async () => {
-    // replaces: true refine feed + rename auto-retire › "MULTIPLE skills mentioned: no feed, and a rename never retires anything"
-    seedSkill("research", "cross-check-figures", CROSS_CHECK);
-    seedSkill("research", "verify-sources", SECOND);
-    const q: string[] = [];
-    await authorSkill("write a skill like cross-check-figures crossed with verify-sources", skillLlm('{"verdict":"skill","reason":"new blend"}', RENAMED, undefined, q));
-    expect(q[0]).not.toContain("This skill ALREADY EXISTS");
-    expect(new SkillStore({ root: join(project(), "skills") }).listRetired()).toHaveLength(0);
-  });
-
-  it("WORD BOUNDARY: a single-word skill name inside a longer word is NOT a mention", async () => {
-    // replaces: true refine feed + rename auto-retire › "WORD BOUNDARY: a single-word skill name inside a longer word is NOT a mention"
-    seedSkill("research", "verify", skillFile("verify", "research", "1. Check the claim.", "checking a claim against evidence"));
-    const q: string[] = [];
-    await authorSkill("write a skill for verifying dates in old documents", skillLlm('{"verdict":"skill","reason":"new"}', RENAMED, undefined, q));
-    expect(q[0]).not.toContain("This skill ALREADY EXISTS");
-    expect(existsSync(skillPath("research", "verify"))).toBe(true);
-  });
-
-  it("CASE-INSENSITIVE: a mixed-case mention of a lowercase slug still feeds", async () => {
-    // replaces: true refine feed + rename auto-retire › "CASE-INSENSITIVE: a mixed-case mention of a lowercase slug still feeds"
-    seedSkill("research", "cross-check-figures", CROSS_CHECK);
-    const q: string[] = [];
-    await authorSkill("改进 Cross-Check-Figures 这个技能，补充过期数据的处理", skillLlm('{"verdict":"skill","reason":"refine"}', CROSS_CHECK, undefined, q));
-    expect(q[0]).toContain("This skill ALREADY EXISTS");
-  });
-
-  it("SCOPE DISOBEDIENCE: fed research/x re-authored as ask/x retires the predecessor with scope/name lineage", async () => {
-    // replaces: true refine feed + rename auto-retire › "SCOPE DISOBEDIENCE: fed research/x re-authored as ask/x retires the predecessor with scope/name lineage"
-    seedSkill("research", "cross-check-figures", CROSS_CHECK);
-    const moved = skillFile("cross-check-figures", "ask", "1. Verify each figure.");
-    const report = await authorSkill("refine the cross-check-figures skill for everyday questions", skillLlm('{"verdict":"skill","reason":"refine"}', moved));
-    expect(existsSync(skillPath("ask", "cross-check-figures"))).toBe(true);
-    expect(existsSync(skillPath("research", "cross-check-figures"))).toBe(false);
-    expect(new SkillStore({ root: join(project(), "skills") }).listRetired()[0]).toMatchObject({ scope: "research", superseded_by: "ask/cross-check-figures" });
-    expect(report).toContain("superseded by ask/cross-check-figures");
-  });
-});
-
-describe("natural-language skill retire/restore via Gate A, over the bridge", () => {
-  it("NL retire happy path: the active skill moves to the graveyard stamped retired_by: paco", async () => {
-    // replaces: natural-language skill retire/restore via Gate A › "NL retire happy path: the active skill moves to the graveyard stamped retired_by: paco"
-    seedSkill("research", "cross-check-figures", CROSS_CHECK);
-    const report = await authorSkill("退役 cross-check-figures 技能", skillLlm('{"verdict":"retire","target":"cross-check-figures","reason":"user asked"}'));
-    expect(existsSync(skillPath("research", "cross-check-figures"))).toBe(false);
-    expect(new SkillStore({ root: join(project(), "skills") }).listRetired()[0]).toMatchObject({ name: "cross-check-figures", retired_by: "paco" });
-    expect(report).toContain("/skills restore cross-check-figures");
-  });
-
-  it("NL retire ambiguous target: nothing moves, the report ASKS which one", async () => {
-    // replaces: natural-language skill retire/restore via Gate A › "NL retire ambiguous target: nothing moves, the report ASKS which one"
-    seedSkill("research", "cross-check-figures", CROSS_CHECK);
-    seedSkill("ask", "verify-figures", skillFile("verify-figures", "ask", "1. Sanity-check the figure.", "sanity-checking a single figure"));
-    const report = await authorSkill("retire the figures skill", skillLlm('{"verdict":"retire","target":"figures","reason":"user asked"}'));
-    expect(existsSync(skillPath("research", "cross-check-figures"))).toBe(true);
-    expect(existsSync(skillPath("ask", "verify-figures"))).toBe(true);
-    expect(report).toContain("Which one?");
-  });
-
-  it("NL restore surfaces the superseded_by stamp (read BEFORE restoreSkill strips it)", async () => {
-    // replaces: natural-language skill retire/restore via Gate A › "NL restore surfaces the superseded_by stamp (read BEFORE restoreSkill strips it)"
-    seedSkill("research", "cross-check-figures", CROSS_CHECK);
-    expect(new SkillStore({ root: join(project(), "skills") }).retireSkill("research", "cross-check-figures", { date: "2026-07-29", by: "refine", supersededBy: "verify-figures" }).ok).toBe(true);
-    const report = await authorSkill("restore the cross-check-figures skill", skillLlm('{"verdict":"restore","target":"cross-check-figures","reason":"wants it back"}'));
-    expect(readFileSync(skillPath("research", "cross-check-figures"), "utf8")).not.toContain("superseded_by");
-    expect(report).toContain("was superseded by verify-figures");
   });
 });
 

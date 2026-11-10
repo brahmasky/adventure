@@ -39,7 +39,7 @@ function createRun(notify: NotifyTarget, key = "k1"): string {
 describe("enqueueEvolutionReportNotification → assistant chat turn (B10a)", () => {
   it("queued: records exactly one assistant turn with the run/chat/intent and the SAME truncated text", () => {
     const run_id = createRun({ kind: "telegram", chat_id: "555" });
-    const result = store.enqueueEvolutionReportNotification(run_id, "skill_author", {
+    const result = store.enqueueEvolutionReportNotification(run_id, "self_diagnose", {
       text: "🐒 新技能已写好：AI 周报流程"
     });
     expect(result.status).toBe("queued");
@@ -62,16 +62,16 @@ describe("enqueueEvolutionReportNotification → assistant chat turn (B10a)", ()
 
   it("duplicate re-enqueue records NO second turn (the queued status is the latch)", () => {
     const run_id = createRun({ kind: "telegram", chat_id: "555" });
-    store.enqueueEvolutionReportNotification(run_id, "skill_author", { text: "report" });
-    const again = store.enqueueEvolutionReportNotification(run_id, "skill_author", { text: "report" });
+    store.enqueueEvolutionReportNotification(run_id, "self_diagnose", { text: "report" });
+    const again = store.enqueueEvolutionReportNotification(run_id, "self_diagnose", { text: "report" });
     expect(again.status).toBe("duplicate");
     expect(store.getRecentChatTurns("555", 10).length).toBe(1);
   });
 
   it("conflict (same key, different payload) records NO turn for the conflicting enqueue", () => {
     const run_id = createRun({ kind: "telegram", chat_id: "555" });
-    store.enqueueEvolutionReportNotification(run_id, "skill_author", { text: "report" });
-    const conflict = store.enqueueEvolutionReportNotification(run_id, "skill_author", { text: "DIFFERENT" });
+    store.enqueueEvolutionReportNotification(run_id, "self_diagnose", { text: "report" });
+    const conflict = store.enqueueEvolutionReportNotification(run_id, "self_diagnose", { text: "DIFFERENT" });
     expect(conflict.status).toBe("conflict");
     expect(store.getRecentChatTurns("555", 10).length).toBe(1);
   });

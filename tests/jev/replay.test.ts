@@ -31,7 +31,7 @@ function deps(turns: ReplayTurnRow[], over: Partial<ReplayDeps> = {}) {
 describe("observedAction / llmLabel", () => {
   it.each([
     [["web_search", "self_write_propose"], "selfcode"],
-    [["skill_author", "web_search"], "skill"],
+    [["grow_submit", "web_search"], "skill"],
     [["http_fetch"], "research"],
     [[], "answer"],
     [["lesson_write"], "unknown"]

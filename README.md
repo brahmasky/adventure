@@ -141,7 +141,6 @@ declaration under `src/omp/tools/` plus a daemon-side adapter:
 | `schedule_task` | Create, list, update or cancel this chat's schedules ([ADR 0017](docs/decisions/0017-scheduler.md)). |
 | `wiki_build` · `wiki_refine` | Save or improve a durable knowledge page ([ADR 0020](docs/decisions/0020-llm-wiki.md)). |
 | `self_diagnose` · `self_write_propose` | Read Houge's own source, or propose a code change through the self-write pipeline. Both run in the background and end the turn. |
-| `skill_author` | Author or refine a skill (Gate A routing, Gate B verification). Runs in the background. |
 | `grow_submit` | Add or improve one of Houge's own procedures; checked by code, reviewed by another model before it goes live. |
 | `grow_read` | Read one of Houge's own procedures by name. |
 | `houge_status` | Read-only view of Houge's own runtime (uptime, why he booted, live build, open incidents, kill and park state); the planner calls it before answering a question about a restart or his health. |
@@ -231,13 +230,11 @@ Learning-loop design: [ADR 0007](docs/decisions/0007-learning-loop.md); prompt-c
 tracked files, so gitignored secrets are absent by construction. Off by default
 ([configuration](docs/reference/configuration.md#self-evolution-phase-1--code-self-diagnose)).
 
-**Skills (Phase 2).** A skill is a reusable procedure under `skills/<scope>/<name>.md` that the
-composer folds into the planner's prompt; skills are ambient, never invoked by name. `skill_author`
-writes one through a two-gate stack: **Gate A** routes (skill vs lesson vs code), then **Gate B**, a
-separate 3-pass anchor verifier, scores whether following the procedure is sound. A commanded skill
-is advisory; an auto-authored one is kept only if Gate B passes, else it is refined up to 3 times and
-then parked in `skills/_pending/`. Skills retire, never delete (`skills/_retired/`), and a weekly
-advisor suggests retirements ([configuration](docs/reference/configuration.md#self-evolution-phase-2a--ambient-skills)).
+**Skills (the grow zone).** A skill is a reusable procedure Houge wrote for himself, kept in the grow
+zone and indexed into the planner's prompt; skills are ambient, never invoked by name. The planner
+stages one with `grow_submit`, which runs the formal checks and queues it for review, and reads one
+back with `grow_read`. `/grow` lists them and `/grow undo` removes one
+([configuration](docs/reference/configuration.md)).
 
 **Code self-write (Phase 3).** When the fix belongs in Houge's own code, the planner calls
 `self_write_propose`. Codex writes the diff in a fresh worktree under `<data>/selfwrite`, and three

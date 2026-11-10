@@ -6,12 +6,12 @@ import { loadToolDeclarations, TOOL_DECLS_DIR, validateInput } from "../../src/o
 import { isToolArmed } from "../../src/omp/tool-arming.js";
 
 describe("tool declarations — data the daemon validates; nothing self-writable runs in the planner (spec §5.1)", () => {
-  it("loads all 17 shipped declarations", () => {
+  it("loads all 16 shipped declarations", () => {
     const r = loadToolDeclarations(TOOL_DECLS_DIR);
     expect(r.ok).toBe(true);
     if (r.ok) expect(r.decls.map((d) => d.name).sort()).toEqual([
       "bash", "gmail_read", "google_api", "grow_read", "grow_submit", "houge_status", "http_fetch", "lesson_write", "memory_correct", "schedule_task", "self_diagnose",
-      "self_write_propose", "skill_author", "to_local_time", "web_search", "wiki_build", "wiki_refine"
+      "self_write_propose", "to_local_time", "web_search", "wiki_build", "wiki_refine"
     ]);
   });
 

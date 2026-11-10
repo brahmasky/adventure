@@ -9,8 +9,9 @@ describe("trustAsk", () => {
   it("clean asks nothing", () => {
     for (const e of ["lesson_write", "shell", "fs_write", "web_search"]) expect(trustAsk("clean", e, "touch x")).toEqual({ ask: false });
   });
-  it("untrusted: lesson_write, schedule_task, self_write_propose, skill_author ask; a shell write does not yet", () => {
-    for (const e of ["lesson_write", "schedule_task", "self_write_propose", "skill_author"]) expect(trustAsk("untrusted", e)).toEqual({ ask: true, reason: UNTRUSTED_REASON });
+  it("untrusted: lesson_write, schedule_task, self_write_propose ask; a shell write and grow_submit (always reviewed, born untrusted) do not", () => {
+    for (const e of ["lesson_write", "schedule_task", "self_write_propose"]) expect(trustAsk("untrusted", e)).toEqual({ ask: true, reason: UNTRUSTED_REASON });
+    expect(trustAsk("untrusted", "grow_submit")).toEqual({ ask: false });
     expect(trustAsk("untrusted", "shell", "touch x")).toEqual({ ask: false });
   });
   it("hostile: shell asks unless read-only; writes ask; reads do not", () => {
@@ -71,7 +72,7 @@ describe("trustAsk fails closed at hostile", () => {
   });
   it("every shell entry runs only a read-only command tap-free; a write-capable entry asks even with a read-only command", () => {
     expect(trustAsk("hostile", "shell_external", "ls")).toEqual({ ask: false });
-    for (const e of ["memory_correct_write", "fs_write", "skill_author", "schedule_task", "self_write_propose"]) expect(trustAsk("hostile", e, "ls").ask).toBe(true);
+    for (const e of ["memory_correct_write", "fs_write", "schedule_task", "self_write_propose"]) expect(trustAsk("hostile", e, "ls").ask).toBe(true);
   });
 });
 

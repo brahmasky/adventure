@@ -74,7 +74,7 @@ describe("resolveQuotedTurn (spec §2.2.1)", () => {
     // enqueueEvolutionReportNotification queues final_report too and records a later assistant row (run-store.ts:5648)
     const run = telegramRun("555", 20);
     hougeReply(run, "555", 21, "the answer", "loop");
-    store.enqueueEvolutionReportNotification(run, "skill_author", { text: "🐒 report" });
+    store.enqueueEvolutionReportNotification(run, "self_diagnose", { text: "🐒 report" });
     deliver(22);
     expect(store.resolveQuotedTurn("555", 21)).toMatchObject({ ok: true, role: "houge", turn: { text: "the answer" } });
     expect(store.resolveQuotedTurn("555", 22)).toEqual({ ok: false, reason: "not_final" });

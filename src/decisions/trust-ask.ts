@@ -10,7 +10,7 @@ import { isReadOnlyCommand } from "./shell-readonly.js";
  */
 export const HOSTILE_REASON = "this turn read text aimed at the assistant";
 export const UNTRUSTED_REASON = "this turn read outside content (web, mail, calendar or network shell output)";
-export const UNTRUSTED_ASK_ENTRIES: ReadonlySet<string> = new Set(["lesson_write", "schedule_task", "self_write_propose", "skill_author"]);
+export const UNTRUSTED_ASK_ENTRIES: ReadonlySet<string> = new Set(["lesson_write", "schedule_task", "self_write_propose"]);
 const SHELL_ENTRIES: ReadonlySet<string> = new Set(["shell", "shell_external", "shell_destructive"]);
 /**
  * Spec §7.2 "every write asks" at hostile, held as an allowlist: only these reads stay tap-free (OMP_LOOP_TOOL_META marks

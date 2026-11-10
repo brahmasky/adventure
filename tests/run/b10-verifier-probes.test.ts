@@ -440,21 +440,21 @@ describe("PROBE 8 — B10a exactly-once under a delivery retry storm", () => {
       const run_id = intake.run_id;
 
       const longText = `报告：${"x".repeat(10_000)}`;
-      const first = store.enqueueEvolutionReportNotification(run_id, "skill_author", { text: longText });
+      const first = store.enqueueEvolutionReportNotification(run_id, "self_diagnose", { text: longText });
       expect(first.status).toBe("queued");
       const payloadText = first.status === "queued" ? (first.record.payload as { text: string }).text : "";
       expect(payloadText.length).toBeLessThan(10_000); // truncation actually applied
 
       // Retry storm on the DELIVERY side: claim → fail(retry) → requeue → claim → deliver.
       const claim1 = store.claimNextNotification("w1", 60)!;
-      expect(claim1.idempotency_key).toBe(`${run_id}:evolution_report:skill_author`);
+      expect(claim1.idempotency_key).toBe(`${run_id}:evolution_report:self_diagnose`);
       store.markNotificationFailed(claim1.notification_id, "telegram 500", true, new Date(Date.now() - 60_000).toISOString(), 5);
       store.requeueRetryWaitNotifications(new Date(Date.now() - 30_000).toISOString());
       const claim2 = store.claimNextNotification("w1", 60)!;
       store.markNotificationDelivered(claim2.notification_id, "tg-msg-1");
 
       // Crash-replay on the ENQUEUE side: the pipeline re-enqueues the same report.
-      const again = store.enqueueEvolutionReportNotification(run_id, "skill_author", { text: longText });
+      const again = store.enqueueEvolutionReportNotification(run_id, "self_diagnose", { text: longText });
       expect(again.status).toBe("duplicate");
 
       // The turn thread has exactly the user turn + ONE evolution_report assistant turn,

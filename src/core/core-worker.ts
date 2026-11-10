@@ -7,7 +7,7 @@ import { CapabilityRunner } from "../capabilities/capability-runner.js";
 import type { ApprovalRequestSink, CapabilityResult } from "../capabilities/capability-runner.js";
 import { createLocalFileReadAdapter } from "../capabilities/local-file-read.js";
 import { createCodingAgentAdapter, resolveCodexEnabled, resolveCodexTimeoutMs } from "../capabilities/coding-agent.js";
-import { compileCodeSelfWriteContract, compileSelfDiagnoseContract, compileSkillAuthorContract } from "../contracts/task-contract.js";
+import { compileCodeSelfWriteContract, compileSelfDiagnoseContract } from "../contracts/task-contract.js";
 import { checkSelfWriteDiff, parseDiffRaw } from "../capabilities/self-write-guard.js";
 import { bucketDenials, buildLockedRetryText, buildTestRetryText, NEEDS_LOCKED_FILE, planDenial, quoteNeedsLockedReason, renderLockedPaths, takeNeedsLockedFile } from "./self-write-locked.js";
 import type { DiffEntry, GuardResult } from "../capabilities/self-write-guard.js";
@@ -25,17 +25,6 @@ import { publishBranch, selfWriteBranchName, summarizeFocus } from "../run/branc
 import { fenceRule, fenceUntrusted, newFenceNonce } from "../prompt/untrusted-fence.js";
 import { createWorktree, removeWorktree } from "../run/worktree.js";
 import { daemonTmpRoot, gitAncestor, setDaemonDataDir } from "../run/daemon-tmp.js";
-import { buildGateAQuestion, GATE_A_DISCIPLINE, parseGateAVerdict } from "../capabilities/skill-router.js";
-import type { GateAResult } from "../capabilities/skill-router.js";
-import { authorDraft, buildGuidedRefineQuestion, parseAuthoredSkill, withFrontmatterVersion } from "../capabilities/skill-author.js";
-import type { AuthoredSkill } from "../capabilities/skill-author.js";
-import {
-  resolveGateBEnabled,
-  resolveGateBPasses,
-  resolveGateBThreshold,
-  verifySkill
-} from "../capabilities/anchor-verify.js";
-import type { VerifyResult } from "../capabilities/anchor-verify.js";
 import { buildCritiqueQuestion, buildResearchQuestion, createWebSearchAdapter } from "../capabilities/web-search.js";
 import { createHttpFetchAdapter } from "../capabilities/http-fetch.js";
 import { createTimeConvertAdapter } from "../capabilities/time-convert.js";
@@ -67,9 +56,9 @@ import {
   renderExtractionDigest,
   unreadableDigest
 } from "./quarantine.js";
-import { composeSystemPrompt, memoryRootFor, SKILL_AUTHOR_DISCIPLINE } from "../prompt/composer.js";
+import { composeSystemPrompt, memoryRootFor } from "../prompt/composer.js";
 import { resolveLocalTimeZone, resolveTimeZone } from "../prompt/tz-convert.js";
-import { resolveSkillMaxPerScope, resolveSkillName, resolveSkillRefinePasses, resolveSkillsEnabled, setFrontmatterFields, SkillStore } from "../skills/skill-store.js";
+import { resolveSkillMaxPerScope, resolveSkillsEnabled, SkillStore } from "../skills/skill-store.js";
 import { resolveWebMaxResults } from "../web/registry.js";
 import type { WebResult } from "../web/types.js";
 import { llmToolAdapter, oneShotAdapter, reportOmpCheck, RUNNER_TIMEOUT_BUFFER_MS, seatBudgetMs } from "../llm/registry.js";
@@ -364,7 +353,7 @@ const OMP_CONFIG_INCIDENT: ReadonlySet<string> = new Set(["omp_config_invalid"])
 const DAEMON_TMP_INCIDENT: ReadonlySet<string> = new Set(["daemon_tmp_in_git_repo"]);
 
 /** The ⓪·2 evolution tools — their non-success outcomes are surfaced code-owned (see LoopTurnContext). */
-const EVOLUTION_TOOLS = new Set(["self_diagnose", "self_write_propose", "skill_author"]);
+const EVOLUTION_TOOLS = new Set(["self_diagnose", "self_write_propose"]);
 
 /** Multimodal ingest (spec 2026-09-29): tests inject all three; the daemon injects the downloader only. */
 export interface MediaWorkerDeps {
@@ -1184,7 +1173,7 @@ export class CoreWorker {
       if (s.id !== undefined) change_id = this.recordLessonChange(run_id, this.chatOf(run_id), { ...s, id: s.id }, source, now);
       return s;
     });
-    // Paco 2026-10-12: an automatic save (here the skill_author down-routes and park) is announced on the Undo card.
+    // Paco 2026-10-12: an automatic save (for example a distilled lesson) is announced on the Undo card.
     if (saved.id !== undefined && change_id) {
       const theme = this.runStore.getLesson(saved.id)?.theme ?? r.theme;
       this.announceSave(run_id, { lesson: savedLessonOf({ ...saved, id: saved.id }, theme, change_id) });
@@ -1866,355 +1855,6 @@ export class CoreWorker {
         notifyText: notify,
         ...(buttons ? { notifyButtons: buttons } : {})
       }
-    };
-  }
-
-  /**
-   * The `skill` branch (ADR 0011, Phase 2b — on-command authoring). Skills are PROSE, so this
-   * runs on the cheap pi→kimi chain (NO Codex, NO worktree): Gate A routes the request
-   * (skill/lesson/code/unsure); a "skill" verdict authors the markdown under
-   * SKILL_AUTHOR_DISCIPLINE, validates it via parseSkillFile, and writes it directly to the
-   * `skills/` root (low-risk, report-not-approve). Down-routes (lesson/code/unsure) save a
-   * lesson and/or report a flag — nothing learned is wasted. DEFENSIVE: a malformed author
-   * output retries once then fails cleanly; never throws, never writes garbage. Returns the
-   * gate-stack report (Origin · Gate A · write outcome · Gate B score · down-route · /skills).
-   */
-  private async runSkill(
-    claim: ClaimedRun,
-    message: string,
-    recentTurns: ChatTurnRow[],
-    budget: BudgetLedger,
-    turnChars: number
-  ): Promise<HelperResult> {
-    const contract = compileSkillAuthorContract(claim.contract.objective);
-    const skillClaim: ClaimedRun = { run_id: claim.run_id, contract };
-    const now = new Date().toISOString();
-
-    // 1) Gate A — is this even a skill? (the §2 routing rubric).
-    const gateRaw = await this.runLlm(skillClaim, buildGateAQuestion(message, recentTurns, turnChars), GATE_A_DISCIPLINE, budget, "classify");
-    const verdict: GateAResult = gateRaw.ok
-      ? parseGateAVerdict(gateRaw.answer)
-      : { verdict: "unsure", reason: "Gate A classification call failed" };
-
-    // 2) Branch on the verdict.
-    if (verdict.verdict === "retire" || verdict.verdict === "restore") {
-      return this.skillLifecycleFromGateA(verdict);
-    }
-    if (verdict.verdict === "skill") {
-      return this.authorAndWriteSkill(skillClaim, message, budget, verdict, "commanded");
-    }
-    if (verdict.verdict === "lesson") {
-      return this.downRouteLesson(skillClaim, verdict, now, budget);
-    }
-    if (verdict.verdict === "code") {
-      return this.skillReport("flagged a CODE capability (not built — backlog)", [
-        "Origin: you asked",
-        `Gate A qualify: → CODE (${verdict.reason})`,
-        "Gate B anchors: n/a (not authored)",
-        "→ Not authored: this needs a new capability/tool, which is the code layer (Phase 3), not a skill."
-      ]);
-    }
-    // unsure / fuzzy → save a lesson if one was offered, and ASK whether to promote.
-    return this.downRouteUnsure(skillClaim, verdict, now, budget);
-  }
-
-  /**
-   * Gate A = skill: author on the cheap chain (1 retry on malformed), run Gate B (3-pass), then
-   * apply the by-origin policy (D5):
-   *   - commanded → ADVISORY: write active regardless; stamp score+last_verified; report the real
-   *     score with a ⚠ note if below threshold.
-   *   - auto → BLOCKING + guided-refine: if Gate B fails, re-author ≤N times feeding the failing
-   *     criteria back; pass at any point ⇒ write active (stamped) + report; still failing ⇒ park in
-   *     `_pending/` + save a lightest-form lesson + report (score, failing, park, lesson, handles).
-   * DEFENSIVE: a Gate B error (unscored) NEVER blocks — it falls back to advisory-write with a note.
-   */
-  private async authorAndWriteSkill(
-    claim: ClaimedRun,
-    message: string,
-    budget: BudgetLedger,
-    verdict: GateAResult,
-    origin: "commanded" | "auto"
-  ): Promise<HelperResult> {
-    const originLine = origin === "commanded" ? "Origin: you asked" : "Origin: auto-promoted from learning";
-
-    // True-refine detection: the request names exactly ONE active skill → feed its file to the
-    // writer (the writer must see what it is improving — spec §3). Zero or many mentions → author
-    // fresh; auto-retire is gated on this feed, so a passing mention can never kill a skill.
-    // WORD-BOUNDED + case-insensitive: names are lowercase slugs, so the boundary class is the
-    // slug alphabet's complement (`\b` fails on `-`) — "verifying" must not hit a skill named
-    // "verify", and "Cross-Check-Figures" must still hit "cross-check-figures".
-    const lowered = message.toLowerCase();
-    const mentioned = this.skillStore.list().filter((m) =>
-      new RegExp(`(^|[^a-z0-9_-])${m.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^a-z0-9_-]|$)`).test(lowered)
-    );
-    const fed = mentioned.length === 1 ? mentioned[0]! : undefined;
-    const fedFile = fed ? this.skillStore.readRawSkill(fed.scope, fed.name) ?? undefined : undefined;
-    // A feed that failed to read is NOT a fed-refine (no writer sight → no retire authority).
-    const feed = fed && fedFile ? fed : undefined;
-
-    // 1) Author the initial draft — one attempt + one retry on malformed output (a capability failure
-    // such as budget → undefined → clean failure below).
-    let parsed = await authorDraft(message, fedFile, async (q, sys) => {
-      const a = await this.runLlm(claim, q, sys, budget, "compose");
-      return a.ok ? a.answer : undefined;
-    });
-    if (!parsed) {
-      return this.skillReport("couldn't author a valid skill", [
-        originLine,
-        `Gate A qualify: ✓ skill (${verdict.reason})`,
-        "→ The writer did not produce a valid skill file after a retry. Nothing was written."
-      ]);
-    }
-
-    // 2) Gate B — verify the authored draft (INDEPENDENT: when + body only, never the anchors).
-    let gate = await this.verifyAuthored(parsed);
-
-    // 3a) COMMANDED → advisory: write active regardless, score is informational.
-    if (origin === "commanded") {
-      return this.writeActiveSkill(claim, parsed, verdict, originLine, gate, feed);
-    }
-
-    // 3b) A Gate B ERROR (unscored — verifier disabled or unavailable) must NEVER block: infra
-    // flakiness must not destroy a good auto-authored skill. Fall back to advisory-write (the report's
-    // gateBLine notes "unscored — advisory only"). ONLY a real low SCORE blocks an auto skill.
-    if (gate.unscored) {
-      return this.writeActiveSkill(claim, parsed, verdict, originLine, gate, feed);
-    }
-
-    // 3c) AUTO → blocking + guided-refine. Pass now ⇒ write active.
-    if (gate.passed) {
-      return this.writeActiveSkill(claim, parsed, verdict, originLine, gate, feed);
-    }
-    const refinePasses = resolveSkillRefinePasses(process.env);
-    for (let i = 0; i < refinePasses && !gate.passed; i += 1) {
-      const refined = await this.runLlm(
-        claim,
-        buildGuidedRefineQuestion(message, parsed.file, gate.failing),
-        SKILL_AUTHOR_DISCIPLINE,
-        budget,
-        "compose"
-      );
-      if (!refined.ok) break;
-      const p = parseAuthoredSkill(refined.answer);
-      if (!p.ok) continue;
-      parsed = p.skill;
-      gate = await this.verifyAuthored(parsed);
-    }
-    if (gate.passed) {
-      return this.writeActiveSkill(claim, parsed, verdict, originLine, gate, feed);
-    }
-    // Still failing after the passes → park + lesson + report (nothing silent, nothing lost).
-    return this.parkBlockedSkill(claim, message, parsed, verdict, originLine, gate, budget);
-  }
-
-  /** Run Gate B (3-pass ensemble) on a draft, or a no-op "unscored" result when disabled. */
-  private async verifyAuthored(skill: AuthoredSkill): Promise<VerifyResult> {
-    if (!resolveGateBEnabled(process.env)) {
-      return { score: 0, passed: true, criteria: [], failing: [], scoredPasses: 0, unscored: true, threshold: 0 };
-    }
-    return verifySkill(
-      { when: skill.meta.when, body: skill.body },
-      { passes: resolveGateBPasses(process.env), threshold: resolveGateBThreshold(process.env) },
-      this.anchorLlm()
-    );
-  }
-
-  /** Write the active skill (mechanical version bump + Gate B stamp), report the gate stack. */
-  private writeActiveSkill(
-    claim: ClaimedRun,
-    parsed: AuthoredSkill,
-    verdict: GateAResult,
-    originLine: string,
-    gate: VerifyResult,
-    fed: { scope: string; name: string } | undefined
-  ): HelperResult {
-    // Refine if a skill with this name already exists; bump version MECHANICALLY (old+1).
-    const existing = this.skillStore.readSkill(parsed.scope, parsed.name);
-    const action = existing ? "Refined" : "Wrote";
-    const newVersion = existing ? (existing.meta.version ?? 1) + 1 : (parsed.meta.version ?? 1);
-    let fileToWrite = withFrontmatterVersion(parsed.file, newVersion);
-    // Stamp the Gate B score + last_verified (only when actually scored; clock passed in).
-    if (!gate.unscored) {
-      fileToWrite = setFrontmatterFields(fileToWrite, { score: gate.score, last_verified: new Date().toISOString().slice(0, 10) });
-    }
-    const write = this.skillStore.writeSkill(parsed.scope, parsed.name, fileToWrite);
-    if (!write.ok) {
-      return this.skillReport("could not write the authored skill", [
-        originLine,
-        `Gate A qualify: ✓ skill (${verdict.reason})`,
-        `→ Write failed: ${write.error}`
-      ]);
-    }
-    // Fed-refine RENAME (or scope disobedience — same failure class) → the fed predecessor is
-    // superseded: retire it with lineage. Gated on the feed (a request that named exactly ONE
-    // active skill whose file the writer saw), so a fresh authoring or a passing mention can
-    // never retire anything.
-    const retiredLines =
-      fed && (fed.scope !== parsed.scope || fed.name !== parsed.name) ? this.retireSuperseded(fed, parsed) : [];
-    const versionLine = existing ? ` (v${existing.meta.version ?? 1}→v${newVersion})` : ` (v${newVersion})`;
-    return this.skillReport(`${action.toLowerCase()} skill "${parsed.name}" (${parsed.scope})`, [
-      originLine,
-      `Gate A qualify: ✓ all 4 held (${verdict.reason})`,
-      gateBLine(gate),
-      `→ ${action} skills/${parsed.scope}/${parsed.name}.md${versionLine} ` +
-        `(${parsed.meta.anchors.length} anchors authored). /skills to view, reply to refine.`,
-      ...retiredLines
-    ]);
-  }
-
-  /** Fed-refine rename/scope-move: the predecessor moves to the graveyard with lineage (spec §3).
-   * The lineage pointer is the bare name when the successor stayed in the same scope, and the
-   * unambiguous `scope/name` when it moved. */
-  private retireSuperseded(fed: { scope: string; name: string }, successor: { scope: string; name: string }): string[] {
-    const supersededBy = fed.scope === successor.scope ? successor.name : `${successor.scope}/${successor.name}`;
-    const r = this.skillStore.retireSkill(fed.scope, fed.name, {
-      date: new Date().toISOString().slice(0, 10),
-      by: "refine",
-      supersededBy
-    });
-    return [
-      r.ok
-        ? `→ Retired predecessor skills/${fed.scope}/${fed.name}.md (superseded by ${supersededBy}). /skills retired to view.`
-        : `→ Could not retire predecessor "${fed.name}": ${r.error}`
-    ];
-  }
-
-  /** Auto-author blocked after guided-refine → park in `_pending/` + lesson + surfaced report. */
-  private async parkBlockedSkill(
-    claim: ClaimedRun,
-    message: string,
-    parsed: AuthoredSkill,
-    verdict: GateAResult,
-    originLine: string,
-    gate: VerifyResult,
-    budget: BudgetLedger
-  ): Promise<HelperResult> {
-    const parked = this.skillStore.writePending(parsed.scope, parsed.name, parsed.file);
-    // Lightest-form lesson capture — nothing learned is wasted even when the skill is blocked.
-    const scope = this.safeLessonScope(parsed.scope);
-    const lesson = (verdict.lesson?.trim() || `when ${parsed.meta.when}, follow a verified procedure`).slice(0, 200);
-    const saved = await this.reconcileAndSaveLesson(claim.run_id, { scope, text: lesson }, "user_feedback", this.reconcileLlm(claim, budget));
-    const failing = gate.failing.length > 0 ? gate.failing.slice(0, 3).map((f) => `   • ${f}`).join("\n") : "   • (no specific criteria captured)";
-    const parkLine = parked.ok
-      ? `→ Parked at skills/_pending/${parsed.scope}/${parsed.name}.md (inert — not applied).`
-      : `→ Could not park the draft: ${parked.error}`;
-    return this.skillReport(`auto-author BLOCKED "${parsed.name}" (${parsed.scope})`, [
-      originLine,
-      `Gate A qualify: ✓ all 4 held (${verdict.reason})`,
-      gateBLine(gate),
-      "Failed criteria:",
-      failing,
-      parkLine,
-      savedLessonLine(saved, `→ Saved a LESSON (${scope}): "${lesson}".`, "→ No durable lesson to save."),
-      '→ Handles: /skills pending to inspect · reply "show me the draft" · reply "write a skill for X" to retry.'
-    ]);
-  }
-
-  /**
-   * Adapt the cheap-chain LLM into Gate B's `AnchorLlm` shape (a raw `(system, question) =>
-   * answer`). Gate B runs walled-off (its own session, no answer key) under the skill-author
-   * contract's `llm_answer`. A capability failure → undefined (the verifier tolerates it).
-   */
-  private anchorLlm(): (system: string, question: string) => Promise<string | undefined> {
-    const contract = compileSkillAuthorContract("gate-b-verify");
-    return async (system, question) => {
-      // Run-less (no phantom run id): audited under `gate:b` as a "verify" call.
-      const r = await this.runLlmWith(this.llmAdapterRunless("gate:b", "verify"), "verify", contract, question, system, new BudgetLedger(contract.budget));
-      return r.ok ? r.answer : undefined;
-    };
-  }
-
-  /** Gate A = lesson: save the down-route lesson (reconciled), report it (no skill file). */
-  private async downRouteLesson(claim: ClaimedRun, verdict: GateAResult, now: string, budget: BudgetLedger): Promise<HelperResult> {
-    const scope = this.safeLessonScope(verdict.scope);
-    const lesson = verdict.lesson?.trim();
-    const saved = lesson ? await this.reconcileAndSaveLesson(claim.run_id, { scope, text: lesson }, "user_feedback", this.reconcileLlm(claim, budget), now) : undefined;
-    return this.skillReport("down-routed to a LESSON (a tweak, not a procedure)", [
-      "Origin: you asked",
-      `Gate A qualify: → LESSON (${verdict.reason})`,
-      "Gate B anchors: n/a (not authored)",
-      savedLessonLine(saved, `→ Saved a LESSON (${scope}): "${lesson}". /lessons to view.`, "→ No durable lesson to save.")
-    ]);
-  }
-
-  /** Gate A = unsure: save the offered lesson now (reconciled) and ASK whether to promote. */
-  private async downRouteUnsure(claim: ClaimedRun, verdict: GateAResult, now: string, budget: BudgetLedger): Promise<HelperResult> {
-    const scope = this.safeLessonScope(verdict.scope);
-    const lesson = verdict.lesson?.trim();
-    const saved = lesson ? await this.reconcileAndSaveLesson(claim.run_id, { scope, text: lesson }, "user_feedback", this.reconcileLlm(claim, budget), now) : undefined;
-    return this.skillReport("unsure — saved a lesson and asking whether to promote", [
-      "Origin: you asked",
-      `Gate A qualify: ? unsure between a lesson and a skill (${verdict.reason})`,
-      "Gate B anchors: n/a (not authored)",
-      savedLessonLine(saved, `→ Saved a LESSON (${scope}) for now: "${lesson}".`, "→ Nothing durable to save yet."),
-      '→ Want me to promote this to a skill? Reply "yes, write a skill for it" and I will.'
-    ]);
-  }
-
-  /** NL retire/restore: Gate A extracted the user's words; resolution + action are code. */
-  private skillLifecycleFromGateA(verdict: GateAResult): HelperResult {
-    const action = verdict.verdict as "retire" | "restore";
-    const target = verdict.target ?? "";
-    const pool = action === "retire" ? this.skillStore.list() : this.skillStore.listRetired();
-    const resolved = resolveSkillName(pool, target);
-    if (resolved.status === "none") {
-      const names = pool.map((m) => `${m.scope}/${m.name}`).join(" · ") || "(none)";
-      return this.skillReport(`${action}: no match for "${target}"`, [
-        "Origin: you asked",
-        `Gate A qualify: → ${action.toUpperCase()} (${verdict.reason})`,
-        `→ No ${action === "retire" ? "active" : "retired"} skill matches "${target}". Available: ${names}`
-      ]);
-    }
-    if (resolved.status === "many") {
-      const names = resolved.metas.map((m) => `${m.scope}/${m.name}`).join(" · ");
-      return this.skillReport(`${action}: "${target}" is ambiguous`, [
-        "Origin: you asked",
-        `Gate A qualify: → ${action.toUpperCase()} (${verdict.reason})`,
-        `→ Which one? ${names} — reply with /skills ${action} <scope>/<name>.`
-      ]);
-    }
-    const { scope, name } = resolved.meta;
-    if (action === "retire") {
-      const r = this.skillStore.retireSkill(scope, name, { date: new Date().toISOString().slice(0, 10), by: "paco" });
-      return this.skillReport(`${r.ok ? "retired" : "retire failed for"} "${name}" (${scope})`, [
-        "Origin: you asked",
-        `Gate A qualify: → RETIRE (${verdict.reason})`,
-        r.ok
-          ? `→ Retired skills/${scope}/${name}.md — inert. /skills restore ${name} to undo.`
-          : `→ ${r.error}`
-      ]);
-    }
-    // Read the lineage stamp BEFORE restoreSkill — restore strips it from the file.
-    const supersededBy = resolved.meta.superseded_by;
-    const r = this.skillStore.restoreSkill(scope, name);
-    const lines = [
-      "Origin: you asked",
-      `Gate A qualify: → RESTORE (${verdict.reason})`,
-      r.ok ? `→ Restored skills/${scope}/${name}.md — active again.` : `→ ${r.error}`
-    ];
-    if (r.ok && supersededBy) {
-      lines.push(`→ Note: it was superseded by ${supersededBy} — both are now active.`);
-    }
-    return this.skillReport(`${r.ok ? "restored" : "restore failed for"} "${name}" (${scope})`, lines);
-  }
-
-  /**
-   * Normalize a down-routed lesson scope to a filename-safe slug (symmetry with skill scopes),
-   * defaulting to "ask" if the Gate A verdict's scope is absent or sanitizes empty. The scope is
-   * the LLM's own output, not raw user data, but slugging keeps the lesson-block key well-formed.
-   */
-  private safeLessonScope(raw: string | undefined): string {
-    const slug = (raw ?? "").toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "");
-    return slug.length > 0 ? slug : "ask";
-  }
-
-  /** Assemble the gate-stack report for a skill attempt (the 🐒 banner + outcome lines). */
-  private skillReport(notify: string, lines: string[]): HelperResult {
-    const body = ["🐒 Skill attempt", "", ...lines].join("\n");
-    return {
-      ok: true,
-      answer: body,
-      report: { title: "Skill attempt", body, sources: ["intent:skill"], notifyText: `🐒 Skill attempt: ${notify}\n\n${lines.join("\n")}` }
     };
   }
 
@@ -3663,9 +3303,7 @@ export class CoreWorker {
         const subContract =
           name === "self_diagnose"
             ? compileSelfDiagnoseContract(message)
-            : name === "self_write_propose"
-              ? compileCodeSelfWriteContract(message)
-              : compileSkillAuthorContract(message);
+            : compileCodeSelfWriteContract(message);
         const subBudget = new BudgetLedger(subContract.budget);
         const started = tryStartEvolutionPipeline({
           current: { run_id: claim.run_id, tool: name, started_at: new Date().toISOString() },
@@ -3675,9 +3313,7 @@ export class CoreWorker {
             const helper =
               name === "self_diagnose"
                 ? await this.runSelfDiagnose(claim, message, focus, turnCtx.recentTurns, subBudget, turnCtx.turnChars)
-                : name === "self_write_propose"
-                  ? await this.runSelfWrite(claim, message, focus, turnCtx.recentTurns, subBudget, turnCtx.turnChars, typeof input.title === "string" ? input.title : undefined)
-                  : await this.runSkill(claim, message, turnCtx.recentTurns, subBudget, turnCtx.turnChars);
+                : await this.runSelfWrite(claim, message, focus, turnCtx.recentTurns, subBudget, turnCtx.turnChars, typeof input.title === "string" ? input.title : undefined);
             if (!helper.ok) {
               return { text: `${name} step failed: ${capabilityFailureDetail(helper.failure)}` };
             }
@@ -4599,17 +4235,6 @@ function buildSelfDiagnoseRelayQuestion(message: string, diagnosis: string): str
 // with the lesson block (⓪·3 S1): dedupe now happens at WRITE time via reconcile-on-write,
 // and the per-scope row cap (resolveLessonCapPerScope) prunes lowest reuse_value on overflow.
 
-/**
- * Render the Gate B line for the gate-stack report. `unscored` (Gate B off or every pass
- * errored) → an advisory note (never a block on an error). Otherwise show the 3-pass score
- * vs threshold, with a ⚠ for a below-threshold (low) score.
- */
-function gateBLine(gate: VerifyResult): string {
-  if (gate.unscored) return "Gate B anchors: (unscored — verifier unavailable; advisory only)";
-  const verdict = gate.passed ? "✓ passed" : "⚠ low score";
-  return `Gate B anchors: ${verdict} — ${gate.score.toFixed(2)} vs threshold ${gate.threshold.toFixed(2)} (${gate.scoredPasses}-pass avg)`;
-}
-
 /** The tree's route as the supervisor pins it (Task 8). */
 function turnRoute(r: Route, verdict_id: string | null): TurnRoute {
   return { role: r.role, effort: r.effort, verdict_id };
@@ -4753,8 +4378,8 @@ function injectedResult(r: ToolAdapterResult): LlmResult {
 /**
  * The runner's wall-clock cap for a loop tool. The evolution tools wrap whole legacy
  * pipelines (multiple inner runner calls), so their outer race bound is the wrapped
- * sub-contract's time ceiling (self-diagnose 30 min · code-self-write 60 min ·
- * skill-author 10 min); the light tools keep their ⓪·1 bounds.
+ * sub-contract's time ceiling (self-diagnose 30 min · code-self-write 60 min);
+ * the light tools keep their ⓪·1 bounds.
  */
 function loopToolTimeoutMs(name: string, seat: (role: LlmCallRole) => number): number {
   switch (name) {
@@ -4785,8 +4410,6 @@ function loopToolTimeoutMs(name: string, seat: (role: LlmCallRole) => number): n
       return compileSelfDiagnoseContract("").budget.time_minutes * 60_000;
     case "self_write_propose":
       return compileCodeSelfWriteContract("").budget.time_minutes * 60_000;
-    case "skill_author":
-      return compileSkillAuthorContract("").budget.time_minutes * 60_000;
     case "gmail_read":
     case "google_api":
       // ADR 0025: the Gmail ops enforce their own 75s wall clock; the outer race bound adds headroom.

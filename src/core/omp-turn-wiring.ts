@@ -19,7 +19,6 @@ export const OMP_LOOP_TOOL_META: Readonly<Record<string, OmpToolMeta>> = Object.
   wiki_refine: { side_effect_level: "none", risk_level: "low", output_limit_bytes: 100_000 },
   self_diagnose: { side_effect_level: "external_read", risk_level: "medium", output_limit_bytes: 200_000 },
   self_write_propose: { side_effect_level: "external_read", risk_level: "medium", output_limit_bytes: 200_000 },
-  skill_author: { side_effect_level: "none", risk_level: "low", output_limit_bytes: 100_000 },
   gmail_read: { side_effect_level: "external_read", risk_level: "medium", output_limit_bytes: 200_000 },
   google_api: { side_effect_level: "external_read", risk_level: "medium", output_limit_bytes: 200_000 },
   // Read-only, Houge's own state only (never external content): not quarantined, never gated.
