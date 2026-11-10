@@ -6,7 +6,7 @@ import { contentHash, renderSkillFile, type GrowFields } from "../../src/grow/ch
 import { GROW_ITEMS_MAX, GrowService, submitText, trustItem } from "../../src/grow/service.js";
 import { opMessage, runOp, type OpDeps } from "../../src/grow/ops.js";
 import type { GrowOpRow, RunStore } from "../../src/run/run-store.js";
-import type { GrowZone } from "../../src/grow/zone.js";
+import { GrowZoneError, type GrowZone } from "../../src/grow/zone.js";
 import { blockWrite, CLEAN, commitCount, commitsForOp, countRows, growBody, growFields, growSetup, headMessage, PASS, small } from "../helpers/grow.js";
 
 afterEach(() => { vi.restoreAllMocks(); });
@@ -343,6 +343,21 @@ describe("B. the operation log and crashes", () => {
     expect(zoneIncidents(s.store, "grow_zone_unavailable")).toEqual([]);
   });
 
+  it("a same-name submit during a post-commit database fault is answered without latching the door or paging twice", async () => {
+    const s = await growSetup(); const f = growFields(); const err = errSpy();
+    await s.svc.submit(f, CLEAN);
+    const id = stagedOf(s.store, f.name)[0]!.id;
+    s.svc.recordReview(id, PASS);
+    const up = vi.spyOn(s.store, "upsertGrowItem").mockImplementationOnce(() => { throw new Error("disk I/O error"); });
+    await expect(s.svc.publishStaged(id)).rejects.toThrow("disk I/O error");
+    up.mockImplementationOnce(() => { throw new Error("disk I/O error"); });
+    expect(await s.svc.submit(rewrite(f), CLEAN)).toEqual({ status: "REFUSED", code: "zone_unavailable" });
+    expect(s.svc.disabledReason()).toBeNull();
+    expect(zoneIncidents(s.store, "grow_zone_unavailable")).toHaveLength(1);
+    expect(await s.svc.submit(OTHER(), CLEAN)).toEqual({ status: "STAGED", name: "other-skill" });
+    expect(err).toHaveBeenCalledWith("[grow] submit: apply_failed");
+  });
+
   it("I4: a write call that threw after its commit landed is applied with that commit and not counted", async () => {
     const s = await growSetup(); const f = growFields(); const err = errSpy();
     await s.svc.submit(f, CLEAN);
@@ -408,6 +423,17 @@ describe("B. the operation log and crashes", () => {
     expect(await Promise.all([runOp(stubDeps(s), op, true), runOp(stubDeps(s), op, true)])).toEqual(["done", "done"]);
     expect(s.store.listGrowVersions(f.name)).toHaveLength(1);
     expect(s.store.listGrowEvents({ actions: ["publish"] })).toHaveLength(1);
+  });
+
+  it("a failed operation linked to a request finishes that request with the zone text", async () => {
+    const s = await growSetup(); const f = growFields(); const err = errSpy();
+    s.store.enqueueGrowRequest({ idempotency_key: "k9", kind: "undo", name: f.name, reason: null, chat_id: "555", now: s.now() });
+    const req = s.store.dueGrowRequests()[0]!.id;
+    const op = s.store.insertGrowOp({ id: randomUUID(), kind: "undo", source: "undo", name: f.name, staged_id: null, request_id: req, target_json: JSON.stringify(f), reason: null, undo_version_id: null, now: s.now() });
+    for (const want of ["retry", "failed"]) { blockWrite(s.zone, f.name); expect(await runOp(stubDeps(s), op, true)).toBe(want); }
+    expect(s.store.getGrowOp(op.id)?.state).toBe("failed");
+    expect(s.store.doneGrowRequests()).toMatchObject([{ id: req, result: "The grow zone could not be written. See /status." }]);
+    expect(err).toHaveBeenCalledWith("[grow] op: write_failed");
   });
 
   it("I2: a submit first finishes a pending publish of that name whose commit exists, and is refused busy while one cannot be written", async () => {
@@ -480,7 +506,7 @@ describe("B. the operation log and crashes", () => {
     const s = await growSetup(); const f = growFields(); const err = errSpy();
     const op = await approvedOp(s, f);
     const head = await s.zone.head();
-    vi.spyOn(s.zone, "findOpCommit").mockRejectedValue(new Error("git"));
+    vi.spyOn(s.zone, "findOpCommit").mockRejectedValue(new GrowZoneError("git_failed"));
     await s.svc.reconcile(true);
     expect(s.store.getGrowOp(op.id)).toMatchObject({ state: "pending", failures: 0 });
     expect(await s.zone.head()).toBe(head);

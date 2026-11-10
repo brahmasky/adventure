@@ -5,7 +5,7 @@ import type { GrowOpRow, GrowStagedRow, RunStore } from "../run/run-store.js";
 import { checkFields, contentHash, fieldScrub, isSmallUpdate, parseSkillFile, type GrowFailCode, type GrowFields } from "./checks.js";
 import { resolveGrowEnabled } from "./flags.js";
 import { runOp, type OpDeps } from "./ops.js";
-import type { GrowZone } from "./zone.js";
+import { GrowZoneError, type GrowZone } from "./zone.js";
 
 /**
  * The grow zone's service (spec 2026-11-10 §5, plan Task 4 Rev 4): the door (submit), the review gate, publishing
@@ -143,13 +143,13 @@ export class GrowService {
     try {
       await this.d.zone.assertToplevel();
       if (!(await this.settle(f.name, true))) return refused("busy");     // I2: one operation in motion per name
-    } catch { return this.zoneFault(); }
+    } catch (e) { return this.zoneFault(e); }
     const stop = this.admit(f, ctx, now);
     if (stop) return stop;
     const existing = store.getGrowItem(f.name);
     const untrusted = ctx.level === "untrusted" || store.isGrowMarked(f.name);
     let needs_review: boolean;
-    try { needs_review = await this.needsReview(f, existing?.state === "live", untrusted); } catch { return this.zoneFault(); }
+    try { needs_review = await this.needsReview(f, existing?.state === "live", untrusted); } catch (e) { return this.zoneFault(e); }
     const id = store.inTransaction(() => {
       if (untrusted) store.markGrowName(f.name, now);
       const newId = store.insertGrowStaged({ name: f.name, run_id: ctx.run_id, chat_id: ctx.chat_id, origin: untrusted ? "untrusted" : "clean", fields_json: JSON.stringify(f), content_hash: contentHash(f), needs_review, now });
@@ -160,10 +160,14 @@ export class GrowService {
     return needs_review ? { status: "STAGED", name: f.name } : this.publishNow(id, f.name);
   }
 
-  /** A git fault on the submit path: the door latches and the planner is told, never handed a rejection. */
-  private zoneFault(): SubmitResult {
-    console.error("[grow] submit: zone_unavailable");
-    this.disable();
+  /**
+   * A fault on the submit path is answered, never thrown at the planner. Only a zone (git) fault latches the door; a
+   * database fault after a commit is already paged by `onApplyFailed` and must not shut the door for every name.
+   */
+  private zoneFault(e: unknown): SubmitResult {
+    const git = e instanceof GrowZoneError;
+    console.error(git ? "[grow] submit: zone_unavailable" : "[grow] submit: apply_failed");
+    if (git) this.disable();
     return refused("zone_unavailable");
   }
 
