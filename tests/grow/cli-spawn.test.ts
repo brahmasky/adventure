@@ -17,7 +17,7 @@ function runGrow(args: string[], cwd: string, tombstone?: string) {
   return spawnSync(tsxPath, [cliPath, "grow", ...args], {
     cwd,
     encoding: "utf8",
-    env: { ...process.env, HOUGE_GROW_DIR: join(root, "grow"), HOUGE_TOMBSTONE_PATH: tombstone ?? join(root, "houge.kill") }
+    env: { ...process.env, HOUGE_ENV_FILE: undefined, HOUGE_GROW_DIR: join(root, "grow"), HOUGE_TOMBSTONE_PATH: tombstone ?? join(root, "houge.kill") }
   });
 }
 
@@ -46,14 +46,13 @@ describe("houge grow CLI (spawned)", () => {
     expect(r.stderr).toContain(GROW_CLI_USAGE);
   });
 
-  it("refuses outside the checkout (no houge.sqlite) for every subcommand, and creates no database", () => {
-    const cwd = makeTempDir();
-    for (const args of [["list"], ["log"], ["check"], ["show", "some-skill"], ["undo", "some-skill"], ["trust", "some-skill"], ["adopt", "some-skill"]]) {
+  it.each([["list"], ["log"], ["check"], ["show", "some-skill"], ["undo", "some-skill"], ["trust", "some-skill"], ["adopt", "some-skill"]])(
+    "refuses outside the checkout (no houge.sqlite) for `grow %s`, and creates no database", (...args) => {
+      const cwd = makeTempDir();
       const r = runGrow(args, cwd);
       expect(r.status, args.join(" ")).toBe(1);
       expect(r.stderr).toContain("houge grow: no houge.sqlite here; run from the Houge checkout");
       expect(r.stdout).not.toContain("queued");
-    }
-    expect(existsSync(join(cwd, "houge.sqlite"))).toBe(false);
-  });
+      expect(existsSync(join(cwd, "houge.sqlite"))).toBe(false);
+    }, 30_000);
 });
