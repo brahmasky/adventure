@@ -42,6 +42,13 @@ describe("grow store", () => {
     expect(s.dueGrowReviews(LATER).map((r) => r.id)).toEqual([id]);
   });
 
+  it("a row whose next attempt is in the future is not due yet", () => {
+    const s = mem(); const id = staged(s);
+    s.patchGrowStaged(id, { next_attempt_at: LATER }, NOW);
+    expect(s.dueGrowReviews(NOW)).toEqual([]);
+    expect(s.dueGrowReviews(LATER).map((r) => r.id)).toEqual([id]);
+  });
+
   it("an update that needs no review is never offered to the reviewer", () => {
     const s = mem(); staged(s, "small-edit", false);
     expect(s.dueGrowReviews(LATER)).toEqual([]);
@@ -64,6 +71,7 @@ describe("grow store", () => {
     expect(s.growHintExists("cat:t1")).toBe(true);
     expect(s.growHintOverlapsTurns(["t2", "t9"], "2026-11-01T00:00:00.000Z")).toBe(true);
     expect(s.growHintOverlapsTurns(["t9"], "2026-11-01T00:00:00.000Z")).toBe(false);
+    expect(s.growHintOverlapsTurns(["t2"], LATER)).toBe(false);
     expect(s.listGrowEvents({ chat_id: "555", actions: ["hint"] })).toMatchObject([{ action: "hint", code: "conversion" }]);
     expect(s.countGrowHintsSince("2026-11-01T00:00:00.000Z")).toBe(1);
   });
@@ -82,6 +90,8 @@ describe("grow store", () => {
     const sink = s.llmAuditSink({ run_id, role: "compose" });
     sink.record({ provider: "anthropic", role: "", outcome: "ok", model: "claude-opus-5-5", family: "claude", request_key: `${run_id}:1` });
     sink.record({ provider: "kimi", role: "", outcome: "error", family: "kimi", request_key: `${run_id}:2` });
+    expect(s.runAuthorFamilies(run_id)).toEqual({ families: ["claude"], unknown: false });
+    s.llmAuditSink({ run_id, role: "reviewer" }).record({ provider: "openai", role: "", outcome: "ok", model: "gpt-x", family: "gpt", request_key: `${run_id}:r1` });
     expect(s.runAuthorFamilies(run_id)).toEqual({ families: ["claude"], unknown: false });
     sink.record({ provider: "x", role: "", outcome: "ok", model: "m", request_key: `${run_id}:3` });
     expect(s.runAuthorFamilies(run_id)).toMatchObject({ unknown: true });
@@ -161,6 +171,18 @@ describe("grow store", () => {
     expect(s.dueGrowRequests()).toEqual([]);
   });
 
+  it("request states only move forward: finishing a replied request or replying to a queued one changes nothing", () => {
+    const s = mem();
+    s.enqueueGrowRequest({ idempotency_key: "k1", kind: "undo", name: "n", reason: null, chat_id: null, now: NOW });
+    const id = s.dueGrowRequests()[0]!.id;
+    s.markGrowRequestReplied(id, LATER);
+    expect(s.dueGrowRequests().map((r) => r.id)).toEqual([id]);
+    s.finishGrowRequest(id, "ok", LATER); s.markGrowRequestReplied(id, LATER);
+    s.finishGrowRequest(id, "again", LATER);
+    expect(s.doneGrowRequests()).toEqual([]);
+    expect(s.dueGrowRequests()).toEqual([]);
+  });
+
   it("a finished request appears in doneGrowRequests and leaves it once replied", () => {
     const s = mem();
     s.enqueueGrowRequest({ idempotency_key: "k1", kind: "adopt", name: "n", reason: null, chat_id: null, now: NOW });
@@ -203,6 +225,7 @@ describe("grow store", () => {
     expect(s.listGrowEvents({ limit: 2, newest: true }).map((e) => e.id)).toEqual([b, c]);
     expect(s.listGrowEvents({ sinceId: a }).map((e) => e.id)).toEqual([b, c]);
     expect(s.countGrowEventsSince("submit", LATER)).toBe(1);
+    expect(s.listGrowEvents({ limit: 2 }).map((e) => e.id)).toEqual([a, b]);
   });
 
   it("the context cursor is 0 until set, then holds the last value set, per chat", () => {

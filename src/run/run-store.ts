@@ -7806,7 +7806,7 @@ export class RunStore {
   }
 
   finishGrowRequest(id: number, result: string, now: string): void {
-    this.db.prepare(`UPDATE grow_requests SET state = 'done', result = ?, done_at = ? WHERE id = ?`).run(result, now, id);
+    this.db.prepare(`UPDATE grow_requests SET state = 'done', result = ?, done_at = ? WHERE id = ? AND state = 'queued'`).run(result, now, id);
   }
 
   doneGrowRequests(): GrowRequestRow[] {
@@ -7814,7 +7814,7 @@ export class RunStore {
   }
 
   markGrowRequestReplied(id: number, now: string): void {
-    this.db.prepare(`UPDATE grow_requests SET state = 'replied', done_at = COALESCE(done_at, ?) WHERE id = ?`).run(now, id);
+    this.db.prepare(`UPDATE grow_requests SET state = 'replied', done_at = COALESCE(done_at, ?) WHERE id = ? AND state = 'done'`).run(now, id);
   }
 
   markGrowName(name: string, now: string): void {
@@ -7841,7 +7841,8 @@ export class RunStore {
     if (opts.chat_id !== undefined) { where.push("chat_id = ?"); args.push(opts.chat_id); }
     if (opts.actions) { where.push(`action IN (${opts.actions.map(() => "?").join(", ") || "NULL"})`); args.push(...opts.actions); }
     const w = where.length ? `WHERE ${where.join(" AND ")}` : "";
-    const limit = opts.limit !== undefined ? ` LIMIT ${Math.max(0, Math.trunc(opts.limit))}` : "";
+    const limit = opts.limit !== undefined ? " LIMIT ?" : "";
+    if (opts.limit !== undefined) args.push(Math.max(0, Math.trunc(opts.limit)));
     if (opts.newest) return this.db.prepare(`SELECT ${GROW_EVENT_COLUMNS} FROM grow_events ${w} ORDER BY id DESC${limit}`).all<GrowEventRow>(...args).reverse();
     return this.db.prepare(`SELECT ${GROW_EVENT_COLUMNS} FROM grow_events ${w} ORDER BY id${limit}`).all<GrowEventRow>(...args);
   }
