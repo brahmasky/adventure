@@ -68,8 +68,10 @@ function isolate(root) {
     HOUGE_TOMBSTONE_PATH: join(root, "houge.kill"), HOUGE_PARK_MARKER_PATH: join(root, "houge.parked"), HOUGE_DISARM_PATH: join(root, "houge.disarm") });
 }
 
+/** The old Gateway constructor has one more positional parameter than the new one (length 5 vs 4): put the options object where the loaded build expects it. */
+const gatewayPad = (m, options) => (m.Gateway.length >= 5 ? [undefined, options] : [options]);
 function intake(m, store, dataDir, goal, key) {
-  const r = new m.Gateway(store, undefined, undefined, undefined, undefined, { dataDir }).intake(m.buildTypedTaskEvent({
+  const r = new m.Gateway(store, undefined, undefined, undefined, ...gatewayPad(m, { dataDir })).intake(m.buildTypedTaskEvent({
     source: "telegram", type: "turn", program: "turn", goal, requested_by: { kind: "user", id: "rollback" }, notify: { kind: "telegram", chat_id: CHAT },
     idempotency_key: `rollback2b:${key}`, source_reference: `rollback2b:${key}` }));
   if (!r.ok || !r.run_id) throw new Error(`intake failed: ${JSON.stringify(r)}`);

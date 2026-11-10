@@ -84,9 +84,11 @@ function omittedRowSelfTest(db, want) {
 /** "run:<n>" when the row sits on the run event n created, else the raw id (so a row on the wrong run never matches); null stays null. */
 const runLabel = (results, runId) => { if (runId === null) return null; const n = results.findIndex((r) => r.ok && r.run_id === runId); return n >= 0 ? `run:${n}` : runId; };
 
+/** The old Gateway constructor has one more positional parameter than the new one (length 5 vs 4): put the options object where the loaded build expects it. */
+const gatewayPad = (m, options) => (m.Gateway.length >= 5 ? [undefined, options] : [options]);
 function runEvents(d, store, item, ctx, recorder) {
   const caps = { ...d.DEFAULT_GLOBAL_BUDGET_CAPS, ...item.caps };
-  const gateway = new d.Gateway(store, caps, undefined, undefined, undefined, { ...(ctx?.dataDir ? { dataDir: ctx.dataDir } : {}), ...(recorder ? { decisionRecorder: recorder.recorder } : {}) });
+  const gateway = new d.Gateway(store, caps, undefined, undefined, ...gatewayPad(d, { ...(ctx?.dataDir ? { dataDir: ctx.dataDir } : {}), ...(recorder ? { decisionRecorder: recorder.recorder } : {}) }));
   const perIntake = []; // turn.contract consultations made by each intake (the live tally's delta around it)
   const results = item.events.map((e) => {
     const before = recorder?.calls["turn.contract"] ?? 0;
