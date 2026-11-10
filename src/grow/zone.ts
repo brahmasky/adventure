@@ -1,4 +1,4 @@
-import { lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { type Stats, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { hardenedGit } from "../run/git-hardened.js";
 import { GROW_LIMITS } from "./checks.js";
@@ -35,21 +35,22 @@ export class GrowZone {
    * nothing is created.
    */
   async ensure(allowInit: boolean): Promise<void> {
-    if (lstatOrNull(join(this.dir, ".git")) === null) {
+    const gitDir = join(this.dir, ".git");
+    const st = lstatOrNull(gitDir);
+    if (st === null) {
       if (!allowInit) throw new GrowZoneError("not_toplevel");
       mkdirSync(this.dir, { recursive: true });
       await this.git(["init", "-q", "-b", "main"]);
-      writeFileSync(join(this.dir, ".git", "config"), CANONICAL_CONFIG);
-    }
-    // A crash between `git init` and the config write leaves an unborn repository with git's default config: it
-    // holds nothing, so it is safe to finish the initialisation. A repository with commits is never rewritten.
-    if (allowInit && lstatOrNull(join(this.dir, ".git"))?.isDirectory() && !(await this.hasHead())) {
-      writeFileSync(join(this.dir, ".git", "config"), CANONICAL_CONFIG);
+      writeFileSync(join(gitDir, "config"), CANONICAL_CONFIG);
+    } else if (allowInit && st.isDirectory() && isEmptyRepo(gitDir)) {
+      // A crash between `git init` and the config write: nothing is in it, so finishing it loses nothing.
+      // Any other `.git` is never rewritten; `assertToplevel` fails closed on its config.
+      writeFileSync(join(gitDir, "config"), CANONICAL_CONFIG);
     }
     await this.assertToplevel();
     mkdirSync(join(this.dir, "skills"), { recursive: true });
     if (!(await this.hasHead())) {
-      if (!allowInit) throw new GrowZoneError("not_toplevel");
+      if (!allowInit || !isEmptyRepo(gitDir)) throw new GrowZoneError("not_toplevel");
       await this.git(["commit", "-q", "--allow-empty", "-m", "grow zone"]);
     }
   }
@@ -125,8 +126,9 @@ export class GrowZone {
   /** The newest commit with a message line exactly `Grow-Op: <opId>`, null when none; a git failure throws, never "not found". */
   async findOpCommit(opId: string): Promise<string | null> {
     if (!OP_ID_RE.test(opId)) throw new GrowZoneError("bad_name");
+    await this.assertToplevel();
     // The UUID pattern holds no regex metacharacters; git matches the anchored pattern per message line.
-    const out = (await this.git(["log", "-n", "1", "--format=%H", "--grep", `^Grow-Op: ${opId}$`])).trim();
+    const out = (await this.git(["log", "-n", "1", "--format=%H", "--basic-regexp", "--grep", `^Grow-Op: ${opId}$`])).trim();
     return out === "" ? null : out;
   }
 
@@ -153,6 +155,21 @@ export class GrowZone {
   }
 }
 
-function lstatOrNull(path: string): ReturnType<typeof lstatSync> | null {
+function lstatOrNull(path: string): Stats | null {
   try { return lstatSync(path); } catch { return null; }
+}
+
+/** True only when a git dir provably holds nothing, judged from the filesystem alone (no git runs). False on any error. */
+export function isEmptyRepo(gitDir: string): boolean {
+  try {
+    if (hasFile(join(gitDir, "refs")) || lstatOrNull(join(gitDir, "packed-refs")) !== null || lstatOrNull(join(gitDir, "index")) !== null) return false;
+    for (const e of readdirSync(join(gitDir, "objects"), { withFileTypes: true })) {
+      if (!e.isDirectory() || (e.name !== "info" && e.name !== "pack") || hasFile(join(gitDir, "objects", e.name))) return false;
+    }
+    return true;
+  } catch { return false; }
+}
+
+function hasFile(dir: string): boolean {
+  return readdirSync(dir, { withFileTypes: true }).some((e) => !e.isDirectory() || hasFile(join(dir, e.name)));
 }

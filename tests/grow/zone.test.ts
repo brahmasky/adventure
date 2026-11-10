@@ -87,7 +87,7 @@ describe("grow zone repository", () => {
     expect(await z.readHead("missing")).toBeNull();
     rmSync(join(dir, ".git"), { recursive: true, force: true });
     await expect(z.readHead("unit-convert")).rejects.toMatchObject({ code: "git_failed" });
-    await expect(z.findOpCommit("0b6f3a52-1c1e-4d0a-9f55-3f2f4a7a9c11")).rejects.toMatchObject({ code: "git_failed" });
+    await expect(z.findOpCommit("0b6f3a52-1c1e-4d0a-9f55-3f2f4a7a9c11")).rejects.toMatchObject({ code: "not_toplevel" });
   });
 
   it("writes a verified bundle that a clone can read", async () => {
@@ -215,5 +215,45 @@ describe("grow zone repository", () => {
     execFileSync("git", ["-C", dir, "-c", "user.name=a", "-c", "user.email=a@b", "commit", "-q", "--allow-empty", "-m", "x"]);
     await expect(new GrowZone(dir).ensure(true)).rejects.toMatchObject({ code: "not_toplevel" });
     expect(readFileSync(join(dir, ".git", "config"), "utf8")).not.toBe(CANONICAL_CONFIG);
+  });
+
+  const commitRaw = (dir: string): void => { execFileSync("git", ["-C", dir, "-c", "user.name=a", "-c", "user.email=a@b", "commit", "-q", "--allow-empty", "-m", "x"]); };
+  const refs = (dir: string): string => execFileSync("git", ["-C", dir, "for-each-ref"], { encoding: "utf8" });
+
+  it.each([
+    ["a malformed line", "[core\n\tbroken"],
+    ["repositoryformatversion 99", "[core]\n\trepositoryformatversion = 99\n"]
+  ])("never adopts a repository with commits whose config is unreadable to git (%s)", async (_n, cfg) => {
+    const dir = join(tmp(), "grow"); execFileSync("git", ["init", "-q", "-b", "main", dir]); commitRaw(dir);
+    writeFileSync(join(dir, ".git", "config"), cfg);
+    await expect(new GrowZone(dir).ensure(true)).rejects.toMatchObject({ code: "not_toplevel" });
+    expect(readFileSync(join(dir, ".git", "config"), "utf8")).toBe(cfg);
+  });
+
+  it("does not re-root a repository whose HEAD points at a missing branch while other refs exist", async () => {
+    const dir = join(tmp(), "grow"); const z = new GrowZone(dir); await z.ensure(true);
+    const before = refs(dir);
+    execFileSync("git", ["-C", dir, "symbolic-ref", "HEAD", "refs/heads/ghost"]);
+    await expect(new GrowZone(dir).ensure(true)).rejects.toMatchObject({ code: "not_toplevel" });
+    expect(refs(dir)).toBe(before);
+    expect(existsSync(join(dir, ".git", "refs", "heads", "ghost"))).toBe(false);
+  });
+
+  it("refuses a .git that is a symlink to another repository, even one with the canonical config", async () => {
+    const root = tmp(); const outer = join(root, "outer"); execFileSync("git", ["init", "-q", outer]);
+    writeFileSync(join(outer, ".git", "config"), CANONICAL_CONFIG);
+    writeFileSync(join(outer, "untracked.txt"), "mine");
+    const dir = join(root, "grow"); mkdirSync(dir);
+    symlinkSync(join(outer, ".git"), join(dir, ".git"));
+    const z = new GrowZone(dir);
+    await expect(z.restoreToHead()).rejects.toMatchObject({ code: "not_toplevel" });
+    await expect(z.ensure(true)).rejects.toMatchObject({ code: "not_toplevel" });
+    expect(readFileSync(join(outer, "untracked.txt"), "utf8")).toBe("mine");
+  });
+
+  it("findOpCommit faults rather than answering null under a repository-local grep setting", async () => {
+    const dir = join(tmp(), "grow"); const z = new GrowZone(dir); await z.ensure(true);
+    appendFileSync(join(dir, ".git", "config"), "[grep]\n\tpatternType = fixed\n");
+    await expect(z.findOpCommit("0b6f3a52-1c1e-4d0a-9f55-3f2f4a7a9c11")).rejects.toMatchObject({ code: "not_toplevel" });
   });
 });
