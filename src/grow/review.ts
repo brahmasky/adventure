@@ -26,7 +26,7 @@ const KNOWN_FAMILIES: Readonly<Record<Exclude<ModelFamily, "other">, true>> = { 
 const isKnownFamily = (f: string): boolean => Object.hasOwn(KNOWN_FAMILIES, f);
 
 /** Content is neutralised so an item can neither close its own block early nor forge another block's opener. */
-const block = (tag: string, text: string): string => `<<<${tag}\n${text.replaceAll(">>>", "> > >").replaceAll("<<<", "< < <")}\n>>>`;
+const block = (tag: string, text: string): string => `<<<${tag}\n${text.replace(/>{3,}/g, (m) => [...m].join(" ")).replace(/<{3,}/g, (m) => [...m].join(" "))}\n>>>`;
 
 /** `scrub` runs on each block's content, never on the frame, so a redaction token cannot alter a marker. */
 export function buildReviewPrompt(i: ReviewInput, scrub: (s: string) => string = (s) => s): string {
