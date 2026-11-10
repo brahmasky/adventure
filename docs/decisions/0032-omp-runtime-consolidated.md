@@ -110,7 +110,7 @@ omp prompt renders the lessons of both `ask` and `research`; each turn credits o
 4.3 **Stale sessions by fingerprint.** At every turn start the supervisor recomputes the system-prompt fingerprint; a
 change (lesson, identity or grow index change, or the UTC date line) restarts the child at that idle boundary and
 `open_session` resumes the transcript. (Amended 2026-11-10 by ADR 0035: the fingerprint covers the index, not skill
-bodies; its alphabetical order means a `grow_read` never changes it, only a change to the set of live items does.)
+bodies; its alphabetical order means a `grow_read` never changes it, only a change to the index text does: an item added, removed or re-described, or the door switching, never a use.)
 4.4 **A lesson change starts a fresh session.** At every spawn the supervisor compares a persisted lesson-set
 fingerprint (id, text, avoid, theme of the active ask + research lessons, from the same read as the rendered section,
 never the rendered bytes, so a reorder, rating or date flip cannot trigger it); when it differs it sends `new_session`
@@ -141,7 +141,7 @@ per-tool sequential attribute.
 budgeted. The global 24 h breaker's `tool_calls` ceiling is set in `.env` to 3× its old value; the code default is
 unchanged.
 4.11 **Background ticks stop on shutdown.** Every model-backed tick the signal path runs (episodic distill and
-consolidate, lesson consolidate, radar, panel, skill re-verify, scheduled fires) takes the daemon's stop signal and
+consolidate, lesson consolidate, radar, panel, scheduled fires) takes the daemon's stop signal and
 returns early between model calls. The one-shot seat kills an in-flight leg's process group and audits it as
 `llm_attempt` error{`shutdown`}, as the planner does for a turn shutdown cuts; `llm_leg_failing` ignores only `shutdown`
 rows, so a shutdown never opens an incident while `aborted` (a hung `frame_idle`/`turn_timeout` turn, a /kill, a
@@ -152,8 +152,8 @@ row is superseded once (UPDATE takes the merged text, SUPERSEDE the newer candid
 is never dropped). The overlay means more reconcile calls per window (a later fact always has the earlier ones as
 neighbours); accepted, since they run on the flat-rate ticks chain. A stopped tick: episodic consolidate skips its
 remaining merges but still stamps; lesson consolidate leaves its latch unstamped; radar writes no tick (its latch
-already stamped); panel writes nothing and restores its weekly latch; re-verify leaves the cut skill stale. Distill
-checks the stop before each embed too.
+already stamped); panel writes nothing and restores its weekly latch. Distill
+checks the stop before each embed too. (Amended 2026-11-10 by ADR 0035: the skill re-verify tick is deleted; it is no longer among these ticks.)
 
 ### 5. Floors as built
 
@@ -216,7 +216,7 @@ door, not on the wall.
 ### 7. Model roles and tiers
 
 7.1 **Roles.** Paco's rule (2026-11-02): always use the latest model under his subscriptions; tiers are how code
-follows it. Each seat names a role (Fast, Default, Thinking, Reader, Vision, Tiny, Judges, Chair, Reviewer, GrowReview). *Amended 2026-11-10 by ADR 0035:* `grow_review` is the role of the asynchronous skill reviewer — a one-shot seat with no tools and three legs (Kimi high, Gemini pro high, Codex high), none of the Claude family that runs the planner; the legs of a family the item's author used are skipped. Each
+follows it. Each seat names a role (Fast, Default, Thinking, Reader, Vision, Tiny, Judges, Chair, Reviewer, GrowReview). *Amended 2026-11-10 by ADR 0035:* `grow_review` is the role of the asynchronous skill reviewer — a one-shot seat with no tools and three legs (two in the static rollback list: Kimi high, Gemini pro high, Codex high), none of the Claude family that runs the planner; the legs of a family the item's author used are skipped. Each
 role is a code-owned list of `{tier, effort}` legs in `src/omp/model-roles.ts`; a leg resolves to its tier's adopted
 head, then its previous adopted head. The seven `HOUGE_OMP_*` chain variables are retired: a set value is ignored and
 named once in a boot warning. Model names change with the catalog, without an ADR amendment.

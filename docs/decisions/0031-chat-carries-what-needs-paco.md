@@ -66,7 +66,7 @@ in ledger rows but nothing read it back in plain words.
   card returns (a re-tap restores it).
 
 Amended 2026-11-10 by ADR 0035 (grow zone, signed by Paco 2026-11-10): four incident kinds join `INCIDENT_ROUTE` and one
-topic joins the closed set. `grow_zone_unavailable` (**page**: the zone cannot be written; reading continues) and
+topic joins the closed set. `grow_zone_unavailable` (**page**: the zone cannot be written; reading continues; with subject `apply`, the page says a commit's database half is being retried and writing continues) and
 `grow_publish_failed` (**page**: a finished skill was dropped after repeated write failures) tell Paco what to do or what
 was lost; `grow_seed_failed` (**log**: an exemplar or migrated skill could not be brought in at start-up) and
 `grow_backup_failed` (**log**: the zone's bundle failed this round; retried) are self-checks. The topic `grow_log` is

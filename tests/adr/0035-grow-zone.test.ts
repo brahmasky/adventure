@@ -10,12 +10,13 @@ import { PROTECTED_DIRS } from "../../src/capabilities/self-write-guard.js";
 import { DISARM_FLAGS } from "../../src/config/disarm-posture.js";
 import { compileTaskContract } from "../../src/contracts/task-contract.js";
 import { CARRY_LEVEL, CAUSE_LEVEL } from "../../src/decisions/entries/turn-trust.js";
-import { trustAsk } from "../../src/decisions/trust-ask.js";
+import { effectiveAsk, trustAsk } from "../../src/decisions/trust-ask.js";
 import { PLAIN_TEXT_ENTRIES } from "../../src/omp/bridge-handler.js";
 import { UNTRUSTED_READ_ENTRIES } from "../../src/omp/external-read.js";
 import { RunStore } from "../../src/run/run-store.js";
 import { TurnTrust } from "../../src/decisions/trust.js";
 import { telegramTurnEvent } from "../helpers/events.js";
+import { EXEMPLAR_NAME } from "../../src/grow/seed.js";
 import { growBody, growFields, growSetup, small } from "../helpers/grow.js";
 import { createQueuedTurnRun } from "../helpers/runs.js";
 import { pinOmpEnv, shortTmp } from "../helpers/omp-env.js";
@@ -37,10 +38,34 @@ describe("ADR 0035 G5: the grow machinery is on the protected surface", () => {
   });
 });
 
+describe("ADR 0035 G1: the orchestrator seeds only the exemplar", () => {
+  it("grow-seed/skills holds exactly the exemplar, so every other grow-zone item is Houge's own", () => {
+    const names = readdirSync(join(root, "grow-seed", "skills"), { withFileTypes: true }).filter((d) => !d.name.startsWith(".")).map((d) => d.name);
+    expect(names).toEqual([EXEMPLAR_NAME]);
+  });
+});
+
+describe("ADR 0035 G3: review is an enforced gate", () => {
+  it("a staged item that needs review is not published until a passing review of its exact content exists", async () => {
+    const s = await growSetup();
+    expect((await s.svc.submit(growFields(), { run_id: "run_1", chat_id: "555", level: "clean" })).status).toBe("STAGED");
+    const row = s.store.listGrowStaged("staged")[0]!;
+    expect(await s.svc.publishStaged(row.id)).toBe("not_approved");
+    expect(s.store.getGrowItem("unit-convert")?.state).not.toBe("live");
+  });
+});
+
 describe("ADR 0035 G2: one door into the zone's repository", () => {
   it("has no caller of writeAndCommit / removeAndCommit outside src/grow/ops.ts", () => {
     const callers = walk("src").filter((p) => /\.(?:writeAndCommit|removeAndCommit)\(/.test(readFileSync(join(root, p), "utf8")));
     expect(callers.filter((p) => p !== join("src", "grow", "ops.ts"))).toEqual([]);
+  });
+});
+
+describe("ADR 0035 G5: undo reasons and reviews are append-only", () => {
+  it("no source file deletes or updates a grow_undo_reasons or grow_reviews row, so Houge cannot unsay a reason or a verdict", () => {
+    const hits = walk("src").filter((p) => /(DELETE FROM|UPDATE)\s+grow_(undo_reasons|reviews)\b/.test(readFileSync(join(root, p), "utf8")));
+    expect(hits).toEqual([]);
   });
 });
 
@@ -54,6 +79,13 @@ describe("ADR 0035 G4: the trust rule", () => {
   it("reading a born-untrusted item is an untrusted cause that carries as untrusted", () => {
     expect(CAUSE_LEVEL.grow_read_untrusted).toBe("untrusted");
     expect(CARRY_LEVEL.grow_read_untrusted).toBe("untrusted");
+  });
+  it("grow_submit asks for no trust at any level, but asks after a Jev-rung send-back like every side effect (settleAsk, ADR 0034 2b-R7); grow_read never asks", () => {
+    for (const level of ["clean", "untrusted"] as const) {
+      expect(effectiveAsk(level, false, "grow_submit")).toEqual({ ask: false });
+      expect(effectiveAsk(level, true, "grow_submit")).toMatchObject({ ask: true });
+    }
+    for (const settle of [false, true]) for (const level of ["clean", "untrusted", "hostile"] as const) expect(effectiveAsk(level, settle, "grow_read")).toEqual({ ask: false });
   });
   it("the grow tools take the plain branch: never quarantined as outside reads, their answer reaches the planner as text", () => {
     for (const t of ["grow_submit", "grow_read"] as const) {

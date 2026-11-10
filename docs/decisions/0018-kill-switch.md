@@ -117,9 +117,9 @@ is a bash/zsh variable that fish does not define, and the operator's shell is fi
 ### Amendment 2026-11-10 — grow zone flag (ADR 0035)
 
 Amended 2026-11-10 by [ADR 0035](0035-grow-zone-verification.md). `HOUGE_GROW_ENABLED` is in `DISARM_FLAGS`
-(`src/config/disarm-posture.ts`): `/disarm` forces it to `"false"`, so `grow_submit` answers `grow_disabled` and no new
-skill review is claimed; reading continues. `HOUGE_SKILLS_ENABLED` was already a disarm flag and arms both grow tools
-and the index, so under `/disarm` the index and both tools are off. `HOUGE_SKILL_REVERIFY_ENABLED` is not in the set: the
+(`src/config/disarm-posture.ts`): `/disarm` forces it to `"false"`, so no new submission is accepted and no new review is claimed.
+With only `HOUGE_GROW_ENABLED` off, `grow_submit` answers `grow_disabled` and `grow_read` still works. (`HOUGE_SKILLS_ENABLED` was already a
+disarm flag and arms both grow tools and the index, so under `/disarm` both tools are unarmed.) `HOUGE_SKILL_REVERIFY_ENABLED` is not in the set: the
 weekly skill re-verify tick it covered is deleted. (The flag list in section 3 is the 2026-07 set; the code's
 `DISARM_FLAGS` is the truth and `tests/adr/0035-grow-zone.test.ts` pins this flag's membership.)
 

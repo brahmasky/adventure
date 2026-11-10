@@ -312,7 +312,7 @@ write.
   hostile (a withheld passage, an outside passage withheld unjudged, or one whose judgement was lost, which reaches the
   planner in a "not checked" frame). Jev down, timed out or partial counts as lost. Inside a turn the level only rises.
 - 8.2 **Taps.** Trust only adds taps: untrusted asks before `lesson_write`, `schedule_task` and `self_write_propose`
-  (Amended 2026-11-10 by ADR 0035: `skill_author` is gone; `grow_submit` never asks — it is refused at `hostile` in a preflight before any ask, and at `untrusted` it is staged, reviewed and marked; `grow_read` never asks); hostile also asks for every shell command off a strict read-only list and every write, and redirects
+  (Amended 2026-11-10 by ADR 0035: `skill_author` is gone; `grow_submit` never asks for trust — it is refused at `hostile` in a preflight before any ask, and at `untrusted` it is staged, reviewed and marked; after a Jev-rung send-back it asks like every side effect (`settleAsk`, rule 2.4, 2b-R7); `grow_read` never asks); hostile also asks for every shell command off a strict read-only list and every write, and redirects
   the built-in writers (rule 2.4). The list admits exact flag sets per program, globs only after `--`; device paths ask;
   `wc` is not on it and any word containing `libxo` asks. A trust card pauses the turn's timers for its TTL
   (`HOUGE_TRUST_ASK_TTL_MS`), at most once per turn; under 5 s left is refused. Trust asks count toward the 3-a-day

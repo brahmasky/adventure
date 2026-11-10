@@ -48,7 +48,8 @@ A file belongs in the kernel (`src/`, the full build flow of AGENTS.md) if it ca
 stop Houge running. Otherwise it belongs in the grow zone. Existing TypeScript features stay as built; the rule
 applies forward. The orchestrator writes no grow-zone item except the exemplar in `grow-seed/skills/`.
 
-Conformance: no mechanical test (a placement rule). AGENTS.md carries the wording; the final review of a slice asks
+Conformance: `ADR 0035 G1: the orchestrator seeds only the exemplar` (`grow-seed/skills/` holds exactly the exemplar
+`option-comparison`). The rest of the rule is a placement rule: AGENTS.md carries the wording; the final review of a slice asks
 "was this built in `src/` though it passes the kernel test?"
 
 ### G2. One write door, one read door, the daemon the only writer
@@ -91,7 +92,7 @@ profiles, run with data dir different from the repo so it cannot pass on the rep
   `grow_disabled`, `turn_hostile`, `name_is_exemplar`, `rate_capped` (20 submits per rolling 24 hours), `zone_full`
   (200 items), `busy`, `zone_unavailable`.
 - **Review is an enforced gate.** An item that needs review is reviewed after the turn ends by a one-shot seat on the
-  role `grow_review` (no tools; legs Kimi, Gemini pro, Codex: none is of the Claude family that runs the planner, and
+  role `grow_review` (no tools; three legs, two in the static rollback list: Kimi, Gemini pro, Codex: none is of the Claude family that runs the planner, and
   none draws on the Anthropic pool). The author's families are read at claim time from the run's successful `compose`
   `llm_attempt` rows; a leg whose family is among them is skipped; an unknown family fails closed. The review is a
   persistent queue claimed from the daemon's poll loop (`grow_staged`, `next_attempt_at`), at most one at a time;
@@ -117,20 +118,21 @@ profiles, run with data dir different from the repo so it cannot pass on the rep
   (the zone has one git writer); the request key is the Telegram trigger's, so a redelivery cannot undo twice. Each
   undo steps back one published version. A reason is always stored ("(no reason given)" when none), and every later
   review of that name receives every stored reason.
-- `/changes` shows one line per publish and per undo (topic `grow_log`). No Telegram card, no tap, no push.
+- `/changes` shows one line per publish and per undo (topic `grow_log`). No Telegram card, no trust tap, no push (the send-back ask of G4 is the one exception, and only in that continuation).
 
-Conformance: `ADR 0035 G6: review by size and provenance` (a new skill is staged, never live on submit); the review
-gate itself is pinned by `tests/grow/service.test.ts` (`I1: an unreviewed row is never published and creates no
+Conformance: `ADR 0035 G3: review is an enforced gate` (a publish of a row that needs review and has no passing review is refused);
+`ADR 0035 G6: review by size and provenance` (a new skill is staged, never live on submit); the review
+gate itself is also pinned by `tests/grow/service.test.ts` (`I1: an unreviewed row is never published and creates no
 operation`, `I1: a passing review of superseded content does not approve the newer content`).
 
 ### G4. The trust rule: hostile refused, untrusted reviewed and marked, a marked item taints its reader
 
 - **`hostile` conversation:** `grow_submit` is refused with `turn_hostile` in a preflight that runs before any trust
-  ask. The turn's level is read from its `turn_trust` ledger rows (a carried level is one of them). `grow_submit` is
-  on no ask list, so no card can put a hostile turn's skill live.
+  ask. The turn's level is the live turn's when bound, else its `turn_trust` ledger rows (a carried level is one of them). `grow_submit` is
+  on no trust ask list, so no card can put a hostile turn's skill live.
 - **`untrusted` conversation:** accepted, always `STAGED` (never the small-update path), always reviewed, stored with
-  `origin: untrusted`. There is no tap: ADR 0034 8.2's ask for `skill_author` is gone with the tool, and `grow_submit`
-  never asks at any level.
+  `origin: untrusted`. There is no trust tap: ADR 0034 8.2's ask for `skill_author` is gone with the tool, and `grow_submit`
+  never asks for trust at any level. One ask remains, and it is not about trust: after a Jev-rung send-back it asks like every side effect (`settleAsk`, ADR 0034 2.4, 2b-R7), because it is not on the read-only list (`effectiveAsk`, `src/decisions/trust-ask.ts`). `grow_read` never asks, not even then.
 - **`clean` conversation:** `origin: clean`.
 - **The mark is per name.** It is kept in its own table, so a removed item, a failed submission or a row in flight
   cannot lose it. A name's mark survives every later submit, pending or live, whatever level it comes from. Only Paco
@@ -143,9 +145,9 @@ operation`, `I1: a passing review of superseded content does not approve the new
   wall or judged-read branches.
 - The skills index is part of the system prompt (G2's read door's companion): one line per live item, `name —
   description`, alphabetical, at most 40 lines and 4,000 chars, plus two fixed sentences. Alphabetical order keeps the
-  prompt stable: the planner restarts only when the set of live items changes, never when one is used.
+  prompt stable: the planner restarts only when the index text changes (an item added, removed or re-described, or the door switching), never when one is used.
 
-Conformance: `ADR 0035 G4: the trust rule` (`grow_submit` never asks at untrusted; `grow_read` never asks at any
+Conformance: `ADR 0035 G4: the trust rule` (`grow_submit` never asks for trust at untrusted, and asks after a send-back;  `grow_read` never asks at any
 level; reading a born-untrusted item is an untrusted cause that carries as untrusted; the grow tools take the plain
 branch); `ADR 0035 G4 clause a: a hostile turn's grow_submit is refused in the preflight` (a bound getter, and the
 ledger's `carried_hostile` with none bound); `ADR 0035: index stable order`; `tests/decisions/trust-ask.test.ts` (the ADR 0034 8.2
@@ -164,7 +166,8 @@ trust table, updated in the same commit as the rule).
   Houge has no tool that reaches the table.
 
 Conformance: `ADR 0035 G5: the grow machinery is on the protected surface` (`src/grow` in `PROTECTED_DIRS`;
-`HOUGE_GROW_ENABLED` in `DISARM_FLAGS`).
+`HOUGE_GROW_ENABLED` in `DISARM_FLAGS`); `ADR 0035 G5: undo reasons and reviews are append-only` (no source file deletes or
+updates a `grow_undo_reasons` or `grow_reviews` row).
 
 ### G6. What is reviewed is decided by code
 
@@ -175,7 +178,7 @@ Conformance: `ADR 0035 G5: the grow machinery is on the protected surface` (`src
   reviewed.
 - A marked (born-untrusted) item is reviewed on every change, however small.
 - The reviewer's input passes through the store's secret redaction (`redactForImprove`) and frames all of it as data:
-  the item, the diff against the live version, the exemplar, the index of live items and every stored undo reason of
+  the item, the live version's body, the exemplar, the index of live items and every stored undo reason of
   that name.
 
 Conformance: `ADR 0035 G6: review by size and provenance` (a new skill is staged; a small edit of a live clean skill is
@@ -198,11 +201,12 @@ test lives in the G4 describe block and names G7).
   Its effect changes (ADR 0034 10.3–10.5): a rule-rung recurrence, or an accepted `skill` proposal, records a grow hint
   (one `grow_hints` row, keyed once per recurrence, plus a `hint` row in `grow_events`). The hint reaches the planner as
   a code-built `[context]` line in that chat's next turn: `grow: a task of kind <category> keeps recurring; consider
-  grow_submit`. At most three hints per rolling 24 hours. The planner decides. `improvement_jobs` and
+  grow_submit`. At most three recurrence hints per rolling 24 hours; Paco's skill Accept is not capped. The planner decides. `improvement_jobs` and
   `skill_reverify_state` stay as tables with no reader or writer.
-  Conformance: `ADR 0035 / ADR 0034 10.4: recurrence gives a hint, never a job` (the improve tick and the improvement
+  Conformance: `ADR 0035 / ADR 0034 §10.4: recurrence gives a hint, never a job` (the improve tick and the improvement
   taps start no skill job and record a grow hint; a second test, `no source file inserts an improvement job`, is
   `it.todo` until Task 13d switches it on).
+- **ADR 0013 restated, not changed.** Code owns the gates (the checks, the review gate, refuse and publish); the model now also owns the grow zone's content.
 - **Skills leave the prompt as bodies.** The composer injects the index only (ADR 0032 4.2). Conformance:
   `ADR 0035: skills leave the prompt`, `it.todo` until Task 13d switches it on (no source file folds skill bodies
   into a prompt).
