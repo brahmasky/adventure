@@ -1,10 +1,12 @@
 import { randomUUID } from "node:crypto";
+import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { contentHash, renderSkillFile, type GrowFields } from "../../src/grow/checks.js";
+import { EXEMPLAR_NAME, seedExemplars } from "../../src/grow/seed.js";
 import { GrowService, trustItem } from "../../src/grow/service.js";
 import { opMessage } from "../../src/grow/ops.js";
 import { GrowZoneError } from "../../src/grow/zone.js";
-import type { GrowOpRow, NotificationQueueResult, RunStore } from "../../src/run/run-store.js";
+import { RunStore, type GrowOpRow, type NotificationQueueResult } from "../../src/run/run-store.js";
 import { blockWrite, CLEAN, commitCount, countRows, growBody, growFields, growSetup, outboxTexts, PASS, small } from "../helpers/grow.js";
 
 afterEach(() => { vi.restoreAllMocks(); });
@@ -488,6 +490,25 @@ describe("F. sync, index, notes", () => {
     expect(await s.svc.seed(next, "exemplar", "seed")).toBe("published");
     expect(s.store.getGrowItem(ex.name)).toMatchObject({ state: "live", origin: "exemplar", content_hash: contentHash(next) });
     expect(await s.zone.readHead(ex.name)).toBe(renderSkillFile(next, "exemplar"));
+  });
+
+  it("a fresh database over a zone that holds the exemplar: after the boot order the exemplar is live, unmarked and reads clean", async () => {
+    const s = await growSetup();
+    const seedDir = join(import.meta.dirname, "..", "..", "grow-seed");
+    expect((await seedExemplars({ store: s.store, svc: s.svc, seedDir, now: s.now() })).seeded).toEqual([EXEMPLAR_NAME]);
+    const store = RunStore.openInMemory();
+    try {
+      const svc = new GrowService({ store, zone: s.zone, env: {}, now: s.now });
+      // the daemon's boot order: ensure, reconcile, sync (the exemplar is an orphan to a database that never saw it), seed
+      expect(await svc.ensureZone()).toBe(true);
+      await svc.reconcile(true);
+      expect(await svc.syncWithHead()).toMatchObject({ orphans: 1 });
+      expect((await seedExemplars({ store, svc, seedDir, now: s.now() })).failed).toEqual([]);
+      expect(store.getGrowItem(EXEMPLAR_NAME)).toMatchObject({ state: "live", origin: "exemplar" });
+      expect(store.isGrowMarked(EXEMPLAR_NAME)).toBe(false);
+      expect(await svc.read(EXEMPLAR_NAME, { run_id: "r1" })).toMatchObject({ ok: true, tainted: false });
+      expect(svc.indexBlock()).toContain(`- ${EXEMPLAR_NAME} — ${store.getGrowItem(EXEMPLAR_NAME)!.description}`);
+    } finally { store.close(); }
   });
 
   it("the index is alphabetical and byte-identical after a read", async () => {

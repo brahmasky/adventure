@@ -93,6 +93,9 @@ export function applyPublish(d: OpDeps, op: GrowOpRow, commitId: string): void {
   const updated = store.getGrowItem(op.name)?.state === "live";
   const staged = op.staged_id === null ? undefined : store.getGrowStaged(op.staged_id);
   store.upsertGrowItem({ name: op.name, state: "live", origin: originOf(d, op), description: f.description, example: f.example, head_commit: commitId, content_hash: contentHash(f), body_hash: bodyHash(f) }, now);
+  // An exemplar is the orchestrator's (G1), never outside content: a mark a fresh database's HEAD sync set on it (an
+  // orphan to that database) is cleared with the publish that makes it the exemplar again.
+  if (op.source === "seed") store.unmarkGrowName(op.name);
   store.insertGrowVersion({ name: op.name, op_id: op.id, commit_id: commitId, content_hash: contentHash(f), fields_json: op.target_json, at: now });
   if (op.staged_id !== null) store.deleteGrowStaged(op.staged_id);
   store.appendGrowEvent({ at: now, run_id: staged?.run_id ?? null, chat_id: staged?.chat_id ?? null, name: op.name, action: "publish", result: updated ? "updated" : "added", code: null, reviewer_model: null, commit_id: commitId });
