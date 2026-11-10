@@ -14,7 +14,8 @@ export interface OpDeps {
   onIncident: (kind: "grow_publish_failed") => void;
   /** The work tree could not be put back to HEAD: every later write must stop (the service latches its door). */
   onDirty: () => void;
-  onApplied: (opId: string) => void;
+  /** Effects applied and committed; given the operation so the callback never has to read the store again. */
+  onApplied: (op: GrowOpRow) => void;
   /** The commit exists but its effects could not be recorded: the operation stays pending. */
   onApplyFailed: (opId: string) => void;
 }
@@ -74,7 +75,7 @@ function applyOnce(d: OpDeps, op: GrowOpRow, commitId: string): void {
       if (op.kind === "undo") applyUndo(d, op, commitId); else applyPublish(d, op, commitId);
     });
   } catch (e) { d.onApplyFailed(op.id); throw e; }
-  d.onApplied(op.id);
+  d.onApplied(op);
 }
 
 async function writeOp(d: OpDeps, op: GrowOpRow): Promise<string> {

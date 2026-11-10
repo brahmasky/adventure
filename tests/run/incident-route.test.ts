@@ -41,7 +41,7 @@ describe("routes", () => {
   });
   it("every other table row pages, and the table size is pinned (a flipped, added or removed row fails)", () => {
     const keys = Object.keys(INCIDENT_ROUTE);
-    // 59 rows, 36 pages: mail_auth_lost, mail_poll_failing and mail_jev_failing (spec 2026-11-09 §7) are the newest pages
+    // 63 rows, 38 pages: grow_zone_unavailable and grow_publish_failed (grow zone 1a) are the newest pages
     expect(keys).toHaveLength(63);
     const notPage = new Set([...CARD_KINDS, ...LOG_KINDS]);
     const pages = keys.filter((k) => !notPage.has(k));

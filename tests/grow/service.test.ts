@@ -213,6 +213,30 @@ describe("A. the door and the review gate", () => {
     expect(countRows(store, "grow_ops")).toBe(0);
   });
 
+  it("the rate cap is a rolling 24 hours: a submit older than that does not count", async () => {
+    const { svc, store } = await growSetup();
+    store.appendGrowEvent({ at: "2026-11-09T09:00:00.000Z", run_id: "old", chat_id: "555", name: "old-skill", action: "submit", result: "accepted", code: null, reviewer_model: null, commit_id: null });
+    for (let i = 0; i < 20; i++) expect((await svc.submit(growFields({ name: `skill-${i}`, body: growBody(40, ` v${i}`) }), CLEAN)).status).toBe("STAGED");
+    expect(await svc.submit(growFields({ name: "skill-20" }), CLEAN)).toEqual({ status: "REFUSED", code: "rate_capped" });
+  });
+
+  it("the index holds at most 40 item lines and at most 4,000 chars", async () => {
+    const a = await growSetup();
+    const put = (store: RunStore, name: string, description: string) => store.upsertGrowItem({ name, state: "live", origin: "clean", description, example: "an example", head_commit: null, content_hash: name, body_hash: name }, "2026-11-10T09:00:00.000Z");
+    for (let i = 0; i < 45; i++) put(a.store, `s-${String(i).padStart(2, "0")}`, `short description number ${i}`);
+    const lines = a.svc.indexBlock()!.split("\n");
+    expect(lines.filter((l) => l.startsWith("- "))).toHaveLength(40);
+    expect(lines.at(-2)).toBe("- s-39 — short description number 39");
+    const b = await growSetup();
+    for (let i = 0; i < 35; i++) put(b.store, `l-${String(i).padStart(2, "0")}`, `${"long description ".repeat(11)}${i}`);
+    const block = b.svc.indexBlock()!;
+    const items = block.split("\n").filter((l) => l.startsWith("- "));
+    expect(items.length).toBeLessThan(35);
+    expect(block.length - "\nWhen a kind of task repeats or went badly, add or improve a procedure with grow_submit.".length).toBeLessThanOrEqual(4000);
+    const next = `- l-${String(items.length).padStart(2, "0")} — ${"long description ".repeat(11)}${items.length}`;
+    expect(block.length - "\nWhen a kind of task repeats or went badly, add or improve a procedure with grow_submit.".length + 1 + next.length).toBeGreaterThan(4000);
+  });
+
   it("the index is empty-zone aware: the write sentence alone with no items, nothing when writing is off too", async () => {
     const s = await growSetup();
     expect(s.svc.indexBlock()).toContain("grow_submit");
@@ -317,6 +341,10 @@ describe("B. the operation log and crashes", () => {
     expect(s.store.getGrowStaged(id)?.state).toBe("failed");
     expect(await s.svc.submit(OTHER(), CLEAN)).toEqual({ status: "STAGED", name: "other-skill" });
     expect(err.mock.calls.map((c) => c[0])).toEqual(["[grow] op: write_failed", "[grow] op: write_failed"]);
+    // The page is cleared by the next publish that lands.
+    s.svc.recordReview(stagedOf(s.store, "other-skill")[0]!.id, PASS);
+    expect(await s.svc.publishStaged(stagedOf(s.store, "other-skill")[0]!.id)).toBe("published");
+    expect(zoneIncidents(s.store, "grow_publish_failed")).toEqual([]);
   });
 
   it("I4: a database failure after the commit is not counted, pages once, and the next reconcile finishes it without a second commit", async () => {
@@ -355,7 +383,7 @@ describe("B. the operation log and crashes", () => {
     expect(s.svc.disabledReason()).toBeNull();
     expect(zoneIncidents(s.store, "grow_zone_unavailable")).toHaveLength(1);
     expect(await s.svc.submit(OTHER(), CLEAN)).toEqual({ status: "STAGED", name: "other-skill" });
-    expect(err).toHaveBeenCalledWith("[grow] submit: apply_failed");
+    expect(err).toHaveBeenCalledWith("[grow] submit: internal_error");
   });
 
   it("I4: a write call that threw after its commit landed is applied with that commit and not counted", async () => {
@@ -385,8 +413,13 @@ describe("B. the operation log and crashes", () => {
     expect(s.svc.disabledReason()).toBe("zone_unavailable");
     expect(zoneIncidents(s.store, "grow_zone_unavailable")).toHaveLength(1);
     expect(await s.svc.submit(OTHER(), CLEAN)).toEqual({ status: "REFUSED", code: "zone_unavailable" });
+    const g = OTHER();
+    const committed = s.store.insertGrowOp({ id: randomUUID(), kind: "publish", source: "migrate", name: g.name, staged_id: null, request_id: null, target_json: JSON.stringify(g), reason: null, undo_version_id: null, now: s.now() });
+    await s.zone.writeAndCommit(g.name, renderSkillFile(g, "clean"), opMessage(committed, "add"));
     const n = commitCount(s.zone);
     await s.svc.reconcile(true);
+    expect(s.store.getGrowOp(committed.id)?.state).toBe("done");            // finished while latched: its commit existed
+    expect(zoneIncidents(s.store, "grow_zone_unavailable")).toHaveLength(1); // and the latch's page stays open
     expect(await s.svc.publishStaged(id)).toBe("held");
     expect(commitCount(s.zone)).toBe(n);
     expect(s.store.getGrowOp(op.id)?.state).toBe("pending");
@@ -397,6 +430,7 @@ describe("B. the operation log and crashes", () => {
     expect(s.store.getGrowOp(op.id)?.state).toBe("done");
     expect(commitCount(s.zone)).toBe(n + 1);
     expect(err).toHaveBeenCalledWith("[grow] op: write_failed");
+    expect(s.store.getGrowItem(g.name)?.state).toBe("live");
   });
 
   it("a stale operation object cannot act; an uncommitted publish whose row moved on is failed without touching git", async () => {
@@ -434,6 +468,89 @@ describe("B. the operation log and crashes", () => {
     expect(s.store.getGrowOp(op.id)?.state).toBe("failed");
     expect(s.store.doneGrowRequests()).toMatchObject([{ id: req, result: "The grow zone could not be written. See /status." }]);
     expect(err).toHaveBeenCalledWith("[grow] op: write_failed");
+  });
+
+  it("I2: no publish operation is created while another operation of the name is pending", async () => {
+    const s = await growSetup(); const f = growFields();
+    await s.live(f);
+    await s.svc.submit(rewrite(f), CLEAN);
+    const row = stagedOf(s.store, f.name).find((r) => r.state === "staged")!;
+    s.svc.recordReview(row.id, PASS);
+    s.store.insertGrowOp({ id: randomUUID(), kind: "undo", source: "undo", name: f.name, staged_id: null, request_id: null, target_json: null, reason: "x", undo_version_id: s.store.latestGrowVersion(f.name)!.id, now: s.now() });
+    const n = commitCount(s.zone); const ops = countRows(s.store, "grow_ops");
+    expect(await s.svc.publishStaged(row.id)).toBe("held");
+    expect(countRows(s.store, "grow_ops")).toBe(ops);
+    expect(commitCount(s.zone)).toBe(n);
+    expect(s.store.getGrowStaged(row.id)?.state).toBe("approved");
+  });
+
+  it("the apply page stays open while any operation is still pending, even when another one applies", async () => {
+    const s = await growSetup(); const err = errSpy();
+    const a = growFields(); const b = OTHER();
+    for (const f of [a, b]) {
+      const op = await approvedOp(s, f);
+      await s.zone.writeAndCommit(f.name, renderSkillFile(f, "clean"), opMessage(op, "add"));
+    }
+    const orig = s.store.upsertGrowItem.bind(s.store);
+    const up = vi.spyOn(s.store, "upsertGrowItem").mockImplementation((i, now) => { if (i.name === a.name) throw new Error("disk"); orig(i, now); });
+    await s.svc.reconcile(true);
+    expect(s.store.getGrowItem(b.name)?.state).toBe("live");
+    expect(zoneIncidents(s.store, "grow_zone_unavailable")).toHaveLength(1);
+    up.mockRestore();
+    await s.svc.reconcile(true);
+    expect(zoneIncidents(s.store, "grow_zone_unavailable")).toEqual([]);
+    expect(err).toHaveBeenCalledWith("[grow] reconcile: op_failed");
+  });
+
+  it("a database fault anywhere on the submit path is answered without latching the door", async () => {
+    const s = await growSetup(); const err = errSpy();
+    vi.spyOn(s.store, "insertGrowStaged").mockImplementationOnce(() => { throw new Error("disk"); });
+    expect(await s.svc.submit(growFields(), CLEAN)).toEqual({ status: "REFUSED", code: "zone_unavailable" });
+    expect(s.svc.disabledReason()).toBeNull();
+    expect(countRows(s.store, "grow_staged")).toBe(0);
+    expect(await s.svc.submit(growFields(), CLEAN)).toEqual({ status: "STAGED", name: "unit-convert" });
+    expect(await s.svc.submit({ ...growFields({ name: "bad-shape" }), body: undefined as unknown as string }, CLEAN)).toEqual({ status: "REFUSED", code: "zone_unavailable" });
+    expect(err.mock.calls.map((c) => c[0])).toEqual(["[grow] submit: internal_error", "[grow] submit: internal_error"]);
+  });
+
+  it("I5: a clean submit does not re-mark a name Paco trusted while it was waiting", async () => {
+    const s = await growSetup(); const f = growFields();
+    s.store.markGrowName(f.name, s.now());
+    let release!: (v: boolean) => void;
+    const held = vi.spyOn(s.svc as unknown as { needsReview: () => Promise<boolean> }, "needsReview").mockReturnValueOnce(new Promise<boolean>((r) => { release = r; }));
+    const pending = s.svc.submit(f, CLEAN);
+    await vi.waitFor(() => expect(held).toHaveBeenCalledTimes(1));        // the submit is parked inside needsReview
+    expect(countRows(s.store, "grow_staged")).toBe(0);
+    expect(trustItem(s.store, f.name, s.now())).toBe(true);
+    release(true);
+    expect(await pending).toEqual({ status: "STAGED", name: f.name });
+    expect(s.store.isGrowMarked(f.name)).toBe(false);
+    expect(stagedOf(s.store, f.name)[0]).toMatchObject({ origin: "clean" });
+  });
+
+  it("a row staged before an exemplar was seeded under its name is failed when published", async () => {
+    const s = await growSetup(); const f = growFields();
+    await s.svc.submit(f, CLEAN);
+    const id = stagedOf(s.store, f.name)[0]!.id;
+    s.svc.recordReview(id, PASS);
+    expect(await s.svc.seed({ ...f, description: "the exemplar version of unit conversion", body: growBody(40, " exemplar") }, "exemplar", "seed")).toBe("published");
+    expect(await s.svc.publishStaged(id)).toBe("failed");
+    expect(s.store.getGrowStaged(id)).toMatchObject({ state: "failed", code: "name_is_exemplar" });
+    expect(s.store.getGrowItem(f.name)?.origin).toBe("exemplar");
+  });
+
+  it("ensureZone: the planner's call never waits, and queued daemon callers repeat nothing after a success", async () => {
+    const s = await growSetup();
+    const svc = freshSvc(s);
+    let open!: () => void; const gate = new Promise<void>((r) => { open = r; });
+    const holder = svc.withLockWait(() => gate);
+    expect(await svc.ensureZone({ wait: false })).toBe(false);
+    const ensure = vi.spyOn(s.zone, "ensure");
+    const queued = [svc.ensureZone(), svc.ensureZone(), svc.ensureZone()];
+    open(); await holder;
+    expect(await Promise.all(queued)).toEqual([true, true, true]);
+    expect(ensure).toHaveBeenCalledTimes(1);
+    expect(await svc.ensureZone({ wait: false })).toBe(true);
   });
 
   it("I2: a submit first finishes a pending publish of that name whose commit exists, and is refused busy while one cannot be written", async () => {
@@ -511,6 +628,8 @@ describe("B. the operation log and crashes", () => {
     expect(s.store.getGrowOp(op.id)).toMatchObject({ state: "pending", failures: 0 });
     expect(await s.zone.head()).toBe(head);
     expect(err.mock.calls.map((c) => c[0])).toEqual(["[grow] reconcile: op_failed"]);
+    expect(s.svc.disabledReason()).toBe("zone_unavailable");               // a git fault on a daemon path latches the door
+    expect(zoneIncidents(s.store, "grow_zone_unavailable")).toHaveLength(1);
     expect(await s.svc.submit(rewrite(f), CLEAN)).toEqual({ status: "REFUSED", code: "zone_unavailable" });
     expect(s.store.getGrowOp(op.id)).toMatchObject({ state: "pending", failures: 0 });
   });

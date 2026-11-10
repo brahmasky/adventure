@@ -105,27 +105,44 @@ export class GrowService {
       store: this.d.store, zone: this.d.zone, now: this.d.now,
       onIncident: (kind) => this.alert(kind, PUBLISH),
       onDirty: () => this.disable(),
-      onApplied: (opId) => { this.resolve("grow_zone_unavailable", APPLY); if (this.d.store.getGrowOp(opId)?.kind === "publish") this.resolve("grow_publish_failed", PUBLISH); },
+      onApplied: (op) => this.applied(op),
       onApplyFailed: () => this.alert("grow_zone_unavailable", APPLY)
     };
   }
 
+  /** The `apply` page stays open while any operation is still pending; a dropped publish is cleared by the next one that lands. */
+  private applied(op: GrowOpRow): void {
+    let idle: boolean;
+    try { idle = this.d.store.pendingGrowOps().length === 0; } catch { console.error("[grow] incident: resolve_failed"); return; }
+    if (idle) this.resolve("grow_zone_unavailable", APPLY);
+    if (op.kind === "publish") this.resolve("grow_publish_failed", PUBLISH);
+  }
+
+  /** A git fault seen on a daemon path latches the door; any other fault is only logged by the caller. */
+  private latchOnZoneError(e: unknown): void { if (e instanceof GrowZoneError) this.disable(); }
+
   /**
    * True when the zone is usable. Creates the repository only for a zone the database knows nothing about: no item and
    * no pending operation (a pending first operation whose repository vanished is a fault, not a fresh start). Clears the
-   * latch only after `ensure` and `restoreToHead` both succeed.
+   * latch only after `ensure` and `restoreToHead` both succeed. The daemon waits its turn (default); the planner passes
+   * `wait: false` and is told "not ready" while the lock is held or anyone is queued (I10: the planner never waits).
    */
-  async ensureZone(): Promise<boolean> {
+  async ensureZone(opts: { wait?: boolean } = {}): Promise<boolean> {
     if (this.ready && !this.disabled) return true;
-    return this.withLockWait(async () => {
-      const { store, zone } = this.d;
-      const fresh = store.listGrowItems().length === 0 && store.pendingGrowOps().length === 0;
-      try { await zone.ensure(fresh); await zone.restoreToHead(); }
-      catch { console.error("[grow] ensure: zone_unavailable"); this.disable(); return false; }
-      this.ready = true; this.disabled = false;
-      this.resolve("grow_zone_unavailable", ZONE);
-      return true;
-    });
+    if (opts.wait !== false) return this.withLockWait(() => this.ensureLocked());
+    const out = await this.withLock(() => this.ensureLocked());
+    return out === "busy" ? false : out;
+  }
+
+  private async ensureLocked(): Promise<boolean> {
+    if (this.ready && !this.disabled) return true;                   // a caller queued behind a successful one repeats nothing
+    const { store, zone } = this.d;
+    const fresh = store.listGrowItems().length === 0 && store.pendingGrowOps().length === 0;
+    try { await zone.ensure(fresh); await zone.restoreToHead(); }
+    catch { console.error("[grow] ensure: zone_unavailable"); this.disable(); return false; }
+    this.ready = true; this.disabled = false;
+    this.resolve("grow_zone_unavailable", ZONE);
+    return true;
   }
 
   // --- submit ---
@@ -143,30 +160,39 @@ export class GrowService {
     try {
       await this.d.zone.assertToplevel();
       if (!(await this.settle(f.name, true))) return refused("busy");     // I2: one operation in motion per name
-    } catch (e) { return this.zoneFault(e); }
-    const stop = this.admit(f, ctx, now);
-    if (stop) return stop;
-    const existing = store.getGrowItem(f.name);
-    const untrusted = ctx.level === "untrusted" || store.isGrowMarked(f.name);
-    let needs_review: boolean;
-    try { needs_review = await this.needsReview(f, existing?.state === "live", untrusted); } catch (e) { return this.zoneFault(e); }
-    const id = store.inTransaction(() => {
-      if (untrusted) store.markGrowName(f.name, now);
-      const newId = store.insertGrowStaged({ name: f.name, run_id: ctx.run_id, chat_id: ctx.chat_id, origin: untrusted ? "untrusted" : "clean", fields_json: JSON.stringify(f), content_hash: contentHash(f), needs_review, now });
+      const stop = this.admit(f, ctx, now);
+      if (stop) return stop;
+      const existing = store.getGrowItem(f.name);
+      const needs_review = await this.needsReview(f, existing?.state === "live", ctx.level === "untrusted" || store.isGrowMarked(f.name));
+      const id = this.stage(f, ctx, needs_review, now);
+      return needs_review ? { status: "STAGED", name: f.name } : await this.publishNow(id, f.name);
+    } catch (e) { return this.submitFault(e); }
+  }
+
+  /**
+   * One transaction. Only an untrusted turn marks the name; the row's origin reads the mark here, inside the
+   * transaction, so a `trustItem` that landed while the submit awaited is never undone by it (I5).
+   */
+  private stage(f: GrowFields, ctx: SubmitCtx, needs_review: boolean, now: string): number {
+    const { store } = this.d;
+    return store.inTransaction(() => {
+      if (ctx.level === "untrusted") store.markGrowName(f.name, now);
+      const origin = store.isGrowMarked(f.name) ? "untrusted" : "clean";
+      const newId = store.insertGrowStaged({ name: f.name, run_id: ctx.run_id, chat_id: ctx.chat_id, origin, fields_json: JSON.stringify(f), content_hash: contentHash(f), needs_review, now });
       store.supersedeGrowStaged(f.name, newId, "superseded", now);
       if (!needs_review) store.patchGrowStaged(newId, { state: "approved" }, now);   // I3: a row needing no review is recoverable as approved
       return newId;
     });
-    return needs_review ? { status: "STAGED", name: f.name } : this.publishNow(id, f.name);
   }
 
   /**
-   * A fault on the submit path is answered, never thrown at the planner. Only a zone (git) fault latches the door; a
-   * database fault after a commit is already paged by `onApplyFailed` and must not shut the door for every name.
+   * Any fault on the submit path is answered, never thrown at the planner. Only a zone (git) fault latches the door; a
+   * database fault (a post-commit apply is already paged by `onApplyFailed`) or a malformed field object must not shut
+   * the door for every name.
    */
-  private zoneFault(e: unknown): SubmitResult {
+  private submitFault(e: unknown): SubmitResult {
     const git = e instanceof GrowZoneError;
-    console.error(git ? "[grow] submit: zone_unavailable" : "[grow] submit: apply_failed");
+    console.error(git ? "[grow] submit: zone_unavailable" : "[grow] submit: internal_error");
     if (git) this.disable();
     return refused("zone_unavailable");
   }
@@ -219,7 +245,9 @@ export class GrowService {
   }
 
   async publishStaged(id: number): Promise<PublishOutcome> {
-    return this.withLockWait(() => this.publishLocked(id, true));
+    return this.withLockWait(async () => {
+      try { return await this.publishLocked(id, true); } catch (e) { this.latchOnZoneError(e); throw e; }
+    });
   }
 
   private async publishLocked(id: number, commit: boolean): Promise<PublishOutcome> {
@@ -231,12 +259,15 @@ export class GrowService {
     return out === "done" ? "published" : out;
   }
 
-  /** I1 + I6: the operation exists only for an approved row that still passes the cap and the duplicate rule. */
+  /**
+   * I1 + I6: the operation exists only for an approved row that still passes the cap, the duplicate and the exemplar
+   * rule. I2: while another operation of the name is pending, nothing is created (`held`).
+   */
   private createPublishOp(row: GrowStagedRow, commit: boolean): GrowOpRow | PublishOutcome {
     const { store } = this.d; const now = this.d.now();
     if (row.state !== "approved") return row.state === "staged" ? "not_approved" : "gone";
     if (row.needs_review && !store.getPassingGrowReview(row.id, row.content_hash)) return "not_approved";
-    if (!this.canWrite(commit)) return "held";
+    if (!this.canWrite(commit) || store.pendingGrowOps(row.name).length > 0) return "held";
     const stop = this.revalidate(JSON.parse(row.fields_json) as GrowFields);
     if (stop) { this.failRow(row, stop); return "failed"; }
     return store.inTransaction(() => {
@@ -245,15 +276,16 @@ export class GrowService {
     });
   }
 
-  /** I6 against what is live now: the cap for a new name, and the duplicate rule (the secret scrub ran at submit). */
-  private revalidate(f: GrowFields): "zone_full" | "duplicate" | null {
+  /** I6 against what is live now: the exemplar rule, the cap for a new name, and the duplicate rule (the secret scrub ran at submit). */
+  private revalidate(f: GrowFields): "zone_full" | "duplicate" | "name_is_exemplar" | null {
+    if (this.d.store.getGrowItem(f.name)?.origin === "exemplar") return "name_is_exemplar";
     const live = this.d.store.listGrowItems("live");
     if (!live.some((i) => i.name === f.name) && live.length >= GROW_ITEMS_MAX) return "zone_full";
     const check = checkFields(f, live, (s) => s);
     return !check.ok && check.code === "duplicate" ? "duplicate" : null;
   }
 
-  private failRow(row: GrowStagedRow, code: "zone_full" | "duplicate"): void {
+  private failRow(row: GrowStagedRow, code: "zone_full" | "duplicate" | "name_is_exemplar"): void {
     const { store } = this.d; const now = this.d.now();
     store.inTransaction(() => {
       store.patchGrowStaged(row.id, { state: "failed", code, claimed_at: null }, now);
@@ -270,7 +302,7 @@ export class GrowService {
   /** I3 + I9: finish pending operations, then publish approved rows; with `commit` false nothing is created or committed. */
   async reconcile(commit: boolean): Promise<void> {
     await this.withLockWait(async () => {
-      const logged = (): void => { console.error("[grow] reconcile: op_failed"); };   // a code, never the error's text
+      const logged = (e: unknown): void => { console.error("[grow] reconcile: op_failed"); this.latchOnZoneError(e); };   // a code, never the error's text
       for (const op of this.d.store.pendingGrowOps()) await runOp(this.opDeps(), op, this.canWrite(commit)).catch(logged);
       for (const row of this.d.store.listGrowStaged("approved")) await this.publishLocked(row.id, commit).catch(logged);
     });
@@ -282,7 +314,7 @@ export class GrowService {
     // The operation row carries no origin: the executor derives `exemplar` from source "seed", so the pair must agree.
     if ((origin === "exemplar") !== (source === "seed")) { console.error("[grow] seed: bad_origin"); return "failed"; }
     return this.withLockWait(async () => {
-      try { return await this.seedLocked(f, source); } catch { console.error("[grow] seed: op_failed"); return "failed"; }
+      try { return await this.seedLocked(f, source); } catch (e) { console.error("[grow] seed: op_failed"); this.latchOnZoneError(e); return "failed"; }
     });
   }
 
@@ -303,7 +335,7 @@ export class GrowService {
     if (store.getGrowItem(name)?.state !== "live") return { ok: false, code: "unknown_skill" };
     let f: ReturnType<typeof parseSkillFile>;
     try { f = parseSkillFile((await this.d.zone.readHead(name)) ?? ""); } catch { console.error("[grow] read: zone_unavailable"); return { ok: false, code: "zone_unavailable" }; }
-    if (f === null) return { ok: false, code: "zone_unavailable" };
+    if (f === null) { console.error("[grow] read: unreadable"); return { ok: false, code: "zone_unavailable" }; }
     store.recordGrowUse(name, ctx.run_id, this.d.now());
     return { ok: true, text: `# ${name}\nWhen: ${f.description}\n\n${f.body}`, tainted: store.isGrowMarked(name) };
   }

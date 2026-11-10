@@ -27,6 +27,8 @@ export async function growSetup(env: NodeJS.ProcessEnv = {}) {
     await svc.submit(f, ctx);
     const row = store.listGrowStaged("staged").find((r) => r.name === f.name);
     if (row) { svc.recordReview(row.id, PASS); await svc.publishStaged(row.id); }
+    // A later assertion must never rest on a skill that did not actually go live.
+    if (store.getGrowItem(f.name)?.state !== "live") throw new Error(`live(): ${f.name} did not go live`);
   };
   return { dir, store, zone, svc, live, now };
 }
