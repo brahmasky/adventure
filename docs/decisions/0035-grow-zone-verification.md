@@ -77,7 +77,7 @@ Conformance: `ADR 0035 G1: the orchestrator seeds only the exemplar` (`grow-seed
   `grow_disabled` when `HOUGE_GROW_ENABLED` is off.
 
 Conformance: `ADR 0035 G2: one door into the zone's repository` (no caller of `writeAndCommit` / `removeAndCommit`
-outside `src/grow/ops.ts`); `tests/adr/0032-grow-root-denied.test.ts` (read and write deny by function and in both
+outside `src/grow/ops.ts`); `ADR 0035 G2: nothing in src writes the old skills folder` (no `join(…, "skills")` in `src` outside `src/grow/`); `tests/adr/0032-grow-root-denied.test.ts` (read and write deny by function and in both
 profiles, run with data dir different from the repo so it cannot pass on the repo deny).
 
 ### G3. Staged, then live on checks; no human gate; every live write a commit
@@ -204,11 +204,11 @@ test lives in the G4 describe block and names G7).
   grow_submit`. At most three recurrence hints per rolling 24 hours; Paco's skill Accept is not capped. The planner decides. `improvement_jobs` and
   `skill_reverify_state` stay as tables with no reader or writer.
   Conformance: `ADR 0035 / ADR 0034 §10.4: recurrence gives a hint, never a job` (the improve tick and the improvement
-  taps start no skill job and record a grow hint; a second test, `no source file inserts an improvement job`, is
-  `it.todo` until Task 13d switches it on).
+  taps start no skill job and record a grow hint; a second test, `no source file inserts an improvement job`,
+  finds no `insertImprovementJob(`, `startSkillJob(` or `enqueueFromRecurrence(` in `src` outside `run-store.ts`).
 - **ADR 0013 restated, not changed.** Code owns the gates (the checks, the review gate, refuse and publish); the model now also owns the grow zone's content.
 - **Skills leave the prompt as bodies.** The composer injects the index only (ADR 0032 4.2). Conformance:
-  `ADR 0035: skills leave the prompt`, `it.todo` until Task 13d switches it on (no source file folds skill bodies
+  `ADR 0035: skills leave the prompt` (no `readScopeBlock` or `skillsReader` in `src`, so no source file folds skill bodies
   into a prompt).
 - **Outcomes reach Houge** through a per-chat cursor over `grow_events`: the next turn's `[context]` carries one line per
   outcome (`grow: <name> is live`, `grow: <name> failed review (grow_read it to see why)`), advanced only after the

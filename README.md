@@ -108,7 +108,7 @@ Telegram ──long-poll──▶ houge daemon (launchd; ledger, scheduler, swee
 2. The poll loop hands the run to the chat's `PlannerSupervisor` and goes back to polling. This
    **detached turn** is what lets `/approve`, `/kill` and a second message land while a turn runs.
 3. The supervisor makes sure a planner child is up: omp answers with a version, Seatbelt profiles
-   rendered, system prompt written (identity, discipline, the `ask` lessons, skills), bridge socket
+   rendered, system prompt written (identity, discipline, the `ask` lessons, the skills index), bridge socket
    minted. A child counts as started only after the bridge has served it the tool manifest within
    15 s. `open_session` resumes the chat's transcript. A changed lesson, identity or skill restarts
    the child at the next idle boundary.
@@ -232,8 +232,8 @@ tracked files, so gitignored secrets are absent by construction. Off by default
 
 **Skills (the grow zone).** A skill is a reusable procedure Houge wrote for himself, kept in the grow
 zone and indexed into the planner's prompt; skills are ambient, never invoked by name. The planner
-stages one with `grow_submit`, which runs the formal checks and queues it for review, and reads one
-back with `grow_read`. `/grow` lists them and `/grow undo` removes one
+stages one with `grow_submit`, which runs the formal checks and queues it for review (a small update to a clean live
+skill goes live at once), and reads one back with `grow_read`. `/grow` lists them and `/grow undo` removes one
 ([configuration](docs/reference/configuration.md)).
 
 **Code self-write (Phase 3).** When the fix belongs in Houge's own code, the planner calls
@@ -400,7 +400,8 @@ the planner's tools.
 dist/cli.js                     the CLI and daemon entry
 dist/omp/extension/houge.js     the one extension the planner loads (policy hook + tool stubs)
 dist/omp/shell-wrapper.sh       the bash wrapper (copied; its hash is checked before use)
-dist/omp/tools/*.json           the tool declarations (copied; validated at boot)
+dist/omp/tools/*.json           the tool declarations (copied after the folder is cleared, so a tool
+                                removed from src leaves dist too; validated at boot)
 ```
 
 **Runtime state.** `<data>` is the directory holding `houge.sqlite`. Under it, `omp/` holds the

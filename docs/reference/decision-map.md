@@ -105,7 +105,7 @@ The `memory.kind` golden set has no `fix` items: Jev does not clear 0.85 on `fix
 |---|---|---|
 | Which tool, what input, what to reply | planner model | composes; not a registry entry by design (ADR 0013) |
 | Tool allowed? asks first? | code, then Paco | contract allow-list and approval gates (`tool.policy`, `tool.shell_class`, `tool.path`, `tool.manifest`, `tool.budget`, `approval.bind`); a standing approval can stand in for the tap |
-| `turn.trust` (clean / untrusted / hostile) | code, locked | untrusted: `lesson_write`, `schedule_task`, `self_write_propose`, `skill_author` ask; hostile: every write asks |
+| `turn.trust` (clean / untrusted / hostile) | code, locked | untrusted: `lesson_write`, `schedule_task`, `self_write_propose` ask; hostile: every write asks, and `grow_submit` is refused (`turn_hostile`); reading a marked grow item raises the turn to untrusted (cause `grow_read_untrusted`) |
 | `tool.shell_netread` | code | feeds the trust level |
 | `tool.injection` | rule floor, then Jev | pass / frame / withhold; tighten only (also on omp's built-in `read`, with a whole-text floor if the judge is late) |
 | `turn.settle` | rule, then Jev | send back once, or settle |
@@ -124,7 +124,7 @@ Rungs run left to right; "code rule" is a single deterministic function. Locked 
 | `turn.trust` | max rule (locked) | tool | adds taps (untrusted, hostile) | live, locked |
 | `memory.kind` | Jev `memory_kind` (provisional bar 0.85) → distill → other | Paco | write a lesson and/or fact, an Undo per item; hand a fix or nothing to the planner | live |
 | `turn.settle` | rule (guards incl. `pass_errored`, then claims and todo checks; the delivered reply is audited) → Jev (four questions, per-question provisional bars) → settle | mixed | one bounded send-back through omp's `session_stop`; a Jev send-back also asks on writes for the rest of the turn | live |
-| `improve.route` | rule (stale, stated rule, recurrence, expiry pattern, `review_bad`) → Jev `improve_target` → Tiny pick → nothing | mixed (`pacoWordsOnly: autoApplies`) | code: the skill-authoring job into `_pending`, and a lesson/fact from a correction Paco typed, applied with a `/changes` line; Jev/Tiny: proposals as cards (schedule, tool gap, ladder; lesson/fact from any other correction); knowledge recorded only (R5) | live |
+| `improve.route` | rule (stale, stated rule, recurrence, expiry pattern, `review_bad`) → Jev `improve_target` → Tiny pick → nothing | mixed (`pacoWordsOnly: autoApplies`) | code: a grow hint (a recurrence or an accepted skill proposal gives the planner a `[context]` line to consider `grow_submit`; at most 3 a day), and a lesson/fact from a correction Paco typed, applied with a `/changes` line; Jev/Tiny: proposals as cards (schedule, tool gap, ladder; lesson/fact from any other correction); knowledge recorded only (R5) | live |
 | `tool.shell_class` | code rule | tool | classifies a shell command: plain, external write (asks) or destructive (asks) | live |
 | `tool.path` | code rule | tool | blocks a path the file floor denies | live, locked |
 | `selfwrite.guard` | code rule | tool | blocks a self-write that touches the protected surface | live, locked |

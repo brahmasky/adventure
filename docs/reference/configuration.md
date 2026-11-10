@@ -475,39 +475,31 @@ spec: [Phase 1 spec](../superpowers/specs/2026-06-20-phase1-code-self-diagnose.m
 | `HOUGE_CODEX_TIMEOUT_MS` | `240000` | Wall-clock timeout (ms) for one Codex consult — Codex is slow (minutes). The CapabilityRunner's enforced cap is **derived** as this value + 15000 buffer, so a legitimately-long consult is not killed early. |
 | `HOUGE_CODEX_BIN` | `codex` | The Codex CLI binary name/path. A missing binary maps to a clean error (the consult fails, the run reports it) rather than crashing. |
 
-## Self-evolution (Phase 2a) — ambient skills
+## Self-evolution (Phase 2a) — skills in the grow zone
 
 A **skill** is a reusable *procedure* for a class of task ("how Houge does X well") — distinct
-from a *lesson* (a one-line preference) and from *code*. Skills are hand-authored markdown under
-`skills/<scope>/<name>.md` (`scope` ∈ the composer surfaces: `ask` | `research` | `selfcode` | …),
-loaded by the composer into a run **between discipline and lessons**. They are **ambient — never
-invoked by name**: the ≤cap in-scope skills ride in-prompt, each prefixed by its `when:` hint, and
-Houge self-applies the relevant ones during an ordinary natural-language turn. Skills are prose
-that executes no logic (low-risk, instantly revertible), so they live outside SQLite and outside
-git (`skills/` is gitignored runtime state). A run with **no skills composes byte-identically** to
-the pre-skills prompt. Design: [ADR 0011](../decisions/0011-self-evolution-architecture.md); spec:
-[Phase 2 spec](../superpowers/specs/2026-06-21-phase2-skills.md).
+from a *lesson* (a one-line preference) and from *code*. Skills are prose items in the **grow zone**
+([ADR 0035](../decisions/0035-grow-zone-verification.md); [spec](../superpowers/specs/2026-11-10-grow-zone-verification-design.md)):
+Houge's own local git repository, `skills/<name>/SKILL.md` per item, never pushed. They are **ambient —
+never invoked by name**: the system prompt carries an **index** (one line per live item, `name —
+description`, alphabetical, at most 40 lines and 4,000 characters), and the planner reads a body with
+`grow_read` when it judges the skill relevant. A skill is prose that executes no logic.
 
-Skill file format (frontmatter is the source of truth; `skills/REGISTRY.md` is a generated view):
-
-```markdown
----
-name: cross-check-figures
-scope: research
-when: comparing numbers across multiple sources   # trigger hint; Houge self-applies
-anchors:                                           # world-fact assertions (Gate B, 2c)
-  - a part never exceeds its whole
-  - units are converted before comparison
-version: 2
-last_verified: 2026-06-21
-origin: refined                                    # commanded | learned | refined
----
-
-<the numbered procedure Houge follows for this class of task>
-```
-
-A malformed or missing skill file is **skipped, never throws** — a bad skill weakens an answer at
-most, it can never break a turn. Use `/grow` to view the skills.
+The planner writes through one door, `grow_submit({ name, description, example, body, anchors? })`, and
+only the daemon commits to the repository. A submit runs the formal checks in milliseconds (field rules,
+a secret scan, no long code block, no near-copy of a live item). A new item, a large change, a change to
+an item that was ever undone and any change to an item marked "from outside content" is `STAGED` and
+**reviewed after the turn by the `grow_review` seat** (a different model family from the author's;
+[Model roles](#model-roles)) before it goes live; a small update (at most 20 changed lines and 25% of the
+body) to a clean live item goes live at once. Every live write is a commit; there is no Paco tap.
+`grow_submit` is refused in a `hostile` conversation (`turn_hostile`), and a schedule-born run cannot call
+it. Reading an item marked "from outside content" raises the turn to `untrusted`
+(turn trust, [Decision ladder](#decision-ladder-adr-0034)). Paco's controls are `/grow`, `/grow undo <name> [reason]` and `/grow trust <name>`
+(and `houge grow list | show | check | log | undo | trust | adopt`); `/changes` has one line per publish
+and per undo. A recurring kind of request, or an accepted skill proposal, gives the planner a hint
+(`grow: a task of kind <category> keeps recurring; consider grow_submit`), at most three recurrence hints
+per rolling 24 hours (see [Decision ladder](#decision-ladder-adr-0034)). The composer injects the index
+only, never a body (ADR 0032 4.2).
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
@@ -515,28 +507,8 @@ most, it can never break a turn. Use `/grow` to view the skills.
 | `HOUGE_GROW_ENABLED` | `on` | Switch for writes to the grow zone (ADR 0035). Only `0`/`false`/`no`/`off` disable it: `grow_submit` then answers `grow_disabled` and the index drops its sentence about writing; the index and `grow_read` keep working. In `DISARM_FLAGS`. |
 | `HOUGE_GROW_DIR` | `~/Library/Application Support/houge/grow` | The grow zone: Houge's own local git repository of skills, outside the code checkout and never pushed. An override is ignored, and the default used, when it is not absolute, is fewer than three path segments deep, is the home directory or an ancestor of it, overlaps the code checkout or the data directory in either direction (compared case-insensitively), or is `~/.omp` or inside it. Write-denied to every sandboxed child. |
 
-### Gate B — the anchor verifier (Phase 2c)
-
-Gate B is a **separate, walled-off** verifier that scores an authored skill's *procedure* for
-correctness. It runs a **3-pass ensemble**: each pass independently derives 4–6 procedure-level
-quality criteria from world-knowledge (it is fed **only** the skill's `when:` + procedure body —
-**never** the author's own `anchors:`, so an author can't grade its own homework) and judges
-whether following the procedure satisfies each; the final score is the mean of the passes. A skill
-**passes** when `score ≥ threshold`. The threshold is a *separation* bar, not a high-quality bar —
-good skills score modestly; the gate works on the good/bad gap (the validating spike cleanly split
-good skills 0.28–0.89 from broken ones ≤0.06).
-
-**Advisory vs blocking by origin (D5):**
-- **Commanded** skills (you asked Houge to write one) → **advisory**: written regardless; the score
-  is stamped into the frontmatter (`score`, `last_verified`) and shown in the report, with a `⚠ low
-  score` note when below threshold.
-- **Auto-authored** skills (promoted from a recurring-procedure correction) → **blocking**: kept
-  only if Gate B passes; otherwise **guided-refine ≤ `HOUGE_SKILL_REFINE_PASSES`**, then if still
-  failing the draft is **parked** in `skills/_pending/` (inert — never applied) and a lightest-form
-  lesson is saved. Every auto-author is surfaced in a report (pass **or** blocked) — nothing silent.
-
-A Gate B parse failure / LLM error **never** blocks a turn: it is treated as *unscored* and falls
-back to an advisory write with a noted error (only a real **low score** blocks, never an error).
+The zone is backed up beside the DB snapshots (`<snapshot>.grow.bundle`); the grow root and the backup
+folder are read- and write-denied to every sandboxed child.
 
 ## Self-evolution (Phase 3) — code self-write
 
@@ -613,7 +585,7 @@ panel judges, the self-write reviewer's fallback legs) recorded nothing (defect 
 Scopes: a run (`run_id`) or a run-less correlation — `tick:episodic_distill`,
 `tick:episodic_consolidate`, `tick:lesson_consolidate`, `tick:idea_radar`, `tick:idea_panel`,
 `cli:lessons-consolidate`, `cli:radar`, `cli:radar-panel`,
-`rating:attribution`, `gate:b` (skill Gate B verify). Run-less rows read back with `run_id`
+`rating:attribution`, `grow_review:<staged id>:<attempt>:<time>` (a grow review claim). Run-less rows read back with `run_id`
 absent, not null. Payload fields:
 
 | Field | Required | Notes |
@@ -716,7 +688,7 @@ a turn runs (detached turns).
 | `/schedule` | control | List this chat's scheduled tasks (id · spec · next fire · goal; `⚠ failed` rows shown so they can be cleared). |
 | `/schedule cancel <id>` | control | Cancel a schedule (reversible state flip, never deleted; failed rows cancellable too). Chat-scoped — other chats' ids read as not-found. |
 | `/kill [reason]` | safety | **Durable kill switch** (ADR 0018): aborts every chat's omp planner, writes the `houge.kill` tombstone, acks with the revival steps, stops the daemon. launchd relaunches into a PARKED process (no polling, no runs) until the file is manually deleted. Unforgeable — slash-only + allowlist + no-forwards; exempt from the command rate limit. |
-| `/disarm` | safety | One-command posture: forces `HOUGE_SELFWRITE_ENABLED` / `HOUGE_CODEX_ENABLED` / `HOUGE_SKILLS_ENABLED` / `HOUGE_SCHEDULER_ENABLED` to `false` — live AND across restarts (`houge.disarm` posture file outranks `.env`). Conversation + episodic memory stay on. |
+| `/disarm` | safety | One-command posture: forces `HOUGE_SELFWRITE_ENABLED` / `HOUGE_CODEX_ENABLED` / `HOUGE_SKILLS_ENABLED` / `HOUGE_GROW_ENABLED` / `HOUGE_SCHEDULER_ENABLED` (and the rest of `DISARM_FLAGS` in `src/config/disarm-posture.ts`) to `false` — live AND across restarts (`houge.disarm` posture file outranks `.env`). Conversation + episodic memory stay on. |
 | `/rearm` | safety | Delete the disarm posture; flags re-apply from `.env` on the **next restart** (the ack says how). |
 
 ## Notification routing (ADR 0031)
@@ -1153,7 +1125,7 @@ decided by a ladder of deciders (code rule → Jev → model → Paco) and recor
 |----------|---------|---------|
 | `HOUGE_IMPROVE_AT` | `21:00` | Local time (`HH:MM`, in `HOUGE_DISPLAY_TZ`) of the daily improvement tick (`improve.route`). No `off`: `HOUGE_IMPROVE_ENABLED=false` is the switch; a typo keeps 21:00. `HOUGE_DECISION_DIGEST_AT` is retired (named once at boot if still set; delete the `.env` line). |
 | `HOUGE_IMPROVE_ENABLED` | on | Switch for the daily improvement tick (`improve.route`). Only the exact word `false` (any case) turns it off; unset, empty, `0`, `off` and any typo keep it on, so a typo never silences the loop. Read live at every tick, and in `DISARM_FLAGS`: `/disarm` forces it to `false` in the running process. Off = the tick does nothing at all (no inbox mirror, no seat or Jev call, no proposal, no job, no latch row, no ledger event), logs one line per local date, and `/status` says `Improvement (7 d): … tick off`. Cards already sent, Undo and the ledger are unaffected. |
-| `HOUGE_RECURRENCE_COSINE_GATE` | `0.6` | Cosine similarity at or above which two of Paco's turns in one category count as the same request, for the recurrence that queues a skill-authoring job (3 turns, 14 days, category not `other` / `status` / `memory`, text of 20+ characters). Deliberately above the episodic gate 0.42: on the last 14 days (P2) 0.42 clustered 15 short `other` turns, 0.5 gave four clusters, 0.6 one. A float from 0 to 1; anything else uses the default. Read per tick. |
+| `HOUGE_RECURRENCE_COSINE_GATE` | `0.6` | Cosine similarity at or above which two of Paco's turns in one category count as the same request, for the recurrence that gives the planner a grow hint (3 turns, 14 days, category not `other` / `status` / `memory`, text of 20+ characters). Deliberately above the episodic gate 0.42: on the last 14 days (P2) 0.42 clustered 15 short `other` turns, 0.5 gave four clusters, 0.6 one. A float from 0 to 1; anything else uses the default. Read per tick. |
 | `HOUGE_TRUST_ASK_TTL_MS` | `300000` (5 min) | How long a trust card (an approval asked only because the turn read outside content, spec §7.2) waits for Paco, and the most a turn's trust cards together may pause its deadline and frame watchdog. A positive integer up to 1 800 000; anything else uses the default. Read per call; no restart needed. |
 
 The injection judge, turn trust, the golden set and the noise band have no switch (R13). The noise band has no variable: its values are reviewed rows in `src/decisions/noise-band.ts`.
@@ -1168,17 +1140,16 @@ the outbox is sent without its buttons (the old adapter ignores `button_rows`), 
 
 **The improvement tick** (`improve.route`) runs once per local date at `HOUGE_IMPROVE_AT`. It reads the inbox, mirrors new `decision_outcomes` rows into it, groups, decides and
 commits one transaction per group. A failing group is isolated (counted `record_failed`, its signals stay unconsumed). At
-most one skill-authoring job starts per tick, up to 3 queue per day, a queued job expires after 3 days. Audit roles:
+most 3 recurrence grow hints are recorded per rolling 24 hours (`IMPROVE_HINTS_PER_DAY`); there is no skill job any more (ADR 0035). Audit roles:
 `improve` (Jev's `improve_target`) and `improve_pick` (the Tiny pick). Ledger events: `improve_tick` (one per pass, with
-its counts), `improvement_job` (each job transition), `improve_signal_skipped` (a producer that could not write an inbox
-row). A tap on a proposal or job card arrives as the `improvement_tap` task event. Tables (additive): `improve_signals`, `improve_ticks`,
-`improve_cursor`, `turn_embeddings`, `improvement_proposals`, `improvement_jobs`, `improvement_taps`. The bar for
+its counts), `improve_signal_skipped` (a producer that could not write an inbox
+row). A tap on a proposal card arrives as the `improvement_tap` task event. Tables (additive): `improve_signals`, `improve_ticks`,
+`improve_cursor`, `turn_embeddings`, `improvement_proposals`, `improvement_taps` (`improvement_jobs` stays for old databases, with no reader or writer). The bar for
 `improve_target` is code (`IMPROVE_BAR_P`, 0.67, set by Paco 2026-10-22 from the sanity run's suggestion); there is no env override. One env var, `HOUGE_IMPROVE_ENABLED` (table above); the
 bounds are code constants: `IMPROVE_SEAT_DEADLINE_MS = 60 000` per seat call, `EMBED_PER_TICK_MAX = 50` embeds per call,
 `IMPROVE_GROUPS_PER_TICK = 40` per local date, a proposal blocks its (target, scope) while it is open and for 14 days after it is dismissed or expired (an `already_known` dismissal never blocks), and a schedule, tool gap, ladder or skill one also after it is accepted or reverted; a lesson or fact draft is skipped only as a near-copy of one reverted on the pair within 14 days (or of an accepted fact), and a near-copy of a lesson accepted within 30 days is the 'lesson did not hold' card (`LESSON_REPEAT_COSINE = 0.6`, its value set by the threshold probe on 2026-11-08; cosine with the tick's embedder; the embedder down defers the group as an outage).
 An outage (Jev or a seat call) leaves a group unconsumed and counts `deferred_outage`. **`/disarm`** (`HOUGE_SKILLS_ENABLED`
-off) holds skill jobs: queued jobs stay queued and a recurrence group that would start one waits. An unreviewed skill offer
-expires after 14 days.
+off) holds grow hints: a recurrence group that would record one waits.
 
 **Tables** (migration `2026-10-12-decision-ladder`, additive): `decisions` (one row per decision that matters:
 `decision_id`, `entry_id`, `entry_version`, `run_id`, `tool_call_id`, `stage`, `rung` (`rule` \| `system_one` \| `model` \|

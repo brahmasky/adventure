@@ -51,7 +51,8 @@ non-executable path, so no test can reach a real binary or spend subscription qu
 
 1. `npm run typecheck` clean, `npm test` green, `npm run build` succeeds. The build is
    `tsc` plus `scripts/copy-omp-assets.mjs`, which copies the files `tsc` does not emit
-   (`src/omp/shell-wrapper.sh` and `src/omp/tools/*.json`) into `dist/omp/`. A new
+   (`src/omp/shell-wrapper.sh` and `src/omp/tools/*.json`) into `dist/omp/`, clearing
+   `dist/omp/tools` first, so removing a tool takes only the `src` delete. A new
    non-TypeScript runtime asset under `src/omp/` must be added to that script.
 2. A **live end-to-end run** demonstrates the user-facing behavior — via Telegram when
    the feature is bot-facing, otherwise a live CLI run (`npm run houge -- …`) against a

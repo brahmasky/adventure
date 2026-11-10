@@ -46,7 +46,9 @@ This file defines domain language for Houge architecture reviews and implementat
 
 **Program**: A reusable task definition in `programs/<name>.md`. It compiles into task contract constraints, required skills, scoring rules, stop conditions, and eval hooks.
 
-**Skill**: Procedural know-how loaded as context for a run. Skills do not secretly define policy.
+**Skill**: A reusable procedure Houge wrote for himself, one prose item in the grow zone. Its name and description sit in the planner's prompt index; the planner reads the body with `grow_read` when it judges it relevant. Skills do not secretly define policy.
+
+**Grow zone**: Houge's own local git repository of skills (ADR 0035), outside the code checkout and never pushed. The planner writes it through `grow_submit` (formal checks, then a review by another model family unless the update is small and the item clean) and reads it through `grow_read`; only the daemon commits. Paco can undo a version (`/grow undo`) and clear a skill's "from outside content" mark (`/grow trust`).
 
 **Memory Artifact**: A durable knowledge item such as a user profile, wiki page, environment guidebook, accepted or activated lesson, or eval checklist.
 
@@ -74,11 +76,11 @@ This file defines domain language for Houge architecture reviews and implementat
 
 **Ladder**: An entry's rungs in order, code first; the first rung that answers decides, and the entry's `fail` verdict stands when none does. On a monotone entry a later rung can only tighten. What a Jev or model verdict may cause depends on what it read: over tool output only a tightening or a proposal, over Paco's own message a reversible, announced effect. The runner decides, then records (`decisions`); recording never changes a decision.
 
-**Ladder move**: A recorded change of who decides an entry (`ladder_moves`), such as a standing approval moving a fingerprint from Paco's tap to a code rule. Only code may make one on its own (standing approvals, skill authoring after recurrence, stated-rule lessons); every loosening is a proposal for Paco's tap; locked entries never move.
+**Ladder move**: A recorded change of who decides an entry (`ladder_moves`), such as a standing approval moving a fingerprint from Paco's tap to a code rule. Only code may make one on its own (standing approvals, grow hints after recurrence, stated-rule lessons); every loosening is a proposal for Paco's tap; locked entries never move.
 
 **Proposal**: A change Houge drafts from an improvement signal and applies on its own (from a correction Paco typed) with a `/changes` line, or offers as one card (lesson, fact, schedule, tool gap or ladder move). One open per (target, scope); it expires after 14 days, a dismissed or expired one blocks the same (target, scope) for 14 days (a dismissal as `already_known` never does), as does an accepted or reverted schedule, tool gap or ladder one, while a lesson or fact is skipped only as a near-copy of one undone there, or of a fact still held (a near-copy of a lesson still held is the 'lesson did not hold' card); a lesson or fact from a correction Paco typed applies on its own, and nothing else is applied until Paco's Accept. An applied lesson, fact or schedule can be undone (`/forget`, `/forget_memory`, or Undo; undoing a lesson or fact reverses its whole change, restoring what its save pruned, and moves the proposal to `reverted`).
 
-**Improvement job**: The one automatic effect of `improve.route`: a skill-authoring job queued after a recurrence (the same kind of request three times in 14 days). It runs on the evolution lane, never as a run, and writes a draft to `_pending` for Paco to promote. A job ends `promoted`, `dismissed`, `failed` or `expired` (an offer Paco left untapped for 14 days); `/disarm` holds queued jobs.
+**Grow hint**: The one automatic effect of `improve.route` for a recurrence (the same kind of request three times in 14 days) or an accepted skill proposal: a `grow_hints` row that reaches the planner as one `[context]` line in that chat's next turn (`consider grow_submit`). At most three recurrence hints per rolling 24 hours; the planner decides whether to write a skill. `/disarm` holds new hints. The old improvement job (a draft in `_pending` for Paco to promote) is gone; its table stays with no reader or writer.
 
 **Trust level**: Clean, untrusted or hostile: what a turn has read so far (`turn.trust`, locked code). It only rises, and it only adds taps.
 
@@ -178,7 +180,7 @@ This file defines domain language for Houge architecture reviews and implementat
 
 **Policy Hook**: The `tool_call` hook in the planner's single extension (`dist/omp/extension/houge.js`). It allowlists tool names, refuses URL-shaped reads, canonicalises paths the way omp resolves them, and asks the bridge to `gate` every built-in file call before omp runs it.
 
-**Seat**: A named LLM role with its own model chain. The planner is the conversational seat; every other seat (reader, photo, ticks, judges, chair, reviewer) is a **one-shot seat**: a tool-less, sessionless, extension-less omp spawn, one per call. Voice transcription (agy-cli) and the self-write writer (codex) are seats outside omp.
+**Seat**: A named LLM role with its own model chain. The planner is the conversational seat; every other seat (reader, photo, ticks, judges, chair, reviewer, grow reviewer) is a **one-shot seat**: a tool-less, sessionless, extension-less omp spawn, one per call. Voice transcription (agy-cli) and the self-write writer (codex) are seats outside omp.
 
 **Tier**: A provider plus an anchored pattern over catalog model ids (`src/omp/model-tiers.ts`), such as `opus@anthropic` or `gemini-pro`. The newest id in the tier is its head, adopted only after a probe call passes; the previous head stays as a fallback. A different family is Paco's call (`/models`), never the tier's.
 
