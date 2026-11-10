@@ -82,7 +82,8 @@ function openView(dbPath) {
       "SELECT event_type, occurred_at, payload_json FROM ledger_events WHERE correlation_id LIKE ? AND occurred_at > ? AND event_type = ? ORDER BY occurred_at",
       like, since, type).map(withPayload),
     typedSince: (type, since) => all("SELECT event_type, occurred_at, payload_json FROM ledger_events WHERE event_type = ? AND occurred_at > ?", type, since).map(withPayload),
-    growStagedSince: (since) => all("SELECT name, state FROM grow_staged WHERE created_at > ?", since),
+    // the submit event survives a publish that deletes the staged row, and it is tied to this run
+    growSubmitAccepted: (runId) => all("SELECT name FROM grow_events WHERE action = 'submit' AND result = 'accepted' AND run_id = ?", runId),
     lessonsSince: (since) => all("SELECT id, scope FROM lessons WHERE created_at > ? ORDER BY id", since),
     factCount: (chat) => get("SELECT count(*) AS n FROM episodic_facts WHERE chat_id = ?", chat)?.n ?? 0
   };
@@ -242,11 +243,11 @@ const CASES = [
   { n: 24, title: "grow_submit: a skill staged for review", send: () => "Write a skill for converting a recipe's ingredient amounts between metric and US cups. Use grow_submit.",
     prep: ["Check HOUGE_SKILLS_ENABLED is on (the default).",
       "The submitted skill is staged and reviewed after the turn: /grow undo <name> removes it if it goes live and you do not want it."],
-    pass: "grow_submit tool_finished succeeded; a grow_staged row created after the case started; the reply says the skill is staged, not saved",
+    pass: "grow_submit tool_finished succeeded; this run has an accepted grow_events submit row; the reply says the skill is staged, not saved",
     check: (v, [r], c) => [
       [toolRows(v, r, "grow_submit").some((p) => p.status === "succeeded"), "grow_submit tool_finished succeeded"],
-      [v.growStagedSince(c.caseStart).length > 0, "a grow_staged row created since the case started"],
-      [/staged|queued|not live yet/i.test(replyText(v, r)), "the reply reports staged, not saved"]
+      [v.growSubmitAccepted(r).length > 0, "an accepted grow_events submit row for this run (survives the publish)"],
+      [/\bstaged\b|not live yet/i.test(replyText(v, r)) && !/\bnot staged\b/i.test(replyText(v, r)), "the reply reports staged, not saved"]
     ] }
 ];
 
