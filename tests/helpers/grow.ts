@@ -51,3 +51,9 @@ export const blockWrite = (zone: GrowZone, name: string): void => {
   mkdirSync(join(zone.dir, "skills"), { recursive: true });                // `git clean` drops the empty folder
   writeFileSync(join(zone.dir, "skills", name), "blocker");
 };
+
+/** Texts of the outbox rows queued under one idempotency key (a reply to a grow request is keyed `grow:req:<id>`). */
+export const outboxTexts = (store: RunStore, key: string): string[] =>
+  (store as unknown as { db: { prepare(s: string): { all(k: string): Array<{ payload_json: string }> } } }).db
+    .prepare("SELECT payload_json FROM notification_outbox WHERE idempotency_key = ?").all(key)
+    .map((r) => (JSON.parse(r.payload_json) as { text: string }).text);

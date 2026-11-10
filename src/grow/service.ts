@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { openAlertedIncident } from "../run/incident-alert.js";
 import type { RoutedIncidentKind } from "../run/incident-route.js";
-import type { GrowOpRow, GrowStagedRow, RunStore } from "../run/run-store.js";
-import { checkFields, contentHash, fieldScrub, isSmallUpdate, parseSkillFile, type GrowFailCode, type GrowFields } from "./checks.js";
+import type { GrowEventRow, GrowOpRow, GrowStagedRow, NotificationQueueResult, RunStore } from "../run/run-store.js";
+import { bodyHash, checkFields, contentHash, fieldScrub, isSmallUpdate, parseSkillFile, type GrowFailCode, type GrowFields } from "./checks.js";
 import { resolveGrowEnabled } from "./flags.js";
-import { runOp, type OpDeps } from "./ops.js";
+import { failOp, runOp, type OpDeps } from "./ops.js";
 import { GrowZoneError, type GrowZone } from "./zone.js";
 
 /**
@@ -21,6 +21,7 @@ export interface GrowDeps { store: RunStore; zone: GrowZone; env: NodeJS.Process
 export interface SubmitCtx { run_id: string; chat_id: string | null; level: TrustLevelName }
 export interface ReviewRecord { pass: boolean; findings: Array<{ step: string; problem: string }>; reviewer_model: string | null; input_hash: string | null; author_families: string[]; undo_reasons_n: number; code: "review_passed" | "review_failed" | "review_unavailable" }
 export type PublishOutcome = "published" | "retry" | "failed" | "gone" | "not_approved" | "held";
+export type UndoResult = { ok: true; removed: boolean } | { ok: false; code: "unknown_skill" | "is_exemplar" | "zone_unavailable" | "busy" };
 
 export const GROW_SUBMITS_PER_DAY = 20;
 export const GROW_ITEMS_MAX = 200;
@@ -32,6 +33,16 @@ const INDEX_WRITE = "When a kind of task repeats or went badly, add or improve a
 const refused = (code: Extract<SubmitResult, { status: "REFUSED" }>["code"]): SubmitResult => ({ status: "REFUSED", code });
 /** Incident subjects: the latched door, a commit whose effects could not be recorded, a publish that was dropped. */
 const ZONE = "zone"; const APPLY = "apply"; const PUBLISH = "publish";
+const UNDO_TEXT = { unknown_skill: "No live skill of that name. /grow lists them.", is_exemplar: "That one is an exemplar and cannot be undone." } as const;
+const undoneText = (name: string, removed: boolean): string =>
+  removed ? `↩️ ${name} removed. Its next version will be reviewed.` : `↩️ ${name} restored to its previous version. Its next version will be reviewed.`;
+/** Only these mean the reply is in the outbox (I7). */
+const IN_OUTBOX: ReadonlySet<NotificationQueueResult["status"]> = new Set(["queued", "duplicate"]);
+/** Failed rows that say nothing about the submission's content: never "the last failed review", never an outcome line. */
+const NOT_A_FAILURE: ReadonlySet<string> = new Set(["superseded", "undone"]);
+const NOTE_RUNS_MAX = 200;
+/** HEAD sync's events: the event table has no sync action, so they are `publish` events with this code (never an outcome line). */
+const HEAD_SYNC = "head_sync";
 
 /** I5: only Paco clears a mark: unmark, the item and its pending rows become clean, in one transaction. */
 export function trustItem(store: RunStore, name: string, now: string): boolean {
@@ -62,6 +73,8 @@ export class GrowService {
   /** The write door's latch: set when the zone is unusable or its work tree could not be restored; only `ensureZone` clears it. */
   private disabled = false;
   private ready = false;
+  /** Outcome lines handed to a run, by run: advanced into the chat's cursor only when that run commits. */
+  private readonly notes = new Map<string, { chat_id: string; last: number }>();
 
   constructor(private readonly d: GrowDeps) { this.zone = d.zone; }
 
@@ -334,7 +347,189 @@ export class GrowService {
     return (await runOp(this.opDeps(), op, true)) === "done" ? "published" : "failed";
   }
 
-  // --- read side (the minimal versions 4a needs; 4b adds the rest) ---
+
+  // --- undo (I2, I7, I8) ---
+
+  async undo(name: string, reason: string | null, requestId?: number): Promise<UndoResult> {
+    return this.withLockWait(() => this.undoLocked(name, reason, requestId));
+  }
+
+  private async undoLocked(name: string, reason: string | null, requestId?: number): Promise<UndoResult> {
+    const { store } = this.d;
+    if (this.disabled) return { ok: false, code: "zone_unavailable" };   // the latched door creates and writes nothing
+    try {
+      const linked = requestId === undefined ? undefined : store.getGrowOpByRequest(requestId);
+      const op = linked ?? (await this.newUndoOp(name, reason, requestId));
+      if (typeof op === "string") return op === "busy" ? { ok: false, code: "busy" } : { ok: false, code: op };
+      if (op.state === "done") return { ok: true, removed: op.target_json === null };   // a linked request continues ITS operation, never another
+      if (op.state === "failed") return { ok: false, code: "zone_unavailable" };
+      if ((await runOp(this.opDeps(), op, true)) !== "done") return { ok: false, code: "zone_unavailable" };
+      return { ok: true, removed: op.target_json === null };
+    } catch (e) {
+      console.error("[grow] undo: zone_unavailable");
+      this.latchOnZoneError(e);
+      return { ok: false, code: "zone_unavailable" };
+    }
+  }
+
+  /** I8: one step back by the version list (never by git history). A live item with no version rows (adopted) is removed. */
+  private async newUndoOp(name: string, reason: string | null, requestId?: number): Promise<GrowOpRow | "busy" | "unknown_skill" | "is_exemplar"> {
+    const { store } = this.d;
+    if (!(await this.cancelOrSettle(name))) return "busy";
+    const item = store.getGrowItem(name);                                // read after settling: a finished publish may have changed it
+    if (!item || item.state !== "live") return "unknown_skill";
+    if (item.origin === "exemplar") return "is_exemplar";
+    const cur = store.latestGrowVersion(name);
+    const prev = cur ? store.previousGrowVersion(name, cur.id) : undefined;
+    return store.insertGrowOp({ id: randomUUID(), kind: "undo", source: "undo", name, staged_id: null, request_id: requestId ?? null, target_json: prev?.fields_json ?? null,
+      reason: (reason ?? "(no reason given)").slice(0, 500), undo_version_id: cur?.id ?? null, now: this.d.now() });
+  }
+
+  /** I2 for undo: finish a pending publish whose commit exists; cancel one whose commit is positively absent. A git error throws (no cancel). */
+  private async cancelOrSettle(name: string): Promise<boolean> {
+    for (const op of this.d.store.pendingGrowOps(name)) {
+      if (op.kind === "undo") { await runOp(this.opDeps(), op, true); continue; }
+      const out = await runOp(this.opDeps(), op, false);                 // "held" = positively no commit
+      if (out === "held") failOp(this.opDeps(), op, "undone");
+    }
+    return this.d.store.pendingGrowOps(name).length === 0;
+  }
+
+  // --- requests (I7) ---
+
+  /** Runs due undo/adopt requests, then queues the reply of every finished one. Returns how many requests finished. */
+  async runRequests(): Promise<number> {
+    return this.withLockWait(async () => {
+      let finished = 0;
+      for (const req of this.d.store.dueGrowRequests()) if (await this.runRequest(req.id, req.kind, req.name, req.reason)) finished += 1;
+      this.replyFinished();
+      return finished;
+    });
+  }
+
+  /** True when the request left `queued`. A transient undo failure leaves it queued for the next run (its operation is continued). */
+  private async runRequest(id: number, kind: "undo" | "adopt", name: string, reason: string | null): Promise<boolean> {
+    const { store } = this.d;
+    if (kind === "adopt") {
+      try { this.adopt(name, id); return true; } catch { console.error("[grow] requests: adopt_failed"); return false; }
+    }
+    const r = await this.undoLocked(name, reason, id);
+    try {
+      if (r.ok) store.finishGrowRequest(id, undoneText(name, r.removed), this.d.now());   // a no-op when applyUndo already finished it
+      else if (r.code === "unknown_skill" || r.code === "is_exemplar") store.finishGrowRequest(id, UNDO_TEXT[r.code], this.d.now());
+      else return false;
+    } catch { console.error("[grow] requests: finish_failed"); return false; }
+    return true;
+  }
+
+  /** A request becomes `replied` only when its reply is in the outbox; a chat-less one has nobody to tell. */
+  private replyFinished(): void {
+    const { store } = this.d;
+    for (const req of store.doneGrowRequests()) {
+      try {
+        if (!req.chat_id) { store.markGrowRequestReplied(req.id, this.d.now()); continue; }
+        const q = store.enqueueNotification({ topic: "reply", target: { kind: "telegram", chat_id: req.chat_id }, intent_type: "progress",
+          idempotency_key: `grow:req:${req.id}`, correlation_id: `grow:req:${req.id}`, payload: { text: req.result ?? "" } });
+        if (IN_OUTBOX.has(q.status)) store.markGrowRequestReplied(req.id, this.d.now());
+      } catch { console.error("[grow] requests: reply_failed"); }
+    }
+  }
+
+  /** One transaction: an orphan becomes live and untrusted with its name marked; a request is finished with the outcome. */
+  adopt(name: string, requestId?: number): boolean {
+    const { store } = this.d; const now = this.d.now();
+    return store.inTransaction(() => {
+      const adopted = store.getGrowItem(name)?.state === "orphan";
+      if (adopted) {
+        store.setGrowItemState(name, "live", now);
+        store.setGrowItemOrigin(name, "untrusted", now);
+        store.markGrowName(name, now);
+        store.appendGrowEvent({ at: now, run_id: null, chat_id: null, name, action: "adopt", result: "live", code: null, reviewer_model: null, commit_id: null });
+      }
+      if (requestId !== undefined) store.finishGrowRequest(requestId, adopted ? `✅ ${name} adopted; it reads as outside content until you trust it.` : `Nothing to adopt under ${name}.`, now);
+      return adopted;
+    });
+  }
+
+  // --- HEAD sync ---
+
+  /**
+   * Brings the rows in line with what is committed at HEAD. Compares `contentHash`, which leaves the file's `origin:` line
+   * out on purpose: the mark is the truth for origin, so an origin-line difference can never bring back a mark Paco
+   * cleared. A name with a pending operation is skipped: its commit is Houge's own, finished by the next reconcile.
+   */
+  async syncWithHead(): Promise<{ orphans: number; removed: number; changed: number }> {
+    return this.withLockWait(async () => {
+      const counts = { orphans: 0, removed: 0, changed: 0 };
+      try {
+        const head = await this.d.zone.head();
+        const atHead = new Set(await this.d.zone.listHead());
+        const busy = new Set(this.d.store.pendingGrowOps().map((o) => o.name));
+        for (const name of atHead) if (!busy.has(name) && !this.d.store.getGrowItem(name) && (await this.syncOrphan(name, head))) counts.orphans += 1;
+        for (const item of this.d.store.listGrowItems("live")) {
+          if (busy.has(item.name)) continue;
+          if (!atHead.has(item.name)) { this.syncRecord(item.name, "removed", head, () => this.d.store.setGrowItemState(item.name, "removed", this.d.now())); counts.removed += 1; }
+          else if (await this.syncChanged(item.name, item.content_hash, head)) counts.changed += 1;
+        }
+      } catch (e) { console.error("[grow] sync: failed"); this.latchOnZoneError(e); }
+      return counts;
+    });
+  }
+
+  private async headFields(name: string): Promise<GrowFields | null> {
+    const f = parseSkillFile((await this.d.zone.readHead(name)) ?? "");
+    if (f === null) console.error("[grow] sync: unparsable");
+    return f;
+  }
+
+  private async syncOrphan(name: string, head: string): Promise<boolean> {
+    const f = await this.headFields(name);
+    if (!f) return false;
+    this.syncRecord(name, "orphan", head, () => this.writeFromHead(name, f, "orphan", head));
+    return true;
+  }
+
+  private async syncChanged(name: string, hash: string, head: string): Promise<boolean> {
+    const f = await this.headFields(name);
+    if (!f || contentHash(f) === hash) return false;
+    this.syncRecord(name, "changed", head, () => this.writeFromHead(name, f, "live", head));
+    return true;
+  }
+
+  /** Content that did not come through the door: untrusted, and the name is marked. */
+  private writeFromHead(name: string, f: GrowFields, state: "live" | "orphan", head: string): void {
+    const now = this.d.now();
+    this.d.store.upsertGrowItem({ name, state, origin: "untrusted", description: f.description, example: f.example, head_commit: head, content_hash: contentHash(f), body_hash: bodyHash(f) }, now);
+    this.d.store.markGrowName(name, now);
+  }
+
+  private syncRecord(name: string, result: "orphan" | "removed" | "changed", head: string, change: () => void): void {
+    const { store } = this.d;
+    store.inTransaction(() => {
+      change();
+      store.appendGrowEvent({ at: this.d.now(), run_id: null, chat_id: null, name, action: "publish", result, code: HEAD_SYNC, reviewer_model: null, commit_id: head });
+    });
+  }
+
+  // --- outcome lines for the writing chat ---
+
+  /** New outcomes for this chat since its cursor, at most 10. They stay until a run that carried them commits. */
+  contextNotes(chat_id: string, run_id: string): string[] {
+    const events = this.d.store.listGrowEvents({ sinceId: this.d.store.getGrowContextCursor(chat_id), chat_id, actions: ["publish", "review_failed", "hint"], limit: 10 });
+    if (this.notes.size > NOTE_RUNS_MAX) this.notes.clear();
+    const last = events.at(-1);
+    if (last) this.notes.set(run_id, { chat_id, last: last.id });
+    return events.map(noteText).filter((t): t is string => t !== null);
+  }
+
+  commitNotes(run_id: string): void {
+    const n = this.notes.get(run_id);
+    if (!n) return;
+    this.notes.delete(run_id);
+    if (n.last > this.d.store.getGrowContextCursor(n.chat_id)) this.d.store.setGrowContextCursor(n.chat_id, n.last);
+  }
+
+  // --- read side ---
 
   async read(name: string, ctx: { run_id: string }): Promise<{ ok: true; text: string; tainted: boolean } | { ok: false; code: "unknown_skill" | "zone_unavailable" }> {
     const { store } = this.d;
@@ -344,6 +539,16 @@ export class GrowService {
     if (f === null) { console.error("[grow] read: unreadable"); return { ok: false, code: "zone_unavailable" }; }
     store.recordGrowUse(name, ctx.run_id, this.d.now());
     return { ok: true, text: `# ${name}\nWhen: ${f.description}\n\n${f.body}`, tainted: store.isGrowMarked(name) };
+  }
+
+  /** The findings of the last submission of `name` that failed; the text is outside content while the name is marked. */
+  readReview(name: string): { ok: true; text: string; tainted: boolean } | { ok: false; code: "no_review" } {
+    const row = this.d.store.listGrowStaged("failed").filter((r) => r.name === name && !NOT_A_FAILURE.has(r.code ?? "")).at(-1);
+    if (!row) return { ok: false, code: "no_review" };
+    const findings = parseFindings(row.findings_json);
+    const head = `${name}: your last submission failed (${row.code ?? "failed"})`;
+    const text = findings.length === 0 ? `${head}; no findings.` : [`${head}. Findings:`, ...findings.map((x) => `- step ${x.step}: ${x.problem}`)].join("\n");
+    return { ok: true, text, tainted: this.d.store.isGrowMarked(name) };
   }
 
   /** Live items in name order under the line and char caps, plus the write sentence while writing is possible. */
@@ -359,4 +564,20 @@ export class GrowService {
     if (lines.length === 1 && !write) return undefined;
     return (write ? [...lines, INDEX_WRITE] : lines).join("\n");
   }
+}
+
+function parseFindings(json: string | null): Array<{ step: string; problem: string }> {
+  if (!json) return [];
+  try {
+    const v: unknown = JSON.parse(json);
+    return Array.isArray(v) ? v.filter((x): x is { step: string; problem: string } => typeof x?.step === "string" && typeof x?.problem === "string") : [];
+  } catch { console.error("[grow] review: bad_findings"); return []; }
+}
+
+/** One outcome line, or null for an event that is not an outcome of the chat's own writing. */
+function noteText(e: GrowEventRow): string | null {
+  if (e.action === "publish") return e.code === HEAD_SYNC || (e.result !== "added" && e.result !== "updated") ? null : `grow: ${e.name} is live`;
+  if (e.action === "review_failed") return NOT_A_FAILURE.has(e.code ?? "") ? null : `grow: ${e.name} failed review (grow_read it with what "review" to see why)`;
+  if (e.action === "hint") return `grow: a task of kind ${e.code ?? "unknown"} keeps recurring; consider grow_submit`;
+  return null;
 }
