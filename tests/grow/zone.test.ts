@@ -25,6 +25,31 @@ describe("grow zone repository", () => {
     expect(existsSync(join(dir, ".git"))).toBe(false);
   });
 
+  it("never initialises over a non-empty directory, so a later restoreToHead cannot clean away files it never owned", async () => {
+    const dir = join(tmp(), "grow"); mkdirSync(join(dir, "skills", "x"), { recursive: true });
+    writeFileSync(join(dir, "skills", "x", "SKILL.md"), "mine");
+    await expect(new GrowZone(dir).ensure(true)).rejects.toMatchObject({ code: "not_empty" });
+    expect(existsSync(join(dir, ".git"))).toBe(false);
+    expect(readFileSync(join(dir, "skills", "x", "SKILL.md"), "utf8")).toBe("mine");
+  });
+
+  it("does not finish a half-initialised repository that has other files beside it", async () => {
+    const dir = join(tmp(), "grow"); execFileSync("git", ["init", "-q", "-b", "main", dir]);
+    writeFileSync(join(dir, ".git", "config"), CANONICAL_CONFIG);
+    mkdirSync(join(dir, "skills", "x"), { recursive: true }); writeFileSync(join(dir, "skills", "x", "SKILL.md"), "mine");
+    await expect(new GrowZone(dir).ensure(true)).rejects.toMatchObject({ code: "not_empty" });
+    await expect(new GrowZone(dir).restoreToHead()).rejects.toBeInstanceOf(GrowZoneError);
+    expect(readFileSync(join(dir, "skills", "x", "SKILL.md"), "utf8")).toBe("mine");
+  });
+
+  it("initialises an existing empty directory, and finishes a half-initialised one holding only .git and an empty skills folder", async () => {
+    const empty = join(tmp(), "grow"); mkdirSync(empty);
+    await new GrowZone(empty).ensure(true);
+    const half = join(tmp(), "grow"); execFileSync("git", ["init", "-q", "-b", "main", half]); mkdirSync(join(half, "skills"));
+    const z = new GrowZone(half); await z.ensure(true);
+    expect(await z.head()).toMatch(/^[0-9a-f]{40}$/);
+  });
+
   it("refuses to act when its .git is gone, so git discovery can never climb into an enclosing repository", async () => {
     const outer = tmp();
     execFileSync("git", ["init", "-q", outer]);

@@ -4,7 +4,7 @@ import { hardenedGit } from "../run/git-hardened.js";
 import { GROW_LIMITS } from "./checks.js";
 
 export class GrowZoneError extends Error {
-  constructor(readonly code: "not_toplevel" | "git_failed" | "bad_name", options?: { cause?: unknown }) { super(code, options); }
+  constructor(readonly code: "not_toplevel" | "not_empty" | "git_failed" | "bad_name", options?: { cause?: unknown }) { super(code, options); }
 }
 export const skillPath = (name: string): string => `skills/${name}/SKILL.md`;
 const IDENTITY = ["-c", "user.name=Houge", "-c", "user.email=houge@localhost", "-c", "commit.gpgsign=false"];
@@ -36,28 +36,32 @@ export class GrowZone {
   }
 
   /**
-   * Creates the repository only when `allowInit`; a missing `.git` (or an unborn HEAD) otherwise is a fault and
-   * nothing is created.
+   * Creates the repository only when `allowInit`, and only in an absent or empty directory (an empty `skills` folder
+   * aside): a later `restoreToHead` cleans every untracked file, so the zone never adopts files it did not write
+   * (`not_empty`). A missing `.git` (or an unborn HEAD) otherwise is a fault and nothing is created.
    */
   async ensure(allowInit: boolean): Promise<void> {
     const gitDir = join(this.dir, ".git");
     const st = lstatOrNull(gitDir);
     if (st === null) {
       if (!allowInit) throw new GrowZoneError("not_toplevel");
+      if (holdsOtherThan(this.dir, ["skills"])) throw new GrowZoneError("not_empty");   // an empty skills folder is an empty zone that lost its .git
       mkdirSync(this.dir, { recursive: true });
       await this.git(["init", "-q", "-b", "main"]);
       writeFileSync(join(gitDir, "config"), CANONICAL_CONFIG);
     } else if (allowInit && st.isDirectory() && isEmptyRepo(gitDir)) {
+      if (holdsOtherThan(this.dir, [".git", "skills"])) throw new GrowZoneError("not_empty");
       // A crash between `git init` and the config write: nothing is in it, so finishing it loses nothing.
       // Any other `.git` is never rewritten; `assertToplevel` fails closed on its config.
       writeFileSync(join(gitDir, "config"), CANONICAL_CONFIG);
     }
     await this.assertToplevel();
-    mkdirSync(join(this.dir, "skills"), { recursive: true });
     if (!(await this.hasHead())) {
       if (!allowInit || !isEmptyRepo(gitDir)) throw new GrowZoneError("not_toplevel");
+      if (holdsOtherThan(this.dir, [".git", "skills"])) throw new GrowZoneError("not_empty");
       await this.git(["commit", "-q", "--allow-empty", "-m", "grow zone"]);
     }
+    mkdirSync(join(this.dir, "skills"), { recursive: true });
   }
 
   private async hasHead(): Promise<boolean> {
@@ -175,6 +179,16 @@ export function isEmptyRepo(gitDir: string): boolean {
     }
     return true;
   } catch { return false; }
+}
+
+/**
+ * True when `dir` holds any entry outside `allowed`, or an allowed `skills` that is not an empty directory (a crash
+ * after it was made, before the root commit). False when `dir` does not exist; any other read error counts as held.
+ */
+function holdsOtherThan(dir: string, allowed: readonly string[]): boolean {
+  let entries;
+  try { entries = readdirSync(dir, { withFileTypes: true }); } catch (e) { return (e as NodeJS.ErrnoException).code !== "ENOENT"; }
+  return entries.some((e) => !allowed.includes(e.name) || (e.name === "skills" && (!e.isDirectory() || readdirSync(join(dir, e.name)).length > 0)));
 }
 
 /** True when a `.gitattributes` of any type sits anywhere under `dir`; symlinks are not followed, the zone's own `.git` is skipped. */
