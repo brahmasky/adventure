@@ -341,7 +341,8 @@ export class GrowService {
     const { store } = this.d;
     if (!(await this.settle(f.name, true))) return "failed";        // an earlier boot's operation is finished, never duplicated
     const item = store.getGrowItem(f.name);
-    if ((source === "migrate" && item) || item?.content_hash === contentHash(f)) return "unchanged";
+    // A removed exemplar is restored: only a live item with the same content is unchanged (a migration never restores).
+    if ((source === "migrate" && item) || (item?.state === "live" && item.content_hash === contentHash(f))) return "unchanged";
     if (this.disabled) return "failed";
     const op = store.insertGrowOp({ id: randomUUID(), kind: "publish", source, name: f.name, staged_id: null, request_id: null, target_json: JSON.stringify(f), reason: null, undo_version_id: null, now: this.d.now() });
     return (await runOp(this.opDeps(), op, true)) === "done" ? "published" : "failed";
@@ -375,7 +376,9 @@ export class GrowService {
   /** I8: one step back by the version list (never by git history). A live item with no version rows (adopted) is removed. */
   private async newUndoOp(name: string, reason: string | null, requestId?: number): Promise<GrowOpRow | "busy" | "unknown_skill" | "is_exemplar"> {
     const { store } = this.d;
-    if (!(await this.cancelOrSettle(name))) return "busy";
+    const settled = await this.cancelOrSettle(name);
+    if (settled === false) return "busy";
+    if (settled !== true) return settled;                                // a pending undo just finished: that was the step back
     const item = store.getGrowItem(name);                                // read after settling: a finished publish may have changed it
     if (!item || item.state !== "live") return "unknown_skill";
     if (item.origin === "exemplar") return "is_exemplar";
@@ -385,14 +388,20 @@ export class GrowService {
       reason: (reason ?? "(no reason given)").slice(0, 500), undo_version_id: cur?.id ?? null, now: this.d.now() });
   }
 
-  /** I2 for undo: finish a pending publish whose commit exists; cancel one whose commit is positively absent. A git error throws (no cancel). */
-  private async cancelOrSettle(name: string): Promise<boolean> {
+  /**
+   * I2 for undo: finish a pending publish whose commit exists; cancel one whose commit is positively absent. A git error
+   * throws (no cancel). Answers false while anything is left pending, the finished undo when settling ran one (I8: one
+   * step back per call, so the caller inserts nothing more), else true.
+   */
+  private async cancelOrSettle(name: string): Promise<boolean | GrowOpRow> {
+    let undone: GrowOpRow | undefined;
     for (const op of this.d.store.pendingGrowOps(name)) {
-      if (op.kind === "undo") { await runOp(this.opDeps(), op, true); continue; }
+      if (op.kind === "undo") { if ((await runOp(this.opDeps(), op, true)) === "done") undone = op; continue; }
       const out = await runOp(this.opDeps(), op, false);                 // "held" = positively no commit
       if (out === "held") failOp(this.opDeps(), op, "undone");
     }
-    return this.d.store.pendingGrowOps(name).length === 0;
+    if (this.d.store.pendingGrowOps(name).length > 0) return false;
+    return undone ? (this.d.store.getGrowOp(undone.id) ?? true) : true;
   }
 
   // --- requests (I7) ---
@@ -411,26 +420,30 @@ export class GrowService {
   private async runRequest(id: number, kind: "undo" | "adopt", name: string, reason: string | null): Promise<boolean> {
     const { store } = this.d;
     if (kind === "adopt") {
-      try { this.adopt(name, id); return true; } catch { console.error("[grow] requests: adopt_failed"); return false; }
+      try { this.adopt(name, id); } catch { console.error("[grow] requests: adopt_failed"); }
+    } else {
+      const r = await this.undoLocked(name, reason, id);
+      try {
+        if (r.ok) store.finishGrowRequest(id, undoneText(name, r.removed), this.d.now());   // a no-op when applyUndo already finished it
+        else if (r.code === "unknown_skill" || r.code === "is_exemplar") store.finishGrowRequest(id, UNDO_TEXT[r.code], this.d.now());
+      } catch { console.error("[grow] requests: finish_failed"); }
     }
-    const r = await this.undoLocked(name, reason, id);
-    try {
-      if (r.ok) store.finishGrowRequest(id, undoneText(name, r.removed), this.d.now());   // a no-op when applyUndo already finished it
-      else if (r.code === "unknown_skill" || r.code === "is_exemplar") store.finishGrowRequest(id, UNDO_TEXT[r.code], this.d.now());
-      else return false;
-    } catch { console.error("[grow] requests: finish_failed"); return false; }
-    return true;
+    // Finished is whatever left `queued`, by whichever path (failOp also finishes a request whose operation failed for good).
+    try { return !store.dueGrowRequests().some((q) => q.id === id); } catch { console.error("[grow] requests: finish_failed"); return false; }
   }
 
   /** A request becomes `replied` only when its reply is in the outbox; a chat-less one has nobody to tell. */
   private replyFinished(): void {
     const { store } = this.d;
-    for (const req of store.doneGrowRequests()) {
+    let done: ReturnType<RunStore["doneGrowRequests"]>;
+    try { done = store.doneGrowRequests(); } catch { console.error("[grow] requests: reply_failed"); return; }
+    for (const req of done) {
       try {
         if (!req.chat_id) { store.markGrowRequestReplied(req.id, this.d.now()); continue; }
         const q = store.enqueueNotification({ topic: "reply", target: { kind: "telegram", chat_id: req.chat_id }, intent_type: "progress",
           idempotency_key: `grow:req:${req.id}`, correlation_id: `grow:req:${req.id}`, payload: { text: req.result ?? "" } });
         if (IN_OUTBOX.has(q.status)) store.markGrowRequestReplied(req.id, this.d.now());
+        else console.error("[grow] requests: reply_conflict");          // stays `done`: the next run tries again
       } catch { console.error("[grow] requests: reply_failed"); }
     }
   }
@@ -456,7 +469,8 @@ export class GrowService {
   /**
    * Brings the rows in line with what is committed at HEAD. Compares `contentHash`, which leaves the file's `origin:` line
    * out on purpose: the mark is the truth for origin, so an origin-line difference can never bring back a mark Paco
-   * cleared. A name with a pending operation is skipped: its commit is Houge's own, finished by the next reconcile.
+   * cleared. A name with a pending operation is skipped: its commit is Houge's own, finished by the next reconcile. An
+   * exemplar is skipped too: the seeder owns it and restores it.
    */
   async syncWithHead(): Promise<{ orphans: number; removed: number; changed: number }> {
     return this.withLockWait(async () => {
@@ -467,7 +481,7 @@ export class GrowService {
         const busy = new Set(this.d.store.pendingGrowOps().map((o) => o.name));
         for (const name of atHead) if (!busy.has(name) && !this.d.store.getGrowItem(name) && (await this.syncOrphan(name, head))) counts.orphans += 1;
         for (const item of this.d.store.listGrowItems("live")) {
-          if (busy.has(item.name)) continue;
+          if (busy.has(item.name) || item.origin === "exemplar") continue;   // the seeder owns exemplars
           if (!atHead.has(item.name)) { this.syncRecord(item.name, "removed", head, () => this.d.store.setGrowItemState(item.name, "removed", this.d.now())); counts.removed += 1; }
           else if (await this.syncChanged(item.name, item.content_hash, head)) counts.changed += 1;
         }

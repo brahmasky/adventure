@@ -5,7 +5,7 @@ import { GrowService, trustItem } from "../../src/grow/service.js";
 import { opMessage } from "../../src/grow/ops.js";
 import { GrowZoneError } from "../../src/grow/zone.js";
 import type { GrowOpRow, NotificationQueueResult, RunStore } from "../../src/run/run-store.js";
-import { CLEAN, commitCount, countRows, growBody, growFields, growSetup, outboxTexts, PASS, small } from "../helpers/grow.js";
+import { blockWrite, CLEAN, commitCount, countRows, growBody, growFields, growSetup, outboxTexts, PASS, small } from "../helpers/grow.js";
 
 afterEach(() => { vi.restoreAllMocks(); });
 
@@ -161,6 +161,7 @@ describe("E. undo and requests", () => {
     expect(s.store.getGrowStaged(op.staged_id!)?.state).toBe("publishing");
     expect(s.store.getGrowItem(f.name)?.state).toBe("live");
     expect(err).toHaveBeenCalledWith("[grow] undo: zone_unavailable");
+    expect(s.svc.disabledReason()).toBe("zone_unavailable");             // a git fault on the undo path latches the door
   });
 
   it("I7: an undo request queues once, runs once, and is replied to once", async () => {
@@ -194,7 +195,7 @@ describe("E. undo and requests", () => {
   });
 
   it("I7: a request becomes replied only when its reply is in the outbox", async () => {
-    const s = await growSetup(); const f = growFields();
+    const s = await growSetup(); const f = growFields(); const err = errSpy();
     await s.live(f);
     const id = request(s, "undo", f.name);
     const orig = s.store.enqueueNotification.bind(s.store);
@@ -209,6 +210,60 @@ describe("E. undo and requests", () => {
     expect(await s.svc.runRequests()).toBe(0);
     expect(requestRow(s.store, id).state).toBe("replied");
     expect(s.store.countNotificationsByIdempotencyKey(`grow:req:${id}`)).toBe(1);
+    expect(err.mock.calls.map((c) => c[0])).toEqual(["[grow] requests: reply_conflict"]);
+  });
+
+  it("a throw while listing finished requests is logged and does not reject runRequests", async () => {
+    const s = await growSetup(); const err = errSpy();
+    vi.spyOn(s.store, "doneGrowRequests").mockImplementationOnce(() => { throw new Error("disk"); });
+    expect(await s.svc.runRequests()).toBe(0);
+    expect(err).toHaveBeenCalledWith("[grow] requests: reply_failed");
+  });
+
+  it("I8: an undo that settles a pending undo of the name answers that one and steps back no further", async () => {
+    const s = await twoVersions(); const { f } = s;
+    const [v1, v2] = s.store.listGrowVersions(f.name);
+    const pendingUndo = s.store.insertGrowOp({ id: randomUUID(), kind: "undo", source: "undo", name: f.name, staged_id: null, request_id: null, target_json: v1!.fields_json, reason: "first", undo_version_id: v2!.id, now: s.now() });
+    const ops = countRows(s.store, "grow_ops");
+    expect(await s.svc.undo(f.name, "second")).toEqual({ ok: true, removed: false });
+    expect(s.store.getGrowOp(pendingUndo.id)?.state).toBe("done");
+    expect(countRows(s.store, "grow_ops")).toBe(ops);
+    expect(s.store.getGrowItem(f.name)).toMatchObject({ state: "live", content_hash: contentHash(f) });
+    expect(s.store.listGrowVersions(f.name).map((v) => v.undone)).toEqual([false, true]);
+  });
+
+  it("an undo while the door is latched answers zone_unavailable at once and creates nothing", async () => {
+    const s = await growSetup(); const f = growFields(); const err = errSpy();
+    await s.live(f);
+    const { rmSync } = await import("node:fs"); const { join } = await import("node:path");
+    rmSync(join(s.zone.dir, ".git"), { recursive: true, force: true });
+    await s.svc.submit(other("x-skill", "x"), CLEAN);                    // latches the door
+    expect(s.svc.disabledReason()).toBe("zone_unavailable");
+    const ops = countRows(s.store, "grow_ops");
+    const lookup = vi.spyOn(s.zone, "findOpCommit");
+    expect(await s.svc.undo(f.name, null)).toEqual({ ok: false, code: "zone_unavailable" });
+    expect(countRows(s.store, "grow_ops")).toBe(ops);
+    expect(lookup).not.toHaveBeenCalled();
+    expect(err).toHaveBeenCalledWith("[grow] submit: zone_unavailable");
+  });
+
+  it("I7: an undo request whose write fails for good ends done with the zone text, is counted, and is replied once", async () => {
+    const s = await twoVersions(); const { f } = s; const err = errSpy();
+    const id = request(s, "undo", f.name);
+    const { rmSync } = await import("node:fs"); const { join } = await import("node:path");
+    // The restore of v1 must fail before its commit: the skill's folder becomes a plain file, so the write cannot land.
+    const block = () => { rmSync(join(s.zone.dir, "skills", f.name), { recursive: true, force: true }); blockWrite(s.zone, f.name); };
+    block();
+    expect(await s.svc.runRequests()).toBe(0);                           // first failure: retry, the request stays queued
+    expect(requestRow(s.store, id).state).toBe("queued");
+    block();
+    expect(await s.svc.runRequests()).toBe(1);
+    expect(s.store.getGrowOpByRequest(id)?.state).toBe("failed");
+    expect(outboxTexts(s.store, `grow:req:${id}`)).toEqual(["The grow zone could not be written. See /status."]);
+    expect(requestRow(s.store, id).state).toBe("replied");
+    expect(await s.svc.runRequests()).toBe(0);
+    expect(s.store.countNotificationsByIdempotencyKey(`grow:req:${id}`)).toBe(1);
+    expect(err).toHaveBeenCalledWith("[grow] op: write_failed");
   });
 
   it("I7: an undo whose database half throws after its commit stays queued and is completed once by the next run", async () => {
@@ -341,6 +396,23 @@ describe("F. sync, index, notes", () => {
     s.svc.commitNotes("run_6");
     s.svc.commitNotes("run_6");
     expect(s.svc.contextNotes("555", "run_7")).toEqual([]);
+  });
+
+  it("syncWithHead leaves exemplars to the seeder, and the seeder restores a removed exemplar", async () => {
+    const s = await growSetup();
+    const ex = other("option-comparison", "options");
+    expect(await s.svc.seed(ex, "exemplar", "seed")).toBe("published");
+    await s.zone.writeAndCommit(ex.name, renderSkillFile({ ...ex, body: growBody(40, " edited") }, "exemplar"), "skill(option-comparison): by hand");
+    expect(await s.svc.syncWithHead()).toEqual({ orphans: 0, removed: 0, changed: 0 });
+    expect(s.store.getGrowItem(ex.name)).toMatchObject({ state: "live", origin: "exemplar", content_hash: contentHash(ex) });
+    expect(s.store.isGrowMarked(ex.name)).toBe(false);
+    await s.zone.removeAndCommit(ex.name, "skill(option-comparison): removed by hand");
+    expect(await s.svc.syncWithHead()).toEqual({ orphans: 0, removed: 0, changed: 0 });
+    s.store.setGrowItemState(ex.name, "removed", s.now());              // as an older build's sync left it
+    expect(await s.svc.seed(ex, "exemplar", "seed")).toBe("published");
+    expect(s.store.getGrowItem(ex.name)).toMatchObject({ state: "live", origin: "exemplar" });
+    expect(await s.zone.readHead(ex.name)).toBe(renderSkillFile(ex, "exemplar"));
+    expect(await s.svc.seed(ex, "exemplar", "seed")).toBe("unchanged");
   });
 
   it("the index is alphabetical and byte-identical after a read", async () => {
