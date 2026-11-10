@@ -146,9 +146,9 @@ function parseLessons(words: string[]): TelegramCommandParseResult {
 }
 
 function parseGrow(words: string[]): TelegramCommandParseResult {
-  if (words.length === 0) return { ok: true, command: { type: "grow", action: "list" } };
-  const action = words[0]!.toLowerCase();
-  if (action !== "undo" && action !== "trust") return invalid("/grow takes nothing, or: undo <name> [reason], or: trust <name>");
+  const action = words[0]?.toLowerCase();
+  if (words.length === 0 || (action === "list" && words.length === 1)) return { ok: true, command: { type: "grow", action: "list" } };
+  if (action !== "undo" && action !== "trust") return invalid("/grow takes nothing (or: list), or: undo <name> [reason], or: trust <name>");
   const name = words[1] ?? "";
   if (!/^[a-z0-9-]{3,48}$/.test(name)) return invalid("/grow undo|trust requires a skill name");
   const reason = action === "undo" ? words.slice(2).join(" ") : "";

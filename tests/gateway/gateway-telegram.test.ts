@@ -289,7 +289,7 @@ describe("Gateway telegram events", () => {
     const first = gateway.intake(event);
     const second = gateway.intake(event); // redelivered update
     expect(first).toEqual({ ok: true, status: "grow_returned", run_id: "" });
-    expect(second).toEqual(first); // replayed, not re-applied
+    expect(second).toEqual(first);
     expect(s.store.countNotificationsByIdempotencyKey("telegram:grow-1:grow")).toBe(1);
     const note = s.store.claimNextNotification("test", 30);
     expect(note?.payload.text).toContain("**unit-convert** · written by Houge · used 0×");

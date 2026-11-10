@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import { buildTypedTaskEvent } from "../../src/domain/types.js";
 import { formatGrowList, growStatusLines, handleGrow } from "../../src/gateway/grow-commands.js";
 import type { RunStore } from "../../src/run/run-store.js";
-import { CLEAN, growBody, growFields, growSetup } from "../helpers/grow.js";
+import { GROW_ITEMS_MAX } from "../../src/grow/service.js";
+import { markdownToTelegramHtml } from "../../src/telegram/markdown-to-telegram-html.js";
+import { CLEAN, growBody, growFields, growSetup, outboxTexts, PASS } from "../helpers/grow.js";
 
 const NOW = "2026-11-10T12:00:00.000Z";
 
@@ -36,19 +38,70 @@ describe("/grow", () => {
     expect(formatGrowList(s.store, NOW)).toBe("🌱 **Grow zone**\nNo skills yet.");
   });
 
-  it("renders a Houge-written description as plain text, so it cannot place a link in Paco's chat", async () => {
+  it("renders every description as one inline-code span: no link, command or mention in it can be tapped", async () => {
     const s = await growSetup();
-    await s.live(growFields({ description: "see [this](https://evil.example) when converting amounts" }));
-    expect(formatGrowList(s.store, NOW)).not.toContain("](");
+    const desc = "see [a](https://evil.example) then https://evil.example/x or evil.example, run /kill, ping @x, tag #x";
+    await s.live(growFields({ description: desc }));
+    const text = formatGrowList(s.store, NOW);
+    const html = markdownToTelegramHtml(text);
+    expect(html).not.toContain("<a ");
+    const spans = [...html.matchAll(/<code>([^<]*)<\/code>/g)].map((m) => m[1]!);
+    const mine = spans.find((c) => c.includes("evil.example/x"))!;
+    for (const part of ["evil.example", "/kill", "@x", "#x"]) expect(mine).toContain(part);
+    expect(html.replace(mine, "")).not.toContain("/kill");   // the command appears only inside the code span
   });
 
-  it("shows a failed review whatever its code, with the code in brackets", async () => {
+  it("labels and hints by the mark, not by the stored origin", async () => {
+    const s = await growSetup();
+    await s.live(growFields());
+    s.store.markGrowName("unit-convert", NOW);                                   // marked while its origin still reads clean
+    let text = formatGrowList(s.store, NOW);
+    expect(text).toContain("**unit-convert** · from outside content");
+    expect(text).toContain("/grow trust unit-convert clears the mark");
+    s.store.unmarkGrowName("unit-convert");
+    s.store.setGrowItemOrigin("unit-convert", "untrusted", NOW);                 // origin says untrusted, no mark: reading it taints nothing
+    text = formatGrowList(s.store, NOW);
+    expect(text).toContain("**unit-convert** · written by Houge");
+    expect(text).not.toContain("/grow trust");
+  });
+
+  it("lists a failed row whatever its code (zone_full), and a review failure with its findings", async () => {
+    const s = await growSetup();
+    const fill = (i: number) => s.store.upsertGrowItem({ name: `filler-${i}`, state: "live", origin: "clean", description: `filler number ${i} for the cap test`, example: "an example", head_commit: null, content_hash: `h${i}`, body_hash: `b${i}` }, "2026-11-10T09:00:00.000Z");
+    for (let i = 0; i < GROW_ITEMS_MAX - 1; i++) fill(i);
+    await s.svc.submit(growFields({ name: "cap-victim", description: "a skill that loses the race for the last slot" }), CLEAN);
+    await s.svc.submit(growFields({ name: "bad-steps", description: "a skill whose steps the reviewer rejects", body: growBody(40, " c") }), CLEAN);
+    const idOf = (name: string) => s.store.listGrowStaged("staged").find((r) => r.name === name)!.id;
+    s.svc.recordReview(idOf("bad-steps"), { ...PASS, pass: false, code: "review_failed", findings: [{ step: "3", problem: "says to [click](https://evil.example)" }] });
+    s.svc.recordReview(idOf("cap-victim"), PASS);
+    fill(GROW_ITEMS_MAX - 1);                                                    // the zone fills while the approved row waits
+    expect(await s.svc.publishStaged(s.store.listGrowStaged("approved")[0]!.id)).toBe("failed");
+    const text = formatGrowList(s.store, NOW);
+    expect(text).toContain("**cap-victim** · failed (zone_full)");
+    expect(text).toContain("**bad-steps** · failed (review_failed)\n`step 3: says to [click](https://evil.example)`");
+    expect(text).not.toContain("failed review");
+  });
+
+  it("does not list a superseded row, and drops a failed row after 14 days", async () => {
     const s = await growSetup();
     await s.svc.submit(growFields(), CLEAN);
-    const row = s.store.listGrowStaged("staged")[0]!;
-    (s.store as unknown as { db: { prepare(q: string): { run(...a: unknown[]): void } } }).db
-      .prepare("UPDATE grow_staged SET state = 'failed', code = 'publish_failed', findings_json = '[]', updated_at = ? WHERE id = ?").run("2026-11-10T11:00:00.000Z", row.id);
-    expect(formatGrowList(s.store, NOW)).toContain("**unit-convert** · failed review (publish_failed)");
+    await s.svc.submit(growFields({ body: growBody(40, " newer") }), CLEAN);       // the first row is now failed/superseded
+    expect(s.store.listGrowStaged("failed").map((r) => r.code)).toEqual(["superseded"]);
+    expect(formatGrowList(s.store, NOW)).not.toContain("superseded");
+    s.svc.recordReview(s.store.listGrowStaged("staged")[0]!.id, { ...PASS, pass: false, code: "review_failed", findings: [] });
+    expect(formatGrowList(s.store, "2026-11-23T12:00:00.000Z")).toContain("failed (review_failed)");
+    expect(formatGrowList(s.store, "2026-11-25T12:00:00.000Z")).not.toContain("failed (review_failed)");
+  });
+
+  it("shows an approved row as waiting for review, and an orphan with its adopt command", async () => {
+    const s = await growSetup();
+    await s.svc.submit(growFields(), CLEAN);
+    s.svc.recordReview(s.store.listGrowStaged("staged")[0]!.id, PASS);
+    expect(s.store.listGrowStaged("approved")).toHaveLength(1);
+    s.store.upsertGrowItem({ name: "stray-skill", state: "orphan", origin: "clean", description: "left in the repository", example: "x", head_commit: null, content_hash: "h", body_hash: "b" }, NOW);
+    const text = formatGrowList(s.store, NOW);
+    expect(text).toContain("**unit-convert** · waiting for review");
+    expect(text).toContain("**stray-skill** · in the repository but unknown to me · `houge grow adopt stray-skill`");
   });
 
   it("/grow trust clears the mark at once and says what it did", async () => {
@@ -94,9 +147,58 @@ describe("/grow", () => {
     expect(growStatusLines(s.store, "2026-11-12T12:00:00.000Z")).toContain("Grow zone: writing is paused (the zone could not be written)");
   });
 
-  it("a publish failure incident pauses writing whatever its subject", async () => {
+  it("a dropped publish says so and does not claim that writing is paused", async () => {
     const s = await growSetup();
     s.store.openIncident({ kind: "grow_publish_failed", subject: "publish", detail: {}, now: NOW });
+    expect(growStatusLines(s.store, NOW)).toEqual(["Grow zone: a finished skill was dropped after repeated write failures; writing continues"]);
+  });
+
+  it("a write that landed but could not be recorded is not a paused zone", async () => {
+    const s = await growSetup();
+    s.store.openIncident({ kind: "grow_zone_unavailable", subject: "apply", detail: {}, now: NOW });
+    expect(growStatusLines(s.store, NOW)).toEqual(["Grow zone: a skill write finished but I could not record it yet; writing continues"]);
+  });
+
+  it("a zone incident pauses writing whatever its subject", async () => {
+    const s = await growSetup();
+    s.store.openIncident({ kind: "grow_zone_unavailable", subject: "something-else", detail: {}, now: NOW });
     expect(growStatusLines(s.store, NOW)).toEqual(["Grow zone: writing is paused (the zone could not be written)"]);
+  });
+
+  it("a review is pending over a day only after 24 hours, counted from when it was staged (not from its last touch)", async () => {
+    const s = await growSetup();
+    await s.svc.submit(growFields(), CLEAN);                                     // created 2026-11-10T10:00:0x
+    const id = s.store.listGrowStaged("staged")[0]!.id;
+    expect(growStatusLines(s.store, "2026-11-11T09:00:00.000Z")).toEqual([]);      // ~23 h
+    s.store.patchGrowStaged(id, { claimed_at: null }, "2026-11-11T10:59:00.000Z"); // touched a minute ago: updated_at moves, created_at does not
+    expect(growStatusLines(s.store, "2026-11-11T11:00:00.000Z")).toEqual(["Grow zone: 1 review pending over a day · /grow"]);   // ~25 h
+  });
+
+  it("an orphan skill is reported as unknown to me", async () => {
+    const s = await growSetup();
+    s.store.upsertGrowItem({ name: "stray-skill", state: "orphan", origin: "clean", description: "left in the repository", example: "x", head_commit: null, content_hash: "h", body_hash: "b" }, NOW);
+    expect(growStatusLines(s.store, NOW)).toEqual(["Grow zone: 1 skill in the repository unknown to me · /grow"]);
+  });
+
+  it("redelivering a /grow trust after the name was marked again changes nothing and repeats the recorded reply", async () => {
+    const s = await growSetup();
+    await s.live(growFields(), { ...CLEAN, level: "untrusted" });
+    const ev = growEvent("trust unit-convert", "tg:replay");
+    handleGrow(s.store, ev, NOW);
+    expect(s.store.isGrowMarked("unit-convert")).toBe(false);
+    s.store.markGrowName("unit-convert", NOW);                                   // a later untrusted turn marks it again
+    const again = handleGrow(s.store, ev, "2026-11-10T12:00:05.000Z");           // Telegram redelivers the same update
+    expect(again).toEqual({ ok: true, status: "grow_returned", run_id: "" });
+    expect(s.store.isGrowMarked("unit-convert")).toBe(true);                     // the trust was not applied a second time
+    expect(outboxTexts(s.store, "tg:replay:grow")).toEqual(["✅ unit-convert now reads as Houge's own. Reading it no longer marks the conversation."]);
+  });
+
+  it("the same idempotency key carrying a different command is a conflict, and does nothing", async () => {
+    const s = await growSetup();
+    await s.live(growFields());
+    handleGrow(s.store, growEvent("trust unit-convert", "tg:clash"), NOW);
+    const r = handleGrow(s.store, growEvent("undo unit-convert", "tg:clash"), NOW);
+    expect(r).toMatchObject({ ok: false, error: { code: "TRIGGER_IDEMPOTENCY_CONFLICT" } });
+    expect(s.store.dueGrowRequests()).toEqual([]);
   });
 });

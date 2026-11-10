@@ -213,6 +213,7 @@ describe("parseTelegramCommand", () => {
 
   it("parses /grow: bare is the list, undo takes a name and a free-text reason, trust takes a name", () => {
     expect(parseTelegramCommand("/grow")).toEqual({ ok: true, command: { type: "grow", action: "list" } });
+    expect(parseTelegramCommand("/grow list")).toEqual({ ok: true, command: { type: "grow", action: "list" } });
     expect(parseTelegramCommand("/grow undo unit-convert wrong unit")).toEqual({
       ok: true, command: { type: "grow", action: "undo", name: "unit-convert", reason: "wrong unit" }
     });
