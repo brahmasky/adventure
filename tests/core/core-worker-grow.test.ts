@@ -1,4 +1,5 @@
-import { writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { OMP_LOOP_TOOL_META } from "../../src/core/omp-turn-wiring.js";
@@ -216,6 +217,22 @@ describe("grow_read over the bridge", () => {
     const r = await t.call("grow_read", { name: "nope" });
     expect(r.content).toContain("REFUSED unknown_skill");
     expect(t.trust.level()).toBe("clean");
+  });
+});
+
+describe("the single writer (spec: one process writes the zone)", () => {
+  it("a worker that is not the daemon refuses grow_submit, creates no zone, and still reads", async () => {
+    const worker = ompWorker(store, tmp.dir, { project: join(tmp.dir, "project"), growWriter: false });
+    const t = turn({ worker });
+    const r = await t.call("grow_submit", SUBMIT);
+    expect(r.content).toContain("REFUSED not_the_daemon");
+    expect(existsSync(process.env.HOUGE_GROW_DIR as string)).toBe(false);
+    expect(store.listGrowStaged("staged")).toEqual([]);
+    expect((await t.call("grow_read", { name: "web-notes" })).content).toContain("REFUSED unknown_skill");
+  });
+  it("no process but the daemon asks for the writer role", () => {
+    const hits = execFileSync("grep", ["-rln", "growWriter", "src", "scripts"], { encoding: "utf8" }).split("\n").filter(Boolean).sort();
+    expect(hits).toEqual(["scripts/live-gate-grow.mjs", "scripts/live-gate-omp.mjs", "src/core/core-worker.ts", "src/telegram/telegram-daemon.ts"]);
   });
 });
 

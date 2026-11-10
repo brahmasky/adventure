@@ -166,7 +166,7 @@ function zoneState(dir) {
 function build() {
   const u = undefined;
   G.store = G.D.RunStore.open(G.copy, G.D.storeOptionsFor(G.broker, process.env));
-  G.worker = new G.D.CoreWorker(G.store, G.project, u, u, u, u, u, G.broker, u, u, u, u, { dataDir: G.data, distDir: DIST, operator: { kind: "user", id: "gate-grow-user" } });
+  G.worker = new G.D.CoreWorker(G.store, G.project, u, u, u, u, u, G.broker, u, u, u, u, { dataDir: G.data, growWriter: true /* the gate stands in for the daemon, against a DB copy and its own zone */, distDir: DIST, operator: { kind: "user", id: "gate-grow-user" } });
   G.gw = new G.D.Gateway(G.store, { ...G.D.DEFAULT_GLOBAL_BUDGET_CAPS, runs: 1e9, tool_calls: 1e9, gated_attempts: 1e9 }, G.project, undefined, { dataDir: G.data, roles: G.worker.modelRoles() });
   G.svc = G.worker.growService();
   if (G.svc.zone.dir !== G.zone) throw new SetupError("the grow dir resolved elsewhere than the gate zone: refusing (a fallback would be the real zone)");

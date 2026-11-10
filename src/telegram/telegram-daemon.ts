@@ -229,7 +229,7 @@ export async function runTelegramDaemon(
     options.telegramClient.downloadFile
       ? { downloadFile: options.telegramClient.downloadFile.bind(options.telegramClient) }
       : undefined,
-    ompOptionsWithOperator(options.omp, options.allowlist)
+    { ...ompOptionsWithOperator(options.omp, options.allowlist), growWriter: true } // the daemon is the zone's one writer
   );
   // After the worker: the gateway's /models reads the worker's RoleResolver (one catalog cache per process).
   const gateway = new Gateway(

@@ -340,6 +340,8 @@ export interface OmpWorkerOptions {
   operator?: Identity;
   /** Tests only: the Jev client's fetch (never the real endpoint in tests). */
   jevFetch?: typeof fetch;
+  /** Only the daemon sets this: it is the one process that writes the grow zone. Any other worker (houge run, the eval runner, a gate) reads the zone and refuses grow_submit. */
+  growWriter?: boolean;
   /** Tests only: the clock for triage state ages and decision rows. */
   jevNow?: () => Date;
   /** The model-role service; default one over `omp models --json`. Tests inject a resolver over a fixture catalog. */
@@ -2088,6 +2090,7 @@ export class CoreWorker {
       return answer("REFUSED zone_unavailable");
     }
     if (!resolveGrowEnabled(process.env)) return answer("REFUSED grow_disabled"); // a disarmed door never touches (or pages about) the zone
+    if (this.ompOptions.growWriter !== true) return answer("REFUSED not_the_daemon"); // one writer per zone: this process never inits or commits it
     const svc = this.growService();
     if (!(await svc.ensureZone({ wait: false }))) return answer(svc.disabledReason() === null ? "REFUSED busy" : "REFUSED zone_unavailable");
     const fields = { name, description, example, body, ...(anchors !== undefined ? { anchors: anchors as string[] } : {}) };

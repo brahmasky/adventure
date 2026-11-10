@@ -26,6 +26,8 @@ export function ompWorker(
     codex?: (input: Record<string, unknown>) => ToolAdapterResult | Promise<ToolAdapterResult>; time?: Adapter;
     embed?: (text: string) => Promise<Float32Array | null>; operator?: Identity;
     jevFetch?: typeof fetch; jevNow?: () => Date; broker?: SecretBroker; roles?: RoleResolver; gateHold?: GateHold;
+    /** Default true here (a test worker stands in for the daemon); pass false to test a non-writer process. */
+    growWriter?: boolean;
   } = {}
 ): CoreWorker {
   const llm: Adapter = o.llm ?? (async () => ({ ok: true, output: { answer: "stub" } }));
@@ -34,7 +36,7 @@ export function ompWorker(
     o.google, o.media, {
       dataDir: root, distDir: tmpOmpDist(root), ...(o.operator ? { operator: o.operator } : {}),
       ...(o.jevFetch ? { jevFetch: o.jevFetch } : {}), ...(o.jevNow ? { jevNow: o.jevNow } : {}), ...(o.roles ? { roles: o.roles } : {}),
-      ...(o.gateHold ? { gateHold: o.gateHold } : {})
+      ...(o.gateHold ? { gateHold: o.gateHold } : {}), growWriter: o.growWriter ?? true
     }
   );
 }
