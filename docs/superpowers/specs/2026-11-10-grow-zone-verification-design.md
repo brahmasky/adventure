@@ -1,6 +1,6 @@
 # Grow zone, slice 1a — a place Houge writes itself, and the checks that decide what goes live
 
-**Rev 1.3 · 2026-11-10 · status: APPROVED by Paco 2026-11-10** (the whole spec, including the changes of meaning to
+**Rev 1.3.1 · 2026-11-10 · status: APPROVED by Paco 2026-11-10 (Rev 1.3); 1.3.1 adds §15, plan-time errata that change no decision** (the whole spec, including the changes of meaning to
 ADR 0011, 0032 and 0034, new ADR 0035, decisions P1–P3, the AGENTS.md wording, and residual R1 accepted for 1a). Rev 1.0 was reviewed
 against the live code by spec-review-senior (Opus 5.5: 8 BLOCKER, 15 WARNING, 6 SUGGESTION) and a codex design
 pass (6 BLOCKER, 4 WARNING, 1 SUGGESTION); Rev 1.2 by a codex re-review (5 BLOCKER, 6 WARNING, 1 SUGGESTION). The
@@ -565,4 +565,38 @@ the planner reliably calls `grow_read` in schedule turns (gate line 9 decides).
 | ADR 0034 §2.4, §8.3, §10.5 and ADR 0032 §6, §4.6 missing | §9 |
 | Gate lines that pass while broken | §11 rewritten on stored evidence; line 9 no longer fires a real schedule out of its slot |
 | Deletion inventory incomplete | Removal matrix (§5.12) |
+
+## 15. Plan-time errata (Rev 1.3.1, 2026-11-10)
+
+Found while writing the implementation plan against the code (`docs/superpowers/plans/2026-11-10-grow-zone-1a.md`).
+None changes a decision of §2 or §2a; where the text above differs, this section wins.
+
+1. **Schedule-born runs (§5.3, §11.9).** The bridge manifest is built once per planner child from the global action
+   list, not per run, so a schedule-born run still sees `grow_submit`. It is refused per call by its contract
+   (`allowed_actions`), exactly as `schedule_task` is today. Gate line 9 asserts that per-call refusal.
+2. **Where the hostile refusal and the origin come from (§5.7).** A tool executor has no handle on the live turn. The
+   preflight (`ompPreflight`) and the `grow_submit` executor read the turn's level from its `turn_trust` ledger rows,
+   the rows `TurnTrust.raise` writes (a carried level is one of them). `grow_read` reports a tainted item to the bridge
+   handler, which raises `grow_read_untrusted` before the text returns.
+3. **Author families (§5.4).** They are read when the review is claimed, from the run's successful `compose`
+   `llm_attempt` ledger rows, not at staging; a review is not claimed until the authoring turn has written its final
+   trust row. No rows, or a row without a family, fails closed.
+4. **Rate caps.** 20 submits and 3 hints are per rolling 24 hours, not per local day.
+5. **Hints (§5.12).** A recurrence hint is a row in a new `grow_hints` table (its key makes it once-only and replaces
+   the old "already authored" test) plus a `hint` row in `grow_events`, which is what the `[context]` line reads.
+6. **`grow_items`** also holds `description` and `example`, so the index and `/grow` need no git read.
+7. **`/changes` (§5.10).** Publish and undo lines go through a new log topic, `grow_log`, into the existing change log.
+8. **`/ask` and `/research` (§8).** These one-shot command paths have no tools, so they cannot call `grow_read`; they
+   no longer carry skills. Every run in the last 30 days was an omp turn.
+9. **Undo (§5.9).** An undo always stores a reason row ("(no reason given)" when Paco gives none), so the next
+   submit of that name is reviewed either way; and a name that was undone once is reviewed on every later submit.
+10. **`houge grow trust`** changes the origin in the database, which is the truth for origin; the file's `origin:`
+    line follows at that item's next publish.
+11. **Migration (§5.11).** A migrated skill's `example` is derived from its `when` line. Nothing about Paco's
+    existing skills is written into the public repository.
+12. **Exemplar.** One prose exemplar, `weekly-digest-brief`. `houge grow drop-case` belongs to 1c and is not built.
+13. **`/skills`** stays for one release as an alias of `/grow`.
+14. **Other switches.** `HOUGE_SKILL_REVERIFY_ENABLED` leaves `DISARM_FLAGS` with its tick; the Gate B variables go
+    with Gate B if nothing else reads them.
+15. **Backup bundle retention (§5.1).** `houge grow log` lists DB snapshots and whether each has its bundle.
 
