@@ -170,7 +170,6 @@ describe("proposal taps", () => {
     expect(s.getImprovementProposal(id)?.state).toBe("accepted");
     expect(s.growHintExists(`answer:${t.turn_id}`)).toBe(true);
     expect(s.listGrowEvents({ actions: ["hint"] })).toMatchObject([{ chat_id: "555", code: "answer", name: "-" }]);
-    expect(s.listJobsByState(["queued"])).toEqual([]);
     const { id: again } = proposal(s, "skill", draft, "answer");   // the same recurrence, proposed again
     handleImprovementTap(s, tap("pr", again, "acc"), NOW);
     expect(reply(s)).toEqual(["Already noted: that recurrence has a hint waiting."]);

@@ -1068,10 +1068,7 @@ export interface ScheduleExpiryRow { approval_id: string; run_id: string; capabi
 export type ProposalTarget = "lesson" | "fact" | "skill" | "schedule" | "knowledge" | "tool_gap" | "ladder";
 export type ProposalState = "open" | "accepted" | "reverted" | "dismissed" | "expired";
 export interface ImprovementProposalRow { proposal_id: string; decision_id: string; target: ProposalTarget; scope: string; chat_id: string | null; draft_json: string; evidence: string; state: ProposalState; result_json: string | null; created_at: string; offered_at: string | null; resolved_at: string | null }
-export type JobState = "queued" | "running" | "pending_review" | "suggested" | "collision" | "promoting" | "promoted" | "dismissed" | "failed" | "expired";
-export interface ImprovementJobRow { job_id: string; kind: "skill_author"; decision_id: string; proposal_id: string | null; chat_id: string | null; origin_json: string; idempotency_key: string; attempt: number; state: JobState; result_code: string | null; gate_a: string | null; pending_scope: string | null; pending_name: string | null; promote_mode: string | null; created_at: string; started_at: string | null; finished_at: string | null; offered_at: string | null; resolved_at: string | null }
 export interface ImprovementTapRow { tap_id: string; subject_kind: "proposal" | "job" | "move"; subject_id: string; action: string; telegram_callback_id: string; result: string; created_at: string }
-export type JobPatch = Partial<Pick<ImprovementJobRow, "result_code" | "gate_a" | "pending_scope" | "pending_name" | "promote_mode">>;
 export interface LadderMoveRow { move_id: string; entry_id: string; scope: string; from_rung: RungKind; to_rung: RungKind; evidence_json: string; granted_by: "paco" | "auto"; granted_via: string | null; paco_callback_id: string | null; revocable: number; state: "active" | "ended"; created_at: string; ended_at: string | null }
 /** Stage 4A (ADR 0030 §8.3): one row per (schedule, chat, fingerprint) streak. `ended` rows stay: audit, and the 30-day deny block is read over them. */
 export type StandingState = "streak" | "candidate" | "sealing" | "sealed" | "standing" | "ended";
@@ -1107,20 +1104,6 @@ export class DecisionRejected extends Error {
   constructor(readonly column: "stage" | "fallback_reason" | "reask") { super(`decision rejected: ${column} not allowed`); }
 }
 
-const JOB_PATCH_COLUMNS = ["result_code", "gate_a", "pending_scope", "pending_name", "promote_mode"] as const;
-const JOB_FINISHED: ReadonlySet<JobState> = new Set(["pending_review", "suggested", "failed"]);
-const JOB_RESOLVED: ReadonlySet<JobState> = new Set(["promoted", "dismissed", "expired"]);
-/** The SET list of one job transition: the patch columns, the attempt bump, and the timestamp each target state stamps. */
-function jobTransitionSets(i: { to: JobState; now: string; patch?: JobPatch; bumpAttempt?: boolean }): { sets: string[]; values: Array<string | number | null> } {
-  const sets = ["state = ?"]; const values: Array<string | number | null> = [i.to];
-  for (const c of JOB_PATCH_COLUMNS) if (i.patch && c in i.patch) { sets.push(`${c} = ?`); values.push(i.patch[c] ?? null); }
-  if (i.bumpAttempt) sets.push("attempt = attempt + 1");
-  if (i.to === "running") { sets.push("started_at = ?"); values.push(i.now); }
-  if (JOB_FINISHED.has(i.to)) { sets.push("finished_at = ?"); values.push(i.now); }
-  if (JOB_RESOLVED.has(i.to)) { sets.push("resolved_at = ?"); values.push(i.now); }
-  if (i.to === "collision" || i.to === "promoting") sets.push("offered_at = NULL");
-  return { sets, values };
-}
 const sqlList = (xs: readonly string[]): string => xs.map((x) => `'${x}'`).join(", ");
 /** The only automatic ladder move the store accepts (spec §4.3): standing approvals, on tool.policy, granted by approval.standing. */
 const AUTO_MOVE = { entry_id: "tool.policy", granted_via: "approval.standing" } as const;
@@ -5729,75 +5712,19 @@ export class RunStore {
     for (const r of this.db.prepare(`SELECT state, COUNT(*) AS n FROM improvement_proposals WHERE created_at > ? GROUP BY state`).all<{ state: ProposalState; n: number }>(sinceIso)) out[r.state] = r.n;
     return out;
   }
-  /** §4.2 last_improvement: the newest accepted proposal or promoted job on the scope (a job's scope is its origin category). */
+  /** §4.2 last_improvement: the newest accepted proposal on the scope. */
   lastAcceptedImprovement(scope: string): { target: string; at: string } | undefined {
     return this.db.prepare(`
       SELECT target, resolved_at AS at FROM improvement_proposals WHERE scope = ? AND state = 'accepted'
-      UNION ALL SELECT 'skill' AS target, resolved_at AS at FROM improvement_jobs WHERE state = 'promoted' AND json_extract(origin_json, '$.category') = ?
       ORDER BY at DESC LIMIT 1
-    `).get<{ target: string; at: string }>(scope, scope);
+    `).get<{ target: string; at: string }>(scope);
   }
 
-  insertImprovementJob(j: { decision_id: string; proposal_id: string | null; chat_id: string | null; origin_json: string; idempotency_key: string; created_at?: string }): string | null {
-    const job_id = `job_${randomUUID()}`;
-    const r = this.db.prepare(`INSERT OR IGNORE INTO improvement_jobs (job_id, kind, decision_id, proposal_id, chat_id, origin_json, idempotency_key, state, created_at) VALUES (?, 'skill_author', ?, ?, ?, ?, ?, 'queued', ?)`)
-      .run(job_id, j.decision_id, j.proposal_id, j.chat_id, j.origin_json, j.idempotency_key, j.created_at ?? new Date().toISOString());
-    return Number(r.changes) === 1 ? job_id : null;
-  }
-  /** Ruling 14: starts are budgeted apart from queueing (a job queued by a tap starts at the next tick). */
-  countJobsStartedSince(sinceIso: string): number {
-    return this.db.prepare(`SELECT COUNT(*) AS n FROM improvement_jobs WHERE started_at > ?`).get<{ n: number }>(sinceIso)?.n ?? 0;
-  }
   listImprovementTaps(subject_id?: string): ImprovementTapRow[] {
     return subject_id === undefined
       ? this.db.prepare(`SELECT * FROM improvement_taps ORDER BY created_at ASC, rowid ASC`).all<ImprovementTapRow>()
       : this.db.prepare(`SELECT * FROM improvement_taps WHERE subject_id = ? ORDER BY created_at ASC, rowid ASC`).all<ImprovementTapRow>(subject_id);
   }
-  getImprovementJob(job_id: string): ImprovementJobRow | undefined {
-    return this.db.prepare(`SELECT * FROM improvement_jobs WHERE job_id = ?`).get<ImprovementJobRow>(job_id);
-  }
-  /** §3.3 step 4: a cluster sharing any turn id with a job created after `sinceIso` is already authored; a `failed` job never counts (final fix 2: a transient failure is no verdict). */
-  jobOverlapsTurns(turn_ids: readonly string[], sinceIso: string): boolean {
-    if (turn_ids.length === 0) return false;
-    return this.db.prepare(`
-      SELECT 1 AS hit FROM improvement_jobs j, json_each(j.origin_json, '$.turn_ids') t WHERE j.created_at > ? AND j.state != 'failed' AND t.value IN (${turn_ids.map(() => "?").join(", ")}) LIMIT 1
-    `).get<{ hit: number }>(sinceIso, ...turn_ids) !== undefined;
-  }
-  /** Final fix D6: the origin turn ids of the jobs of one category created after `sinceIso`, `failed` jobs excluded (final fix 2). */
-  jobOriginTurnIds(category: string, sinceIso: string): string[] {
-    return this.db.prepare(`SELECT DISTINCT t.value AS turn_id FROM improvement_jobs j, json_each(j.origin_json, '$.turn_ids') t WHERE j.created_at > ? AND j.state != 'failed' AND json_extract(j.origin_json, '$.category') = ?`)
-      .all<{ turn_id: string }>(sinceIso, category).map((r) => r.turn_id);
-  }
-  listJobsByState(states: readonly JobState[]): ImprovementJobRow[] {
-    if (states.length === 0) return [];
-    return this.db.prepare(`SELECT * FROM improvement_jobs WHERE state IN (${states.map(() => "?").join(", ")}) ORDER BY created_at ASC, rowid ASC`).all<ImprovementJobRow>(...states);
-  }
-  countJobsCreatedSince(sinceIso: string): number {
-    return this.db.prepare(`SELECT COUNT(*) AS n FROM improvement_jobs WHERE created_at > ?`).get<{ n: number }>(sinceIso)?.n ?? 0;
-  }
-  /**
-   * §5.2: one fenced UPDATE (state in `from`, and `attempt` when given) is the only thing that lets an ending write; the loser
-   * updates zero rows and enqueues nothing. A move to `collision` or back to `promoting` clears offered_at (a new card is due).
-   * The ledger event names the exact from state. The caller holds the transaction that also enqueues the card.
-   */
-  transitionJob(i: { job_id: string; from: readonly JobState[]; to: JobState; now: string; attempt?: number; patch?: JobPatch; bumpAttempt?: boolean }): boolean {
-    const row = this.getImprovementJob(i.job_id);
-    if (!row || !i.from.includes(row.state) || (i.attempt !== undefined && row.attempt !== i.attempt)) return false;
-    const { sets, values } = jobTransitionSets(i);
-    const r = this.db.prepare(`UPDATE improvement_jobs SET ${sets.join(", ")} WHERE job_id = ? AND state = ? AND attempt = ?`).run(...values, i.job_id, row.state, row.attempt);
-    if (Number(r.changes) !== 1) return false;
-    const attempt = i.bumpAttempt ? row.attempt + 1 : row.attempt;
-    this.recordMemoryEvent("improvement_job", { job_id: i.job_id, from: row.state, to: i.to, attempt, ...(i.patch?.result_code ? { result_code: i.patch.result_code } : {}) }, "improve");
-    return true;
-  }
-  markJobsOffered(ids: readonly string[], now: string): void {
-    if (ids.length === 0) return;
-    this.db.prepare(`UPDATE improvement_jobs SET offered_at = ? WHERE offered_at IS NULL AND job_id IN (${ids.map(() => "?").join(", ")})`).run(now, ...ids);
-  }
-  listJobsFinishedSince(sinceIso: string): ImprovementJobRow[] {
-    return this.db.prepare(`SELECT * FROM improvement_jobs WHERE finished_at > ? OR resolved_at > ? ORDER BY COALESCE(resolved_at, finished_at) ASC, rowid ASC`).all<ImprovementJobRow>(sinceIso, sinceIso);
-  }
-
   /** §5.1 tap history: one row per Telegram callback id (a redelivered tap is the same tap). */
   insertImprovementTap(t: { subject_kind: "proposal" | "job" | "move"; subject_id: string; action: string; telegram_callback_id: string; result: string; created_at?: string }): boolean {
     const r = this.db.prepare(`INSERT OR IGNORE INTO improvement_taps (tap_id, subject_kind, subject_id, action, telegram_callback_id, result, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)

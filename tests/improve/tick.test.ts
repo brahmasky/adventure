@@ -201,7 +201,6 @@ describe("runImproveTick", () => {
     expect(store.listGrowEvents({ actions: ["hint"] })).toHaveLength(1);
     const row = store.listDecisionsBetween("2026-01-01T00:00:00.000Z", "2027-01-01T00:00:00.000Z").find((x) => x.entry_id === "improve.route");
     expect(row).toMatchObject({ verdict: "skill", rung: "rule", reason_code: "recurrence" });
-    expect(store.listJobsByState(["queued"])).toEqual([]);
     expect(store.listUnconsumedSignals(10)).toEqual([]);
   });
 
