@@ -44,6 +44,12 @@ describe("turn.trust", () => {
     trust.raise("injection_withheld", "tc9");
     expect(store.listDecisionsForRun(run_id).filter((d) => d.entry_id === "turn.trust")).toEqual([expect.objectContaining({ verdict: "hostile", rung: "rule", reason_code: "injection_withheld", tool_call_id: "tc9" })]);
   });
+  // reasonCodes is hand-kept: a cause missing from it would leave its decision row without a reason (ADR 0035 G4)
+  it("a born-untrusted grow read records its own reason code on the decisions row, linked to the tool call", () => {
+    const { store, run_id, trust } = setup();
+    trust.raise("grow_read_untrusted", "tc7");
+    expect(store.listDecisionsForRun(run_id).filter((d) => d.entry_id === "turn.trust")).toEqual([expect.objectContaining({ verdict: "untrusted", reason_code: "grow_read_untrusted", tool_call_id: "tc7" })]);
+  });
   it("finalize writes turn_trust_final exactly once, and a turn without it reads as not clean", () => {
     const { store, run_id, trust, events } = setup();
     expect(turnTrustFinal(store, run_id)).toBeNull();
