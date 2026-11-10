@@ -8,10 +8,11 @@ vi.mock("../../src/grow/tick.js", async (orig) => ({ ...(await orig<typeof impor
 const oneShot = vi.hoisted(() => ({ spawn: vi.fn() }));
 vi.mock("../../src/llm/providers/omp.js", async (orig) => ({ ...(await orig<typeof import("../../src/llm/providers/omp.js")>()), spawnOneShot: oneShot.spawn }));
 
+import { openAlertedIncident } from "../../src/run/incident-alert.js";
 import { EXEMPLAR_NAME } from "../../src/grow/seed.js";
 import { GROW_CLAIM_STALE_MS } from "../../src/grow/tick.js";
-import { bootGrowZone, runGrowTickSafe, type RunTelegramDaemonOptions } from "../../src/telegram/telegram-daemon.js";
-import { growSetup, mkTmp } from "../helpers/grow.js";
+import { bootGrowZone, detachedJob, runGrowTickSafe, startGrowJobs, type RunTelegramDaemonOptions } from "../../src/telegram/telegram-daemon.js";
+import { commitCount, growFields, growSetup, mkTmp, PASS } from "../helpers/grow.js";
 import { pinOmpEnv } from "../helpers/omp-env.js";
 
 pinOmpEnv();
@@ -70,6 +71,17 @@ describe("bootGrowZone", () => {
     writeFileSync(join(root, "skills", "paco", "broken.md"), "not a skill file");
     await bootGrowZone(opts(s, root), fakeWorker(s), NOW);
     expect(openKinds(s)).toContain("grow_seed_failed");
+  });
+
+  it("with the switch off, an approved row stays approved and nothing is committed (boot reconcile never publishes)", async () => {
+    const s = await growSetup(); const root = mkTmp(); mkdirSync(join(root, "grow-seed", "skills"), { recursive: true });
+    await s.svc.submit(growFields(), { run_id: "run_1", chat_id: "555", level: "clean" });
+    const row = s.store.listGrowStaged("staged")[0]!; s.svc.recordReview(row.id, PASS);
+    const before = commitCount(s.zone);
+    const saved = process.env.HOUGE_GROW_ENABLED; process.env.HOUGE_GROW_ENABLED = "false";
+    try { await bootGrowZone(opts(s, root), fakeWorker(s), NOW); } finally { if (saved === undefined) delete process.env.HOUGE_GROW_ENABLED; else process.env.HOUGE_GROW_ENABLED = saved; }
+    expect(commitCount(s.zone)).toBe(before);
+    expect(s.store.listGrowStaged("approved").map((r) => r.id)).toEqual([row.id]);
   });
 
   it("logs a code, never a message, when the boot itself throws", async () => {
@@ -140,6 +152,28 @@ describe("runGrowTickSafe", () => {
     expect(openKinds(bad)).not.toContain("grow_backup_failed");
   });
 
+  it("a verified existing bundle also closes grow_backup_failed", async () => {
+    process.env.HOUGE_BACKUP_ENABLED = "1";
+    const s = await growSetup(); const root = mkTmp();
+    mkdirSync(join(root, "backups")); writeFileSync(join(root, "backups", SNAP), "snap");
+    openAlertedIncident(s.store, { kind: "grow_backup_failed", subject: "bundle", detail: {}, now: NOW });
+    writeFileSync(join(root, "backups", SNAP.replace(".sqlite", ".grow.bundle")), "already there");
+    await runGrowTickSafe(opts(s, root), fakeWorker(s), NOW);
+    expect(openKinds(s)).not.toContain("grow_backup_failed");
+  });
+
+  it("an invalid omp config does not stop the tick: only a review's spawn fails (an outage for that review)", async () => {
+    const saved = process.env.HOUGE_OMP_LEASE_TTL_S; process.env.HOUGE_OMP_LEASE_TTL_S = "60";
+    try {
+      const s = await growSetup();
+      await runGrowTickSafe(opts(s, mkTmp()), fakeWorker(s), NOW);
+      expect(tick.run).toHaveBeenCalledTimes(1);
+      const deps = tick.run.mock.calls[0]![0] as { spawn(i: unknown): Promise<unknown> };
+      await expect(deps.spawn({ correlationId: "c", seat: "reader", chain: CHAIN, prompt: "p" })).rejects.toThrow();
+      expect(oneShot.spawn).not.toHaveBeenCalled();
+    } finally { if (saved === undefined) delete process.env.HOUGE_OMP_LEASE_TTL_S; else process.env.HOUGE_OMP_LEASE_TTL_S = saved; }
+  });
+
   it("makes no bundle while backups are off", async () => {
     delete process.env.HOUGE_BACKUP_ENABLED;
     const s = await growSetup(); const root = mkTmp();
@@ -147,5 +181,20 @@ describe("runGrowTickSafe", () => {
     rmSync(join(s.dir, "grow", ".git"), { recursive: true, force: true });
     await runGrowTickSafe(opts(s, root), fakeWorker(s), NOW);
     expect(openKinds(s)).not.toContain("grow_backup_failed");
+  });
+});
+
+describe("startGrowJobs: Paco's requests do not wait behind a review", () => {
+  it("a queued undo is done while the review job is still in flight", async () => {
+    const s = await growSetup(); const f = growFields(); await s.live(f);
+    s.store.enqueueGrowRequest({ idempotency_key: "tg:u1", kind: "undo", name: f.name, reason: "wrong unit", chat_id: "555", now: NOW });
+    let release!: () => void;
+    tick.run.mockImplementation(() => new Promise<void>((r) => { release = r; }));   // a review that is still running the model
+    const jobs = { grow: detachedJob(), growRequests: detachedJob() };
+    startGrowJobs(opts(s, mkTmp()), fakeWorker(s), NOW, jobs);
+    await jobs.growRequests.settled();
+    expect(s.store.getGrowItem(f.name)?.state).not.toBe("live");
+    expect(s.store.dueGrowRequests()).toEqual([]);
+    release(); await jobs.grow.settled();
   });
 });
