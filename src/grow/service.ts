@@ -49,7 +49,7 @@ export function trustItem(store: RunStore, name: string, now: string): boolean {
 export function submitText(r: SubmitResult): string {
   switch (r.status) {
     case "LIVE": return `LIVE: ${r.name} is live.`;
-    case "STAGED": return `STAGED: ${r.name} passed the formal checks and is waiting for review; it is not live yet. You will see the outcome in a later turn.`;
+    case "STAGED": return `STAGED: ${r.name} passed the formal checks and is queued; it is not live yet. You will see the outcome in a later turn.`;
     case "FAIL": return `FAIL ${r.code}: ${r.message}`;
     case "REFUSED": return `REFUSED ${r.code}`;
   }
@@ -215,14 +215,18 @@ export class GrowService {
     return prev === null || !isSmallUpdate(prev, f);
   }
 
-  /** A small update of a clean live skill publishes inside the submit: one retry, then the answer. */
+  /**
+   * A small update of a clean live skill publishes inside the submit: one retry, then the answer. A row left `approved`
+   * or `publishing` (held, or still retrying) is queued: the next reconcile publishes it, so the answer is STAGED.
+   */
   private async publishNow(id: number, name: string): Promise<SubmitResult> {
     let out: PublishOutcome;
     try {
       out = await this.publishLocked(id, true);
       if (out === "retry") out = await this.publishLocked(id, true);
-    } catch { console.error("[grow] submit: publish_failed"); return refused("zone_unavailable"); }
+    } catch (e) { console.error("[grow] submit: publish_failed"); this.latchOnZoneError(e); return refused("zone_unavailable"); }
     if (out === "published") return { status: "LIVE", name };
+    if (out === "held" || out === "retry") return { status: "STAGED", name };
     if (out !== "failed") return refused("zone_unavailable");
     const code = this.d.store.getGrowStaged(id)?.code;
     return { status: "FAIL", code: code === "duplicate" || code === "zone_full" ? code : "publish_failed", message: "the update could not be published" };
@@ -305,6 +309,8 @@ export class GrowService {
       const logged = (e: unknown): void => { console.error("[grow] reconcile: op_failed"); this.latchOnZoneError(e); };   // a code, never the error's text
       for (const op of this.d.store.pendingGrowOps()) await runOp(this.opDeps(), op, this.canWrite(commit)).catch(logged);
       for (const row of this.d.store.listGrowStaged("approved")) await this.publishLocked(row.id, commit).catch(logged);
+      // The last pending operation may have ended through failOp, which applies nothing: clear the apply page here too.
+      if (this.d.store.pendingGrowOps().length === 0) this.resolve("grow_zone_unavailable", APPLY);
     });
   }
 

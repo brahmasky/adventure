@@ -176,7 +176,7 @@ describe("A. the door and the review gate", () => {
 
   it("submitText renders each answer", () => {
     expect(submitText({ status: "LIVE", name: "a-b" })).toBe("LIVE: a-b is live.");
-    expect(submitText({ status: "STAGED", name: "a-b" })).toBe("STAGED: a-b passed the formal checks and is waiting for review; it is not live yet. You will see the outcome in a later turn.");
+    expect(submitText({ status: "STAGED", name: "a-b" })).toBe("STAGED: a-b passed the formal checks and is queued; it is not live yet. You will see the outcome in a later turn.");
     expect(submitText({ status: "REFUSED", code: "busy" })).toBe("REFUSED busy");
   });
 
@@ -551,6 +551,71 @@ describe("B. the operation log and crashes", () => {
     expect(await Promise.all(queued)).toEqual([true, true, true]);
     expect(ensure).toHaveBeenCalledTimes(1);
     expect(await svc.ensureZone({ wait: false })).toBe(true);
+  });
+
+  it("the apply page is cleared by reconcile once nothing is pending, even when the last operation ended through failOp", async () => {
+    const s = await growSetup(); const err = errSpy();
+    const a = growFields(); const b = OTHER();
+    const opA = await approvedOp(s, a);
+    await s.zone.writeAndCommit(a.name, renderSkillFile(a, "clean"), opMessage(opA, "add"));
+    const opB = await approvedOp(s, b);
+    const up = vi.spyOn(s.store, "upsertGrowItem").mockImplementationOnce(() => { throw new Error("disk"); });
+    blockWrite(s.zone, b.name);
+    await s.svc.reconcile(true);                                         // A's apply fails (page opens), B's write fails once
+    expect(zoneIncidents(s.store, "grow_zone_unavailable")).toHaveLength(1);
+    up.mockRestore();
+    blockWrite(s.zone, b.name);
+    await s.svc.reconcile(true);                                         // A applies while B is pending; B then fails for good
+    expect(s.store.getGrowOp(opA.id)?.state).toBe("done");
+    expect(s.store.getGrowOp(opB.id)?.state).toBe("failed");
+    expect(s.store.pendingGrowOps()).toEqual([]);
+    expect(zoneIncidents(s.store, "grow_zone_unavailable")).toEqual([]);
+    expect(err).toHaveBeenCalledWith("[grow] reconcile: op_failed");
+  });
+
+  it("a zone error in the inline publish of a small update latches the door", async () => {
+    const s = await growSetup(); const err = errSpy();
+    await s.live(growFields());
+    vi.spyOn(s.zone, "findOpCommit").mockRejectedValueOnce(new GrowZoneError("git_failed"));
+    expect(await s.svc.submit(small(growFields()), CLEAN)).toEqual({ status: "REFUSED", code: "zone_unavailable" });
+    expect(s.svc.disabledReason()).toBe("zone_unavailable");
+    expect(zoneIncidents(s.store, "grow_zone_unavailable")).toHaveLength(1);
+    expect(err).toHaveBeenCalledWith("[grow] submit: publish_failed");
+  });
+
+  it("a small update whose inline publish is held or still retrying is answered STAGED, and reconcile makes it live", async () => {
+    const s = await growSetup();
+    await s.live(growFields());
+    const pub = vi.spyOn(s.svc as unknown as { publishLocked: (id: number, c: boolean) => Promise<string> }, "publishLocked");
+    pub.mockResolvedValueOnce("held");
+    expect(await s.svc.submit(small(growFields()), CLEAN)).toEqual({ status: "STAGED", name: "unit-convert" });
+    pub.mockRestore();
+    await s.svc.reconcile(true);
+    expect(s.store.getGrowItem("unit-convert")?.content_hash).toBe(contentHash(small(growFields())));
+    const pub2 = vi.spyOn(s.svc as unknown as { publishLocked: (id: number, c: boolean) => Promise<string> }, "publishLocked");
+    pub2.mockResolvedValueOnce("retry").mockResolvedValueOnce("retry");
+    const edit = { ...growFields(), body: small(growFields()).body.replace("Step 5 of", "Step five of") };
+    expect(await s.svc.submit(edit, CLEAN)).toEqual({ status: "STAGED", name: "unit-convert" });
+    pub2.mockRestore();
+    await s.svc.reconcile(true);
+    expect(s.store.getGrowItem("unit-convert")?.content_hash).toBe(contentHash(edit));
+  });
+
+  it("a zone error inside publishStaged or seed latches the door", async () => {
+    const err = errSpy();
+    const a = await growSetup();
+    await a.svc.submit(growFields(), CLEAN);
+    const id = stagedOf(a.store, "unit-convert")[0]!.id;
+    a.svc.recordReview(id, PASS);
+    vi.spyOn(a.zone, "findOpCommit").mockRejectedValueOnce(new GrowZoneError("git_failed"));
+    await expect(a.svc.publishStaged(id)).rejects.toBeInstanceOf(GrowZoneError);
+    expect(a.svc.disabledReason()).toBe("zone_unavailable");
+    const b = await growSetup();
+    vi.spyOn(b.zone, "findOpCommit").mockRejectedValueOnce(new GrowZoneError("git_failed"));
+    expect(await b.svc.seed(growFields({ name: "option-comparison" }), "exemplar", "seed")).toBe("failed");
+    expect(b.svc.disabledReason()).toBe("zone_unavailable");
+    expect(zoneIncidents(b.store, "grow_zone_unavailable")).toHaveLength(1);
+    expect(err).toHaveBeenCalledWith("[grow] seed: op_failed");
   });
 
   it("I2: a submit first finishes a pending publish of that name whose commit exists, and is refused busy while one cannot be written", async () => {
