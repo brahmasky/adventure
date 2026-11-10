@@ -7,11 +7,13 @@ import { oncePerTrigger, replyTo } from "./memory-commands.js";
 const DAY_MS = 86_400_000;
 const MAX_LIST_CHARS = 3800;
 const FINDINGS_SHOWN = 3;
+const WAITING_LABEL: Readonly<Record<string, string>> = { approved: "approved, waiting to publish", publishing: "publishing" };
 /**
  * Houge or a reviewer wrote these lines: one inline-code span, so no link, command or mention in them is tappable. Backticks are stripped, so a span cannot be left early.
  * The shared adapter resends plain text when the rich send fails, and plain text auto-links, so the characters that start a link, command or mention are swapped for look-alikes first.
  */
-const defang = (s: string): string => s.replace(/\//g, "\u2215").replace(/@/g, "\uFF20").replace(/#/g, "\uFF03").replace(/(?<=[A-Za-z0-9])\.(?=[A-Za-z0-9])/g, "\u2024");
+const defang = (s: string): string => s.replace(/\//g, "\u2215").replace(/@/g, "\uFF20").replace(/#/g, "\uFF03").replace(/\$/g, "\uFF04")
+  .replace(/(?<=[\p{L}\p{N}])[.\u3002\uFF0E\uFF61](?=[\p{L}\p{N}])/gu, "\u2024"); // any letter, so IDN domains (\u043F\u0440\u0438\u043C\u0435\u0440.\u0440\u0444) and the CJK / full-width dots too
 const code = (s: string): string => {
   const t = defang(s.replace(/[`\r\n]+/g, " ").replace(/\s+/g, " ").trim());
   return t === "" ? "" : `\`${t}\``;
@@ -37,7 +39,7 @@ export function formatGrowList(store: RunStore, now: string): string {
     const hint = store.isGrowMarked(i.name) ? `\n/grow trust ${i.name} clears the mark` : "";
     return `**${i.name}** · ${liveLabel(store, i)} · used ${i.uses}×\n${code(i.description)}${hint}`;
   });
-  const waiting = store.listGrowStaged().filter((r) => r.state !== "failed").map((r) => `**${r.name}** · ${r.state === "publishing" ? "publishing" : "waiting for review"}`);
+  const waiting = store.listGrowStaged().filter((r) => r.state !== "failed").map((r) => `**${r.name}** · ${WAITING_LABEL[r.state] ?? "waiting for review"}`);
   const failed = store.listGrowStaged("failed")
     .filter((r) => !NOT_A_FAILURE.has(r.code ?? "") && Date.parse(now) - Date.parse(r.updated_at) < 14 * DAY_MS)
     .map((r) => `**${r.name}** · failed (${r.code ?? "review_failed"})${findingsOf(r.findings_json)}`);

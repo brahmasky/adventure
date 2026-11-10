@@ -53,6 +53,14 @@ describe("/grow", () => {
     for (const bad of ["://", "evil.example", "/kill", "@x", "#x"]) { expect(text).not.toContain(bad); expect(html).not.toContain(bad); }
   });
 
+  it("defangs dots next to any letter and the CJK / full-width dots, and cashtags", async () => {
+    const s = await growSetup();
+    await s.live(growFields({ description: "visit пример.рф or evilé.com or evil。com or evil．com or evil｡com, buy $USD" }));
+    const text = formatGrowList(s.store, NOW);
+    for (const bad of ["пример.рф", "evilé.com", "evil。com", "evil．com", "evil｡com", "$USD"]) expect(text).not.toContain(bad);
+    expect(text).toContain("пример․рф");
+  });
+
   it("stops at whole entries under the message bound and says how many it left out", async () => {
     const s = await growSetup();
     for (let i = 0; i < 200; i++) {
@@ -119,14 +127,14 @@ describe("/grow", () => {
     expect(formatGrowList(s.store, "2026-11-25T12:00:00.000Z")).not.toContain("failed (review_failed)");
   });
 
-  it("shows an approved row as waiting for review, and an orphan with its adopt command", async () => {
+  it("shows an approved row as waiting to publish, and an orphan with its adopt command", async () => {
     const s = await growSetup();
     await s.svc.submit(growFields(), CLEAN);
     s.svc.recordReview(s.store.listGrowStaged("staged")[0]!.id, PASS);
     expect(s.store.listGrowStaged("approved")).toHaveLength(1);
     s.store.upsertGrowItem({ name: "stray-skill", state: "orphan", origin: "clean", description: "left in the repository", example: "x", head_commit: null, content_hash: "h", body_hash: "b" }, NOW);
     const text = formatGrowList(s.store, NOW);
-    expect(text).toContain("**unit-convert** · waiting for review");
+    expect(text).toContain("**unit-convert** · approved, waiting to publish");
     expect(text).toContain("**stray-skill** · in the repository but unknown to me · `houge grow adopt stray-skill`");
   });
 
