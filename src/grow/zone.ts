@@ -8,6 +8,10 @@ export class GrowZoneError extends Error {
 }
 export const skillPath = (name: string): string => `skills/${name}/SKILL.md`;
 const IDENTITY = ["-c", "user.name=Houge", "-c", "user.email=houge@localhost", "-c", "commit.gpgsign=false"];
+/** Global config off does not switch off `~/.config/git/attributes`; this does. */
+const NO_ATTRIBUTES_FILE = ["-c", "core.attributesFile=/dev/null"];
+/** Files in `.git` that would make git read config from somewhere other than the byte-checked `.git/config`. */
+const CONFIG_REDIRECTS = ["commondir", "config.worktree"];
 /**
  * The only repository config the zone accepts. `ensure(true)` writes it right after `git init`, and `assertToplevel`
  * fails closed unless `.git/config` is exactly this: a planted `[filter]`, `[core] hooksPath` or alias then never runs.
@@ -22,9 +26,10 @@ export class GrowZone {
   constructor(dir: string, private readonly opts: { signal?: AbortSignal } = {}) { this.dir = resolve(dir); }
 
   private async git(args: string[]): Promise<string> {
-    const env = { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: process.env.HOME ?? "", GIT_CEILING_DIRECTORIES: dirname(this.dir) };
+    // GIT_COMMON_DIR pins the common dir to `.git` itself: a planted `.git/commondir` cannot lend another repository's config.
+    const env = { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: process.env.HOME ?? "", GIT_CEILING_DIRECTORIES: dirname(this.dir), GIT_COMMON_DIR: join(this.dir, ".git") };
     try {
-      const r = await hardenedGit(["--git-dir", join(this.dir, ".git"), "--work-tree", this.dir, ...IDENTITY, ...args],
+      const r = await hardenedGit(["--git-dir", join(this.dir, ".git"), "--work-tree", this.dir, ...IDENTITY, ...NO_ATTRIBUTES_FILE, ...args],
         { env, cwd: this.dir, timeout: GIT_TIMEOUT_MS, maxBuffer: 4 * 1024 * 1024, ...(this.opts.signal ? { signal: this.opts.signal } : {}) });
       return r.stdout;
     } catch (e) { throw new GrowZoneError("git_failed", { cause: e }); }
@@ -64,7 +69,8 @@ export class GrowZone {
    * itself. What stops git climbing into an enclosing repository, or into another one, is the explicit `--git-dir`
    * (no discovery), `<dir>/.git` being a real directory (not a gitfile or symlink that redirects), and
    * `GIT_CEILING_DIRECTORIES` in every call's environment. What stops planted config from running commands is the
-   * byte-exact config and the absence of attribute files (a filter needs both a definition and an attribute).
+   * byte-exact config, the pinned common dir (and no `commondir` or `config.worktree` file to redirect it), and the
+   * absence of attribute files anywhere in the tree (a filter needs both a definition and an attribute).
    */
   async assertToplevel(): Promise<void> {
     const dotGit = join(this.dir, ".git");
@@ -72,9 +78,8 @@ export class GrowZone {
     let config: string;
     try { config = readFileSync(join(dotGit, "config"), "utf8"); } catch (e) { throw new GrowZoneError("not_toplevel", { cause: e }); }
     if (config !== CANONICAL_CONFIG) throw new GrowZoneError("not_toplevel");
-    if (lstatOrNull(join(this.dir, ".gitattributes")) !== null || lstatOrNull(join(dotGit, "info", "attributes")) !== null) {
-      throw new GrowZoneError("not_toplevel");
-    }
+    if (CONFIG_REDIRECTS.some((f) => lstatOrNull(join(dotGit, f)) !== null)) throw new GrowZoneError("not_toplevel");
+    if (lstatOrNull(join(dotGit, "info", "attributes")) !== null || holdsAttributes(this.dir, true)) throw new GrowZoneError("not_toplevel");
     const top = (await this.git(["rev-parse", "--show-toplevel"])).trim();
     if (realpathSync(top) !== realpathSync(this.dir)) throw new GrowZoneError("not_toplevel");
   }
@@ -170,6 +175,13 @@ export function isEmptyRepo(gitDir: string): boolean {
     }
     return true;
   } catch { return false; }
+}
+
+/** True when a `.gitattributes` of any type sits anywhere under `dir`; symlinks are not followed, the zone's own `.git` is skipped. */
+function holdsAttributes(dir: string, top = false): boolean {
+  let entries;
+  try { entries = readdirSync(dir, { withFileTypes: true }); } catch (e) { throw new GrowZoneError("not_toplevel", { cause: e }); }
+  return entries.some((e) => e.name === ".gitattributes" || (e.isDirectory() && !(top && e.name === ".git") && holdsAttributes(join(dir, e.name))));
 }
 
 function hasFile(dir: string): boolean {

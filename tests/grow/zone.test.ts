@@ -123,6 +123,46 @@ describe("grow zone repository", () => {
     await expect(z.assertToplevel()).rejects.toMatchObject({ code: "not_toplevel" });
   });
 
+  /** A second repository whose config defines a filter that touches `marker`: what a planted commondir would borrow. */
+  const evilCommon = (root: string, marker: string): string => {
+    const evil = join(root, "evil"); execFileSync("git", ["init", "-q", evil]);
+    writeFileSync(join(evil, ".git", "config"), `${CANONICAL_CONFIG}[filter "evil"]\n\tclean = touch ${marker}; cat\n\tsmudge = touch ${marker}; cat\n`);
+    return join(evil, ".git");
+  };
+
+  it("never runs a filter from a planted commondir plus a nested .gitattributes: the zone refuses and no command runs", async () => {
+    const root = tmp(); const dir = join(root, "grow"); const z = new GrowZone(dir); await z.ensure(true);
+    const marker = join(root, "filter-ran");
+    writeFileSync(join(dir, ".git", "commondir"), `${evilCommon(root, marker)}\n`);
+    mkdirSync(join(dir, "skills", "unit-convert"), { recursive: true });
+    writeFileSync(join(dir, "skills", "unit-convert", ".gitattributes"), "* filter=evil\n");
+    await expect(z.writeAndCommit("unit-convert", "v1\n", "m")).rejects.toBeInstanceOf(GrowZoneError);
+    await expect(z.restoreToHead()).rejects.toBeInstanceOf(GrowZoneError);
+    expect(existsSync(marker)).toBe(false);
+  });
+
+  it.each([
+    ["a planted .git/commondir", (dir: string, root: string) => { writeFileSync(join(dir, ".git", "commondir"), `${evilCommon(root, join(root, "m"))}\n`); }],
+    ["a planted .git/config.worktree", (dir: string) => { writeFileSync(join(dir, ".git", "config.worktree"), "[core]\n\thooksPath = /tmp\n"); }],
+    ["a .gitattributes in a skill folder", (dir: string) => { mkdirSync(join(dir, "skills", "x"), { recursive: true }); writeFileSync(join(dir, "skills", "x", ".gitattributes"), "* text\n"); }],
+    ["a .gitattributes deep in the tree", (dir: string) => { mkdirSync(join(dir, "a", "b", "c"), { recursive: true }); writeFileSync(join(dir, "a", "b", "c", ".gitattributes"), "* text\n"); }]
+  ])("refuses %s alone", async (_n, plant) => {
+    const root = tmp(); const dir = join(root, "grow"); const z = new GrowZone(dir); await z.ensure(true);
+    plant(dir, root);
+    await expect(z.assertToplevel()).rejects.toMatchObject({ code: "not_toplevel" });
+  });
+
+  it("never reads the attributes file under HOME, which global config off does not switch off", async () => {
+    const root = tmp(); const home = join(root, "home"); mkdirSync(join(home, ".config", "git"), { recursive: true });
+    writeFileSync(join(home, ".config", "git", "attributes"), "* text eol=lf\n");   // would turn CRLF into LF on add
+    const saved = process.env.HOME; process.env.HOME = home;
+    try {
+      const z = new GrowZone(join(root, "grow")); await z.ensure(true);
+      await z.writeAndCommit("unit-convert", "a\r\nb\r\n", "m");
+      expect(await z.readHead("unit-convert")).toBe("a\r\nb\r\n");
+    } finally { process.env.HOME = saved; }
+  });
+
   it("refuses .git/info/attributes alone", async () => {
     const dir = join(tmp(), "grow"); const z = new GrowZone(dir); await z.ensure(true);
     mkdirSync(join(dir, ".git", "info"), { recursive: true });
