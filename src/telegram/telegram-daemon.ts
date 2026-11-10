@@ -55,7 +55,6 @@ import { BACKUP_DIR_NAME, resolveBackupEnabled, runDbBackupTick } from "../run/d
 import type { LlmCallRole, ReloadMarker, RunStore } from "../run/run-store.js";
 import { openAlertedIncident, runIncidentReminder } from "../run/incident-alert.js";
 import { maybeFireScheduledTasks } from "../run/schedule-tick.js";
-import { SkillStore } from "../skills/skill-store.js";
 import { runInvariantSweep, type InvariantSweepInput, type InvariantSweepResult } from "../run/invariant-sweep.js";
 import { clearParkMarker, readParkMarker } from "../run/tombstone.js";
 import { classifyBoot, hostBootedAt, readBootCode, type BootCode } from "../status/houge-status.js";

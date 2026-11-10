@@ -511,11 +511,9 @@ most, it can never break a turn. Use `/grow` to view the skills.
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `HOUGE_SKILLS_ENABLED` | `on` | Kill switch for the ambient skills layer. Skills are read-only/low-risk, so this defaults **on** — only an explicit `0`/`false`/`no`/`off` disables it, in which case the composer omits the skills section (composing byte-identically to a no-skills run). |
+| `HOUGE_SKILLS_ENABLED` | `on` | Kill switch for Houge's own procedures: off removes the grow index from the prompt and both grow tools. Default on. In `DISARM_FLAGS`. |
 | `HOUGE_GROW_ENABLED` | `on` | Switch for writes to the grow zone (ADR 0035). Only `0`/`false`/`no`/`off` disable it: `grow_submit` then answers `grow_disabled` and the index drops its sentence about writing; the index and `grow_read` keep working. In `DISARM_FLAGS`. |
 | `HOUGE_GROW_DIR` | `~/Library/Application Support/houge/grow` | The grow zone: Houge's own local git repository of skills, outside the code checkout and never pushed. An override is ignored, and the default used, when it is not absolute, is fewer than three path segments deep, is the home directory or an ancestor of it, overlaps the code checkout or the data directory in either direction (compared case-insensitively), or is `~/.omp` or inside it. Write-denied to every sandboxed child. |
-| `HOUGE_SKILL_MAX_PER_SCOPE` | `4` | Max skills folded into a prompt per scope (alphabetical by filename; the rest are dropped). Bounds the prompt and keeps self-selection precise. |
-| `HOUGE_SKILL_REFINE_PASSES` | `3` | Max **guided-refine** passes for a blocked auto-authored skill (the paper peaks at 3). Each pass re-authors the draft against Gate B's specific failing criteria, then re-verifies. |
 
 ### Gate B — the anchor verifier (Phase 2c)
 

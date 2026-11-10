@@ -235,16 +235,8 @@ export interface ComposeOptions {
   lessonsReader?: (scope: string) => string | undefined;
   /** Read lessons from a different scope (e.g. the critique pass reuses `research` lessons). */
   lessonsScope?: string;
-  /**
-   * Injected skills-block reader (Phase 2a): `(scope) => block | undefined`. Like
-   * `lessonsReader`, when absent (or it returns nothing) the skills section is omitted —
-   * so a run with no skills composes byte-identically to today (eval goldens unaffected).
-   */
-  skillsReader?: (scope: string) => string | undefined;
-  /** The omp planner's own procedures: an index, never bodies (ADR 0035). Rendered instead of the skills section. */
+  /** The omp planner's own procedures: an index, never bodies (ADR 0035). */
   growIndex?: () => string | undefined;
-  /** Read skills from a different scope (e.g. the critique pass reuses `research` skills). */
-  skillsScope?: string;
   /**
    * Injected episodic-facts reader (Phase M B3): `() => block | undefined`. Zero-arg
    * on purpose — unlike lessons/skills (scope-keyed), episodic facts are CHAT-keyed
@@ -288,8 +280,6 @@ export function composeSystemPrompt(
   const discipline = DISCIPLINES[surface] ?? "";
   const lessonsScope = options.lessonsScope ?? surface;
   const lessons = options.lessonsReader?.(lessonsScope);
-  const skillsScope = options.skillsScope ?? surface;
-  const skills = options.skillsReader?.(skillsScope);
   const grow = options.growIndex?.();
   const core = options.coreReader?.();
   const episodic = options.episodicReader?.();
@@ -299,7 +289,7 @@ export function composeSystemPrompt(
     temporalContext(options.now),
     identity,
     discipline,
-    grow ? `## Your procedures (grow zone)\n${grow}` : skills ? `## Skills — apply when relevant\n${skills}` : "",
+    grow ? `## Your procedures (grow zone)\n${grow}` : "",
     // Always-known biography grounds the answer BEFORE the scored episodic recollection.
     core ? `${CORE_FACTS_SECTION_HEADER}\n${core}` : "",
     episodic ? `${EPISODIC_SECTION_HEADER}\n${episodic}` : "",

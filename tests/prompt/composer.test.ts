@@ -79,47 +79,18 @@ describe("composeSystemPrompt", () => {
     expect(prompt).toContain("check the math");
   });
 
-  it("folds the scope's skills block in with a when: line when the reader supplies one", () => {
-    const root = memoryRoot("I am 猴哥.");
-    const prompt = composeSystemPrompt(root, "research", {
-      skillsReader: reader({
-        research: "### cross-check — when: comparing figures\nVerify each number against its source."
-      })
-    });
-    expect(prompt).toContain("## Skills — apply when relevant");
-    expect(prompt).toContain("when: comparing figures");
-    expect(prompt).toContain("Verify each number against its source.");
-  });
-
-  it("is byte-identical when no skills reader vs a reader that returns nothing (goldens safe)", () => {
-    const root = memoryRoot("I am 猴哥.");
-    const now = new Date("2026-06-19T00:00:00.000Z");
-    const baseline = composeSystemPrompt(root, "research", { now });
-    const withEmptyReader = composeSystemPrompt(root, "research", { now, skillsReader: () => undefined });
-    expect(withEmptyReader).toBe(baseline);
-  });
-
-  it("skillsScope override lets the critique reuse research skills", () => {
-    const root = memoryRoot("I am 猴哥.");
-    const prompt = composeSystemPrompt(root, "research-critique", {
-      skillsReader: reader({ research: "### cross-check — when: comparing figures\nmethod body" }),
-      skillsScope: "research"
-    });
-    expect(prompt).toContain("method body");
-  });
-
   it("folds the episodic block in under its header when the reader supplies one (Phase M B3)", () => {
     const root = memoryRoot("I am 猴哥.");
     const prompt = composeSystemPrompt(root, "ask", {
       episodicReader: () => "- Paco lives in Sydney\n- Paco 喜欢周末骑车",
       lessonsReader: reader({ ask: "- be concise" }),
-      skillsReader: reader({ ask: "### s — when: x\nbody" })
+      growIndex: () => "- unit-convert — converting"
     });
     expect(prompt).toContain(EPISODIC_SECTION_HEADER);
     expect(prompt).toContain("- Paco lives in Sydney");
-    // Placement: between skills and lessons — memory grounds the answer before
+    // Placement: between the grow procedures and lessons — memory grounds the answer before
     // behavioural preferences shape it.
-    expect(prompt.indexOf("## Skills — apply when relevant")).toBeLessThan(prompt.indexOf(EPISODIC_SECTION_HEADER));
+    expect(prompt.indexOf("## Your procedures (grow zone)")).toBeLessThan(prompt.indexOf(EPISODIC_SECTION_HEADER));
     expect(prompt.indexOf(EPISODIC_SECTION_HEADER)).toBeLessThan(prompt.indexOf("## What you've learned"));
   });
 

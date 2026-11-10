@@ -58,7 +58,6 @@ import {
 } from "./quarantine.js";
 import { composeSystemPrompt, memoryRootFor } from "../prompt/composer.js";
 import { resolveLocalTimeZone, resolveTimeZone } from "../prompt/tz-convert.js";
-import { resolveSkillMaxPerScope, resolveSkillsEnabled, SkillStore } from "../skills/skill-store.js";
 import { resolveWebMaxResults } from "../web/registry.js";
 import type { WebResult } from "../web/types.js";
 import { llmToolAdapter, oneShotAdapter, reportOmpCheck, RUNNER_TIMEOUT_BUFFER_MS, seatBudgetMs } from "../llm/registry.js";
@@ -176,7 +175,7 @@ import { buildSystemPrompt, quotedLine, type TurnContextDeps, type TurnRetrieval
 import { noRetrieval, telemetryOf, type GatedRetrieval } from "../run/relevance-gate.js";
 import { readTombstone } from "../run/tombstone.js";
 import { chatWorkspace } from "../omp/workspace.js";
-import { resolveGrowDir, resolveGrowEnabled } from "../grow/flags.js";
+import { resolveGrowDir, resolveGrowEnabled, resolveSkillsEnabled } from "../grow/flags.js";
 import { GrowService, submitText } from "../grow/service.js";
 import { GrowZone } from "../grow/zone.js";
 import { installedBinaryDirs, type PathContext } from "../omp/protected-paths.js";
@@ -536,14 +535,8 @@ export class CoreWorker {
     this.httpFetchAdapter = httpFetchAdapter ?? createHttpFetchAdapter();
     this.timeConvertAdapter = timeConvertAdapter ?? createTimeConvertAdapter();
     this.embedAdapter = embedAdapter ?? ((text) => embedText(text, resolveEmbedConfig(process.env)));
-    this.skillStore = new SkillStore({
-      root: join(projectRoot, "skills"),
-      maxPerScope: resolveSkillMaxPerScope(process.env)
-    });
   }
 
-  /** Ambient skills live as markdown under `<projectRoot>/skills/<scope>/` (Phase 2a). */
-  private readonly skillStore: SkillStore;
   /** One planner supervisor per chat (created on the chat's first turn). */
   private readonly supervisors = new Map<string, PlannerSupervisor>();
   /** Live omp turns' loop-tool state, by run id. */
@@ -913,9 +906,7 @@ export class CoreWorker {
       process.env.HOUGE_ASK_SYSTEM_PROMPT ??
       composeSystemPrompt(memoryRootFor(this.projectRoot), "ask", {
         lessonsReader: this.lessonsReader(),
-        lessonsScope: scope,
-        skillsReader: this.skillsReader(),
-        skillsScope: scope
+        lessonsScope: scope
       });
     const result = await new CapabilityRunner(registry).execute({
       contract: claim.contract,
@@ -1045,8 +1036,7 @@ export class CoreWorker {
       input: {
         question: synthQuestion,
         system: composeSystemPrompt(memoryRoot, "research", {
-          lessonsReader: this.lessonsReader(),
-          skillsReader: this.skillsReader()
+          lessonsReader: this.lessonsReader()
         })
       },
       budget
@@ -1070,9 +1060,7 @@ export class CoreWorker {
         ),
         system: composeSystemPrompt(memoryRoot, "research-critique", {
           lessonsReader: this.lessonsReader(),
-          lessonsScope: "research",
-          skillsReader: this.skillsReader(),
-          skillsScope: "research"
+          lessonsScope: "research"
         })
       },
       budget
@@ -1259,16 +1247,6 @@ export class CoreWorker {
   }
 
   /**
-   * The composer's skills-block reader: read the scope's ambient procedures (≤cap). The
-   * kill switch lives here — `HOUGE_SKILLS_ENABLED` off → the reader returns undefined for
-   * every scope → the composer omits the skills section (byte-identical to a no-skills run).
-   */
-  private skillsReader(): (scope: string) => string | undefined {
-    if (!resolveSkillsEnabled(process.env)) return () => undefined;
-    return (scope) => this.skillStore.readScopeBlock(scope);
-  }
-
-  /**
    * The `selfcode` branch (ADR 0011, Phase 1 — code self-diagnose). Houge reads his OWN
    * source: frame the question (the user's report + focus + recent thread as DATA, the
    * untrusted-data channel — never the system prompt), consult Codex **read-only** in a
@@ -1349,9 +1327,7 @@ export class CoreWorker {
         question: buildSelfDiagnoseRelayQuestion(message, diagnosis),
         system: composeSystemPrompt(memoryRootFor(this.projectRoot), "selfcode", {
           lessonsReader: this.lessonsReader(),
-          lessonsScope: "ask",
-          skillsReader: this.skillsReader(),
-          skillsScope: "ask"
+          lessonsScope: "ask"
         })
       },
       budget
