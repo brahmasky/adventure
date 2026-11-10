@@ -1,6 +1,7 @@
-import { homedir } from "node:os";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { resolveGrowDir, resolveGrowEnabled, resolveSkillsEnabled } from "../../src/grow/flags.js";
 
 const DEFAULT = "/Users/x/Library/Application Support/houge/grow";
@@ -44,6 +45,37 @@ describe("grow flags", () => {
     expect(resolveGrowDir({ HOUGE_GROW_DIR: "/data/a/b/../../../../Users/x" }, "/Users/x")).toBe(DEFAULT);
     expect(resolveGrowDir({ HOUGE_GROW_DIR: "/Users/x/Library/../" }, "/Users/x")).toBe(DEFAULT);
   });
+  describe("through a symlink", () => {
+    const dirs: string[] = [];
+    afterEach(() => { for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true }); });
+    /** A real temp root (tmpdir itself sits behind /var → /private/var), with a checkout, a data dir and a home inside. */
+    const world = () => {
+      const t = mkdtempSync(join(tmpdir(), "grow-flags-")); dirs.push(t);
+      const repo = join(t, "repo"), data = join(t, "data"), home = join(t, "home", "me");
+      for (const d of [repo, data, join(home, ".omp")]) mkdirSync(d, { recursive: true });
+      return { t, repo, data, home, fallback: join(home, "Library", "Application Support", "houge", "grow") };
+    };
+
+    it("refuses an override whose real path lands inside an avoided dir, ~/.omp or the home itself", () => {
+      const w = world();
+      symlinkSync(w.repo, join(w.t, "to-repo")); symlinkSync(join(w.home, ".omp"), join(w.t, "to-omp")); symlinkSync(join(w.t, "home"), join(w.t, "to-homes"));
+      const pick = (dir: string): string => resolveGrowDir({ HOUGE_GROW_DIR: dir }, w.home, [w.repo, w.data]);
+      for (const bad of [join(w.t, "to-repo", "grow"), join(w.t, "to-repo"), join(w.t, "to-omp", "grow"), join(w.t, "to-homes")]) expect(pick(bad), bad).toBe(w.fallback);
+      expect(pick(join(w.t, "zone", "grow"))).toBe(join(w.t, "zone", "grow"));
+    });
+
+    it("compares real paths on both sides: an avoided dir given by a symlink spelling still bites", () => {
+      const w = world();
+      symlinkSync(w.repo, join(w.t, "repo-link"));
+      expect(resolveGrowDir({ HOUGE_GROW_DIR: join(w.repo, "grow") }, w.home, [join(w.t, "repo-link")])).toBe(w.fallback);
+    });
+
+    it("keeps the override's own spelling when its real path is allowed", () => {
+      const w = world(); mkdirSync(join(w.t, "real-zone")); symlinkSync(join(w.t, "real-zone"), join(w.t, "zone-link"));
+      expect(resolveGrowDir({ HOUGE_GROW_DIR: join(w.t, "zone-link", "grow") }, w.home, [w.repo, w.data])).toBe(join(w.t, "zone-link", "grow"));
+    });
+  });
+
   it("is pinned away from the real home directory for the whole suite", () => {
     expect(resolveGrowDir(process.env, homedir()).startsWith(join(homedir(), "Library"))).toBe(false);
   });
