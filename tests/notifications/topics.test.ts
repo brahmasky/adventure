@@ -11,7 +11,7 @@ describe("TOPIC_ROUTE (spec 2026-11-03 §4.1)", () => {
   });
   it("keeps every reply, report, approval, card and the storm summary in chat", () => {
     for (const t of ["reply", "run_report", "approval", "memory_card", "rating_ask", "urgent", "idea_panel", "self_write",
-      "budget_fuse", "improve_job", "improve_card", "jev_card", "mail_card", "model_card", "incident_page", "incident_reminder", "incident_summary"] as const) {
+      "budget_fuse", "improve_card", "jev_card", "mail_card", "model_card", "incident_page", "incident_reminder", "incident_summary"] as const) {
       expect(TOPIC_ROUTE[t]).toBe("chat");
       expect(isLogTopic(t)).toBe(false);
     }

@@ -34,7 +34,6 @@ import { pacoAddress, resolveMailEnabled } from "../mail/flag.js";
 import { clearAuthPauseAtBoot, runMailTick } from "../mail/poller.js";
 import { runMailRetention } from "../mail/retention.js";
 import { evolutionLaneSettled, evolutionLaneSnapshot } from "../core/evolution-lane.js";
-import { reconcileJobsAtBoot } from "../core/skill-job.js";
 import type { TelegramAllowlist } from "../domain/types.js";
 import { Gateway } from "../gateway/gateway.js";
 import { ANCHOR_DIR, bootJevAnchor } from "../decisions/jev-anchor-import.js";
@@ -298,12 +297,6 @@ export async function runTelegramDaemon(
   const marker = consumeReloadMarkerAtBoot(options.store);
   notifyReloadOnBoot(options, marker);
   const bootId = recordBoot(options, marker, startedAt);
-  try { // the evolution lane is in-memory: a job left running by the last process can never finish (2b-ii §5.2)
-    reconcileJobsAtBoot(options.store, new SkillStore({ root: join(options.projectRoot, "skills") }),
-      options.allowlist.chats[0] ? String(options.allowlist.chats[0].telegram_chat_id) : null, startedAt);
-  } catch (error) {
-    console.error(`[telegram-daemon] improvement job boot reconcile failed: ${errorCode(error)}`);
-  }
   await bootGrowZone(options, worker, startedAt); // the zone is consistent before anything is seeded; a failure here leaves the zone usable
   // the retry step first: a reply that went stale while the daemon was down is abandoned before this flush can send it
   await flushLogged({ retry: true }); // best-effort: the poll loop re-dispatches queued notifications anyway

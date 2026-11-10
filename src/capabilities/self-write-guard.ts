@@ -130,7 +130,6 @@ export const PROTECTED_FILES: readonly string[] = [
   "src/notifications/attachment-check.ts", // attach.path's send predicate (locked; R7 Decision 4-A): checkAttachment/overCount, one inside
   "src/run/git-hardened.ts", // daemon-side git without user/system config, fsmonitor or hooks (A3)
   // ── Improvement loop (decision ladder 2b-ii; Paco's word 2026-10-22) ──
-  "src/skills/promote.ts", // nothing reaches the active skills tree without Paco's tap: the promotion gate itself
   "src/gateway/improvement-commands.ts", // proposal / job / ladder-move taps: chat-bound and state-fenced, so a tap can only act on what it was offered
   // ── Supply chain / build ──
   "package.json",

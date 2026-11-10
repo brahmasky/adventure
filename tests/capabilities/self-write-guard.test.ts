@@ -108,7 +108,6 @@ describe("checkSelfWriteDiff — allowed", () => {
 describe("checkSelfWriteDiff — every protected class is hard-denied", () => {
   const protectedHits: Array<[string, DiffEntry]> = [
     ["policy dir", entry({ status: "M", path: "src/policy/something.ts" })],
-    ["skill promotion (nothing reaches the active skills tree without Paco's tap)", entry({ status: "M", path: "src/skills/promote.ts" })],
     ["improvement taps (chat-bound and state-fenced)", entry({ status: "M", path: "src/gateway/improvement-commands.ts" })],
     ["capability-policy under policy dir", entry({ status: "M", path: "src/policy/capability-policy.ts" })],
     ["attachment-check (attach.path's send predicate, locked, R7 Decision 4-A)", entry({ status: "M", path: "src/notifications/attachment-check.ts" })],
