@@ -52,6 +52,10 @@ describe("ADR 0035 G3: review is an enforced gate", () => {
     const row = s.store.listGrowStaged("staged")[0]!;
     expect(await s.svc.publishStaged(row.id)).toBe("not_approved");
     expect(s.store.getGrowItem("unit-convert")?.state).not.toBe("live");
+    // The review check itself, not the state check: a row that reads `approved` with no passing review is still refused.
+    s.store.patchGrowStaged(row.id, { state: "approved" }, "2026-11-10T11:00:00.000Z");
+    expect(await s.svc.publishStaged(row.id)).toBe("not_approved");
+    expect(s.store.getGrowItem("unit-convert")?.state).not.toBe("live");
   });
 });
 
@@ -61,14 +65,14 @@ describe("ADR 0035 G2: one door into the zone's repository", () => {
     expect(callers.filter((p) => p !== join("src", "grow", "ops.ts"))).toEqual([]);
   });
   it("nothing in src writes the old skills folder", () => {
-    const hits = walk("src").filter((f) => /join\([^)]*["']skills["']\)/.test(readFileSync(join(root, f), "utf8")) && !f.includes("/grow/"));
+    const hits = walk("src").filter((f) => /join\([^)]*["']skills["']|\$\{[^}]*\}\/skills\b/.test(readFileSync(join(root, f), "utf8")) && !f.includes("/grow/"));
     expect(hits).toEqual([]);
   });
 });
 
 describe("ADR 0035 G5: undo reasons and reviews are append-only", () => {
   it("no source file deletes or updates a grow_undo_reasons or grow_reviews row, so Houge cannot unsay a reason or a verdict", () => {
-    const hits = walk("src").filter((p) => /(DELETE FROM|UPDATE)\s+grow_(undo_reasons|reviews)\b/.test(readFileSync(join(root, p), "utf8")));
+    const hits = walk("src").filter((p) => /(DELETE\s+FROM|UPDATE|(?:INSERT\s+OR\s+)?REPLACE\s+INTO)\s+grow_(undo_reasons|reviews)\b/i.test(readFileSync(join(root, p), "utf8")));
     expect(hits).toEqual([]);
   });
 });
@@ -106,7 +110,7 @@ describe("ADR 0035 G4: the trust rule", () => {
 });
 
 describe("ADR 0035 / ADR 0034 §10.4: recurrence gives a hint, never a job", () => {
-  const startsJob = /insertImprovementJob\(|startSkillJob\(|enqueueFromRecurrence\(/;
+  const startsJob = /insertImprovementJob\(|startSkillJob\(|enqueueFromRecurrence\(|INSERT\s+(OR\s+\w+\s+)?INTO\s+improvement_jobs/i;
   it("the improve tick and the improvement taps start no skill job: a recurrence or a skill Accept records a grow hint", () => {
     for (const f of [join("src", "improve", "tick.ts"), join("src", "gateway", "improvement-commands.ts")]) {
       const text = readFileSync(join(root, f), "utf8");
@@ -115,7 +119,7 @@ describe("ADR 0035 / ADR 0034 §10.4: recurrence gives a hint, never a job", () 
     }
   });
   it("no source file inserts an improvement job", () => {
-    const hits = walk("src").filter((f) => startsJob.test(readFileSync(join(root, f), "utf8")) && !f.endsWith("run-store.ts"));
+    const hits = walk("src").filter((f) => startsJob.test(readFileSync(join(root, f), "utf8")));
     expect(hits).toEqual([]);
   });
 });
