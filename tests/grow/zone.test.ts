@@ -170,7 +170,9 @@ describe("grow zone repository", () => {
     ["a planted .git/commondir", (dir: string, root: string) => { writeFileSync(join(dir, ".git", "commondir"), `${evilCommon(root, join(root, "m"))}\n`); }],
     ["a planted .git/config.worktree", (dir: string) => { writeFileSync(join(dir, ".git", "config.worktree"), "[core]\n\thooksPath = /tmp\n"); }],
     ["a .gitattributes in a skill folder", (dir: string) => { mkdirSync(join(dir, "skills", "x"), { recursive: true }); writeFileSync(join(dir, "skills", "x", ".gitattributes"), "* text\n"); }],
-    ["a .gitattributes deep in the tree", (dir: string) => { mkdirSync(join(dir, "a", "b", "c"), { recursive: true }); writeFileSync(join(dir, "a", "b", "c", ".gitattributes"), "* text\n"); }]
+    ["a .gitattributes deep in the tree", (dir: string) => { mkdirSync(join(dir, "a", "b", "c"), { recursive: true }); writeFileSync(join(dir, "a", "b", "c", ".gitattributes"), "* text\n"); }],
+    // APFS folds case: git opening `.gitattributes` reads this file
+    ["an upper-case .GITATTRIBUTES", (dir: string) => { mkdirSync(join(dir, "skills"), { recursive: true }); writeFileSync(join(dir, "skills", ".GITATTRIBUTES"), "* ident\n"); }]
   ])("refuses %s alone", async (_n, plant) => {
     const root = tmp(); const dir = join(root, "grow"); const z = new GrowZone(dir); await z.ensure(true);
     plant(dir, root);
@@ -186,6 +188,49 @@ describe("grow zone repository", () => {
       await z.writeAndCommit("unit-convert", "a\r\nb\r\n", "m");
       expect(await z.readHead("unit-convert")).toBe("a\r\nb\r\n");
     } finally { process.env.HOME = saved; }
+  });
+
+  it("never reads another repository's history through a planted commondir: every read refuses", async () => {
+    const root = tmp(); const z = new GrowZone(join(root, "grow")); await z.ensure(true);
+    await z.writeAndCommit("unit-convert", "ZONE\n", "m");
+    const f = new GrowZone(join(root, "foreign")); await f.ensure(true);
+    await f.writeAndCommit("unit-convert", "FOREIGN\n", "m"); await f.writeAndCommit("planted", "EVIL\n", "m");
+    writeFileSync(join(z.dir, ".git", "commondir"), `${join(f.dir, ".git")}\n`);
+    await expect(z.readHead("unit-convert")).rejects.toMatchObject({ code: "not_toplevel" });
+    await expect(z.listHead()).rejects.toMatchObject({ code: "not_toplevel" });
+    await expect(z.head()).rejects.toMatchObject({ code: "not_toplevel" });
+  });
+
+  it("publishes past a planted .gitignore and a nested repository, and restoreToHead removes both", async () => {
+    const dir = join(tmp(), "grow"); const z = new GrowZone(dir); await z.ensure(true);
+    writeFileSync(join(dir, ".gitignore"), "*\n");
+    expect(await z.writeAndCommit("unit-convert", "v1\n", "m")).toMatch(/^[0-9a-f]{40}$/);
+    await z.restoreToHead();
+    expect(existsSync(join(dir, ".gitignore"))).toBe(false);
+    execFileSync("git", ["init", "-q", join(dir, "skills", "other")]);
+    await expect(z.writeAndCommit("other", "v1\n", "m")).rejects.toBeInstanceOf(GrowZoneError);
+    await z.restoreToHead();
+    expect(existsSync(join(dir, "skills", "other", ".git"))).toBe(false);
+    expect(await z.writeAndCommit("other", "v1\n", "m")).toMatch(/^[0-9a-f]{40}$/);
+  });
+
+  it("publishes past an ignore file under HOME", async () => {
+    const root = tmp(); const home = join(root, "home"); mkdirSync(join(home, ".config", "git"), { recursive: true });
+    writeFileSync(join(home, ".config", "git", "ignore"), "*\n");
+    const saved = process.env.HOME; process.env.HOME = home;
+    try {
+      const z = new GrowZone(join(root, "grow")); await z.ensure(true);
+      expect(await z.writeAndCommit("unit-convert", "v1\n", "m")).toMatch(/^[0-9a-f]{40}$/);
+    } finally { process.env.HOME = saved; }
+  });
+
+  it("never writes its config through a symlinked .git/config", async () => {
+    const root = tmp(); const dir = join(root, "grow"); const victim = join(root, "victim.txt");
+    writeFileSync(victim, "PRECIOUS\n");
+    mkdirSync(join(dir, ".git", "refs"), { recursive: true }); mkdirSync(join(dir, ".git", "objects"));
+    symlinkSync(victim, join(dir, ".git", "config"));
+    await expect(new GrowZone(dir).ensure(true)).rejects.toBeInstanceOf(GrowZoneError);
+    expect(readFileSync(victim, "utf8")).toBe("PRECIOUS\n");
   });
 
   it("refuses .git/info/attributes alone", async () => {

@@ -8,8 +8,8 @@ export class GrowZoneError extends Error {
 }
 export const skillPath = (name: string): string => `skills/${name}/SKILL.md`;
 const IDENTITY = ["-c", "user.name=Houge", "-c", "user.email=houge@localhost", "-c", "commit.gpgsign=false"];
-/** Global config off does not switch off `~/.config/git/attributes`; this does. */
-const NO_ATTRIBUTES_FILE = ["-c", "core.attributesFile=/dev/null"];
+/** Global config off does not switch off `~/.config/git/attributes` or `~/.config/git/ignore`; these do. */
+const NO_HOME_FILES = ["-c", "core.attributesFile=/dev/null", "-c", "core.excludesFile=/dev/null"];
 /** Files in `.git` that would make git read config from somewhere other than the byte-checked `.git/config`. */
 const CONFIG_REDIRECTS = ["commondir", "config.worktree"];
 /**
@@ -25,11 +25,17 @@ export class GrowZone {
   readonly dir: string;
   constructor(dir: string, private readonly opts: { signal?: AbortSignal } = {}) { this.dir = resolve(dir); }
 
+  /**
+   * Every zone git call. A `commondir` or `config.worktree` file in `.git` is refused before any call, reads included
+   * (git 2.55 still resolves refs through a planted commondir); GIT_COMMON_DIR pins the common dir to `.git` itself in
+   * case one appears after the check; system attributes are off.
+   */
   private async git(args: string[]): Promise<string> {
-    // GIT_COMMON_DIR pins the common dir to `.git` itself: a planted `.git/commondir` cannot lend another repository's config.
-    const env = { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: process.env.HOME ?? "", GIT_CEILING_DIRECTORIES: dirname(this.dir), GIT_COMMON_DIR: join(this.dir, ".git") };
+    if (CONFIG_REDIRECTS.some((f) => lstatOrNull(join(this.dir, ".git", f)) !== null)) throw new GrowZoneError("not_toplevel");
+    const env = { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: process.env.HOME ?? "", GIT_CEILING_DIRECTORIES: dirname(this.dir),
+      GIT_COMMON_DIR: join(this.dir, ".git"), GIT_ATTR_NOSYSTEM: "1" };
     try {
-      const r = await hardenedGit(["--git-dir", join(this.dir, ".git"), "--work-tree", this.dir, ...IDENTITY, ...NO_ATTRIBUTES_FILE, ...args],
+      const r = await hardenedGit(["--git-dir", join(this.dir, ".git"), "--work-tree", this.dir, ...IDENTITY, ...NO_HOME_FILES, ...args],
         { env, cwd: this.dir, timeout: GIT_TIMEOUT_MS, maxBuffer: 4 * 1024 * 1024, ...(this.opts.signal ? { signal: this.opts.signal } : {}) });
       return r.stdout;
     } catch (e) { throw new GrowZoneError("git_failed", { cause: e }); }
@@ -48,12 +54,12 @@ export class GrowZone {
       if (holdsOtherThan(this.dir, ["skills"])) throw new GrowZoneError("not_empty");   // an empty skills folder is an empty zone that lost its .git
       mkdirSync(this.dir, { recursive: true });
       await this.git(["init", "-q", "-b", "main"]);
-      writeFileSync(join(gitDir, "config"), CANONICAL_CONFIG);
+      writeConfig(gitDir);
     } else if (allowInit && st.isDirectory() && isEmptyRepo(gitDir)) {
       if (holdsOtherThan(this.dir, [".git", "skills"])) throw new GrowZoneError("not_empty");
       // A crash between `git init` and the config write: nothing is in it, so finishing it loses nothing.
       // Any other `.git` is never rewritten; `assertToplevel` fails closed on its config.
-      writeFileSync(join(gitDir, "config"), CANONICAL_CONFIG);
+      writeConfig(gitDir);
     }
     await this.assertToplevel();
     if (!(await this.hasHead())) {
@@ -82,7 +88,6 @@ export class GrowZone {
     let config: string;
     try { config = readFileSync(join(dotGit, "config"), "utf8"); } catch (e) { throw new GrowZoneError("not_toplevel", { cause: e }); }
     if (config !== CANONICAL_CONFIG) throw new GrowZoneError("not_toplevel");
-    if (CONFIG_REDIRECTS.some((f) => lstatOrNull(join(dotGit, f)) !== null)) throw new GrowZoneError("not_toplevel");
     if (lstatOrNull(join(dotGit, "info", "attributes")) !== null || holdsAttributes(this.dir, true)) throw new GrowZoneError("not_toplevel");
     const top = (await this.git(["rev-parse", "--show-toplevel"])).trim();
     if (realpathSync(top) !== realpathSync(this.dir)) throw new GrowZoneError("not_toplevel");
@@ -112,7 +117,7 @@ export class GrowZone {
     rmSync(`${file}.tmp`, { force: true });
     writeFileSync(`${file}.tmp`, text, { flag: "wx" });
     renameSync(`${file}.tmp`, file);
-    await this.git(["add", "--", skillPath(name)]);
+    await this.git(["add", "-f", "--", skillPath(name)]);   // a planted ignore file cannot block a publish
     await this.git(["commit", "-q", "--allow-empty", "-m", message, "--", skillPath(name)]);
     return this.head();
   }
@@ -141,11 +146,14 @@ export class GrowZone {
     return out === "" ? null : out;
   }
 
-  /** Discards staged and unstaged changes and untracked files; `reset --hard` also works when the only commit is empty. */
+  /**
+   * Discards staged and unstaged changes and every untracked file, ignored ones and nested repositories included
+   * (`-ffdx`); `reset --hard` also works when the only commit is empty.
+   */
   async restoreToHead(): Promise<void> {
     await this.assertToplevel();
     await this.git(["reset", "-q", "--hard", "HEAD"]);
-    await this.git(["clean", "-fdq"]);
+    await this.git(["clean", "-ffdqx"]);
   }
 
   async bundle(toPath: string): Promise<void> {
@@ -164,6 +172,16 @@ export class GrowZone {
   private checkName(name: string): void {
     if (!GROW_LIMITS.nameRe.test(name)) throw new GrowZoneError("bad_name");
   }
+}
+
+/** Writes the canonical config by temp file and rename, never through a planted symlink or into anything but a file. */
+function writeConfig(gitDir: string): void {
+  const file = join(gitDir, "config");
+  const st = lstatOrNull(file);
+  if (st !== null && !st.isFile()) throw new GrowZoneError("not_toplevel");
+  rmSync(`${file}.tmp`, { force: true });
+  writeFileSync(`${file}.tmp`, CANONICAL_CONFIG, { flag: "wx" });
+  renameSync(`${file}.tmp`, file);
 }
 
 function lstatOrNull(path: string): Stats | null {
@@ -191,11 +209,14 @@ function holdsOtherThan(dir: string, allowed: readonly string[]): boolean {
   return entries.some((e) => !allowed.includes(e.name) || (e.name === "skills" && (!e.isDirectory() || readdirSync(join(dir, e.name)).length > 0)));
 }
 
-/** True when a `.gitattributes` of any type sits anywhere under `dir`; symlinks are not followed, the zone's own `.git` is skipped. */
+/**
+ * True when a `.gitattributes` of any type and any case (APFS folds case) sits anywhere under `dir`; symlinks are not
+ * followed, the zone's own `.git` is skipped.
+ */
 function holdsAttributes(dir: string, top = false): boolean {
   let entries;
   try { entries = readdirSync(dir, { withFileTypes: true }); } catch (e) { throw new GrowZoneError("not_toplevel", { cause: e }); }
-  return entries.some((e) => e.name === ".gitattributes" || (e.isDirectory() && !(top && e.name === ".git") && holdsAttributes(join(dir, e.name))));
+  return entries.some((e) => e.name.toLowerCase() === ".gitattributes" || (e.isDirectory() && !(top && e.name === ".git") && holdsAttributes(join(dir, e.name))));
 }
 
 function hasFile(dir: string): boolean {
