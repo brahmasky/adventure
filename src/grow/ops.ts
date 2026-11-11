@@ -119,7 +119,7 @@ export function applyUndo(d: OpDeps, op: GrowOpRow, commitId: string): void {
   store.appendGrowEvent({ at: now, run_id: null, chat_id: null, name: op.name, action: "undo", result: op.target_json === null ? "removed" : "restored", code: null, reviewer_model: null, commit_id: commitId });
   store.enqueueNotification({ topic: "grow_log", idempotency_key: `grow:op:${op.id}`, correlation_id: `grow:op:${op.id}`, text: `Paco undid the skill ${op.name}.`, now });
   if (op.request_id !== null) {
-    const text = op.target_json === null ? `↩️ ${op.name} removed. Its next version will be reviewed.` : `↩️ ${op.name} restored to its previous version. Its next version will be reviewed.`;
+    const text = op.target_json === null ? `\u21A9\uFE0F ${op.name} removed. Its next version will be reviewed.` : `\u21A9\uFE0F ${op.name} restored to its previous version. Its next version will be reviewed.`;
     store.finishGrowRequest(op.request_id, text, now);
   }
   store.finishGrowOp(op.id, "done", commitId, now);
