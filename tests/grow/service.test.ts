@@ -157,6 +157,19 @@ describe("A. the door and the review gate", () => {
     expect(store.listGrowEvents({ actions: ["trust"] })).toHaveLength(1);
   });
 
+  it("an untrusted submit cannot supersede Houge's own pending clean version: refused pending_clean, the clean row stays", async () => {
+    const s = await growSetup(); const { svc, store } = s;
+    expect(await svc.submit(growFields(), CLEAN)).toEqual({ status: "STAGED", name: "unit-convert" });
+    const clean = stagedOf(store, "unit-convert")[0]!;
+    expect(await svc.submit({ ...growFields(), body: growBody(40, " junk") }, UNTRUSTED)).toEqual({ status: "REFUSED", code: "pending_clean" });
+    expect(stagedOf(store, "unit-convert")).toMatchObject([{ id: clean.id, state: "staged", origin: "clean" }]);
+    expect(store.isGrowMarked("unit-convert")).toBe(false);
+    expect(store.listGrowEvents({ actions: ["submit"] })).toHaveLength(1);           // the refused submit is no submit
+    svc.recordReview(clean.id, FAIL_REVIEW);                                          // once the clean row is final, the door is open again
+    expect(await svc.submit({ ...growFields(), body: growBody(40, " junk") }, UNTRUSTED)).toEqual({ status: "STAGED", name: "unit-convert" });
+    expect(submitText({ status: "REFUSED", code: "pending_clean" })).toBe("REFUSED pending_clean");
+  });
+
   it("I5: an untrusted item undone to removal keeps its mark, so a clean resubmit is untrusted", async () => {
     const s = await growSetup();
     await s.live(growFields(), UNTRUSTED);

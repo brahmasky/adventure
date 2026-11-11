@@ -16,7 +16,7 @@ export type TrustLevelName = "clean" | "untrusted" | "hostile";
 export type SubmitResult =
   | { status: "LIVE"; name: string } | { status: "STAGED"; name: string }
   | { status: "FAIL"; code: GrowFailCode | "zone_full" | "publish_failed"; message: string }
-  | { status: "REFUSED"; code: "grow_disabled" | "turn_hostile" | "name_is_exemplar" | "rate_capped" | "zone_full" | "busy" | "zone_unavailable" };
+  | { status: "REFUSED"; code: "grow_disabled" | "turn_hostile" | "name_is_exemplar" | "pending_clean" | "rate_capped" | "zone_full" | "busy" | "zone_unavailable" };
 export interface GrowDeps { store: RunStore; zone: GrowZone; env: NodeJS.ProcessEnv; now: () => string }
 export interface SubmitCtx { run_id: string; chat_id: string | null; level: TrustLevelName }
 export interface ReviewRecord { pass: boolean; findings: Array<{ step: string; problem: string }>; reviewer_model: string | null; input_hash: string | null; author_families: string[]; undo_reasons_n: number; code: "review_passed" | "review_failed" | "review_unavailable" }
@@ -218,16 +218,27 @@ export class GrowService {
     return refused("zone_unavailable");
   }
 
-  /** The exemplar, rate, cap and formal gates; the submit event is recorded for every submit that reaches the checks. */
+  /** The exemplar, pending-clean, rate, cap and formal gates; the submit event is recorded for every submit that reaches the checks. */
   private admit(f: GrowFields, ctx: SubmitCtx, now: string): SubmitResult | null {
     const { store } = this.d;
     const existing = store.getGrowItem(f.name);
     if (existing?.origin === "exemplar") return refused("name_is_exemplar");
+    if (ctx.level === "untrusted" && this.pendingClean(f.name)) return refused("pending_clean");
     if (store.countGrowEventsSince("submit", new Date(Date.parse(now) - DAY_MS).toISOString()) >= GROW_SUBMITS_PER_DAY) return refused("rate_capped");
     if (existing?.state !== "live" && store.countGrowItems("live") >= GROW_ITEMS_MAX) return refused("zone_full");
     const check = checkFields(f, store.listGrowItems("live"), fieldScrub(store));
     store.appendGrowEvent({ at: now, run_id: ctx.run_id, chat_id: ctx.chat_id, name: f.name, action: "submit", result: check.ok ? "accepted" : "failed", code: check.ok ? null : check.code, reviewer_model: null, commit_id: null });
     return check.ok ? null : { status: "FAIL", code: check.code, message: check.message };
+  }
+
+  /**
+   * A version of the name is in motion and the name is unmarked: it came from a clean turn (an untrusted one marks the
+   * name, and trust is refused while a version is pending). An untrusted submit must not supersede it: that would drop
+   * Houge's own work and mark the name, a side effect outside text could aim at any name.
+   */
+  private pendingClean(name: string): boolean {
+    const { store } = this.d;
+    return !store.isGrowMarked(name) && store.listGrowStaged().some((r) => r.name === name && r.state !== "failed");
   }
 
   private async needsReview(f: GrowFields, isLive: boolean, untrusted: boolean): Promise<boolean> {
