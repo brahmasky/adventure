@@ -221,6 +221,15 @@ describe("grow_read over the bridge", () => {
   });
 });
 
+describe("one grow directory per worker", () => {
+  it("the sandbox deny and the service's zone stay the same path after HOUGE_GROW_DIR changes under a running worker", () => {
+    const t = turn();
+    const zoneDir = (t.worker.growService().zone as unknown as { dir: string }).dir;
+    process.env.HOUGE_GROW_DIR = join(growRoot.dir, "elsewhere");
+    expect(t.worker.ompProbeContext().ctx.grow).toBe(zoneDir);
+  });
+});
+
 describe("the single writer (spec: one process writes the zone)", () => {
   it("a worker that is not the daemon refuses grow_submit, creates no zone, and still reads", async () => {
     const worker = ompWorker(store, tmp.dir, { project: join(tmp.dir, "project"), growWriter: false });

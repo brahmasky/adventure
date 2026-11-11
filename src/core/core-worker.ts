@@ -547,6 +547,7 @@ export class CoreWorker {
   private readonly pendingLadder = new Map<string, PendingLadderRow[]>();
   private recorderCache?: DecisionRecorder;
   private growCache?: GrowService;
+  private growDirCache?: string;
   /** Lazy: a field initializer cannot read the runStore parameter property (it is assigned after class fields). */
   private get decisionRecorder(): DecisionRecorder { return (this.recorderCache ??= storeRecorder(this.runStore)); }
   private readonly ompDecls: { ok: true; decls: ToolDeclaration[] } | { ok: false; error: string };
@@ -1917,8 +1918,9 @@ export class CoreWorker {
     return { home: homedir(), repo: this.projectRoot, data, binDirs: installedBinaryDirs(process.env, process.execPath), grow: this.growDir() };
   }
 
-  /** The one grow-directory expression: the sandbox denies it and the service writes it, so they can never differ. */
-  private growDir(): string { return resolveGrowDir(process.env, homedir(), [this.projectRoot, this.ompDataDir()]); }
+  /** The one grow directory, resolved once per worker: the sandbox denies it and the cached service writes it, so they can never differ
+   *  (resolveGrowDir reads the filesystem — a symlink appearing later must not move the deny away from the zone). */
+  private growDir(): string { return (this.growDirCache ??= resolveGrowDir(process.env, homedir(), [this.projectRoot, this.ompDataDir()])); }
 
   /** One grow service per worker, built on first use. */
   growService(): GrowService {
