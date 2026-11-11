@@ -13,7 +13,7 @@ layer, and have the README *link* to the rest:
 | Layer | Holds | Audience |
 |-------|-------|----------|
 | `README.md` | What Houge is, status, quickstart, a Documentation index. **No low-level tables.** | First-time visitor |
-| [`docs/reference/`](docs/reference/) | Exhaustive catalogs — every env var, default, purpose ([configuration.md](docs/reference/configuration.md)); every decision-ladder entry ([decision-map.md](docs/reference/decision-map.md)); the Jev layer ([jev-decision-layer.md](docs/reference/jev-decision-layer.md)). | Operator looking something up |
+| [`docs/reference/`](docs/reference/) | Exhaustive catalogs — every env var, default, purpose ([configuration.md](docs/reference/configuration.md)); every decision-ladder entry ([decision-map.md](docs/reference/decision-map.md)); the Jev layer ([jev-decision-layer.md](docs/reference/jev-decision-layer.md)); the grow zone ([grow-zone.md](docs/reference/grow-zone.md)). | Operator looking something up |
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | Charter, locked decisions, sequenced next builds, one delta per shipped slice. | Planner |
 | [`tasks/todo.md`](tasks/todo.md) | The top "CURRENT SYSTEM STATE" block is the live state; the rest is shipped history. [`tasks/lessons.md`](tasks/lessons.md) holds orchestration mistakes and their rules; [`sessions.md`](sessions.md) one arc entry per build session, newest last. | Orchestrator |
 | [`docs/decisions/`](docs/decisions/) | Architecture Decision Records — the **why** behind significant choices. | Collaborator / future-you |

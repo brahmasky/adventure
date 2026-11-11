@@ -490,7 +490,7 @@ only the daemon commits to the repository. A submit runs the formal checks in mi
 a secret scan, no long code block, no near-copy of a live item). A new item, a large change, a change to
 an item that was ever undone and any change to an item marked "from outside content" is `STAGED` and
 **reviewed after the turn by the `grow_review` seat** (a different model family from the author's;
-[Model roles](#model-roles)) before it goes live; a small update (at most 20 changed lines, 800 changed characters and 25% of the
+[Model roles](#model-roles)) before it goes live; a small update (at most 20 changed lines and 25% of the body's lines, 800 changed characters and 25% of the
 body's characters) to a clean live item that was never undone, submitted from a clean turn, goes live at once; a submit from an
 `untrusted` turn is always staged and marks the item "from outside content" (the mark outlives a failed review; such an
 item is listed in the index by name only, `(from outside content; grow_read it to see it)`, until Paco trusts it), and is refused
@@ -506,7 +506,8 @@ it. Reading an item marked "from outside content" raises the turn to `untrusted`
 and per undo. A recurring kind of request, or an accepted skill proposal, gives the planner a hint
 (`grow: a task of kind <category> keeps recurring; consider grow_submit`), at most three recurrence hints
 per rolling 24 hours (see [Decision ladder](#decision-ladder-adr-0034)). The composer injects the index
-only, never a body (ADR 0032 4.2).
+only, never a body (ADR 0032 4.2). The operator guide (lifecycle, commands, `/status` lines, troubleshooting) is
+[grow-zone.md](grow-zone.md).
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
