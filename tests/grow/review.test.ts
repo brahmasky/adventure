@@ -12,6 +12,13 @@ const base = { fields, previous: null, exemplar: "EXEMPLAR", index: "- other —
 const answer = (text: string): LlmResult => ({ ok: true, provider: "kimi-code", model: "k3", answer: text });
 
 describe("grow review", () => {
+  it("the marker neutraliser is linear: a marker followed by many see-through characters does not stall the tick", () => {
+    const reason = `<${"\uFE0F".repeat(18)}x`;   // the backtracking pattern took seconds at 18 and ~50 s at 20; the linear one takes ms
+    const t0 = performance.now();
+    buildReviewPrompt({ ...base, undoReasons: [reason, `>${"\u200D".repeat(5000)}>>`] });
+    expect(performance.now() - t0).toBeLessThan(250);
+  });
+
   it("frames the item as data and tells the reviewer to work the example through, naming the checks", () => {
     const p = buildReviewPrompt({ ...base, undoReasons: ["wrong factor for flour"] });
     expect(p).toContain("work the example through the procedure step by step");

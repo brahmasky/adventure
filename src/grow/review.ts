@@ -33,7 +33,9 @@ const isKnownFamily = (f: string): boolean => Object.hasOwn(KNOWN_FAMILIES, f);
  * places the door never checked (undo reasons, the index, an adopted orphan), so this does not rely on the door.
  */
 const SEE_THROUGH = `(?:${HIDDEN_CLASSES.map(([, re]) => re.source).join("|")}|\\p{M})`;
-const MARKER_UNIT = `[<>\\uFE64\\uFE65\\uFF1C\\uFF1E]${SEE_THROUGH}*`;
+// one character per step behind a lookahead: the see-through classes overlap (U+FE0F is in three), and `(?:a|b|c)*`
+// over overlapping classes inside `{3,}` backtracks exponentially — a stalled review tick
+const MARKER_UNIT = `[<>\\uFE64\\uFE65\\uFF1C\\uFF1E](?:(?=${SEE_THROUGH})[^])*`;
 const MARKER_RUN = new RegExp(`(?:${MARKER_UNIT}){3,}`, "gu");
 const MARKER_SPLIT = new RegExp(MARKER_UNIT, "gu");
 /** Content is neutralised so an item can neither close its own block early nor forge another block's opener. */
