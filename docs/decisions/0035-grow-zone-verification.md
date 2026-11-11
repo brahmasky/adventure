@@ -276,7 +276,7 @@ test lives in the G4 describe block and names G7).
   until `/grow trust`; at most five names a day (the untrusted budget). `/status` counts such skills ("N skill(s) from
   outside content (shown by name only)") and a reached cap. Closing it would mean marking at publish, which lets a
   failed outside submit leave no trace.
-- **R8. Attributes in the index or HEAD alone (open: Paco's acceptance is owed, Tier C).** A `.gitattributes` present only in the index or HEAD can
+- **R8. Attributes in the index or HEAD alone (accepted by Paco 2026-11-11).** A `.gitattributes` present only in the index or HEAD can
   still convert text, but cannot run a command: a filter needs a config definition, and the config is byte-checked and
   pinned. Closing it needs `--attr-source`, which the system git (2.39) lacks.
 
