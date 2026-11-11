@@ -199,6 +199,19 @@ describe("/grow", () => {
     expect(growStatusLines(s.store, "2026-11-12T12:00:00.000Z")).toContain("Grow zone: writing is paused (the zone could not be written)");
   });
 
+  it("says in /status when either daily submit cap is reached, and nothing while both have room", async () => {
+    const s = await growSetup();
+    const accepted = (i: number, code: string | null) => s.store.appendGrowEvent({ at: "2026-11-10T11:00:00.000Z", run_id: "r", chat_id: "555", name: `s-${i}`, action: "submit", result: "accepted", code, reviewer_model: null, commit_id: null });
+    for (let i = 0; i < 4; i++) accepted(i, "untrusted");
+    for (let i = 0; i < 19; i++) accepted(10 + i, null);
+    expect(growStatusLines(s.store, NOW)).toEqual([]);
+    accepted(4, "untrusted");
+    expect(growStatusLines(s.store, NOW)).toEqual(["Grow zone: 5 skills from outside content accepted in 24 hours, the cap; more from outside content wait"]);
+    accepted(29, null);
+    expect(growStatusLines(s.store, NOW)).toContain("Grow zone: 20 skills accepted in 24 hours, the cap; new submits wait");
+    expect(growStatusLines(s.store, "2026-11-11T11:00:01.000Z")).toEqual([]);   // rolling: a day later both have room
+  });
+
   it("a dropped publish says so and does not claim that writing is paused", async () => {
     const s = await growSetup();
     s.store.openIncident({ kind: "grow_publish_failed", subject: "publish", detail: {}, now: NOW });

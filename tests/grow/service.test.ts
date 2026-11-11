@@ -246,6 +246,20 @@ describe("A. the door and the review gate", () => {
     expect(countRows(store, "grow_ops")).toBe(0);
   });
 
+  it("only accepted submits count: twenty failing ones, clean or untrusted, do not block a clean accepted one", async () => {
+    const { svc } = await growSetup();
+    for (let i = 0; i < 20; i++) expect((await svc.submit(growFields({ name: "x" }), i % 2 ? UNTRUSTED : CLEAN)).status).toBe("FAIL");
+    expect(await svc.submit(growFields(), CLEAN)).toEqual({ status: "STAGED", name: "unit-convert" });
+  });
+
+  it("untrusted accepted submits have their own budget of five: the sixth is rate_capped while a clean one still passes", async () => {
+    const { svc } = await growSetup();
+    for (let i = 0; i < 5; i++) expect((await svc.submit(growFields({ name: `outside-${i}`, body: growBody(40, ` o${i}`) }), UNTRUSTED)).status).toBe("STAGED");
+    expect(await svc.submit(growFields({ name: "outside-5", body: growBody(40, " o5") }), UNTRUSTED)).toEqual({ status: "REFUSED", code: "rate_capped" });
+    for (let i = 0; i < 20; i++) expect((await svc.submit(growFields({ name: `clean-${i}`, body: growBody(40, ` c${i}`) }), CLEAN)).status).toBe("STAGED");
+    expect(await svc.submit(growFields({ name: "clean-20", body: growBody(40, " c20") }), CLEAN)).toEqual({ status: "REFUSED", code: "rate_capped" });
+  });
+
   it("the rate cap is a rolling 24 hours: a submit older than that does not count", async () => {
     const { svc, store } = await growSetup();
     store.appendGrowEvent({ at: "2026-11-09T09:00:00.000Z", run_id: "old", chat_id: "555", name: "old-skill", action: "submit", result: "accepted", code: null, reviewer_model: null, commit_id: null });

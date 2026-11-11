@@ -202,7 +202,16 @@ describe("grow store", () => {
     expect(s.isGrowMarked("n")).toBe(false);
   });
 
-  it("events list ascending, newest option returns the newest rows still ascending, and counts by action since", () => {
+  it("counts accepted submits since a time, per budget: failed ones never, an untrusted turn's only in its own", () => {
+    const s = mem();
+    const sub = (at: string, result: string, code: string | null) => s.appendGrowEvent({ at, run_id: null, chat_id: "555", name: "n", action: "submit", result, code, reviewer_model: null, commit_id: null });
+    sub(NOW, "accepted", null); sub(LATER, "accepted", null); sub(LATER, "accepted", "untrusted"); sub(LATER, "failed", "bad_name");
+    expect(s.countGrowAcceptedSubmitsSince(LATER, false)).toBe(1);
+    expect(s.countGrowAcceptedSubmitsSince(NOW, false)).toBe(2);
+    expect(s.countGrowAcceptedSubmitsSince(NOW, true)).toBe(1);
+  });
+
+  it("events list ascending, and the newest option returns the newest rows still ascending", () => {
     const s = mem();
     const ev = (name: string, at: string, action: "submit" | "publish" = "submit") =>
       s.appendGrowEvent({ at, run_id: null, chat_id: "555", name, action, result: "ok", code: null, reviewer_model: null, commit_id: null });
@@ -210,7 +219,6 @@ describe("grow store", () => {
     expect(s.listGrowEvents({}).map((e) => e.id)).toEqual([a, b, c]);
     expect(s.listGrowEvents({ limit: 2, newest: true }).map((e) => e.id)).toEqual([b, c]);
     expect(s.listGrowEvents({ sinceId: a }).map((e) => e.id)).toEqual([b, c]);
-    expect(s.countGrowEventsSince("submit", LATER)).toBe(1);
     expect(s.listGrowEvents({ limit: 2 }).map((e) => e.id)).toEqual([a, b]);
   });
 

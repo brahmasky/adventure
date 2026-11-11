@@ -24,6 +24,8 @@ export type PublishOutcome = "published" | "retry" | "failed" | "gone" | "not_ap
 export type UndoResult = { ok: true; removed: boolean } | { ok: false; code: "unknown_skill" | "is_exemplar" | "zone_unavailable" | "busy" };
 
 export const GROW_SUBMITS_PER_DAY = 20;
+/** Untrusted turns' own budget: their accepted submits never use up the clean one, so outside text cannot starve Houge's own writing. */
+export const GROW_UNTRUSTED_SUBMITS_PER_DAY = 5;
 export const GROW_ITEMS_MAX = 200;
 export const GROW_INDEX_LINES = 40;
 export const GROW_INDEX_CHARS = 4000;
@@ -63,6 +65,15 @@ export function trustItem(store: RunStore, name: string, now: string): TrustResu
     store.appendGrowEvent({ at: now, run_id: null, chat_id: null, name, action: "trust", result: "clean", code: null, reviewer_model: null, commit_id: null });
     return "trusted";
   });
+}
+
+/**
+ * The rate cap, for the door and for `/status` alike: accepted submits (staged or live) in the rolling 24 hours of one
+ * budget. A failed check or a refusal counts toward neither, so failing submits cannot burn the day's cap.
+ */
+export function growCapReached(store: RunStore, now: string, untrusted: boolean): boolean {
+  const since = new Date(Date.parse(now) - DAY_MS).toISOString();
+  return store.countGrowAcceptedSubmitsSince(since, untrusted) >= (untrusted ? GROW_UNTRUSTED_SUBMITS_PER_DAY : GROW_SUBMITS_PER_DAY);
 }
 
 export function submitText(r: SubmitResult): string {
@@ -218,16 +229,19 @@ export class GrowService {
     return refused("zone_unavailable");
   }
 
-  /** The exemplar, pending-clean, rate, cap and formal gates; the submit event is recorded for every submit that reaches the checks. */
+  /**
+   * The exemplar, pending-clean, rate, cap and formal gates; the submit event is recorded for every submit that reaches
+   * the checks. An accepted one from an untrusted turn carries the code `untrusted`: it counts toward that budget.
+   */
   private admit(f: GrowFields, ctx: SubmitCtx, now: string): SubmitResult | null {
     const { store } = this.d;
     const existing = store.getGrowItem(f.name);
     if (existing?.origin === "exemplar") return refused("name_is_exemplar");
     if (ctx.level === "untrusted" && this.pendingClean(f.name)) return refused("pending_clean");
-    if (store.countGrowEventsSince("submit", new Date(Date.parse(now) - DAY_MS).toISOString()) >= GROW_SUBMITS_PER_DAY) return refused("rate_capped");
+    if (growCapReached(store, now, ctx.level === "untrusted")) return refused("rate_capped");
     if (existing?.state !== "live" && store.countGrowItems("live") >= GROW_ITEMS_MAX) return refused("zone_full");
     const check = checkFields(f, store.listGrowItems("live"), fieldScrub(store));
-    store.appendGrowEvent({ at: now, run_id: ctx.run_id, chat_id: ctx.chat_id, name: f.name, action: "submit", result: check.ok ? "accepted" : "failed", code: check.ok ? null : check.code, reviewer_model: null, commit_id: null });
+    store.appendGrowEvent({ at: now, run_id: ctx.run_id, chat_id: ctx.chat_id, name: f.name, action: "submit", result: check.ok ? "accepted" : "failed", code: check.ok ? (ctx.level === "untrusted" ? "untrusted" : null) : check.code, reviewer_model: null, commit_id: null });
     return check.ok ? null : { status: "FAIL", code: check.code, message: check.message };
   }
 

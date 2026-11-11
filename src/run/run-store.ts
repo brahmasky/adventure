@@ -7813,8 +7813,10 @@ export class RunStore {
     return this.db.prepare(`SELECT ${GROW_EVENT_COLUMNS} FROM grow_events ${w} ORDER BY id${limit}`).all<GrowEventRow>(...args);
   }
 
-  countGrowEventsSince(action: GrowEventRow["action"], since: string): number {
-    return this.db.prepare(`SELECT COUNT(*) AS n FROM grow_events WHERE action = ? AND at >= ?`).get<{ n: number }>(action, since)?.n ?? 0;
+  /** Accepted submits since `since`, of one budget: an untrusted turn's carry the code `untrusted`. */
+  countGrowAcceptedSubmitsSince(since: string, untrusted: boolean): number {
+    return this.db.prepare(`SELECT COUNT(*) AS n FROM grow_events WHERE action = 'submit' AND result = 'accepted' AND at >= ? AND (CASE WHEN code = 'untrusted' THEN 1 ELSE 0 END) = ?`)
+      .get<{ n: number }>(since, untrusted ? 1 : 0)?.n ?? 0;
   }
 
   /** One 'read' event per (run, name) bumps uses once; a planner re-reading in one turn is not more evidence. */

@@ -1,5 +1,5 @@
 import type { TypedTaskEvent } from "../domain/types.js";
-import { NOT_A_FAILURE, trustItem, trustPendingText } from "../grow/service.js";
+import { GROW_SUBMITS_PER_DAY, GROW_UNTRUSTED_SUBMITS_PER_DAY, growCapReached, NOT_A_FAILURE, trustItem, trustPendingText } from "../grow/service.js";
 import type { GrowItemRow, RunStore } from "../run/run-store.js";
 import type { GatewayIntakeResult } from "./gateway.js";
 import { oncePerTrigger, replyTo } from "./memory-commands.js";
@@ -65,7 +65,7 @@ function fitEntries(all: string[]): string[] {
   return out;
 }
 
-/** The `/status` lines: nothing when the zone is healthy. Only a latched zone pauses writing; a dropped publish or an unrecorded write does not. */
+/** The `/status` lines: nothing when the zone is healthy. Only a latched zone pauses writing; a dropped publish or an unrecorded write does not. A reached submit cap says so. */
 export function growStatusLines(store: RunStore, now: string): string[] {
   const late = store.listGrowStaged("staged").filter((r) => Date.parse(now) - Date.parse(r.created_at) > DAY_MS).length;
   const orphans = store.countGrowItems("orphan");
@@ -77,7 +77,9 @@ export function growStatusLines(store: RunStore, now: string): string[] {
     ...(unrecorded ? ["Grow zone: a skill write finished but I could not record it yet; writing continues"] : []),
     ...(dropped ? ["Grow zone: a finished skill was dropped after repeated write failures; writing continues"] : []),
     ...(late > 0 ? [`Grow zone: ${late} review${late === 1 ? "" : "s"} pending over a day · /grow`] : []),
-    ...(orphans > 0 ? [`Grow zone: ${orphans} skill${orphans === 1 ? "" : "s"} in the repository unknown to me · /grow`] : [])];
+    ...(orphans > 0 ? [`Grow zone: ${orphans} skill${orphans === 1 ? "" : "s"} in the repository unknown to me · /grow`] : []),
+    ...(growCapReached(store, now, false) ? [`Grow zone: ${GROW_SUBMITS_PER_DAY} skills accepted in 24 hours, the cap; new submits wait`] : []),
+    ...(growCapReached(store, now, true) ? [`Grow zone: ${GROW_UNTRUSTED_SUBMITS_PER_DAY} skills from outside content accepted in 24 hours, the cap; more from outside content wait`] : [])];
 }
 
 function growText(store: RunStore, event: TypedTaskEvent, now: string): string {
