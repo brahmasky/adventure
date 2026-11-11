@@ -659,3 +659,63 @@ None changes a decision of §2 or §2a; where the text above differs, this secti
 36. **`HOUGE_GROW_DIR`** is accepted only when absolute, at least three segments deep, and not the home directory
     or an ancestor of it.
 
+**Rev 1.3.3, from the final review round (2026-11-11; Paco approved items 37-39 and accepted the residuals of 40 on 2026-11-11):**
+
+37. **`/grow trust` refuses while a version is pending (Paco 2026-11-11; replaces the pending clause of 33).** While a
+    staged, approved or publishing row, or a pending op, exists for the name, trust answers "A new version of X is
+    waiting for review; trust it once it is live or failed." and clears nothing; pending rows are never flipped to clean
+    (`trustItem`, `src/grow/service.ts`; same text in `houge grow trust`). `/grow` shows each pending row's origin.
+38. **The index shows a marked item by name only (Paco 2026-11-11; §5.6).** The line is `- <name> — (from outside
+    content; grow_read it to see it)`, in the system prompt and in the reviewer's `LIVE_INDEX` (`indexBlock`,
+    `src/grow/service.ts`); the description returns after `/grow trust`. The write sentence is also omitted in a process
+    that is not the zone's writer.
+39. **The submit caps count accepted submits only (Paco 2026-11-11; amends 4).** 20 accepted submits per rolling 24 h;
+    an untrusted turn's accepted submits have their own 5, which do not use up the 20; failed checks, refusals and
+    submits that throw count toward neither (`growCapReached`, `countGrowAcceptedSubmitsSince`; the `accepted` event is
+    written in the staging transaction). `/status` shows a line for each cap that is reached.
+40. **Accepted residuals (Paco 2026-11-11).** The mark outlives a failed review (mark-at-stage, fail closed; only
+    `/grow trust` clears it). An untrusted submit can make a clean live skill name-only and taint its readers until
+    `/grow trust` (at most 5 names a day); `/status` counts marked live skills ("N skill(s) from outside content
+    (shown by name only)").
+41. **`pending` refusal (§5.3).** An untrusted submit is refused with `pending` while any version of the name is in
+    motion (a staged, approved or publishing row, or a pending op), whatever the mark says; a clean turn may still
+    supersede. The refusal comes before `settle`, so it runs no operation of the name and spends no budget.
+42. **The door refuses by Unicode class (§5.4 check 1; reverses the Task 2 keep-ZWJ ruling).** Refused: Cc except
+    `\n` and `\t`, Cf (so ZWJ), Co, Cn, Cs, variation selectors (so VS16), Default_Ignorable_Code_Point, Hangul
+    fillers, Braille/Khitan/musical blanks, U+2028/2029. Emoji sequences are refused. Code stays `control_chars`; the
+    message names the class and never quotes the character (`HIDDEN_CLASSES`, `src/grow/scrub.ts`).
+43. **Scrub and marker neutraliser see NFKC (§5.4 check 2, §5.4 review prompt).** The secret scan also reads the text
+    with hidden characters dropped and NFKC applied; a secret split by a soft hyphen or written fullwidth is redacted.
+    Secret-path patterns are case-insensitive, read `//` and `/./` as `/`, and match `.env` after any separator
+    (`fieldScrub`, `src/grow/scrub.ts`). The marker neutraliser breaks runs of `<` and `>` and of their NFKC forms
+    (U+FE64/65, U+FF1C/1E), with hidden characters and combining marks see-through.
+44. **A small update is also bounded by changed characters (P3, §5.3).** At most 20 changed lines, and at most 800
+    changed characters and 25% of the old body's characters; `description`, `example` and `anchors` unchanged
+    (`isSmallUpdate`, `src/grow/checks.ts`; line-length-weighted alignment in a band of 40 around the diagonal).
+45. **Zone init and git (§5.1; enforces 23).** The repository is created only in an absent or empty directory (an empty
+    `skills/` is allowed); anything else is `GrowZoneError("not_empty")` and the files stay untouched. Zone git sets
+    `GIT_COMMON_DIR`, `GIT_ATTR_NOSYSTEM=1`, `core.attributesFile=/dev/null` and `core.excludesFile=/dev/null`; refuses
+    `.git/commondir`, `.git/config.worktree` and a `.gitattributes` in any case anywhere in the tree on every call;
+    adds with `-f`; `restoreToHead` runs `clean -ffdqx`; the config is written by rename into a regular file only
+    (`src/grow/zone.ts`).
+46. **`HOUGE_GROW_DIR` is judged as the canonical path it reaches (36).** Symlinks (also dangling ones) are resolved, a
+    `/System/Volumes/Data` firmlink prefix is stripped, and the rules run on the real paths of the override, the home
+    and every avoided directory; any other realpath error falls back to the default (`resolveGrowDir`).
+47. **`grow-seed/` is protected (G1, G5).** It is in `PROTECTED_DIRS` (`src/capabilities/self-write-guard.ts`); the
+    exemplar's content hash is pinned in `tests/adr/0035-grow-zone-door.test.ts`.
+48. **The exemplar seed clears a sync mark (U1-G).** The publish with `source === "seed"` unmarks the name in the same
+    transaction: an exemplar is orchestrator-written, so a mark on one is a sync artefact on a fresh database.
+49. **Adopt and HEAD-sync write version rows (§5.9).** Adopted content and an outside edit synced from HEAD are
+    versions (`grow_versions.op_id` `adopt:<uuid>` / `sync:<uuid>`, `commit_id` = HEAD), so undo steps back from them.
+50. **An unsettled run ends the review (§5.4/§5.8).** A due row whose run is terminal with no final trust level, or that
+    has waited over 24 h unsettled, fails `run_unsettled` without a review (`failUnsettled`, `src/grow/tick.ts`).
+51. **The switch is re-read after a review (35).** A pass recorded with `HOUGE_GROW_ENABLED` off stays `approved` until
+    an armed reconcile.
+52. **Requests run as their own daemon job each poll (amends 22 and 28).** The review tick only reviews
+    (`runGrowTick` returns `{ reviewed }`); reconcile and Paco's requests run in `runGrowRequestsSafe`, once per poll,
+    so they never wait behind a review (`startGrowJobs`, `src/telegram/telegram-daemon.ts`).
+53. **Only the daemon's worker writes (G2).** A worker without `growWriter` answers `REFUSED not_the_daemon` to
+    `grow_submit` before `ensureZone`; `grow_read` still works (`src/core/core-worker.ts`). The daemon resolves the
+    grow directory once per worker, so the sandbox deny and the zone never part.
+54. **Outcome and status lines.** `run_unsettled` has its outcome line; `/status` adds the cap lines of 39 and the
+    marked-live count of 40; `/grow` shows each pending row's origin.
