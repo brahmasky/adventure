@@ -24,11 +24,16 @@ export const visibleView = (s: string): string => s.replace(HIDDEN_ANY, "").norm
 
 const esc = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const NAME_CHAR = "[A-Za-z0-9_-]";
-/** ADR 0032 §3.2 as literals: a path into a credential store under a home directory. A match ends where the name does, so sentence punctuation after it still matches. */
-const HOME_SECRET_PATH = new RegExp(`(?:~|\\$HOME|\\$\\{HOME\\}|/Users/[^/\\s]+|/home/[^/\\s]+)/(?:${HOME_SECRETS.map(esc).join("|")})(?!${NAME_CHAR})`);
-/** A dotenv file after a separator, any case; `.env.example|sample|template` are templates, not secrets. */
-const DOTENV_PATH = new RegExp(`(?:^|[\\s/"'\`(])\\.env(?!\\.(?:example|sample|template)(?!${NAME_CHAR}))(?:\\.${NAME_CHAR}+)?(?!${NAME_CHAR})`, "im");
-const isSecretPath = (s: string): boolean => HOME_SECRET_PATH.test(s) || DOTENV_PATH.test(s);
+/**
+ * ADR 0032 §3.2 as literals: a path into a credential store under a home directory, any case (APFS folds case). A
+ * match ends where the name does, so sentence punctuation after it still matches.
+ */
+const HOME_SECRET_PATH = new RegExp(`(?:~|\\$HOME|\\$\\{HOME\\}|/Users/[^/\\s]+|/home/[^/\\s]+)/(?:${HOME_SECRETS.map(esc).join("|")})(?!${NAME_CHAR})`, "i");
+/** A dotenv file after anything but a name character or a dot, any case; `.env.example|sample|template` are templates, not secrets. */
+const DOTENV_PATH = new RegExp(`(?:^|[^A-Za-z0-9_.-])\\.env(?!\\.(?:example|sample|template)(?!${NAME_CHAR}))(?:\\.${NAME_CHAR}+)?(?!${NAME_CHAR})`, "im");
+/** `//` and `/./` read as `/`, so `~//.ssh` and `~/./.ssh` are judged as `~/.ssh`. */
+const samePath = (s: string): string => s.replace(/\/(?:\.?\/)+/g, "/");
+const isSecretPath = (s: string): boolean => { const p = samePath(s); return HOME_SECRET_PATH.test(p) || DOTENV_PATH.test(p); };
 
 /**
  * What a skill field may not contain: a known secret value, a secret-shaped token, or a secret path. Changes the text

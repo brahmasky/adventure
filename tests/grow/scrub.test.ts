@@ -9,11 +9,12 @@ describe("fieldScrub", () => {
     "~/.ssh/id_ed25519", "/Users/paco/.claude/settings.json", "read the .env file", "read .env.local",
     "read .env.", "see .env!", "edit .env.local.", "~/.ssh.", "~/.ssh?", "Credentials live in ~/.aws.", "${HOME}/.ssh/id_rsa",
     "/home/paco/.ssh/id_rsa", "the .ENV file", "~/.claude.json", "read .env.production",
-    "Authorization: Bearer abcdefghijklmnopqrstuvwxyz012345"
+    "Authorization: Bearer abcdefghijklmnopqrstuvwxyz012345",
+    "~/.SSH/id_rsa", "~//.ssh/id_rsa", "~/./.ssh/id_rsa", "$HOME/.ssh//id_rsa", "path=.env", "see[.env]", "{.env}", "a,.env", "/Users/paco/LIBRARY/Keychains"
   ])("changes %s, so a secret never lands in a skill", (s) => { expect(scrub(s)).not.toBe(s); });
 
   it.each([
-    "https://www.nrc.gov/reactors/new-reactors/smr.html", "add 1000000 grams of water", "copy .env.example to start", "copy .env.example to start.", "see .env.sample, then", "use the environment variables", "an event.env property", steps
+    "https://www.nrc.gov/reactors/new-reactors/smr.html", "add 1000000 grams of water", "copy .env.example to start", "copy .env.example to start.", "see .env.sample, then", "use the environment variables", "an event.env property", "the file my.env.example", "https://example.com//a/./b", steps
   ])("leaves ordinary text alone: %s", (s) => { expect(scrub(s)).toBe(s); });
 
   // A secret split by an invisible character, or spelled in compatibility forms, still reads as the secret: the scrub
