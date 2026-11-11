@@ -105,7 +105,7 @@ The `memory.kind` golden set has no `fix` items: Jev does not clear 0.85 on `fix
 |---|---|---|
 | Which tool, what input, what to reply | planner model | composes; not a registry entry by design (ADR 0013) |
 | Tool allowed? asks first? | code, then Paco | contract allow-list and approval gates (`tool.policy`, `tool.shell_class`, `tool.path`, `tool.manifest`, `tool.budget`, `approval.bind`); a standing approval can stand in for the tap |
-| `turn.trust` (clean / untrusted / hostile) | code, locked | untrusted: `lesson_write`, `schedule_task`, `self_write_propose` ask; hostile: every write asks, and `grow_submit` is refused (`turn_hostile`); reading a marked grow item raises the turn to untrusted (cause `grow_read_untrusted`) |
+| `turn.trust` (clean / untrusted / hostile) | code, locked | untrusted: `lesson_write`, `schedule_task`, `self_write_propose` ask; hostile: every write asks, and `grow_submit` is refused (`turn_hostile`); reading a marked grow item raises the turn to untrusted (cause `grow_read_untrusted`); a marked item is listed by name only; an untrusted `grow_submit` is refused `pending` while a version of the name is in motion |
 | `tool.shell_netread` | code | feeds the trust level |
 | `tool.injection` | rule floor, then Jev | pass / frame / withhold; tighten only (also on omp's built-in `read`, with a whole-text floor if the judge is late) |
 | `turn.settle` | rule, then Jev | send back once, or settle |

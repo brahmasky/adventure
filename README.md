@@ -199,7 +199,7 @@ merged lesson and supersedes the originals; it never deletes. Preview with
 Slash commands keep it inspectable (idempotent, no run, no budget unless noted):
 
 - `/lessons [scope]` view lessons · `/forget <scope|id>` retire them (a reversible status flip; one the improvement check saved has its whole change undone).
-- `/grow` lists the skills Houge wrote for himself; `/grow undo <name> [reason]` steps back one version (removes the skill if it had none) (queued, the daemon confirms); `/grow trust <name>` clears the "from outside content" mark.
+- `/grow` lists the skills Houge wrote for himself; `/grow undo <name> [reason]` steps back one version (removes the skill if it had none) (queued, the daemon confirms); `/grow trust <name>` clears the "from outside content" mark (refused while a new version of that skill is waiting for review).
 - `/schedule` · `/schedule cancel <N>` list or cancel this chat's schedules. Schedules are created and
   updated conversationally through `schedule_task`.
 - `/status` health digest (with a `Jev front door: armed` or `off (cause)` line, plus 24 h decision counts, the settle health line, per-entry Jev skips when there were any, and the Improvement (7 d) line) · `/status decisions` the last 10 decisions · `/changes` background changes of the last 30 days in plain words (model switches, internal self-checks, routine Jev notices — what no longer comes to chat) · `/usage` token use per model (omp rows show "sub", never dollars).
@@ -233,7 +233,7 @@ tracked files, so gitignored secrets are absent by construction. Off by default
 **Skills (the grow zone).** A skill is a reusable procedure Houge wrote for himself, kept in the grow
 zone and indexed into the planner's prompt; skills are ambient, never invoked by name. The planner
 stages one with `grow_submit`, which runs the formal checks and queues it for review (a small update to a clean, never-undone live
-skill, from a clean turn, goes live at once), and reads one back with `grow_read`. `/grow` lists them and `/grow undo` steps back one version (removes the skill if it had none)
+skill, from a clean turn, goes live at once; a skill from outside content is listed by name only until Paco trusts it), and reads one back with `grow_read`. `/grow` lists them and `/grow undo` steps back one version (removes the skill if it had none)
 ([configuration](docs/reference/configuration.md)).
 
 **Code self-write (Phase 3).** When the fix belongs in Houge's own code, the planner calls

@@ -490,9 +490,14 @@ only the daemon commits to the repository. A submit runs the formal checks in mi
 a secret scan, no long code block, no near-copy of a live item). A new item, a large change, a change to
 an item that was ever undone and any change to an item marked "from outside content" is `STAGED` and
 **reviewed after the turn by the `grow_review` seat** (a different model family from the author's;
-[Model roles](#model-roles)) before it goes live; a small update (at most 20 changed lines and 25% of the
-body) to a clean live item that was never undone, submitted from a clean turn, goes live at once; a submit from an
-`untrusted` turn is always staged and marks the item "from outside content". Every live write is a commit; there is
+[Model roles](#model-roles)) before it goes live; a small update (at most 20 changed lines, 800 changed characters and 25% of the
+body's characters) to a clean live item that was never undone, submitted from a clean turn, goes live at once; a submit from an
+`untrusted` turn is always staged and marks the item "from outside content" (the mark outlives a failed review; such an
+item is listed in the index by name only, `(from outside content; grow_read it to see it)`, until Paco trusts it), and is refused
+(`pending`) while any version of that name is waiting. The door refuses hidden characters by Unicode class, so zero-width
+joiners and variation selectors are refused and **emoji sequences are not allowed**. Caps count accepted submits only:
+20 per rolling 24 hours, and 5 more for untrusted turns that do not use up the 20; `/status` shows a line when one is hit.
+Only the daemon's worker writes: any other process answers `not_the_daemon`. Every live write is a commit; there is
 no trust tap (after a Jev-rung send-back `grow_submit` asks like every side effect, ADR 0034 2b-R7).
 `grow_submit` is refused in a `hostile` conversation (`turn_hostile`), and a schedule-born run cannot call
 it. Reading an item marked "from outside content" raises the turn to `untrusted`
@@ -507,7 +512,7 @@ only, never a body (ADR 0032 4.2).
 |----------|---------|---------|
 | `HOUGE_SKILLS_ENABLED` | `on` | Kill switch for Houge's own procedures: off removes the grow index from the prompt and both grow tools. Default on. In `DISARM_FLAGS`. |
 | `HOUGE_GROW_ENABLED` | `on` | Switch for writes to the grow zone (ADR 0035). Only `0`/`false`/`no`/`off` disable it: `grow_submit` then answers `grow_disabled` and the index drops its sentence about writing; the index and `grow_read` keep working. In `DISARM_FLAGS`. |
-| `HOUGE_GROW_DIR` | `~/Library/Application Support/houge/grow` | The grow zone: Houge's own local git repository of skills, outside the code checkout and never pushed. An override is ignored, and the default used, when it is not absolute, is fewer than three path segments deep, is the home directory or an ancestor of it, overlaps the code checkout or the data directory in either direction (compared case-insensitively), or is `~/.omp` or inside it. Write-denied to every sandboxed child. |
+| `HOUGE_GROW_DIR` | `~/Library/Application Support/houge/grow` | The grow zone: Houge's own local git repository of skills, outside the code checkout and never pushed. The zone is created only in an absent or empty directory. An override is judged as the canonical path it reaches (symlinks, also dangling ones, and a `/System/Volumes/Data` prefix are resolved) and is ignored, and the default used, when it is not absolute, is fewer than three path segments deep, is the home directory or an ancestor of it, overlaps the code checkout or the data directory in either direction (compared case-insensitively), or is `~/.omp` or inside it. Write-denied to every sandboxed child. |
 
 The zone is backed up beside the DB snapshots (`<snapshot>.grow.bundle`); the grow root and the backup
 folder are read- and write-denied to every sandboxed child.
@@ -669,7 +674,7 @@ a turn runs (detached turns).
 
 | Command | Plane | Purpose |
 |---------|-------|---------|
-| `/status` | control | Per-cap breaker headroom, run counts by state, last error, plus the 24 h decision counts per entry, the `turn.settle` health line, per-entry Jev skips, a carried trust level (until `/fresh`), the count of background notices paged and logged, and the self-check line. |
+| `/status` | control | Per-cap breaker headroom, run counts by state, last error, plus the 24 h decision counts per entry, the `turn.settle` health line, per-entry Jev skips, a carried trust level (until `/fresh`), the count of background notices paged and logged, the self-check line, and grow-zone lines when something needs a look (writing paused, reviews pending over a day, orphans, live skills shown by name only, a reached submit cap). |
 | `/status decisions` | control | The last 10 decision rows. |
 | `/changes` (same as `/status changes`) | control | The change log of the last 30 days in plain words: at most 20 rows, repeats collapsed to `×N`, capped at 3,900 characters. See [Notification routing](#notification-routing-adr-0031). |
 | `/models` · `/models set <role> <pattern>` · `/models reset <role>` | control | Which model each role resolves to, and the override (details under [Model roles](#model-roles)). |
@@ -683,7 +688,7 @@ a turn runs (detached turns).
 | `/forget <scope\|id>` | control | Prune that scope's lessons, or one lesson by numeric id (a reversible status flip — rows are never deleted) and ack. A lesson an improvement proposal saved has its whole change undone (what its save pruned at the cap comes back) and the proposal reverted; `/forget <scope>` undoes each such lesson newest first, then prunes the scope empty. |
 | `/memories [query]` | control | Up to 10 of this chat's ACTIVE episodic facts as `#id · text · date`: the matches for the query (keyword and substring search), or with no query the 10 most-applied. Read-only. |
 | `/forget_memory <id>` | control | (Alias `/forget-memory`.) Retire one active fact of this chat (a reversible status flip, recorded in `memory_changes`) and reply with the card's **Undo** button. Allowlist only; an unknown, retired or other chat's id gets a refusal reply. A fact an improvement proposal saved in this chat has its whole change undone instead (what its save pruned comes back), the proposal is reverted, and the reply is plain text with no Undo button. |
-| `/grow` | control | Lists the skills Houge wrote for himself (origin · uses · description as plain text), reviews waiting, recent failures, and repository skills he does not know. The list includes the exemplar and shows descriptions in a defanged code span. `/skills` (any arguments) stays one release as an alias of the `/grow` list. `/grow undo <name> [reason]` records a request the daemon's grow tick runs and confirms; `/grow trust <name>` clears the "from outside content" mark at once. |
+| `/grow` | control | Lists the skills Houge wrote for himself (origin · uses · description as plain text), reviews waiting, recent failures, and repository skills he does not know. The list includes the exemplar and shows descriptions in a defanged code span. `/skills` (any arguments) stays one release as an alias of the `/grow` list. `/grow undo <name> [reason]` records a request the daemon's request job runs each poll and confirms; `/grow trust <name>` clears the "from outside content" mark at once, or is refused while a new version of that skill is waiting for review (a pending row is never flipped to clean). |
 | `/radar week` · `/radar pick <n>` | control | The same as `/idea` and `/idea pick <n>` below (`/idea` is an alias of the `/radar` family). |
 | `/radar [n]` | control | Numbered top-10 active idea cards (picked > shortlisted pinned first, then momentum) + last-tick footer; `/radar <n>` 详情 — per-card drill-down with summary, momentum, panel scores, and source titles + URLs. Flag off → off notice. Read-only view of the ADR 0026 `ideas` store. |
 | `/idea [pick <n>]` | control | Latest weekly panel shortlist snapshot (ADR 0027): rank · title · mean score · chair rationale, with the picked marker. `/idea pick <n>` resolves rank n IN the frozen snapshot and maintains the global pick singleton (at most one `picked` card, ever — re-pick reverts the prior). |
