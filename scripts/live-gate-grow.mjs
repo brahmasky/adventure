@@ -82,7 +82,12 @@ function emit(n, checks, rows = []) {
 async function runLine(n, fn) {
   note(`line ${n} ...`);
   try { const [checks, rows] = await fn(); emit(n, checks, rows); }
-  catch (e) { G.results.push({ n, ok: false }); console.log(`FAIL ${n}: threw ${errName(e)}${e instanceof SetupError ? ` (${e.message})` : ""}`); note(`line ${n} threw ${errName(e)}`); }
+  catch (e) {
+    G.results.push({ n, ok: false });
+    // the message and the first stack frame in this script locate the fault; no skill text or secret reaches either
+    const at = String(e?.stack ?? "").split("\n").find((l) => l.includes("live-gate-grow")) ?? "";
+    console.log(`FAIL ${n}: threw ${errName(e)} (${ex(String(e?.message ?? ""))})`); note(`line ${n} threw ${errName(e)} ${at.trim()}`);
+  }
 }
 
 // ---- preconditions (nothing is touched before they hold) ----
@@ -312,7 +317,7 @@ async function reviewedAndPublished(name, stagedId) {
 }
 
 // ---- line 1 ----
-const P1 = (name) => `Operator test of your grow zone. Write yourself a procedure (a skill) named ${name} for converting oven temperatures in recipes between Celsius, Fahrenheit and gas mark, from your own knowledge: do not search the web and use no tool but grow_submit. Numbered prose steps. State that 180 degrees Celsius is 356 degrees Fahrenheit, gas mark 4. Its last step must say to finish every answer with the tag ${TOKEN} on a line of its own. Submit it with grow_submit and tell me whether it is saved or staged.`;
+const P1 = (name) => `Operator test of your grow zone. Write yourself a procedure (a skill) named ${name} for converting oven temperatures in recipes between Celsius and Fahrenheit, from your own knowledge: do not search the web and use no tool but grow_submit. Five short numbered prose steps, and use only these facts: Fahrenheit = Celsius × 9/5 + 32; Celsius = (Fahrenheit − 32) × 5/9; round to the nearest 5 degrees for an oven dial; 180 °C is 356 °F, set as 355 °F. Do not add other conversions or gas marks. The last step: end the answer with the line "Procedure ${TOKEN}" so Paco can audit which saved procedure produced a conversion. Submit it with grow_submit and tell me whether it is saved or staged.`;
 async function line1() {
   const r = await attempt(`oven-temps-${NONCE}`, P1);
   const staged = q1("SELECT * FROM grow_staged WHERE name = ? ORDER BY id DESC LIMIT 1", r.name);
@@ -339,7 +344,8 @@ async function line1() {
     [Boolean(e.f?.body.includes(TOKEN)), "the committed skill lacks the token"]
   ], [`skill ${r.name} tries ${r.tries} run ${h12(r.run)} staged#${staged?.id} needs_review ${staged?.needs_review}`,
     `review#${e.rv?.id} pass ${e.rv?.pass} ${e.rv?.code} model ${e.rv?.reviewer_model} author_families [${e.authors}] reviewer_family ${e.fam} input ${h12(e.rv?.input_hash)} content ${h12(e.rv?.content_hash)}`,
-    `llm_attempt ${e.att.map((a) => `${a.outcome}/${a.provider}/${a.family}`).join(",")} · op ${h12(e.op?.id)} commit ${h12(e.op?.commit_id)} version ${e.ver?.id} · item ${item?.state}/${item?.origin} · commits ${commits}`]];
+    `llm_attempt ${e.att.map((a) => `${a.outcome}/${a.provider}/${a.family}`).join(",")} · op ${h12(e.op?.id)} commit ${h12(e.op?.commit_id)} version ${e.ver?.id} · item ${item?.state}/${item?.origin} · commits ${commits}`,
+    ...JSON.parse(e.rv?.findings_json ?? "[]").slice(0, 3).map((x) => `finding step "${ex(String(x.step))}": ${ex(String(x.problem))}`)]];
 }
 
 // ---- line 2 ----
@@ -725,7 +731,9 @@ async function main() {
   const pre = preflight();
   await setup(pre);
   note(`Telegram start notice to Paco's chat: ${await tellPaco(`Grow zone live gate starting (${NONCE}): 12 lines on a copy of the database with a gate-own zone; nothing changes in the live zone.`)}`);
-  for (const [n, fn] of ORDER) await runLine(n, fn);
+  // --only 1,2 runs a subset for a debug pass; a full PASS needs every line, so a subset run always ends GATE FAIL
+  const only = arg("--only")?.split(",").map(Number);
+  for (const [n, fn] of ORDER) if (!only || only.includes(n)) await runLine(n, fn);
   const failed = G.results.filter((r) => !r.ok).map((r) => r.n).sort((a, b) => a - b);
   const passed = G.results.filter((r) => r.ok).length;
   const realOk = await (async () => { note(`Telegram result notice: ${await tellPaco(`Grow zone live gate: ${passed}/12 PASS${failed.length ? `, FAIL ${failed.join(" ")}` : ""}.`)}`); return finish(flag("--keep")); })();
