@@ -18,17 +18,19 @@ export interface GrowTickDeps { store: RunStore; svc: GrowService; env: NodeJS.P
   chain: () => ModelString[]; spawn: (input: OneShotInput) => Promise<LlmResult>; exemplar: () => Promise<string>; settled: (run_id: string) => boolean }
 const plus = (iso: string, ms: number): string => new Date(Date.parse(iso) + ms).toISOString();
 
-/** One poll cycle's grow work (spec §5.4, §5.8): finish publishes, run Paco's queued requests, free stale claims, then at most one review. */
-export async function runGrowTick(d: GrowTickDeps): Promise<{ requests: number; reviewed: number | null }> {
-  if (!(await d.svc.ensureZone())) return { requests: 0, reviewed: null };
-  await d.svc.reconcile(resolveGrowEnabled(d.env));
-  const requests = await d.svc.runRequests();
+/**
+ * One poll cycle's review work (spec §5.4, §5.8): free stale claims, then at most one review. Finishing publishes and
+ * Paco's requests is the daemon's request job (`runGrowRequestsSafe`), never this tick: two reconciles in one poll would
+ * spend both of an operation's write tries (GROW_OP_TRIES) back to back.
+ */
+export async function runGrowTick(d: GrowTickDeps): Promise<{ reviewed: number | null }> {
+  if (!(await d.svc.ensureZone())) return { reviewed: null };
   d.store.releaseStaleGrowClaims(plus(d.now, -GROW_CLAIM_STALE_MS));
-  if (!resolveGrowEnabled(d.env) || d.signal.aborted) return { requests, reviewed: null };
+  if (!resolveGrowEnabled(d.env) || d.signal.aborted) return { reviewed: null };
   const row = reviewable(d);
-  if (!row || !d.store.claimGrowReview(row.id, d.now)) return { requests, reviewed: null };
+  if (!row || !d.store.claimGrowReview(row.id, d.now)) return { reviewed: null };
   await reviewOne(d, row);
-  return { requests, reviewed: row.id };
+  return { reviewed: row.id };
 }
 
 /**

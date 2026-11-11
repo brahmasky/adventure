@@ -1,8 +1,11 @@
+import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
+import type { CoreWorker } from "../../src/core/core-worker.js";
 import { GROW_RETRY_AFTER_MS, runGrowTick } from "../../src/grow/tick.js";
 import type { LlmResult } from "../../src/llm/types.js";
 import { parseModelString } from "../../src/omp/model-string.js";
-import { CLEAN, growBody, growFields, growSetup, PASS } from "../helpers/grow.js";
+import { runGrowRequestsSafe, type RunTelegramDaemonOptions } from "../../src/telegram/telegram-daemon.js";
+import { blockWrite, CLEAN, growBody, growFields, growSetup, PASS } from "../helpers/grow.js";
 
 const chain = () => ["kimi-code/k3:high", "openai-codex/gpt-6.1-sol:high"].map(parseModelString);
 const pass = async (): Promise<LlmResult> => ({ ok: true, provider: "kimi-code", model: "k3", answer: '{"pass":true,"findings":[]}' });
@@ -24,7 +27,7 @@ async function staged() {
 describe("grow tick", () => {
   it("reviews a staged skill after its turn has ended, records the review, and publishes it on a pass", async () => {
     const s = await staged();
-    expect(await s.tick(pass)).toEqual({ requests: 0, reviewed: s.id });
+    expect(await s.tick(pass)).toEqual({ reviewed: s.id });
     expect(s.store.getGrowItem("unit-convert")?.state).toBe("live");
     expect(s.store.listGrowReviews("unit-convert")).toMatchObject([{ staged_id: s.id, pass: true, reviewer_model: "kimi-code/k3", author_families: "claude", undo_reasons_n: 0 }]);
     expect(s.store.listGrowReviews("unit-convert")[0]!.input_hash).toMatch(/^[0-9a-f]{64}$/);
@@ -93,14 +96,15 @@ describe("grow tick", () => {
     expect(s.store.getGrowStaged(s.id)).toMatchObject({ state: "staged", claimed_at: null, next_attempt_at: new Date(Date.parse(NOW) + GROW_RETRY_AFTER_MS[0]).toISOString() });
   });
 
-  it("starts no review when the switch is off, but still runs Paco's queued undo", async () => {
+  it("starts no review when the switch is off, and leaves Paco's queued undo to the request job", async () => {
     const s = await staged();
     const spawn = vi.fn(pass);
     await s.live(growFields({ name: "other-skill", description: "another skill used to test the queue", body: "x ".repeat(200) }));
     s.store.enqueueGrowRequest({ idempotency_key: "tg:9", kind: "undo", name: "other-skill", reason: null, chat_id: "555", now: NOW });
-    expect(await s.tick(spawn, { env: { HOUGE_GROW_ENABLED: "false" } })).toEqual({ requests: 1, reviewed: null });
+    expect(await s.tick(spawn, { env: { HOUGE_GROW_ENABLED: "false" } })).toEqual({ reviewed: null });
     expect(spawn).not.toHaveBeenCalled();
-    expect(s.store.getGrowItem("other-skill")?.state).toBe("removed");
+    expect(s.store.dueGrowRequests()).toHaveLength(1);                     // runGrowRequestsSafe runs it, not the tick
+    expect(s.store.getGrowItem("other-skill")?.state).toBe("live");
     expect(s.store.getGrowStaged(s.id)?.state).toBe("staged");
   });
 
@@ -159,7 +163,7 @@ describe("grow tick", () => {
     const s = await staged();
     vi.spyOn(s.svc, "publishStaged").mockRejectedValue(new Error("git exploded"));
     const err = vi.spyOn(console, "error").mockImplementation(() => {});
-    await expect(s.tick(pass)).resolves.toEqual({ requests: 0, reviewed: s.id });
+    await expect(s.tick(pass)).resolves.toEqual({ reviewed: s.id });
     expect(s.store.getGrowStaged(s.id)?.state).toBe("approved");
     expect(err.mock.calls.flat().join(" ")).toContain("[grow] tick: publish_failed");
     expect(err.mock.calls.flat().join(" ")).not.toContain("git exploded");
@@ -175,13 +179,15 @@ describe("grow tick", () => {
     expect(logged).not.toContain("Step 1 of the procedure");
   });
 
-  it("an unusable zone stops the tick before reconcile and review", async () => {
+  it("an unusable zone stops the tick before any review; the tick never reconciles or runs requests", async () => {
     const s = await staged();
-    vi.spyOn(s.svc, "ensureZone").mockResolvedValue(false);
-    const rec = vi.spyOn(s.svc, "reconcile");
-    const spawn = vi.fn(pass);
-    expect(await s.tick(spawn)).toEqual({ requests: 0, reviewed: null });
+    const rec = vi.spyOn(s.svc, "reconcile"); const req = vi.spyOn(s.svc, "runRequests");
+    await s.tick(pass);
     expect(rec).not.toHaveBeenCalled();
+    expect(req).not.toHaveBeenCalled();
+    vi.spyOn(s.svc, "ensureZone").mockResolvedValue(false);
+    const spawn = vi.fn(pass);
+    expect(await s.tick(spawn)).toEqual({ reviewed: null });
     expect(spawn).not.toHaveBeenCalled();
   });
 
@@ -245,6 +251,24 @@ describe("grow tick", () => {
     expect(s.store.getGrowStaged(s.id)?.state).toBe("staged");
     expect((await s.tick(pass, { settled: false, now: dayAfter(1000) })).reviewed).toBeNull();
     expect(s.store.getGrowStaged(s.id)).toMatchObject({ state: "failed", code: "run_unsettled" });
+  });
+
+  it("I4: one poll (a tick and the request job side by side) spends at most one write attempt on a pending operation", async () => {
+    const s = await staged();
+    s.svc.recordReview(s.id, PASS);
+    const op = s.store.inTransaction(() => {
+      s.store.patchGrowStaged(s.id, { state: "publishing", claimed_at: null }, NOW);
+      return s.store.insertGrowOp({ id: randomUUID(), kind: "publish", source: "submit", name: "unit-convert", staged_id: s.id, request_id: null, target_json: s.store.getGrowStaged(s.id)!.fields_json, reason: null, undo_version_id: null, now: NOW });
+    });
+    expect(await s.svc.ensureZone()).toBe(true);                            // a running daemon's zone: ready, so nothing restores the tree first
+    blockWrite(s.zone, "unit-convert");                                      // the next write fails; its cleanup clears the blocker
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const worker = { growService: () => s.svc } as unknown as CoreWorker;
+    const options = { stopSignal: new AbortController().signal } as unknown as RunTelegramDaemonOptions;
+    await Promise.all([runGrowRequestsSafe(options, worker), s.tick(pass)]);
+    // a second attempt in the same poll would have written at once, with no time between the tries (GROW_OP_TRIES = 2)
+    expect(s.store.getGrowOp(op.id)).toMatchObject({ state: "pending", failures: 1 });
+    expect(s.store.getGrowItem("unit-convert")).toBeUndefined();
   });
 
   it("releases a claim older than ten minutes but not one nine minutes old", async () => {
