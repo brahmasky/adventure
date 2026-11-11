@@ -84,13 +84,13 @@ describe("grow formal checks", () => {
   // shape so the scrub misses it. The table spans every class the door refuses, at its range ends.
   it.each([
     ["tag character (start)", "\u{E0001}"], ["tag character (letter)", "\u{E0041}"], ["tag character (cancel)", "\u{E007F}"],
-    ["variation selector 1", "︀"], ["variation selector 16", "️"], ["supplementary variation selector", "\u{E0100}"], ["last supplementary variation selector", "\u{E01EF}"],
-    ["soft hyphen", "­"], ["zero-width joiner", "‍"], ["left-to-right mark", "‎"], ["right-to-left mark", "‏"],
-    ["Arabic letter mark", "؜"], ["function application", "⁡"], ["invisible plus", "⁤"], ["Mongolian vowel separator", "᠎"],
+    ["variation selector 1", "\ufe00"], ["variation selector 16", "\ufe0f"], ["supplementary variation selector", "\u{E0100}"], ["last supplementary variation selector", "\u{E01EF}"],
+    ["soft hyphen", "\u00ad"], ["zero-width joiner", "\u200d"], ["left-to-right mark", "\u200e"], ["right-to-left mark", "\u200f"],
+    ["Arabic letter mark", "\u061c"], ["function application", "\u2061"], ["invisible plus", "\u2064"], ["Mongolian vowel separator", "\u180e"],
     ["Hangul filler", "ㅤ"], ["Hangul choseong filler", "ᅟ"], ["Hangul jungseong filler", "ᅠ"], ["halfwidth Hangul filler", "ﾠ"],
-    ["interlinear annotation anchor", "￹"], ["interlinear annotation terminator", "￻"],
-    ["C1 control (first)", "\u0080"], ["C1 control (last)", "\u009f"], ["inhibit symmetric swapping", "⁪"], ["nominal digit shapes", "⁯"],
-    ["bare carriage return", "\r"], ["private-use character", ""], ["unassigned code point", "͸"], ["lone surrogate", "\ud800"]
+    ["interlinear annotation anchor", "\ufff9"], ["interlinear annotation terminator", "\ufffb"],
+    ["C1 control (first)", "\u0080"], ["C1 control (last)", "\u009f"], ["inhibit symmetric swapping", "\u206a"], ["nominal digit shapes", "\u206f"],
+    ["bare carriage return", "\r"], ["private-use character", "\ue000"], ["unassigned code point", "\u0378"], ["lone surrogate", "\ud800"]
   ])("rejects %s in any field", (_n, ch) => {
     expect(code(ok({ body: `${body(8)}\nsee th${ch}is step` }))).toBe("control_chars");
     expect(code(ok({ anchors: [`a fact${ch} here`] }))).toBe(ch === "\r" ? "bad_anchors" : "control_chars");   // a one-line field refuses \r first
@@ -101,7 +101,7 @@ describe("grow formal checks", () => {
   });
 
   it("rejects an emoji sequence and says so: the joiner and the variation selector are not allowed", () => {
-    for (const s of ["\u{1F468}‍\u{1F469}‍\u{1F467} family", "red ❤️ heart"]) {
+    for (const s of ["\u{1F468}\u200d\u{1F469}\u200d\u{1F467} family", "red ❤\ufe0f heart"]) {
       const r = checkFields(ok({ body: `${body(8)}\n${s}` }), [], same);
       expect(r.ok).toBe(false);
       expect(!r.ok && r.code).toBe("control_chars");
@@ -112,13 +112,13 @@ describe("grow formal checks", () => {
   it("names the class of the refused character, never the character itself", () => {
     const msg = (ch: string): string => { const r = checkFields(ok({ body: `${body(8)}\nx${ch}y` }), [], same); return r.ok ? "" : r.message; };
     expect(msg("\u0007")).toMatch(/a control character/);
-    expect(msg("​")).toMatch(/an invisible format character/);
-    expect(msg("️")).toMatch(/a variation selector/);
+    expect(msg("\u200b")).toMatch(/an invisible format character/);
+    expect(msg("\ufe0f")).toMatch(/a variation selector/);
     expect(msg("ㅤ")).toMatch(/an invisible filler/);
-    expect(msg(" ")).toMatch(/a line or paragraph separator/);
-    expect(msg("")).toMatch(/a private-use character/);
-    expect(msg("͸")).toMatch(/an unassigned code point/);
-    expect(msg("​")).not.toContain("​");
+    expect(msg("\u2028")).toMatch(/a line or paragraph separator/);
+    expect(msg("\ue000")).toMatch(/a private-use character/);
+    expect(msg("\u0378")).toMatch(/an unassigned code point/);
+    expect(msg("\u200b")).not.toContain("\u200b");
   });
 
   // A small update goes live unreviewed, so each of its four bounds must bite on its own. The changed characters are
