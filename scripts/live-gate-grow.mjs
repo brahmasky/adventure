@@ -209,6 +209,9 @@ async function setup(pre) {
   build();
   G.store.db.prepare("UPDATE notification_outbox SET state = 'failed_terminal' WHERE state NOT IN ('delivered', 'failed_terminal')").run(); // nothing old is resent
   for (const t of G.store.listScheduledTasks()) G.store.cancelScheduledTask(t.schedule_id);   // Paco's real schedules never fire on the copy
+  // once the live DB holds the real zone's rows, the copy would describe a zone the gate's empty zone is not: the service
+  // rightly refuses to initialise a zone over existing items, so the copy's grow tables start empty (the copy only)
+  for (const t of ["grow_items", "grow_staged", "grow_events", "grow_undo_reasons", "grow_context_cursor", "grow_hints", "grow_reviews", "grow_requests", "grow_marks", "grow_ops", "grow_versions"]) G.store.db.prepare(`DELETE FROM ${t}`).run();
   await boot();
   G.pid1 = process.pid;
   note(`ready: copy migrated ${G.store.db.prepare("SELECT 1 AS x FROM schema_migrations WHERE version = '2026-11-10-grow-zone'").get() ? "yes" : "NO"}; gate zone ${G.zone.replace(homedir(), "~")}; real grow dir ${JSON.stringify(zoneState(G.realZone)).slice(0, 120)}`);
