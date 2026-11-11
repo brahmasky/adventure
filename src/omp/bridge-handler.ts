@@ -453,7 +453,7 @@ async function awaitApproval(turn: ActiveTurn, approval_id: string, policy: Wait
 interface Rendered { content: string; digest: string; failed?: string }
 
 /** Tools whose code-rendered `answer` reaches the planner as text, not a JSON envelope. */
-const PLAIN_TEXT_ENTRIES: ReadonlySet<RegistryEntry> = new Set<RegistryEntry>(["houge_status", "memory_correct", "memory_correct_write"]);
+export const PLAIN_TEXT_ENTRIES: ReadonlySet<RegistryEntry> = new Set<RegistryEntry>(["houge_status", "memory_correct", "memory_correct_write", "grow_submit", "grow_read"]);
 
 /** Read tools cross the wall ALWAYS (D3), judged first (spec §7.1); bash is judged raw (D12 + §7.1); a ledger digest carries counts and hashes only. */
 async function render(deps: BridgeHandlerDeps, turn: ActiveTurn, req: CallReq, entry: RegistryEntry, r: CapabilityResult): Promise<Rendered> {
@@ -462,6 +462,8 @@ async function render(deps: BridgeHandlerDeps, turn: ActiveTurn, req: CallReq, e
   }
   if (SHELL_ENTRIES.has(entry)) return renderShell(deps, turn, req, r);
   if (r.status !== "succeeded") return { content: capResponse(failureText(r)), digest: r.status };
+  // ADR 0035 G4: a born-untrusted grow item taints its reader before the text returns
+  if (entry === "grow_read" && r.output.tainted === true) turn.trust?.raise("grow_read_untrusted", req.toolCallId);
   if (PLAIN_TEXT_ENTRIES.has(entry) && typeof r.output.answer === "string") {
     const text = r.output.answer;
     return { content: capResponse(text), digest: `${bytes(text)} bytes` };

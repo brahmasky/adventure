@@ -95,7 +95,7 @@ function copyDb(from, to) {
 function checkRender(m, store, ctx, fails) {
   const dropped = () => store.getLedgerEvents().filter((e) => e.event_type === "lesson_dropped").length;
   const before = dropped();
-  const d = { store, memoryRoot: join(ctx.repo, "memory"), dataDir: ctx.root, skillsReader: () => undefined,
+  const d = { store, memoryRoot: join(ctx.repo, "memory"), dataDir: ctx.root, growIndex: () => undefined,
     coreBlock: () => undefined, retrieve: async () => ({ facts: [], pages: [] }), env: process.env };
   const { path, snapshot } = m.turn.writeSystemPromptFile(d, ctx.chat);
   const active = m.render.OMP_LESSON_SCOPES.flatMap((s) => store.getActiveLessons(s)).map((l) => l.id).sort((a, b) => a - b);

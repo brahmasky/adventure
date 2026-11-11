@@ -11,11 +11,12 @@ const ANCHOR_KINDS = ["jev_anchor_missing", "jev_anchor_mixed_models", "jev_anch
 const CARD_KINDS = ["jev_model_drifted", "jev_model_insufficient", "jev_model_check_stalled", "decision_health"];
 const LOG_KINDS = ["heartbeat_gap", "core_overflow", "trust_tap_budget", "decision_record_failed", "decision_fallback", "decision_golden_drift",
   "omp_read_format_drift", "omp_contract_drift", ...ANCHOR_KINDS, "standing_sweep_failed", "standing_settle_failed", "standing_evidence_failed",
-  "todo_reminder_seen", "static_list_stale", "model_catalog_unavailable", "triage_overrides", "hostile_schedule_turn"];
+  "todo_reminder_seen", "static_list_stale", "model_catalog_unavailable", "triage_overrides", "hostile_schedule_turn", "grow_seed_failed", "grow_backup_failed"];
 
 describe("every opened kind has a rule", () => {
   const opened = [...SWEEP_INCIDENT_KINDS, ...SUPERVISOR_ALERT_KINDS, ...JEV_ANSWERED_RESOLVES, ...JEV_MODEL_INCIDENT_KINDS, "jev_model_check_stalled",
-    ...ANCHOR_KINDS, OMP_READ_FORMAT_DRIFT, OMP_CONTRACT_DRIFT, "hostile_schedule_turn", "trust_card_failed"];
+    ...ANCHOR_KINDS, OMP_READ_FORMAT_DRIFT, OMP_CONTRACT_DRIFT, "hostile_schedule_turn", "trust_card_failed",
+    "grow_zone_unavailable", "grow_publish_failed", "grow_seed_failed", "grow_backup_failed"];
   for (const k of opened) it(`${k} is in the table`, () => expect(isRoutedKind(k)).toBe(true));
 });
 
@@ -34,17 +35,17 @@ describe("routes", () => {
   it("card kinds route card and make no notice of their own", () => {
     for (const k of CARD_KINDS) { expect(routeOf(k)).toBe("card"); expect(incidentNotice(k, "x")).toBeNull(); expect(incidentResolvedNotice(k, "x", 5)).toBeNull(); }
   });
-  it("the 19 log kinds route log", () => {
-    expect(LOG_KINDS).toHaveLength(19);
+  it("the 21 log kinds route log", () => {
+    expect(LOG_KINDS).toHaveLength(21);
     for (const k of LOG_KINDS) expect(routeOf(k)).toBe("log");
   });
   it("every other table row pages, and the table size is pinned (a flipped, added or removed row fails)", () => {
     const keys = Object.keys(INCIDENT_ROUTE);
-    // 59 rows, 36 pages: mail_auth_lost, mail_poll_failing and mail_jev_failing (spec 2026-11-09 §7) are the newest pages
-    expect(keys).toHaveLength(59);
+    // 63 rows, 38 pages: grow_zone_unavailable and grow_publish_failed (grow zone 1a) are the newest pages
+    expect(keys).toHaveLength(63);
     const notPage = new Set([...CARD_KINDS, ...LOG_KINDS]);
     const pages = keys.filter((k) => !notPage.has(k));
-    expect(pages).toHaveLength(36);
+    expect(pages).toHaveLength(38);
     for (const k of pages) { expect(routeOf(k)).toBe("page"); expect(incidentNotice(k, "x")?.topic).toBe("incident_page"); }
   });
   it("the unknown-kind stderr line prints once per kind per process", () => {
@@ -58,6 +59,17 @@ describe("routes", () => {
     expect(routeOf("no_such_kind")).toBe("page");
     expect(incidentNotice("no_such_kind", "daemon")).toEqual({ topic: "incident_page", text: "⚠️ Something needs a look.\n`no_such_kind` · daemon" });
     expect(isRoutedKind("no_such_kind")).toBe(false);
+  });
+});
+
+describe("grow_zone_unavailable by subject", () => {
+  it("the zone subject says the zone cannot be written; the apply subject says one change's database half is retried and writing continues", () => {
+    expect(incidentNotice("grow_zone_unavailable", "zone")?.text).toContain("cannot be written");
+    const apply = incidentNotice("grow_zone_unavailable", "apply")?.text ?? "";
+    expect(apply).not.toContain("cannot be written");
+    expect(apply).toContain("writing continues");
+    expect(incidentResolvedNotice("grow_zone_unavailable", "apply", 3)?.text).toContain("writing continues");
+    expect(incidentResolvedNotice("grow_zone_unavailable", "zone", 3)?.text).toContain("cannot be written");
   });
 });
 

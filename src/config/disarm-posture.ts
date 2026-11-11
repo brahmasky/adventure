@@ -39,9 +39,6 @@ export const DISARM_FLAGS: readonly string[] = [
   // Lesson-consolidation design (2026-07-23): rewrites Houge's OWN behavioral guidance (merges
   // its lessons) — the STOP switch must halt a capability that edits how Houge thinks.
   "HOUGE_LESSON_CONSOLIDATE_ENABLED",
-  // Skill retirement spec (2026-07-29): the re-verify advisor re-scores Houge's OWN procedures
-  // weekly — evolution surface, covered by the STOP switch like lesson consolidation.
-  "HOUGE_SKILL_REVERIFY_ENABLED",
   // Idea Radar R1 (spec 2026-07-24): unattended daily reads of external feeds + one metered
   // LLM call + durable idea-card writes — unattended autonomy.
   "HOUGE_RADAR_ENABLED",
@@ -54,10 +51,12 @@ export const DISARM_FLAGS: readonly string[] = [
   "HOUGE_MEDIA_INGEST_ENABLED",
   // Jev System One master (ADR 0033 G6, ADR 0034 1.6): /disarm switches Jev's front door off; Jev's other entries do not read this flag.
   "HOUGE_JEV_ENABLED",
-  // 2b-ii follow-up: the improvement tick turns Paco's taps into proposals and skill jobs — an evolution surface the STOP switch covers.
+  // 2b-ii follow-up: the improvement tick turns Paco's taps into proposals and grow hints — an evolution surface the STOP switch covers.
   "HOUGE_IMPROVE_ENABLED",
   // SP2 mail triage (spec 2026-11-09): polls Paco's own inbox unattended and pushes cards — unattended autonomy the STOP switch covers.
-  "HOUGE_MAIL_ENABLED"
+  "HOUGE_MAIL_ENABLED",
+  // grow zone writes (ADR 0035): /disarm stops Houge adding or changing his own skills
+  "HOUGE_GROW_ENABLED"
   // omp runtime (spec 2026-09-30, D2): the money track (extwork, bounty) and the live Jev shadow
   // are deleted, so their flags left this set; omp itself has no arming flag (the cutover is hard).
 ];

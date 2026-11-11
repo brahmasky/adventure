@@ -38,6 +38,7 @@ describe("role lists (code-owned, spec §4)", () => {
     expect(f(c.judges)).toBe("kimi-code/k3,openai-codex/gpt-6.1-sol");
     expect(f(c.chair)).toBe("anthropic/claude-opus-5-5:low");
     expect(f(c.reviewer)).toBe("kimi-code/k3:high,google-antigravity/claude-opus-5-5:medium");
+    expect(f(c.growReview)).toBe("kimi-code/k3:high,openai-codex/gpt-6.1-sol:high");
   });
 
   it("static Fast and Thinking are the Default list: the rollback routes every turn to today's planner chain", () => {

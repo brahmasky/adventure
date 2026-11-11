@@ -13,6 +13,14 @@ import { ENV_TEMPLATE_PATTERNS, HOME_CODE_CONFIG, HOME_INSTALL_TREES, HOME_SECRE
 describe("Seatbelt profiles — floor A at the OS level (spec §3 L1a/L1b)", () => {
   const ctx = { home: "/Users/p", repo: "/Users/p/Projects/adventure", data: "/Users/p/Projects/adventure" };
 
+  it("denies read and write of the grow dir and the backup folder in both profiles, grow outside repo and data (ADR 0035 G2, G4)", () => {
+    const grow = "/Users/p/Library/Application Support/houge/grow";
+    for (const p of Object.values(renderSeatbelt({ ...ctx, grow }))) {
+      expect(p).toContain(`(deny file-read* file-write* (subpath "${grow}"))`);
+      expect(p).toContain('(deny file-read* file-write* (subpath "/Users/p/Projects/adventure/backups"))');
+    }
+  });
+
   it("renders subpath denies for secret dirs and files alike (a file guess must never decide a secret rule), in both profiles", () => {
     const { planner, shell } = renderSeatbelt(ctx);
     for (const p of [planner, shell]) {

@@ -4,7 +4,7 @@ import { staticRoleChains, type RoleChains } from "./model-roles.js";
 export interface OmpConfig {
   bin: string; profile: string; sandbox: boolean;
   planner: ModelString[]; reader: ModelString[]; media: ModelString[]; ticks: ModelString[];
-  judges: ModelString[]; chair: ModelString[]; reviewer: ModelString[];
+  judges: ModelString[]; chair: ModelString[]; reviewer: ModelString[]; growReview: ModelString[];
   envPassthrough: string[];
   turnTimeoutMs: number; frameIdleMs: number; approvalTimeoutMs: number; oneshotTimeoutMs: number;
   idleExitMs: number; shellTimeoutMs: number; leaseTtlS: number;
@@ -91,6 +91,7 @@ export function resolveOmpConfig(env: NodeJS.ProcessEnv, chains: RoleChains = st
     judges: chains.judges,
     chair: chains.chair,
     reviewer: chains.reviewer,
+    growReview: chains.growReview,
     envPassthrough: list(read(env, "HOUGE_OMP_ENV_PASSTHROUGH")),
     turnTimeoutMs: num(env, "HOUGE_OMP_TURN_TIMEOUT_MS"),
     frameIdleMs: num(env, "HOUGE_OMP_FRAME_IDLE_MS"),

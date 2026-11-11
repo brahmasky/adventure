@@ -278,7 +278,7 @@ Live. `improve.route` runs once a day inside the improvement
 tick, not in a turn. Signals (corrections, ratings, denials and expiries, planner failures, recurrence) are grouped by
 (signal, scope); each group is one decision, recorded `after_turn`, mixed input, fail value `nothing`.
 
-- **Rule rung first.** Stale; a stated rule `memory.kind` already saved; a recurrence (skill job, or `knowledge` while the
+- **Rule rung first.** Stale; a stated rule `memory.kind` already saved; a recurrence (a grow hint, or `knowledge` while the
   wiki is disarmed); an expiry pattern (schedule proposal); `review_bad` (unlocked entry: `ladder`; locked: `nothing` /
   `locked_entry`); an empty text (`no_text`). `ladder` is listed as applicable only to `review_bad` groups, so Jev never
   chooses it.
@@ -291,7 +291,7 @@ tick, not in a turn. Signals (corrections, ratings, denials and expiries, planne
   `tiny_pick`; a word outside the two is an abstention, so the row records `nothing` on the `fail` rung with no reason code
   (abstentions set none; `improve-sanity.mjs` counts these). A pick still running at the bound records `nothing` on `fail`
   with fallback `timeout` on the model rung, consumes the group, and counts toward `decision_fallback_streak`.
-- **Effects.** Automatic: the `_pending` skill draft, and a lesson or fact from a correction Paco typed (`autoApplies`: `memlane_fix` rows, no prior, the memory lane's backstops, one `/changes` line with its undo). Everything else is a card (Accept / Dismiss), nothing applied before Accept. A lesson or fact draft first passes the memory lane's backstops (a lifted rule, an unsupported quote or a refused AVOID is dropped or the draft is `nothing` / `no_text`); the card of a lesson shows its AVOID.
+- **Effects.** Automatic: a grow hint (one `grow_hints` row; the planner sees a `[context]` line in that chat's next turn and decides whether to call `grow_submit`; at most 3 a day, ADR 0035), and a lesson or fact from a correction Paco typed (`autoApplies`: `memlane_fix` rows, no prior, the memory lane's backstops, one `/changes` line with its undo). Everything else is a card (Accept / Dismiss), nothing applied before Accept. A lesson or fact draft first passes the memory lane's backstops (a lifted rule, an unsupported quote or a refused AVOID is dropped or the draft is `nothing` / `no_text`); the card of a lesson shows its AVOID.
 - **Outages defer.** A Jev failure that is an outage (timeout, or `no_key`, `fused`, `auth`, `rate_limited`, `overloaded`,
   `transport`, `error`), a failed Tiny pick or a failed distill call leaves the group unconsumed with no decision row; the tick
   counts it `deferred_outage` and the `/status` Improvement line shows it. The first outage of a segment latches: the remaining groups run the rule
@@ -300,15 +300,12 @@ tick, not in a turn. Signals (corrections, ratings, denials and expiries, planne
 - **Bounds.** Each seat call has `IMPROVE_SEAT_DEADLINE_MS = 60 000`. The embedder takes at most `EMBED_PER_TICK_MAX = 50`
   turns per call and stops at its first failure; a backlog over the cap ends each segment `stopped` until it clears. Counts
   add up across the segments of a local date; the 40-group cap is per date.
-- **Skill job endings.** `pending_review` / `collision` offers expire after 14 days (`expired`, one card). Result codes:
-  `gate_a_unavailable`, `offer_expired`, `promote_retry:N`, `promote_failed` (3 failed retries). `/disarm` holds queued jobs.
+- **No skill job.** The skill job, its promotion step and its result codes are gone (ADR 0035); `improvement_jobs` stays as a table with no reader or writer. `/disarm` (`HOUGE_SKILLS_ENABLED` off) holds new grow hints: a recurrence group that would record one waits.
 - **Repeats and Undo.** A proposal Paco dismissed, or that expired, blocks the same (target, scope) for 14 days; an
   accepted or reverted schedule, tool gap, ladder or skill proposal does too. A lesson or fact is skipped only as a
   near-copy: its draft embeds at or above `LESSON_REPEAT_COSINE` (0.6, set by the threshold probe on 2026-11-08) against one reverted on the pair within 14 days,
   or an accepted fact; a near-copy of a lesson accepted within 30 days is the 'lesson did not hold' card
-  (`improve/repeat.ts`; the embedder down defers the group). An already authored cluster also covers a job
-  of the last 90 days in the same category whose origin turn embeds within the recurrence gate; a `failed` job never
-  counts. Undo of an improve-sourced save (`/forget`, `/forget_memory`, the card's Undo) reverses its whole change,
+  (`improve/repeat.ts`; the embedder down defers the group). A cluster is already hinted when a grow hint holds its key, or holds any of its turns within the last 30 days (`JOB_OVERLAP_DAYS`). Undo of an improve-sourced save (`/forget`, `/forget_memory`, the card's Undo) reverses its whole change,
   moves its proposal to `reverted` and writes no `turn.handler` label.
 
 ## Arming

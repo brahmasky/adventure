@@ -32,7 +32,6 @@ import {
   RATING_ACK_TEXT,
   resolveRatingPendingMinutes
 } from "../capabilities/session-rating.js";
-import { resolveSkillName, SkillStore, type SkillMeta } from "../skills/skill-store.js";
 import { join } from "node:path";
 import { evolutionLaneSnapshot } from "../core/evolution-lane.js";
 import { changesText } from "../notifications/change-log-view.js";
@@ -42,7 +41,6 @@ import { queryStatus } from "../status/status-query.js";
 import { formatUsageTable } from "../status/usage-report.js";
 import { resolveRadarAt, resolveRadarEnabled, resolveRadarTz } from "../capabilities/idea-radar.js";
 import { CHAIR_FALLBACK_RATIONALE, resolvePanelEnabled } from "../capabilities/idea-panel.js";
-import { resolveSkillReverifyAt, resolveSkillReverifyEnabled } from "../capabilities/skill-reverify.js";
 import { resolvePanelAt } from "../capabilities/week-key.js";
 import { escapeForTelegram } from "../capabilities/text-hygiene.js";
 import { toolApprovalWaiters } from "../omp/tool-approval-sink.js";
@@ -66,6 +64,7 @@ import { recordApprovalDenied, recordCorrection, recordImproveSignal, skipImprov
 import type { NotificationButton, NotificationPayload } from "../notifications/notification-types.js";
 import { standingScheduleSection } from "../decisions/standing-approval.js";
 import { forgetImprovementLesson, forgetScopeWithUndo } from "./improve-undo.js";
+import { growStatusLines, handleGrow } from "./grow-commands.js";
 import { handleForgetMemory, handleMemories, handleMemoryUndo } from "./memory-commands.js";
 import { handleModels, modelsUnavailable, type ModelsRoles } from "./models-commands.js";
 import { handleFresh } from "./fresh-command.js";
@@ -89,7 +88,7 @@ export type GatewayIntakeResult =
   | { ok: true; status: "approval_resolved"; run_id: string }
   | { ok: true; status: "approvals_returned"; run_id: string }
   | { ok: true; status: "lessons_returned"; run_id: string }
-  | { ok: true; status: "skills_returned"; run_id: string }
+  | { ok: true; status: "grow_returned"; run_id: string }
   | { ok: true; status: "forgotten"; run_id: string }
   | { ok: true; status: "memory_undone"; run_id: string }
   | { ok: true; status: "lesson_change_undone"; run_id: string }
@@ -178,7 +177,6 @@ function ratingStatusText(
 export class Gateway {
   private readonly caps: GlobalBudgetCaps;
   private readonly projectRoot: string;
-  private readonly skillStore: SkillStore;
   private readonly hooks: GatewayHooks;
   private recorderCache?: DecisionRecorder;
   /** Lazy, like CoreWorker's (core-worker.ts:560): the intake entries' rows have no run (spec 2026-10-30 R1 §4). No env: a record failure pages HOUGE_TELEGRAM_CHAT_ID. Injectable for the differential and the gate (spec R2 §4.2). */
@@ -193,15 +191,11 @@ export class Gateway {
     private readonly runStore: RunStore,
     caps?: GlobalBudgetCaps,
     projectRoot?: string,
-    skillStore?: SkillStore,
     hooks?: GatewayHooks,
     private readonly options: { dataDir?: string; roles?: ModelsRoles; decisionRecorder?: DecisionRecorder; modelProbe?: ProbeFn; stopSignal?: AbortSignal } = {}
   ) {
     this.caps = caps ?? resolveGlobalBudgetCaps(process.env);
     this.projectRoot = projectRoot ?? process.cwd();
-    // Skills live as markdown under `<projectRoot>/skills/` (same root the worker reads);
-    // injectable so tests point at a temp dir.
-    this.skillStore = skillStore ?? new SkillStore({ root: join(this.projectRoot, "skills") });
     this.hooks = hooks ?? {};
   }
 
@@ -252,7 +246,7 @@ export class Gateway {
     }
     if (event.type === "memlane_undo") return this.accepted(event, now, handleMemLaneUndo(this.runStore, event));
     if (event.type === "decision_review") return this.accepted(event, now, handleDecisionReview(this.runStore, event));
-    if (event.type === "improvement_tap") return this.accepted(event, now, handleImprovementTap(this.runStore, this.skillStore, event, now));
+    if (event.type === "improvement_tap") return this.accepted(event, now, handleImprovementTap(this.runStore, event, now));
     if (event.type === "jev_accept_tap") return this.accepted(event, now, handleJevAcceptTap(this.runStore, event, now));
     if (event.type === "mail_tap") return this.accepted(event, now, handleMailTap(this.runStore, event, new Date(now)));
     if (event.type === "model_tier_tap") return this.accepted(event, now, handleModelTierTap(this.runStore, this.tierTapDeps(), event, now));
@@ -289,9 +283,7 @@ export class Gateway {
       return this.handleLessons(event, now);
     }
 
-    if (event.type === "skills") {
-      return this.handleSkills(event, now);
-    }
+    if (event.type === "grow") return this.accepted(event, now, handleGrow(this.runStore, event, now));
 
     if (event.type === "forget") {
       return this.handleForget(event, now);
@@ -505,87 +497,6 @@ export class Gateway {
     this.runStore.recordTriggerProcessed(event, result);
     this.recordTelegramAccepted(event, now);
     return result;
-  }
-
-  /**
-   * `/skills [scope]` — a read-only VIEWER (no run, no budget; Phase 2a). Regenerates the
-   * registry then lists the ambient skills (all scopes, or one) so the owner can see what
-   * procedures Houge applies. Skills are never invoked by name — this is awareness only.
-   * Idempotent on the trigger key, exactly like `/lessons`.
-   */
-  private handleSkills(event: TypedTaskEvent, now: string): GatewayIntakeResult {
-    const replay = this.runStore.beginTriggerProcessing(event);
-    if (replay.status === "duplicate") {
-      return JSON.parse(replay.result_json) as GatewayIntakeResult;
-    }
-    if (replay.status === "conflict") {
-      return {
-        ok: false,
-        error: { code: replay.error, message: "Trigger idempotency key conflicts with a different payload" }
-      };
-    }
-
-    // `program` carries either a lifecycle verb (`retire <name>` / `restore <name>`) or a
-    // scope — where `pending` and `retired` name the special inert views.
-    const program = typeof event.program === "string" ? event.program.trim() : "";
-    const [first, ...restWords] = program.split(/\s+/).filter(Boolean);
-    const action = first === "retire" || first === "restore" ? first : undefined;
-
-    let text: string;
-    if (action) {
-      text = this.executeSkillLifecycle(action, restWords.join(" "), now);
-    } else {
-      const scope = program;
-      const isPending = scope.toLowerCase() === "pending";
-      const isRetired = scope.toLowerCase() === "retired";
-      this.skillStore.regenerateRegistry();
-      text = isPending
-        ? formatPendingText(this.skillStore.listPending())
-        : isRetired
-          ? formatRetiredText(this.skillStore.listRetired())
-          : formatSkillsText(scope || undefined, this.skillStore.list(scope || undefined));
-    }
-
-    const result: GatewayIntakeResult = { ok: true, status: "skills_returned", run_id: "" };
-    this.runStore.enqueueNotification({
-      topic: "reply",
-      target: event.notify,
-      intent_type: "progress",
-      idempotency_key: `${event.idempotency_key}:skills`,
-      correlation_id: event.source_reference,
-      payload: { text }
-    });
-    this.runStore.recordTriggerProcessed(event, result);
-    this.recordTelegramAccepted(event, now);
-    return result;
-  }
-
-  /** `/skills retire|restore <name>` — deterministic lifecycle verbs on the skill store. */
-  private executeSkillLifecycle(action: "retire" | "restore", name: string, now: string): string {
-    const pool = action === "retire" ? this.skillStore.list() : this.skillStore.listRetired();
-    const resolved = resolveSkillName(pool, name);
-    if (resolved.status === "none") {
-      const names = pool.map((m) => `${m.scope}/${m.name}`).join(" · ") || "(none)";
-      const where = action === "retire" ? "active" : "retired";
-      return `No ${where} skill matches "${name}". Available: ${names}`;
-    }
-    if (resolved.status === "many") {
-      const names = resolved.metas.map((m) => `${m.scope}/${m.name}`).join(" · ");
-      return `"${name}" is ambiguous — use /skills ${action} <scope>/<name>. Matches: ${names}`;
-    }
-    const { scope, name: skillName } = resolved.meta;
-    if (action === "retire") {
-      const r = this.skillStore.retireSkill(scope, skillName, { date: now.slice(0, 10), by: "paco" });
-      return r.ok
-        ? `Retired **${skillName}** (${scope}) → skills/_retired/. Inert — restore with /skills restore ${skillName}.`
-        : `Could not retire "${skillName}": ${r.error}`;
-    }
-    // Read the lineage stamp BEFORE restoreSkill — restore strips it from the file.
-    const supersededBy = resolved.meta.superseded_by;
-    const r = this.skillStore.restoreSkill(scope, skillName);
-    if (!r.ok) return `Could not restore "${skillName}": ${r.error}`;
-    const lineageNote = supersededBy ? ` Note: it was superseded by ${supersededBy} — both are now active.` : "";
-    return `Restored **${skillName}** (${scope}) — active again, folds on the next matching run.${lineageNote}`;
   }
 
   /**
@@ -1430,6 +1341,7 @@ export class Gateway {
       `Self-check: swept ${sweptText} · ${this.changesLine(now)}`,
       frontDoorLine(process.env, this.options.dataDir ?? this.projectRoot),
       ...this.carryLine(chatId, localOf),
+      ...growStatusLines(this.runStore, now),
       ...this.radarStatusLines(now),
       ...this.panelStatusLines(now),
       `Errors: ${errorsText}`,
@@ -1652,23 +1564,6 @@ function formatLessonLines(lesson: LessonRow): string {
   return lines.join("\n");
 }
 
-/**
- * Render the `/skills` reply: a readable list of the ambient procedures (name, scope, the
- * `when:` hint, and version) so the owner sees what Houge can apply. `scope` set → one
- * scope (or "none yet"); unset → every scope.
- */
-function formatSkillsText(scope: string | undefined, metas: SkillMeta[]): string {
-  if (metas.length === 0) {
-    return scope
-      ? `No skills for "${scope}" yet.`
-      : "No skills yet. Skills are reusable procedures Houge applies automatically when relevant.";
-  }
-  // Bold, not `##` — markdownToTelegramHtml has no heading support.
-  return metas
-    .map((m) => `**${m.name}** (${m.scope}) v${m.version ?? 1}\nwhen: ${m.when}`)
-    .join("\n\n");
-}
-
 // The list renderer lives in schedule-spec.ts since scheduler v2 (the schedule_task
 // list verb and the /schedule command share ONE renderer); re-exported here for the
 // command-path callers and their tests.
@@ -1688,7 +1583,7 @@ export const HELP_TEXT = [
   "/radar — 创意雷达：/radar · /radar <n> · /radar week · /radar pick <n>",
   "/schedule — 列出定时任务（/schedule cancel <编号或 id> 取消）",
   "/lessons — 已学到的经验（可选 scope）",
-  "/skills — 可用技能（/skills <scope> · retire/restore <name> · retired · pending）",
+  "/grow — 我自己写的技能；/grow undo <名称> [原因] 撤销；/grow trust <名称> 清除\"外部内容\"标记",
   "/forget <scope|id> — 清除某条经验",
   "/memories [query] — 查看记住的事实（最多 10 条）",
   "/forget_memory <id> — 忘掉一条记忆（附撤销按钮）",
@@ -1961,7 +1856,7 @@ export function formatScheduleCancelledText(schedule_id: string): string {
 /** `/schedule cancel <N>` when there is no Nth row (out of range / empty list). */
 /**
  * Read-only "系统任务" footer for the `/schedule` command: the env-pinned built-in ticks
- * (idea radar daily, idea panel weekly, skill re-verify weekly) with a live-computed next
+ * (idea radar daily, idea panel weekly) with a live-computed next
  * fire. Unnumbered — they can never collide with `/schedule cancel <编号>` — and appended
  * ONLY on the /schedule command surface, never the schedule_task list verb (the model must
  * not reason about, or try to cancel, rows it cannot own). Empty string when no built-in
@@ -1993,50 +1888,12 @@ export function formatSystemScheduleSection(env: NodeJS.ProcessEnv, now: string)
       );
     }
   }
-  if (resolveSkillReverifyEnabled(env)) {
-    const reverifyAt = resolveSkillReverifyAt(env);
-    if (reverifyAt !== null) {
-      const spec = { kind: "weekly", day: reverifyAt.day, at: reverifyAt.at } as const;
-      lines.push(
-        `· skill re-verify · ${describeScheduleSpec(spec)} (${city})${nextSuffix(computeNextRunAt(spec, tz, now))}`
-      );
-    }
-  }
   if (lines.length === 0) return "";
   return ["", "", "**系统任务**（只读 · env 控制）", ...lines].join("\n");
 }
 
 export function formatScheduleNumberNotFoundText(n: number): string {
   return `没有第 ${n} 个定时任务 (no schedule #${n}) — see /schedule for the list.`;
-}
-
-/**
- * Render the `/skills pending` reply: the parked (blocked) auto-author drafts under
- * `_pending/` — INERT (never applied), inspectable so Paco can hand-fix + promote or discard.
- */
-function formatPendingText(metas: SkillMeta[]): string {
-  if (metas.length === 0) {
-    return "No pending skills. Blocked auto-authored drafts park here (inert) for you to inspect.";
-  }
-  return [
-    "Pending (blocked) skills — parked, NOT applied. Hand-fix + move to active, or discard:",
-    "",
-    ...metas.map((m) => `**${m.name}** (${m.scope})\nwhen: ${m.when}`)
-  ].join("\n");
-}
-
-/** Render `/skills retired`: the graveyard — inert, restorable, with lineage stamps. */
-function formatRetiredText(metas: SkillMeta[]): string {
-  if (metas.length === 0) return "No retired skills. Retire one with /skills retire <name>.";
-  return [
-    "Retired skills — inert (never folded). /skills restore <name> to bring one back:",
-    "",
-    ...metas.map(
-      (m) =>
-        `**${m.name}** (${m.scope}) · retired ${m.retired ?? "?"} · by ${m.retired_by ?? "?"}` +
-        (m.superseded_by ? ` · superseded by ${m.superseded_by}` : "")
-    )
-  ].join("\n");
 }
 
 /** `/approvals` with nothing waiting. Exported so tests assert against it. */

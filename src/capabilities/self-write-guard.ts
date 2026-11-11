@@ -70,6 +70,8 @@ export const PROTECTED_DIRS: readonly string[] = [
   ".github", // CI / supply-chain
   "src/omp", // omp runtime: floor A/B, the gate, the wall routing, the child env, the sandbox wrap (security I2)
   "src/decisions", // decision ladder (ADR 0030, spec §6.3): the registry, runner and recorder decide the gates — Paco's hand only
+  "src/grow", // grow zone (ADR 0035 G5): the verifier, the one door and the review gate for self-written skills — Paco's hand only
+  "grow-seed", // grow-zone exemplars (ADR 0035 G1): the orchestrator alone writes them; a seeded exemplar publishes unreviewed
   "dist" // the built JS the daemon runs: gitignored, so a diff should never carry it; refused if one does (security N5)
 ];
 
@@ -129,7 +131,6 @@ export const PROTECTED_FILES: readonly string[] = [
   "src/notifications/attachment-check.ts", // attach.path's send predicate (locked; R7 Decision 4-A): checkAttachment/overCount, one inside
   "src/run/git-hardened.ts", // daemon-side git without user/system config, fsmonitor or hooks (A3)
   // ── Improvement loop (decision ladder 2b-ii; Paco's word 2026-10-22) ──
-  "src/skills/promote.ts", // nothing reaches the active skills tree without Paco's tap: the promotion gate itself
   "src/gateway/improvement-commands.ts", // proposal / job / ladder-move taps: chat-bound and state-fenced, so a tap can only act on what it was offered
   // ── Supply chain / build ──
   "package.json",

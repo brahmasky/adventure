@@ -13,7 +13,7 @@ layer, and have the README *link* to the rest:
 | Layer | Holds | Audience |
 |-------|-------|----------|
 | `README.md` | What Houge is, status, quickstart, a Documentation index. **No low-level tables.** | First-time visitor |
-| [`docs/reference/`](docs/reference/) | Exhaustive catalogs — every env var, default, purpose ([configuration.md](docs/reference/configuration.md)); every decision-ladder entry ([decision-map.md](docs/reference/decision-map.md)); the Jev layer ([jev-decision-layer.md](docs/reference/jev-decision-layer.md)). | Operator looking something up |
+| [`docs/reference/`](docs/reference/) | Exhaustive catalogs — every env var, default, purpose ([configuration.md](docs/reference/configuration.md)); every decision-ladder entry ([decision-map.md](docs/reference/decision-map.md)); the Jev layer ([jev-decision-layer.md](docs/reference/jev-decision-layer.md)); the grow zone ([grow-zone.md](docs/reference/grow-zone.md)). | Operator looking something up |
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | Charter, locked decisions, sequenced next builds, one delta per shipped slice. | Planner |
 | [`tasks/todo.md`](tasks/todo.md) | The top "CURRENT SYSTEM STATE" block is the live state; the rest is shipped history. [`tasks/lessons.md`](tasks/lessons.md) holds orchestration mistakes and their rules; [`sessions.md`](sessions.md) one arc entry per build session, newest last. | Orchestrator |
 | [`docs/decisions/`](docs/decisions/) | Architecture Decision Records — the **why** behind significant choices. | Collaborator / future-you |
@@ -51,7 +51,8 @@ non-executable path, so no test can reach a real binary or spend subscription qu
 
 1. `npm run typecheck` clean, `npm test` green, `npm run build` succeeds. The build is
    `tsc` plus `scripts/copy-omp-assets.mjs`, which copies the files `tsc` does not emit
-   (`src/omp/shell-wrapper.sh` and `src/omp/tools/*.json`) into `dist/omp/`. A new
+   (`src/omp/shell-wrapper.sh` and `src/omp/tools/*.json`) into `dist/omp/`, clearing
+   `dist/omp/tools` first, so removing a tool takes only the `src` delete. A new
    non-TypeScript runtime asset under `src/omp/` must be added to that script.
 2. A **live end-to-end run** demonstrates the user-facing behavior — via Telegram when
    the feature is bot-facing, otherwise a live CLI run (`npm run houge -- …`) against a

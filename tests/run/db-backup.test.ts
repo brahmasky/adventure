@@ -202,6 +202,27 @@ describe("runDbBackupTick — retention keeps the newest K by filename", () => {
   });
 });
 
+describe("runDbBackupTick — retention removes the zone bundle paired with a pruned snapshot", () => {
+  it("a pruned snapshot takes its .grow.bundle with it; a kept snapshot keeps its bundle", () => {
+    process.env.HOUGE_BACKUP_KEEP = "2";
+    const store = RunStore.openInMemory();
+    const root = projectRoot();
+    try {
+      const days = ["2026-07-14T12:00:00.000Z", "2026-07-15T12:30:00.000Z", "2026-07-16T13:00:00.000Z"];
+      const bundleOf = (day: string): string => join(root, BACKUP_DIR_NAME, backupFileName(day).replace(/\.sqlite$/, ".grow.bundle"));
+      for (const day of days.slice(0, 2)) {
+        runDbBackupTick({ store, projectRoot: root, now: day });
+        writeFileSync(bundleOf(day), "bundle");
+      }
+      runDbBackupTick({ store, projectRoot: root, now: days[2]! });
+      expect(existsSync(bundleOf(days[0]!))).toBe(false);
+      expect(existsSync(bundleOf(days[1]!))).toBe(true);
+    } finally {
+      store.close();
+    }
+  });
+});
+
 describe("runDbBackupTick — retention can never evict the snapshot just written (verifier MAJOR 2)", () => {
   it("a foreign future-dated file does not prune the fresh snapshot, and the tick still succeeds", () => {
     process.env.HOUGE_BACKUP_KEEP = "1";

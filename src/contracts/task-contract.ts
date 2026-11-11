@@ -104,28 +104,6 @@ export function compileSelfDiagnoseContract(objective: string): CompiledTaskCont
 }
 
 /**
- * The `skill-author` contract (ADR 0011, Phase 2b). Derived in-route from a `turn` whose
- * intent classified as `skill`: it allows `llm_answer` (Gate A classify + the writer pass)
- * + `write_report`. The skill file write itself is a DIRECT `SkillStore.writeSkill` bounded
- * to the `skills/` root (low-risk prose, report-not-approve) — NOT a gated capability — so
- * no write capability is opened here. `coding_agent_cli` stays FORBIDDEN: skills are prose,
- * never code. Small budget (a few cheap-chain calls); short time ceiling.
- */
-export function compileSkillAuthorContract(objective: string): CompiledTaskContract {
-  const base = {
-    objective,
-    budget: { time_minutes: 10, max_tool_calls: 3, max_agent_delegations: 0 },
-    allowed_actions: ["llm_answer", "write_report"],
-    forbidden_actions: ["coding_agent_cli", "generic_shell", "external_write", "destructive", "paid_action"],
-    output: { path: "runs/<run-id>/report.md", format: "sourced_markdown_report" as const },
-    approval_gates: ["local_write", "external_write", "destructive", "paid"] as SideEffectLevel[],
-    stop_condition: "skill authored + written (or down-routed), or budget exhausted",
-    eval_hooks: []
-  };
-  return { ...base, contract_hash: stableHash(base) };
-}
-
-/**
  * The `code-self-write` contract (ADR 0011, Phase 3 — code self-write). Derived in-route from
  * a `turn` whose intent classified as `selfcode` in WRITE mode (and only when
  * `HOUGE_SELFWRITE_ENABLED=true`). It OPENS `coding_agent_cli` (write-mode Codex in a fresh
@@ -152,7 +130,7 @@ export function compileCodeSelfWriteContract(objective: string): CompiledTaskCon
 /** The omp turn envelope (spec §9): the planner's Houge tools plus the omp built-ins and bash. */
 export const TURN_ACTIONS: readonly string[] = [
   "web_search", "http_fetch", "to_local_time", "lesson_write", "schedule_task", "wiki_build", "wiki_refine",
-  "self_diagnose", "self_write_propose", "skill_author", "gmail_read", "google_api", "houge_status", "memory_correct", "memory_correct_write",
+  "self_diagnose", "self_write_propose", "gmail_read", "google_api", "houge_status", "memory_correct", "memory_correct_write", "grow_submit", "grow_read",
   "fs_read", "fs_write", "shell", "shell_external", "shell_destructive", "write_report"
 ];
 
@@ -169,7 +147,9 @@ function compileTurnContract(event: TypedTaskEvent): TaskContractResult {
   // Scheduler v2 provenance strip: a run BORN FROM a schedule fire must not create or
   // mutate schedules — its goal text is replayed schedule data, not a fresh user ask
   // (2026-07-19: the weekly AI周报 fire minted a duplicate row).
-  const turnActions = TURN_ACTIONS.filter((action) => !(event.source === "schedule" && action === "schedule_task"));
+  // A schedule-born run also may not write the grow zone (ADR 0035 G7); reading it stays.
+  const SCHEDULE_STRIPPED: ReadonlySet<string> = new Set(["schedule_task", "grow_submit"]);
+  const turnActions = TURN_ACTIONS.filter((action) => !(event.source === "schedule" && SCHEDULE_STRIPPED.has(action)));
 
   const base = {
     objective: event.goal,

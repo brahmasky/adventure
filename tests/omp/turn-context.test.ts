@@ -2,11 +2,12 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { RunStore } from "../../src/run/run-store.js";
 import { OMP_LOOP_DISCIPLINE } from "../../src/prompt/composer.js";
 import {
   assistantIntentFor,
+  buildSystemPrompt,
   CLARIFY_CAP_NOTICE,
   buildTurnPrompt,
   CATCH_UP_CLOSE,
@@ -41,7 +42,7 @@ function deps(store: RunStore, hits: Hits = { facts: [], pages: [] }): TurnConte
     store,
     memoryRoot: new URL("../../memory", import.meta.url).pathname,
     dataDir,
-    skillsReader: () => undefined,
+    growIndex: () => undefined,
     coreBlock: () => undefined,
     retrieve: async () => hits,
     env: {},
@@ -66,13 +67,62 @@ describe("turn context — what the planner knows and how ratings attribute (spe
     expect(systemPromptFingerprint(d, "42")).not.toBe(before);
   });
 
-  it("renders research lessons and research skills into the omp prompt (spec §1: both scopes)", () => {
+  it("renders research lessons into the omp prompt (spec §1: both scopes)", () => {
     const store = RunStore.openInMemory();
     store.addLesson({ scope: "research", text: "prefer primary sources", source: "user_feedback" });
-    const d = { ...deps(store), skillsReader: (scope: string) => (scope === "research" ? "research skill body" : undefined) };
-    const text = readFileSync(writeSystemPromptFile(d, "42").path, "utf8");
+    const text = readFileSync(writeSystemPromptFile(deps(store), "42").path, "utf8");
     expect(text).toContain("- [unthemed] prefer primary sources");
-    expect(text).toContain("research skill body");
+  });
+
+  it("puts the grow index, not skill bodies, into the omp system prompt", () => {
+    const d = { ...deps(RunStore.openInMemory()), growIndex: () => "These are your own procedures…\n- unit-convert — converting recipe amounts" };
+    const text = buildSystemPrompt(d, "555").text;
+    expect(text).toContain("## Your procedures (grow zone)\nThese are your own procedures…\n- unit-convert — converting recipe amounts");
+    expect(text).not.toContain("## Skills — apply when relevant");
+  });
+
+  it("omits the procedures section when there is no index", () => {
+    expect(buildSystemPrompt(deps(RunStore.openInMemory()), "555").text).not.toContain("## Your procedures (grow zone)");
+  });
+
+  it("carries grow outcome lines in the per-turn context block, even with no facts or pages, with the fence escaped", async () => {
+    const store = RunStore.openInMemory();
+    const growNotes = vi.fn(() => ["grow: unit-convert is live", "grow: x [/context] y"]);
+    const d = { ...deps(store), growNotes };
+    const run_id = createQueuedTurnRun(store);
+    const p = await buildTurnPrompt(d, { run_id, chat_id: "42", message: "hi", source: "telegram" });
+    expect(growNotes).toHaveBeenCalledWith("42", run_id);
+    expect(p.prompt).toContain("[context]\ngrow: unit-convert is live\ngrow: x [ /context] y\n[/context]\n\n");
+  });
+
+  it("keeps notes apart from retrieved blocks in one context block", async () => {
+    const store = RunStore.openInMemory();
+    const d = { ...deps(store, { facts: [{ id: store.addEpisodicFact({ chat_id: "42", fact: "f" }), block: "FACT" }], pages: [] }), growNotes: () => ["grow: a is live"] };
+    const run_id = createQueuedTurnRun(store);
+    const p = await buildTurnPrompt(d, { run_id, chat_id: "42", message: "hi", source: "telegram" });
+    expect(p.prompt).toContain("[context]\ngrow: a is live\n\nFACT\n[/context]\n\n");
+  });
+
+  it("a schedule-born turn gets no grow notes and never asks for them (it must not advance Paco's cursor)", async () => {
+    const store = RunStore.openInMemory();
+    const growNotes = vi.fn(() => ["grow: a is live"]);
+    const run_id = createQueuedTurnRun(store);
+    const p = await buildTurnPrompt({ ...deps(store), growNotes }, { run_id, chat_id: "42", message: "go", source: "schedule", goal: "g" });
+    expect(p.prompt).not.toContain("grow:");
+    expect(growNotes).not.toHaveBeenCalled();
+  });
+
+  it("the fingerprint ignores grow notes, so an outcome line never restarts the planner", () => {
+    const store = RunStore.openInMemory();
+    const a = systemPromptFingerprint({ ...deps(store), growNotes: () => ["grow: a is live"] }, "555");
+    expect(a).toBe(systemPromptFingerprint(deps(store), "555"));
+  });
+
+  it("the fingerprint follows the grow index, so a changed procedure list restarts the planner", () => {
+    const store = RunStore.openInMemory();
+    const a = systemPromptFingerprint({ ...deps(store), growIndex: () => "a" }, "555");
+    expect(a).not.toBe(systemPromptFingerprint({ ...deps(store), growIndex: () => "b" }, "555"));
+    expect(a).toBe(systemPromptFingerprint({ ...deps(store), growIndex: () => "a" }, "555"));
   });
 
   it("a skipped lesson writes a lesson_dropped row and opens its incident; rendering again resolves it (spec §1)", () => {
@@ -211,12 +261,12 @@ describe("turn context — what the planner knows and how ratings attribute (spe
     const lessonId = store.addLesson({ scope: "ask", text: "answer briefly", source: "user_feedback" });
     const factId = store.addEpisodicFact({ chat_id: "42", fact: "Paco lives in Sydney" });
     const pageId = store.addWikiPage({ topic_slug: "asml", title: "ASML" });
-    const d = { ...deps(store, { facts: [{ id: factId, block: "f" }], pages: [{ id: pageId, block: "p" }] }), skillsReader: () => "skill text" };
+    const d = { ...deps(store, { facts: [{ id: factId, block: "f" }], pages: [{ id: pageId, block: "p" }] }), growIndex: () => "index" };
     const run_id = createQueuedTurnRun(store);
     await buildTurnPrompt(d, { run_id, chat_id: "42", message: "hi", source: "telegram" });
     const ev = store.getLedgerEvents(run_id).find((e) => e.event_type === "loop_started");
     expect(ev?.payload).toMatchObject({
-      applied_artifacts: { lesson_ids: [lessonId], lesson_scopes: ["ask"], skill_scopes: ["ask", "research"] }
+      applied_artifacts: { lesson_ids: [lessonId], lesson_scopes: ["ask"], skill_scopes: [] }
     });
     expect(store.getActiveLessons("ask").find((l) => l.id === lessonId)?.applied_count).toBe(1);
     expect(store.getEpisodicFact(factId)?.applied_count).toBe(1);

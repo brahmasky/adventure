@@ -3,12 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { BudgetLedger } from "../../src/budget/budget-ledger.js";
-import { GATE_B_DISCIPLINE } from "../../src/capabilities/anchor-verify.js";
-import { GATE_A_DISCIPLINE } from "../../src/capabilities/skill-router.js";
-import { compileSkillAuthorContract } from "../../src/contracts/task-contract.js";
 import { evolutionLaneSettled, resetEvolutionLaneForTests } from "../../src/core/evolution-lane.js";
 import { buildTypedTaskEvent } from "../../src/domain/types.js";
-import { SKILL_AUTHOR_DISCIPLINE } from "../../src/prompt/composer.js";
 import { Gateway } from "../../src/gateway/gateway.js";
 import { RunStore } from "../../src/run/run-store.js";
 import { pinEnabledFlags, pinOmpEnv } from "../helpers/omp-env.js";
@@ -170,57 +166,6 @@ describe("a save that reaches more than one path, or a reply that never arrives"
     const cards = memcards(store);
     expect(cards).toHaveLength(1);
     expect(String(cards[0]?.text)).toMatch(new RegExp(`^📒 Saved lesson #\\d+ · format \\(replaced #${prior}\\)`));
-    store.close();
-  });
-});
-
-// Fix round 1 (review Important 1): skill_author's Gate A down-routes and the blocked-skill park save a lesson the planner's
-// tool chose, not Paco's tap: an automatic save, so it writes a lesson_changes row in the save's transaction and gets the card.
-describe("skill_author's automatic lesson saves", () => {
-  const skillLlm = (gateA: string, authored?: string, gateB?: string): Llm => async (input) => {
-    const system = String(input.system ?? ""); const question = String(input.question ?? "");
-    let out = `ANSWER: ${question}`;
-    if (system.includes(GATE_A_DISCIPLINE)) out = gateA;
-    else if (system.includes(GATE_B_DISCIPLINE) && gateB !== undefined) out = gateB;
-    else if (system.includes(SKILL_AUTHOR_DISCIPLINE) && authored !== undefined) out = authored;
-    return { ok: true, output: { question, answer: out, model: "f", provider: "f" } };
-  };
-  const setup = (llm: Llm, message: string) => {
-    const dir = mkdtempSync(join(tmpdir(), "hlsk-"));
-    vi.stubEnv("HOUGE_TOMBSTONE_PATH", join(dir, "houge.kill"));
-    const store = RunStore.openInMemory();
-    const worker = ompWorker(store, dir, { llm, project: join(dir, "project") });
-    const run_id = createQueuedTurnRun(store, message);
-    return { store, worker, run_id, t: bridgeTurn(store, worker, run_id, dir) };
-  };
-  const expectOneUndoCard = (store: RunStore, lesson: string) => {
-    const cards = memcards(store);
-    expect(cards).toHaveLength(1);
-    expect(String(cards[0]?.text)).toContain(lesson);
-    expect((cards[0]?.buttons as Array<{ data: string }>).map((b) => b.data)).toEqual([expect.stringMatching(UNDO)]);
-    expect(tapUndo(store, undoOf(cards[0]?.buttons)!)).toMatchObject({ ok: true, status: "lesson_change_undone" });
-    expect(store.getActiveLessons("ask").map((l) => l.text)).not.toContain(lesson);
-  };
-  for (const verdict of ["lesson", "unsure"] as const) {
-    it(`Gate A = ${verdict}: the down-routed lesson is saved with a change row and one Undo card; Undo retires it`, async () => {
-      const gateA = JSON.stringify({ verdict, scope: "ask", lesson: "answer with the conclusion first", reason: "a tweak" });
-      const { store, t } = setup(skillLlm(gateA), "以后回答要先给结论再给理由");
-      await t.call("skill_author", {});
-      await evolutionLaneSettled();
-      expect(store.getActiveLessons("ask").map((l) => l.text)).toContain("answer with the conclusion first");
-      expectOneUndoCard(store, "answer with the conclusion first");
-      store.close();
-    });
-  }
-  it("an auto-authored skill Gate B blocks is parked with a lesson: one Undo card; Undo retires it", async () => {
-    const weak = ["---", "name: weak-skill", "scope: ask", "when: something", "anchors:", "  - a part never exceeds its whole", "version: 1",
-      "origin: auto", "---", "", "1. Do a vague thing."].join("\n");
-    const { store, worker, run_id } = setup(skillLlm("", weak, '{"criteria":[{"text":"a","ok":0},{"text":"b","ok":0}]}'), "learned procedure");
-    const contract = compileSkillAuthorContract("learned procedure");
-    const author = (worker as unknown as { authorAndWriteSkill: (...a: unknown[]) => Promise<unknown> }).authorAndWriteSkill.bind(worker);
-    await author({ run_id, contract }, "learned procedure", new BudgetLedger(contract.budget),
-      { verdict: "skill", scope: "ask", lesson: "verify a procedure before relying on it", reason: "recurring" }, "auto");
-    expectOneUndoCard(store, "verify a procedure before relying on it");
     store.close();
   });
 });

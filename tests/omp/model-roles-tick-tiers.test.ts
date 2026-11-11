@@ -56,7 +56,7 @@ describe("the first tick over the 2026-11-02 catalog", () => {
     const r = roles(); const notes: string[] = [];
     await tick(r, undefined, day(0));                       // baseline, no probe (P26)
     await tick(r, probeBy(() => PASS), day(1), notes);
-    expect(notes).toEqual(["🔁 Kimi K: k3 → k3.1-pro (used by Tiny, Judges 0, Reviewer)"]);
+    expect(notes).toEqual(["🔁 Kimi K: k3 → k3.1-pro (used by Tiny, Judges 0, Reviewer, Grow_review)"]);
   });
   it("the gemini-pro tier adopts the renamed head on its first pass, and the line names Judges 2", async () => {
     catalog = FULL; const r = roles(); const notes: string[] = [];
@@ -178,7 +178,7 @@ describe("a shadowing override", () => {
     store.recordModelRoleOverride({ key: "judges:0", pattern: "k3", actor: "paco" });
     await tick(r, probeBy(() => PASS), day(1), notes);
     // judges:0 is shadowed by the override, so it did not move: the one line names only the keys that did
-    expect(notes).toEqual(["🔁 Kimi K: k3 → k3.1-pro (used by Tiny, Reviewer)", shadowLine("judges:0", "kimi-code/k3.1-pro", "k3")]);
+    expect(notes).toEqual(["🔁 Kimi K: k3 → k3.1-pro (used by Tiny, Reviewer, Grow_review)", shadowLine("judges:0", "kimi-code/k3.1-pro", "k3")]);
     expect(shadowLine("judges:0", "kimi-code/k3.1-pro", "k3")).toBe("ℹ️ Tier head `kimi-code/k3.1-pro` is available; your override `k3` is in place (/models reset judges 0).");
     expect(failedLine("kimi-code/k3.1-pro", null)).toBe("⚠️ `kimi-code/k3.1-pro` failed its check; staying on nothing.");
   });

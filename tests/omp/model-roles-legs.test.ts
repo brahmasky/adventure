@@ -47,8 +47,8 @@ describe("previous heads", () => {
 
 describe("keysOfTier", () => {
   it("names every role and judge seat with a leg on the tier", () => {
-    expect(keysOfTier("kimi")).toEqual(["default", "thinking", "reader", "tiny", "reviewer", "judges:0"]);
-    expect(keysOfTier("gemini-pro")).toEqual(["judges:2"]);
+    expect(keysOfTier("kimi")).toEqual(["default", "thinking", "reader", "tiny", "reviewer", "grow_review", "judges:0"]);
+    expect(keysOfTier("gemini-pro")).toEqual(["grow_review", "judges:2"]);
   });
 });
 

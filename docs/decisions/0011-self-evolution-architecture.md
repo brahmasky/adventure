@@ -1,6 +1,6 @@
 # ADR 0011: Self-evolution architecture — how Houge improves his code, skills, and lessons
 
-- **Status:** accepted (direction; built in phases) — **refined by [ADR 0012](0012-self-evolution-spine-closed-loop.md)** (the closed-loop spine: feedback signal, four memory types, auto-rollback). This ADR's machinery stands; 0012 reframes the three-layers model as one closed loop. · **amended 2026-07-27 by [ADR 0027](0027-idea-panel-claude-chair.md)** (contained panel chair seat — see end) · **amended 2026-10-12 by [ADR 0030](0030-decision-ladder.md)** (src/decisions/ protected — see end)
+- **Status:** accepted (direction; built in phases) — **refined by [ADR 0012](0012-self-evolution-spine-closed-loop.md)** (the closed-loop spine: feedback signal, four memory types, auto-rollback). This ADR's machinery stands; 0012 reframes the three-layers model as one closed loop. · **amended 2026-07-27 by [ADR 0027](0027-idea-panel-claude-chair.md)** (contained panel chair seat — see end) · **amended 2026-10-12 by [ADR 0030](0030-decision-ladder.md)** (src/decisions/ protected — see end) · **amended 2026-11-10 by [ADR 0035](0035-grow-zone-verification.md)** (the skills gate: formal checks, then a reviewer of another model family — see end)
 - **Date:** 2026-06-20
 - **Deciders:** Paco
 
@@ -266,3 +266,25 @@ containment posture and the broker-held auth.
 ## Amendment (2026-10-12): decision ladder
 
 Amended by [ADR 0030](0030-decision-ladder.md). `src/decisions/` joins `PROTECTED_DIRS`: if the registry decides the gates, editing it can open a gate, so it is Paco's hand only.
+
+---
+
+## Amendment (2026-11-10): the skills gate
+
+Amended 2026-11-10 by [ADR 0035](0035-grow-zone-verification.md) (spec 2026-11-10-grow-zone-verification-design.md, approved by Paco 2026-11-10).
+
+- **The skills gate of section 3 changes** from "anchor assertions by a walled model, then the user" to **formal checks
+  (code), then a reviewer of a different model family**. A skill is written by Houge through the grow zone's one door
+  (`grow_submit`); a new item, a large rewrite, a born-untrusted item and any item with a stored undo reason are
+  reviewed by a one-shot seat (role `grow_review`) whose families exclude the author's; a small update of a clean item
+  is not. Nothing goes live unreviewed where review is required, and no trust tap is asked of Paco (a Jev-rung send-back still asks, ADR 0034 2b-R7). Every live write is a
+  commit; one command reverts it.
+- **Anchors become optional.** The `anchors` field is kept on the item and passed to the reviewer, but no model-run
+  anchor gate scores a skill and nothing requires one.
+- **Why trajectory-distilled skills stay rejected** (Alternatives considered, above). Their reason still holds: they
+  encode one model's behaviour and fail on transfer. It holds more strongly once other models read skills (slice 1b). A
+  reviewer of another family reading the procedure cold is the 1a answer; saved cases that run a script skill (1c) are
+  the stronger one.
+- The routing rubric of section 2 is unchanged. Its effect for a recurrence changes with ADR 0034 10.3–10.5: the
+  planner is hinted to `grow_submit`; no job drafts a skill.
+

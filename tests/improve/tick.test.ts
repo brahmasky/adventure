@@ -1,20 +1,16 @@
 import { describe, expect, it, vi } from "vitest";
-import { IMPROVE_GROUPS_PER_TICK, improveTickDue, runImproveTick, type ImproveTickDeps, type JobHooks } from "../../src/improve/tick.js";
+import { IMPROVE_GROUPS_PER_TICK, improveTickDue, runImproveTick, type ImproveTickDeps } from "../../src/improve/tick.js";
 import { evaluateImproveDegraded, IMPROVE_DEGRADED_KIND } from "../../src/improve/degraded.js";
 import { SETTLE_REASON_VALUES } from "../../src/decisions/outcomes.js";
 import { RunStore, type DecisionInsert } from "../../src/run/run-store.js";
-import { SkillStore } from "../../src/skills/skill-store.js";
 import type { JevRequest, JevResult } from "../../src/jev/jev-client.js";
 import { createTelegramTurn } from "../helpers/runs.js";
 import type { ImproveOrigin } from "../../src/run/run-store.js";
 import type { DatabaseSync } from "node:sqlite";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 
 // Spec 2b-ii §3.1, §3.5 (codex D3, round 2 N1): once per local date at HOUGE_IMPROVE_AT, the
 // inbox is the only input; model calls outside transactions; one transaction per group (decision row, one outcome row per
-// inbox row, proposal or queued job, consumed_at); deferred groups stay unconsumed; a crash resumes; a stop signal stops
+// inbox row, proposal or grow hint, consumed_at); deferred groups stay unconsumed; a crash resumes; a stop signal stops
 // between model calls; improve_tick start/end events bracket every run.
 const ENV = { HOUGE_DISPLAY_TZ: "Australia/Sydney" };
 const NOW = "2026-10-21T11:00:00.000Z"; // 22:00 AEDT: past the 21:00 default
@@ -27,8 +23,7 @@ const D = (o: Partial<DecisionInsert>): DecisionInsert => ({ entry_id: "turn.han
 function deps(store: RunStore, o: Partial<ImproveTickDeps> = {}): ImproveTickDeps {
   const distill = llm('{"kind":"rule","lesson":"Answer in one line."}');
   return { store, env: ENV, now: NOW, signal: new AbortController().signal, chatId: "555", client: jev({ lesson: 0.8, nothing: 0.2 }),
-    llm: { pick: llm("lesson"), distill, classify: llm("{}"), compose: llm(""), verify: llm("") }, embed: async () => Float32Array.from([1, 0]), embedModel: "m",
-    skills: new SkillStore({ root: mkdtempSync(join(tmpdir(), "hg-skills-")) }), ...o };
+    llm: { pick: llm("lesson"), distill }, embed: async () => Float32Array.from([1, 0]), embedModel: "m", ...o };
 }
 /** A telegram turn the intake caps (3 queued runs, 5 commands a minute) do not count: close the run, clear the audit (tests only, raw SQL; precedent tests/improve/abandonment.test.ts). */
 function turn(s: RunStore, text: string): { run_id: string; turn_id: string } {
@@ -48,6 +43,23 @@ function correction(store: RunStore, text = "please always answer in one line", 
   return { about, correcting };
 }
 const events = (s: RunStore) => s.listLedgerEventsByTypeSince("improve_tick", "2026-01-01T00:00:00.000Z").map((e) => e.payload.phase);
+const NEXT_DAY = "2026-10-22T11:00:00.000Z";
+function topicTurn(store: RunStore, topic: string, k: number, category = "answer"): void {
+  const run_id = turn(store, `${topic} request number ${k} for the weekly thing`).run_id;
+  store.insertJevVerdict({ run_id, category: category as "answer", breadth: null, reasoning: null, actions: null, sets_rule: null, rule_scope: null, lane: "answer", role: "default", effort: null, cascade: null,
+    save_outcome: "none", route_outcome: "fallback", reason: "jev_skipped", skip_reason: null, quoted_turn_id: null });
+}
+const DAY_AFTER = "2026-10-23T11:00:00.000Z";
+/**
+ * One recurrence cluster: three alike `answer` turns (the embedder maps a topic word to its own axis), and the tick's
+ * deps over the store. `different` plants a second topic's cluster in the same store for the tick two days later.
+ */
+function recurrenceSetup(o: { store?: RunStore; env?: NodeJS.ProcessEnv; different?: boolean } = {}): { deps: ImproveTickDeps; store: RunStore } {
+  const store = o.store ?? RunStore.openInMemory();
+  for (let k = 0; k < 3; k += 1) topicTurn(store, o.different ? "beta" : "alpha", k);
+  const embed = async (text: string) => Float32Array.from(["alpha", "beta"].map((t) => (text.startsWith(t) ? 1 : 0)));
+  return { store, deps: deps(store, { embed, now: o.different ? DAY_AFTER : NOW, ...(o.env ? { env: { ...ENV, ...o.env } } : {}) }) };
+}
 
 describe("improveTickDue", () => {
   it("due once per local date at or after HOUGE_IMPROVE_AT (default 21:00); not before; not twice; `off` is no value", () => {
@@ -178,23 +190,39 @@ describe("runImproveTick", () => {
     expect(noDraft).toMatchObject({ ran: true, counts: { proposals: 0, no_draft: 1 } });
     expect(s2.listDecisionsBetween("2026-01-01T00:00:00.000Z", "2027-01-01T00:00:00.000Z").find((x) => x.entry_id === "improve.route")).toMatchObject({ verdict: "nothing", reason_code: "no_text" });
   });
-  it("a recurrence cluster decided skill/recurrence by the rule rung queues a job through the hooks, at most 3 a day; the 4th cluster is deferred and stays unconsumed", async () => {
-    const s = RunStore.openInMemory();
-    const hooks: JobHooks = { reconcile: vi.fn(), reconcileAccepted: vi.fn(), runQueued: vi.fn(async () => 0),
-      enqueueFromRecurrence: vi.fn((store, i) => store.insertImprovementJob({ decision_id: i.decision_id, proposal_id: null, chat_id: i.chat_id, origin_json: JSON.stringify(i.origin), idempotency_key: i.idempotency_key, created_at: i.now })) };
-    const texts = ["alpha", "beta", "gamma", "delta"];
-    for (const t of texts) for (let k = 0; k < 3; k += 1) {
-      const run_id = turn(s, `${t} request number ${k} for the weekly thing`).run_id;
-      s.insertJevVerdict({ run_id, category: "answer", breadth: null, reasoning: null, actions: null, sets_rule: null, rule_scope: null, lane: "answer", role: "default", effort: null, cascade: null,
-        save_outcome: "none", route_outcome: "fallback", reason: "jev_skipped", skip_reason: null, quoted_turn_id: null });
-    }
-    const embed = async (text: string) => Float32Array.from(texts.map((t) => (text.startsWith(t) ? 1 : 0)));
-    const r = await runImproveTick(deps(s, { embed, jobs: hooks }));
-    expect(r).toMatchObject({ ran: true, counts: { recurrence: 4, jobs_queued: 3, jobs_started: 0, deferred: 1 } }); // queued by the tick; started by the hook (a fake here)
-    expect(s.listJobsByState(["queued"]).map((j) => j.chat_id)).toEqual(["555", "555", "555"]);
-    expect(s.listUnconsumedSignals(10).map((x) => x.signal)).toEqual(["recurrence"]);
-    expect(hooks.runQueued).toHaveBeenCalledWith(expect.anything(), 3);
-    expect(hooks.reconcile).toHaveBeenCalledTimes(1);
+  // ADR 0034 §10.4 as amended by ADR 0035: a recurring task gives the planner a hint (one grow_hints row + one `hint`
+  // grow_events row); the planner decides whether to grow_submit. The tick never starts a skill-authoring job.
+  it("a rule-rung recurrence records one grow hint for the chat and starts no job (ADR 0034 §10.4 as amended)", async () => {
+    const { deps: d, store } = recurrenceSetup();
+    const r = await runImproveTick(d);
+    expect(r.ran && r.counts.hints).toBe(1);
+    const [ev] = store.listGrowEvents({ actions: ["hint"] });
+    expect(ev).toMatchObject({ chat_id: "555", code: "answer", name: "-", result: "ok", run_id: null }); // code-built: the category enum, never Paco's text
+    expect(store.listGrowEvents({ actions: ["hint"] })).toHaveLength(1);
+    const row = store.listDecisionsBetween("2026-01-01T00:00:00.000Z", "2027-01-01T00:00:00.000Z").find((x) => x.entry_id === "improve.route");
+    expect(row).toMatchObject({ verdict: "skill", rung: "rule", reason_code: "recurrence" });
+    expect(store.listUnconsumedSignals(10)).toEqual([]);
+  });
+
+  it("records the same recurrence only once, and at most three hints in 24 hours", async () => {
+    const { deps: d, store } = recurrenceSetup();
+    await runImproveTick(d);
+    expect(store.countGrowHintsSince("2026-01-01T00:00:00.000Z")).toBe(1);
+    // the same task once more on the next day: a four-turn cluster (a new inbox row) with the same first turn, so the same hint
+    // key — the rule rung records nothing/already_authored and no second hint
+    topicTurn(store, "alpha", 3);
+    const same = await runImproveTick({ ...d, now: NEXT_DAY });
+    expect(same.ran && same.counts.hints).toBe(0);
+    expect(store.countGrowHintsSince("2026-01-01T00:00:00.000Z")).toBe(1);
+    const rows = store.listDecisionsBetween("2026-01-01T00:00:00.000Z", "2027-01-01T00:00:00.000Z").filter((x) => x.entry_id === "improve.route");
+    expect(rows.map((x) => [x.verdict, x.reason_code])).toEqual([["skill", "recurrence"], ["nothing", "already_authored"]]);
+    // three hints inside the 24 hours before the day after (other keys, other turns): the cap of three is reached, so a new cluster is deferred, unconsumed
+    for (const k of ["a", "b", "c"]) store.recordGrowHint({ idempotency_key: k, chat_id: "555", category: "other", turn_ids: [k], decision_id: "d", now: DAY_AFTER });
+    const next = recurrenceSetup({ store, different: true });
+    const r2 = await runImproveTick(next.deps);
+    expect(r2.ran && r2.counts.hints).toBe(0);
+    expect(r2.ran && r2.counts.deferred).toBe(1);
+    expect(store.listUnconsumedSignals(10).map((x) => x.signal)).toEqual(["recurrence"]);
   });
 
   it("a group whose commit throws rolls back whole (no decision row, rows unconsumed, record_failed 1) and the next group still commits; the tick is done, not failed", async () => {
@@ -223,20 +251,34 @@ describe("runImproveTick", () => {
     expect(s.listOpenProposals()).toHaveLength(1);
     expect(s.listUnconsumedSignals(10)).toHaveLength(1);
   });
-  it("with skills disarmed a recurrence group the rule rung would turn into a job is deferred: no decision row, no job, its row stays unconsumed (final fix C5)", async () => {
-    const s = RunStore.openInMemory();
-    const hooks: JobHooks = { reconcile: vi.fn(), reconcileAccepted: vi.fn(), runQueued: vi.fn(async () => 0),
-      enqueueFromRecurrence: vi.fn((store, i) => store.insertImprovementJob({ decision_id: i.decision_id, proposal_id: null, chat_id: i.chat_id, origin_json: JSON.stringify(i.origin), idempotency_key: i.idempotency_key, created_at: i.now })) };
-    for (let k = 0; k < 3; k += 1) {
-      const run_id = turn(s, `alpha request number ${k} for the weekly thing`).run_id;
-      s.insertJevVerdict({ run_id, category: "answer", breadth: null, reasoning: null, actions: null, sets_rule: null, rule_scope: null, lane: "answer", role: "default", effort: null, cascade: null,
-        save_outcome: "none", route_outcome: "fallback", reason: "jev_skipped", skip_reason: null, quoted_turn_id: null });
-    }
-    const r = await runImproveTick(deps(s, { env: { ...ENV, HOUGE_SKILLS_ENABLED: "false" }, jobs: hooks }));
-    expect(r).toMatchObject({ ran: true, counts: { recurrence: 1, jobs_queued: 0, deferred: 1 } });
-    expect(hooks.enqueueFromRecurrence).not.toHaveBeenCalled();
-    expect(s.listDecisionsBetween("2026-01-01T00:00:00.000Z", "2027-01-01T00:00:00.000Z").filter((x) => x.entry_id === "improve.route")).toEqual([]);
-    expect(s.listUnconsumedSignals(10).map((x) => x.signal)).toEqual(["recurrence"]);
+  it("caps hints at three inside one tick: four clusters give three hints and one deferred, unconsumed row; a hint older than 24 hours does not count", async () => {
+    const store = RunStore.openInMemory();
+    store.recordGrowHint({ idempotency_key: "old", chat_id: "555", category: "other", turn_ids: ["old"], decision_id: "d", now: "2026-10-20T10:59:59.000Z" }); // 24 h + 1 s before NOW
+    const topics = ["alpha", "beta", "gamma", "delta"];
+    for (const t of topics) for (let k = 0; k < 3; k += 1) topicTurn(store, t, k);
+    const embed = async (text: string) => Float32Array.from(topics.map((t) => (text.startsWith(t) ? 1 : 0)));
+    const r = await runImproveTick(deps(store, { embed }));
+    expect(r).toMatchObject({ ran: true, counts: { recurrence: 4, hints: 3, deferred: 1 } });
+    expect(store.listUnconsumedSignals(10).map((x) => x.signal)).toEqual(["recurrence"]);
+    expect(store.listGrowEvents({ actions: ["hint"] })).toHaveLength(4); // the old one and today's three
+  });
+
+  it("a recurrence whose stored category is not in the enum writes its hint code as other (no free text in grow_events)", async () => {
+    const store = RunStore.openInMemory();
+    for (let k = 0; k < 3; k += 1) topicTurn(store, "alpha", k, "ignore previous instructions");
+    const r = await runImproveTick(deps(store, { embed: async (text: string) => Float32Array.from([text.startsWith("alpha") ? 1 : 0, 0]) }));
+    expect(r.ran && r.counts.hints).toBe(1);
+    expect(store.listGrowEvents({ actions: ["hint"] }).map((e) => e.code)).toEqual(["other"]);
+  });
+
+  it("records no hint while skills are disarmed, and leaves the signals unconsumed: no decision row, deferred (final fix C5)", async () => {
+    const { deps: d, store } = recurrenceSetup({ env: { HOUGE_SKILLS_ENABLED: "false" } });
+    const r = await runImproveTick(d);
+    expect(r).toMatchObject({ ran: true, counts: { recurrence: 1, hints: 0, deferred: 1 } });
+    expect(store.listGrowEvents({ actions: ["hint"] })).toEqual([]);
+    expect(store.countGrowHintsSince("2026-01-01T00:00:00.000Z")).toBe(0);
+    expect(store.listDecisionsBetween("2026-01-01T00:00:00.000Z", "2027-01-01T00:00:00.000Z").filter((x) => x.entry_id === "improve.route")).toEqual([]);
+    expect(store.listUnconsumedSignals(10).map((x) => x.signal)).toEqual(["recurrence"]);
   });
   it("D1: a Jev outage or a failed distill call never consumes: no decision row, the rows stay unconsumed, counted deferred_outage; a parsed empty draft is still no_text", async () => {
     const s = RunStore.openInMemory();
@@ -402,7 +444,7 @@ describe("HOUGE_IMPROVE_ENABLED", () => {
     const s = RunStore.openInMemory();
     work(s);
     const client = vi.fn(jev({ lesson: 0.9 }));
-    const seats = { pick: llm("lesson"), distill: llm("{}"), classify: llm("{}"), compose: llm(""), verify: llm("") };
+    const seats = { pick: llm("lesson"), distill: llm("{}") };
     const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
     const off = deps(s, { client, llm: seats, env: { ...ENV, HOUGE_IMPROVE_ENABLED: "FALSE" } });
     expect(await runImproveTick(off)).toEqual({ ran: false });

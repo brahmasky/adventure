@@ -158,7 +158,7 @@ export async function runTelegramPollOnce(
       : undefined,
     ompOptionsWithOperator(options.omp, options.allowlist)
   );
-  const gateway = new Gateway(options.store, undefined, options.projectRoot, undefined, undefined, {
+  const gateway = new Gateway(options.store, undefined, options.projectRoot, undefined, {
     dataDir: options.omp?.dataDir ?? options.projectRoot, roles: worker.modelRoles()
   });
   worker.validateOmpConfig(); // B4: a malformed HOUGE_OMP_* chain pages Paco before any turn

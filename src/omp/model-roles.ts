@@ -6,8 +6,8 @@ import { seedTierHeads, tierDef, type TierHeads, type TierId } from "./model-tie
  * ordered list of exact selectors (`provider/id[:effort]`). Resolution against omp's live catalog is pure and lives here;
  * RoleResolver (role-resolver.ts) holds the catalog, Paco's `/models` overrides and reads the mode per call.
  */
-export type RoleName = "fast" | "default" | "thinking" | "reader" | "vision" | "tiny" | "judges" | "chair" | "reviewer";
-export const ROLE_NAMES: readonly RoleName[] = ["fast", "default", "thinking", "reader", "vision", "tiny", "judges", "chair", "reviewer"];
+export type RoleName = "fast" | "default" | "thinking" | "reader" | "vision" | "tiny" | "judges" | "chair" | "reviewer" | "grow_review";
+export const ROLE_NAMES: readonly RoleName[] = ["fast", "default", "thinking", "reader", "vision", "tiny", "judges", "chair", "reviewer", "grow_review"];
 
 /** Planner gears and routed efforts: structurally src/jev/tree-policy.ts `TurnRole` / `Effort` (src/omp imports nothing from src/jev). */
 type PlannerRole = "fast" | "default" | "thinking";
@@ -32,7 +32,8 @@ export const ROLE_LEGS: Readonly<Record<RoleName, readonly Leg[]>> = {
   tiny: [leg("kimi", "low"), leg("gemini-flash", "low")],
   judges: [leg("kimi"), leg("codex-sol"), leg("gemini-pro")],
   chair: [leg("opus@anthropic", "low")],
-  reviewer: [leg("kimi", "high"), leg("opus@antigravity", "medium")]
+  reviewer: [leg("kimi", "high"), leg("opus@antigravity", "medium")],
+  grow_review: [leg("kimi", "high"), leg("gemini-pro", "high"), leg("codex-sol", "high")]
 };
 /** The panel's seat count (S1: chains(), resolveAll() and the panel read this one number). */
 export const JUDGE_SEATS = ROLE_LEGS.judges.length;
@@ -89,7 +90,8 @@ export const STATIC_ROLE_LISTS: Readonly<Record<RoleName, readonly string[]>> = 
     tiny: ["kimi-code/k3:low"],
     judges: ["kimi-code/k3", "openai-codex/gpt-6.1-sol"],
     chair: ["anthropic/claude-opus-5-5:low"],
-    reviewer: ["kimi-code/k3:high", "google-antigravity/claude-opus-5-5:medium"]
+    reviewer: ["kimi-code/k3:high", "google-antigravity/claude-opus-5-5:medium"],
+    grow_review: ["kimi-code/k3:high", "openai-codex/gpt-6.1-sol:high"]
   };
 })();
 
@@ -208,17 +210,17 @@ export function clampEffort(m: ModelString, effort: RoutedEffort | null, catalog
 /** An exhausted planner role steps up (spec §4): Fast → Default → Thinking → none (`no_planner_leg`). */
 export const STEP_UP: Readonly<Record<PlannerRole, PlannerRole | null>> = { fast: "default", default: "thinking", thinking: null };
 
-/** The seven OmpConfig seat chains, as the roles fill them. */
+/** The eight OmpConfig seat chains, as the roles fill them. */
 export interface RoleChains { planner: ModelString[]; reader: ModelString[]; media: ModelString[]; ticks: ModelString[];
-  judges: ModelString[]; chair: ModelString[]; reviewer: ModelString[] }
+  judges: ModelString[]; chair: ModelString[]; reviewer: ModelString[]; growReview: ModelString[] }
 
 /**
- * The seven seat chains as STATIC_ROLE_LISTS: today's chains exactly. `HOUGE_MODEL_ROLES=static`, callers that hold no
+ * The eight seat chains as STATIC_ROLE_LISTS: today's chains exactly. `HOUGE_MODEL_ROLES=static`, callers that hold no
  * resolver (the CLI, scripts), and resolveOmpConfig's default.
  */
 export function staticRoleChains(): RoleChains {
   const s = (r: RoleName): ModelString[] => STATIC_ROLE_LISTS[r].map(parseModelString);
-  return { planner: s("default"), reader: s("reader"), media: s("vision"), ticks: s("tiny"), judges: s("judges"), chair: s("chair"), reviewer: s("reviewer") };
+  return { planner: s("default"), reader: s("reader"), media: s("vision"), ticks: s("tiny"), judges: s("judges"), chair: s("chair"), reviewer: s("reviewer"), growReview: s("grow_review") };
 }
 
 const JUDGE_SEAT_KEY = /^judges:(0|[1-9]\d?)$/;

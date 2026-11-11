@@ -35,7 +35,7 @@ function rig(caps = DEFAULT_GLOBAL_BUDGET_CAPS) {
   const store = RunStore.openInMemory(); const calls: string[] = [];
   const inner = storeRecorder(store);
   const recorder: DecisionRecorder = { record: (e, r, c) => { calls.push(e.id); return inner.record(e, r, c); } };
-  return { store, calls, g: new Gateway(store, caps, undefined, undefined, undefined, { decisionRecorder: recorder }),
+  return { store, calls, g: new Gateway(store, caps, undefined, undefined, { decisionRecorder: recorder }),
     contractCalls: () => calls.filter((id) => id === "turn.contract").length };
 }
 const rows = (store: RunStore) => (store as unknown as { db: { prepare(s: string): { all(): Array<Record<string, unknown>> } } }).db
@@ -132,7 +132,7 @@ describe("turn.contract at handleTaskIntake", () => {
     r.store.insertJevVerdict({ run_id: original, category: "memory", breadth: 1, reasoning: 1, actions: 0, sets_rule: 0.95, rule_scope: "ask",
       lane: "memory", role: "default", effort: null, cascade: null, save_outcome: "saved", route_outcome: "act", reason: "routed", skip_reason: null, quoted_turn_id: null });
     let n = 0;
-    const g = new Gateway(r.store, DEFAULT_GLOBAL_BUDGET_CAPS, undefined, undefined, undefined, { dataDir: dir, decisionRecorder: { record: (e, x, c) => { if (e.id === "turn.contract") n += 1; return storeRecorder(r.store).record(e, x, c); } } });
+    const g = new Gateway(r.store, DEFAULT_GLOBAL_BUDGET_CAPS, undefined, undefined, { dataDir: dir, decisionRecorder: { record: (e, x, c) => { if (e.id === "turn.contract") n += 1; return storeRecorder(r.store).record(e, x, c); } } });
     const out = g.intake(buildTypedTaskEvent({ source: "telegram", type: "memlane_ask", requested_by: { kind: "user", id: "paco" },
       notify: { kind: "telegram", chat_id: "555" }, idempotency_key: "mla:1", source_reference: "mla:1",
       metadata: { telegram_update_id: 1, telegram_callback_id: "mla:1", run_id: original } } as never), NOW);

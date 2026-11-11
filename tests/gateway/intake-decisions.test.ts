@@ -137,7 +137,7 @@ describe("intake.budget_fuse at handleTaskIntake", () => {
     store.recordChatTurn({ chat_id: "555", run_id: original, role: "user", text: "synthetic rule" }); // memLaneAskTurnEvent needs the turn's text (memlane-commands.ts:42)
     store.insertJevVerdict({ run_id: original, category: "memory", breadth: 1, reasoning: 1, actions: 0, sets_rule: 0.95, rule_scope: "ask",
       lane: "memory", role: "default", effort: null, cascade: null, save_outcome: "saved", route_outcome: "act", reason: "routed", skip_reason: null, quoted_turn_id: null });
-    const g = new Gateway(store, { ...DEFAULT_GLOBAL_BUDGET_CAPS, runs: 0 }, undefined, undefined, undefined, { dataDir: dir });
+    const g = new Gateway(store, { ...DEFAULT_GLOBAL_BUDGET_CAPS, runs: 0 }, undefined, undefined, { dataDir: dir });
     const r = g.intake(buildTypedTaskEvent({ source: "telegram", type: "memlane_ask", requested_by: { kind: "user", id: "paco" },
       notify: { kind: "telegram", chat_id: "555" }, idempotency_key: "mla:1", source_reference: "mla:1",
       metadata: { telegram_update_id: 1, telegram_callback_id: "mla:1", run_id: original } }), NOW);

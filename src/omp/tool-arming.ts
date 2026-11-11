@@ -2,7 +2,7 @@ import { resolveCodexEnabled } from "../capabilities/coding-agent.js";
 import { resolveGoogleEnabled } from "../capabilities/google-api.js";
 import { resolveSelfWriteEnabled } from "../capabilities/self-write-writer.js";
 import { resolveWikiEnabled } from "../capabilities/wiki.js";
-import { resolveSkillsEnabled } from "../skills/skill-store.js";
+import { resolveSkillsEnabled } from "../grow/flags.js";
 import { resolveHttpFetchEnabled } from "../web/http-fetch.js";
 import { resolveTimeToolEnabled } from "../prompt/tz-convert.js";
 import { resolveSchedulerEnabled } from "../run/schedule-spec.js";
@@ -10,7 +10,8 @@ import { resolveSchedulerEnabled } from "../run/schedule-spec.js";
 const ARMED: Record<string, (env: NodeJS.ProcessEnv) => boolean> = {
   http_fetch: resolveHttpFetchEnabled, to_local_time: resolveTimeToolEnabled, schedule_task: resolveSchedulerEnabled,
   wiki_build: resolveWikiEnabled, wiki_refine: resolveWikiEnabled, self_diagnose: resolveCodexEnabled,
-  self_write_propose: resolveSelfWriteEnabled, skill_author: resolveSkillsEnabled,
+  self_write_propose: resolveSelfWriteEnabled,
+  grow_submit: resolveSkillsEnabled, grow_read: resolveSkillsEnabled,
   gmail_read: resolveGoogleEnabled, google_api: resolveGoogleEnabled
 };
 

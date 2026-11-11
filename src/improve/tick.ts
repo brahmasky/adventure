@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { errorCode } from "../domain/error-code.js";
 import { redactForImprove } from "../decisions/egress.js";
 import { autoApplies, type ImproveState, type ImproveTarget } from "../decisions/entries/improve-route.js";
@@ -12,11 +11,11 @@ import type { DecideResult } from "../decisions/types.js";
 import type { JevRequest, JevResult } from "../jev/jev-client.js";
 import type { ProposalTarget, RunStore } from "../run/run-store.js";
 import { formatInstantInZone, resolveDisplayZone } from "../run/schedule-spec.js";
-import { resolveSkillsEnabled, type SkillStore } from "../skills/skill-store.js";
+import { resolveSkillsEnabled } from "../grow/flags.js";
 import { resolveImproveAt, resolveImproveEnabled } from "./flag.js";
 import { computeAbandonment } from "./abandonment.js";
 import { decideImprove, deferredRecorder, isJevOutage, type RecordPatch, type TickLlm } from "./decide-improve.js";
-import { buildImproveState, groupSignals, RECURRENCE_WINDOW_DAYS, type SignalGroup } from "./groups.js";
+import { buildImproveState, groupSignals, hintCategory, RECURRENCE_WINDOW_DAYS, type SignalGroup } from "./groups.js";
 import { DRAFT_SEAT_FAILED, draftFor, PROPOSAL_TTL_DAYS, rewriteEvidence, type Draft } from "./proposals.js";
 import { computeRecurrence, recordRecurrenceSignals, resolveRecurrenceGate, type Embedder, type RecurrenceCluster } from "./recurrence.js";
 import { scheduleHints } from "./schedule-shift.js";
@@ -28,36 +27,28 @@ import { scheduleHints } from "./schedule-shift.js";
  * crash resumes from the `running` latch; the stop signal is checked between model calls; `improve_tick` events bracket it.
  */
 export const IMPROVE_GROUPS_PER_TICK = 40;
-export const IMPROVE_JOBS_PER_DAY = 3;
+export const IMPROVE_HINTS_PER_DAY = 3;
 export const IMPROVE_INBOX_BATCH = 500;
 export const IMPROVE_STALE_DAYS = 30;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-export interface JobHooks {
-  reconcile(d: ImproveTickDeps): void;
-  reconcileAccepted(d: ImproveTickDeps): void;
-  enqueueFromRecurrence(store: RunStore, i: { decision_id: string; proposal_id: null; chat_id: string | null; origin: { turn_ids: string[]; run_ids: string[]; category: string; text_hashes: string[] }; idempotency_key: string; now: string }): string | null;
-  runQueued(d: ImproveTickDeps, budget: number): Promise<number>;
-}
 export interface ImproveTickDeps {
   store: RunStore; env: NodeJS.ProcessEnv; now: string; signal: AbortSignal; chatId: string | null;
   client: (r: JevRequest) => Promise<JevResult>;
-  llm: { pick: TickLlm; distill: TickLlm; classify: TickLlm; compose: TickLlm; verify: TickLlm };
-  embed: Embedder; embedModel: string; skills: SkillStore; jobs?: JobHooks;
+  llm: { pick: TickLlm; distill: TickLlm };
+  embed: Embedder; embedModel: string;
   /** Tests only: overrides IMPROVE_TICK_BUDGET_MS, and the wall clock the budget is measured on (a flake-free budget test). */
   budgetMs?: number;
   clock?: () => number;
-  /** The instant a job's ending is stamped with (final fix C1). Unset in the daemon (the wall clock); the live gate passes its shifted clock. */
-  wallNow?: () => string;
   /** Tests only: overrides IMPROVE_SEAT_DEADLINE_MS. */
   seatDeadlineMs?: number;
 }
 export const IMPROVE_TICK_BUDGET_MS = 120_000;
-/** Final fix E3: one seat call (distill, pick, classify, compose, verify) from the tick or a job never runs longer than this. */
+/** Final fix E3: one seat call (distill, pick) from the tick never runs longer than this. */
 export const IMPROVE_SEAT_DEADLINE_MS = 60_000;
-export interface TickCounts { mirrored: number; recurrence: number; abandoned: number; groups: number; decided: number; proposals: number; applied: number; cards: number; jobs_queued: number; jobs_started: number; deferred: number; deferred_outage: number; stale: number; already_proposed: number; no_draft: number; record_failed: number; embed_unavailable: number }
+export interface TickCounts { mirrored: number; recurrence: number; abandoned: number; groups: number; decided: number; proposals: number; applied: number; cards: number; hints: number; deferred: number; deferred_outage: number; stale: number; already_proposed: number; no_draft: number; record_failed: number; embed_unavailable: number }
 export type ImproveTickResult = { ran: false } | { ran: true; result: "done" | "stopped" | "failed"; counts: TickCounts };
-const zero = (): TickCounts => ({ mirrored: 0, recurrence: 0, abandoned: 0, groups: 0, decided: 0, proposals: 0, applied: 0, cards: 0, jobs_queued: 0, jobs_started: 0, deferred: 0, deferred_outage: 0, stale: 0, already_proposed: 0, no_draft: 0, record_failed: 0, embed_unavailable: 0 });
+const zero = (): TickCounts => ({ mirrored: 0, recurrence: 0, abandoned: 0, groups: 0, decided: 0, proposals: 0, applied: 0, cards: 0, hints: 0, deferred: 0, deferred_outage: 0, stale: 0, already_proposed: 0, no_draft: 0, record_failed: 0, embed_unavailable: 0 });
 
 /** Due once per local date at or after HOUGE_IMPROVE_AT (default 21:00, no off): the date, or null. */
 export function improveTickDue(store: RunStore, env: NodeJS.ProcessEnv, now: string): string | null {
@@ -113,14 +104,12 @@ function deadlineSeats(llm: ImproveTickDeps["llm"], stop: AbortSignal, ms: numbe
     const aborted = new Promise<{ ok: false }>((resolve) => { onAbort = () => resolve({ ok: false }); signal.addEventListener("abort", onAbort, { once: true }); });
     try { return await Promise.race([seat({ ...input, signal }), aborted]); } finally { signal.removeEventListener("abort", onAbort); }
   };
-  return { pick: wrap(llm.pick), distill: wrap(llm.distill), classify: wrap(llm.classify), compose: wrap(llm.compose), verify: wrap(llm.verify) };
+  return { pick: wrap(llm.pick), distill: wrap(llm.distill) };
 }
 
 /** Phase 1: housekeeping and the producers. `stopped` when the daemon is stopping or the produce phase used up the budget (final fix E2). */
 async function producePhase(d: ImproveTickDeps, c: TickCounts, overBudget: () => boolean): Promise<{ clusters: Map<string, RecurrenceCluster>; stopped: boolean }> {
   d.store.expireProposals(new Date(Date.parse(d.now) - PROPOSAL_TTL_DAYS * DAY_MS).toISOString(), d.now);
-  d.jobs?.reconcile(d);
-  d.jobs?.reconcileAccepted(d);
   c.mirrored += d.store.mirrorOutcomesIntoInbox().copied;
   const rec = await computeRecurrence({ store: d.store, env: d.env, now: d.now, embed: d.embed, embedModel: d.embedModel, signal: d.signal, overBudget });
   // final fix 2: the 50-embed cap (not an outage) left turns missing — stop now, the next cycle embeds the next 50 (a backlog clears in one evening)
@@ -146,7 +135,7 @@ async function tickBody(d: ImproveTickDeps, c: TickCounts): Promise<"done" | "st
   const hints = scheduleHints(d.store, d.now, tz);
   const since14 = d.store.listImproveSignalsSince(new Date(Date.parse(d.now) - RECURRENCE_WINDOW_DAYS * DAY_MS).toISOString());
   const dayAgo = new Date(Date.parse(d.now) - DAY_MS).toISOString();
-  let queueLeft = IMPROVE_JOBS_PER_DAY - d.store.countJobsCreatedSince(dayAgo);
+  let hintsLeft = IMPROVE_HINTS_PER_DAY - d.store.countGrowHintsSince(dayAgo);
   const latch = { on: false }; // final fix 2: after the first outage of the segment, the rule rung only (no Jev, no seat call)
   for (const g of groups) {
     // ruling 17: between groups only — a decided group always commits; the stop or the budget ends the call, the latch resumes next cycle
@@ -154,9 +143,9 @@ async function tickBody(d: ImproveTickDeps, c: TickCounts): Promise<"done" | "st
     if (c.decided >= IMPROVE_GROUPS_PER_TICK) { c.deferred += 1; continue; }
     // final fix D5: with the embedder down no cluster exists today, so a waiting recurrence row is deferred, not consumed stale
     if (g.signal === "recurrence" && c.embed_unavailable > 0 && g.rows.every((x) => x.created_at >= staleBefore)) { c.deferred_outage += 1; continue; }
-    const s = buildImproveState(g, { store: d.store, env: d.env, now: d.now, skills: d.skills, redact: (t) => redactForImprove(d.store, t), scheduleHints: hints, since14, recurrenceGate: resolveRecurrenceGate(d.env) });
-    // §3.5: a cluster beyond the day's 3 gets no row (ruling 5); final fix C5: so does every cluster while /disarm has skills off
-    if (willStartJob(s) && (queueLeft <= 0 || !resolveSkillsEnabled(d.env))) { c.deferred += 1; continue; }
+    const s = buildImproveState(g, { store: d.store, env: d.env, now: d.now, redact: (t) => redactForImprove(d.store, t), scheduleHints: hints, since14 });
+    // §3.5: a cluster beyond the day's 3 hints gets no row (ruling 5); final fix C5: so does every cluster while /disarm has skills off
+    if (willHint(s) && (hintsLeft <= 0 || !resolveSkillsEnabled(d.env))) { c.deferred += 1; continue; }
     let outcome: GroupOutcome;
     try {
       outcome = await runGroup(d, g, s, { tz, hints, latch, overBudget }, c);
@@ -169,11 +158,10 @@ async function tickBody(d: ImproveTickDeps, c: TickCounts): Promise<"done" | "st
     if (outcome === "record_failed") { c.record_failed += 1; continue; }   // rows stay unconsumed: tomorrow's tick reads them again
     if (outcome === "deferred") { c.deferred += 1; continue; }
     if (outcome === "deferred_outage") { c.deferred_outage += 1; continue; }   // final fix D1: an outage never consumes; the stale rule bounds it
-    if (outcome === "queued") queueLeft -= 1;
+    if (outcome === "queued") hintsLeft -= 1;
     if (s.stale) c.stale += 1;
     c.decided += 1;
   }
-  if (d.jobs) c.jobs_started += await d.jobs.runQueued(d, Math.max(0, IMPROVE_JOBS_PER_DAY - d.store.countJobsStartedSince(dayAgo))); // ruling 14: starts are budgeted apart from queueing
   return "done";
 }
 
@@ -211,28 +199,28 @@ async function runGroup(d: ImproveTickDeps, g: SignalGroup, s: ImproveState, x: 
   return commitGroup(d, g, s, r, { draft: placed, duplicate, auto, repeat: rep?.kind === "repeat", repeatIds: rep !== null && "ids" in rep ? rep.ids : null }, rec2.flush, c);
 }
 const ttlSince = (now: string): string => new Date(Date.parse(now) - PROPOSAL_TTL_DAYS * DAY_MS).toISOString();
-/** A rule-rung skill/recurrence row starts a job (ruling 1): the state predicts it so the day's budget can defer before any call. */
-const willStartJob = (s: ImproveState): boolean => s.recurrence !== null && !s.alreadyAuthored && !s.skillExists && !(s.category !== null && ["lookup", "research"].includes(s.category)) && !s.stale;
-/** Targets that need a draft to be a proposal; `knowledge` is recorded only (R5) and a rule-rung `skill` is the job. */
+/** A rule-rung skill/recurrence row records a grow hint (ADR 0035): the state predicts it so the day's cap can defer before any call. */
+const willHint = (s: ImproveState): boolean => s.recurrence !== null && !s.alreadyAuthored && !s.skillExists && !(s.category !== null && ["lookup", "research"].includes(s.category)) && !s.stale;
+/** Targets that need a draft to be a proposal; `knowledge` is recorded only (R5) and a rule-rung `skill` is the hint. */
 const NEEDS_DRAFT: ReadonlySet<string> = new Set(["lesson", "fact", "skill", "schedule", "tool_gap", "ladder"]);
 
 /**
  * §3.1's commit boundary: the decision row (through the real recorder, patched when the proposal is not written — ruling 6),
  * one outcome row per inbox row (the stored text back through its check: outcomeValueOf), the proposal (applied, or its
- * card: placeProposal) or the queued job, and consumed_at — one transaction. A recorder that returns null (its write failed)
+ * card: placeProposal) or the grow hint, and consumed_at — one transaction. A recorder that returns null (its write failed)
  * consumes nothing: the rows are read again tomorrow. Counts are bumped AFTER the commit (spec 2026-11-07 §5, codex): a
  * rolled-back group bumps nothing.
  */
 function commitGroup(d: ImproveTickDeps, g: SignalGroup, s: ImproveState, r: DecideResult<ImproveTarget, unknown>, pre: { draft: Draft | null; duplicate: boolean; auto: boolean; repeat: boolean; repeatIds: readonly string[] | null },
   flush: (real: ReturnType<typeof storeRecorder>, patch?: RecordPatch) => string | null, c: TickCounts): GroupOutcome {
-  // final fix C5: the backstop of the pre-check — a rule-rung job while skills are disarmed writes nothing and consumes nothing
+  // final fix C5: the backstop of the pre-check — a rule-rung hint while skills are disarmed writes nothing and consumes nothing
   if (r.rung === "rule" && r.verdict === "skill" && !resolveSkillsEnabled(d.env)) return "deferred";
   const bumps = zero();
   const outcome = d.store.inTransaction((): GroupOutcome => {
     // addendum Rev 2.3.1 A: the candidates the repeat check embedded are read again; a card accepted meanwhile changes them — retry next tick, nothing written
     if (pre.repeatIds !== null && pre.draft !== null && !sameIds(pre.repeatIds, repeatCandidatesFor(d.store, pre.draft.target as "lesson" | "fact", s.scope, d.now).map(candidateKey))) return "deferred";
-    const job = r.rung === "rule" && r.verdict === "skill" && s.recurrence !== null && d.jobs !== undefined;
-    const wantsProposal = !job && NEEDS_DRAFT.has(r.verdict);
+    const hint = r.rung === "rule" && r.verdict === "skill" && s.recurrence !== null;
+    const wantsProposal = !hint && NEEDS_DRAFT.has(r.verdict);
     const draft = pre.draft;
     const duplicate = wantsProposal && (pre.duplicate || pre.repeat || (draft !== null && d.store.proposalBlocks(draft.target, s.scope, ttlSince(d.now))));
     const patch: RecordPatch | undefined = duplicate ? { verdict: "nothing", reason: "already_proposed" } : wantsProposal && draft === null ? { verdict: "nothing", reason: "no_text" } : undefined;
@@ -243,10 +231,9 @@ function commitGroup(d: ImproveTickDeps, g: SignalGroup, s: ImproveState, r: Dec
       catch (e) { if (!(e instanceof OutcomeRejected)) throw e; console.error(`[improve] outcome row refused: ${row.signal}`); }
     }
     let queued = false;
-    if (job) {
-      const origin = { turn_ids: s.recurrence!.turnIds, run_ids: g.rows.map((x) => x.about_run_id).filter((x): x is string => x !== null), category: s.category ?? "other", text_hashes: textHashes(g) };
-      queued = d.jobs!.enqueueFromRecurrence(d.store, { decision_id, proposal_id: null, chat_id: g.newest.chat_id ?? d.chatId, origin, idempotency_key: s.recurrence!.idempotencyKey, now: d.now }) !== null;
-      if (queued) bumps.jobs_queued += 1;
+    if (hint) { // recordGrowHint joins this transaction; the category is the tick's own enum, never Paco's text
+      queued = d.store.recordGrowHint({ idempotency_key: s.recurrence!.idempotencyKey, chat_id: g.newest.chat_id ?? d.chatId, category: hintCategory(s.category), turn_ids: s.recurrence!.turnIds, decision_id, now: d.now });
+      if (queued) bumps.hints += 1;
     } else if (patch?.reason === "already_proposed") bumps.already_proposed += 1;
     else if (patch?.reason === "no_text") bumps.no_draft += 1;
     else if (draft) placeProposal(d, g, s, draft, decision_id, pre.auto, bumps);
@@ -280,9 +267,4 @@ function placeProposal(d: ImproveTickDeps, g: SignalGroup, s: ImproveState, draf
   }
   queueProposalCard(d.store, { proposal_id, target: draft.target, draft_json: draft.draft_json, evidence: draft.evidence }, chat_id, d.now);
   bumps.cards += 1;
-}
-
-/** sha256 of each cluster text (the job re-reads the texts from chat_turns; the hashes tell a changed row). */
-function textHashes(g: SignalGroup): string[] {
-  return (g.recurrence?.texts ?? []).map((t) => createHash("sha256").update(t).digest("hex").slice(0, 16));
 }

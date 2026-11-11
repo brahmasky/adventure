@@ -35,7 +35,7 @@
 // Thinking and bypass the pinned Default head it asserts). Case 6 is smoke-only.
 import { execFileSync, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { DatabaseSync } from "node:sqlite";
@@ -82,6 +82,8 @@ function openView(dbPath) {
       "SELECT event_type, occurred_at, payload_json FROM ledger_events WHERE correlation_id LIKE ? AND occurred_at > ? AND event_type = ? ORDER BY occurred_at",
       like, since, type).map(withPayload),
     typedSince: (type, since) => all("SELECT event_type, occurred_at, payload_json FROM ledger_events WHERE event_type = ? AND occurred_at > ?", type, since).map(withPayload),
+    // the submit event survives a publish that deletes the staged row, and it is tied to this run
+    growSubmitAccepted: (runId) => all("SELECT name FROM grow_events WHERE action = 'submit' AND result = 'accepted' AND run_id = ?", runId),
     lessonsSince: (since) => all("SELECT id, scope FROM lessons WHERE created_at > ? ORDER BY id", since),
     factCount: (chat) => get("SELECT count(*) AS n FROM episodic_facts WHERE chat_id = ?", chat)?.n ?? 0
   };
@@ -238,14 +240,14 @@ const CASES = [
         [reviews.length > 0 && reviews.every((p) => p.family !== "gpt"), "no reviewer row on the gpt family (writer ≠ checker)"]
       ];
     } },
-  { n: 24, title: "skill_author through Gate A/B", send: () => "Write a skill for converting a recipe's ingredient amounts between metric and US cups.",
-    prep: ["Check HOUGE_SKILLS_ENABLED is on (the default) and HOUGE_GATE_B_ENABLED is on (the default).",
-      "The authored skill lands in <repo>/skills/: delete it afterwards if you do not want it."],
-    pass: "skill_author tool_finished succeeded; a Gate B verify llm_attempt under gate:b; a new skill file under <repo>/skills",
+  { n: 24, title: "grow_submit: a skill staged for review", send: () => "Write a skill for converting a recipe's ingredient amounts between metric and US cups. Use grow_submit.",
+    prep: ["Check HOUGE_SKILLS_ENABLED is on (the default).",
+      "The submitted skill is staged and reviewed after the turn: /grow undo <name> removes it if it goes live and you do not want it."],
+    pass: "grow_submit tool_finished succeeded; this run has an accepted grow_events submit row; the reply says the skill is staged, not saved",
     check: (v, [r], c) => [
-      [toolRows(v, r, "skill_author").some((p) => p.status === "succeeded"), "skill_author tool_finished succeeded"],
-      [v.correlated("gate:b%", c.caseStart, "llm_attempt").some((e) => e.payload.role === "verify"), "Gate B verify llm_attempt (gate:b)"],
-      [newSkillFiles(join(c.repo, "skills"), Date.parse(c.caseStart)).length > 0, "a new skill file under <repo>/skills"]
+      [toolRows(v, r, "grow_submit").some((p) => p.status === "succeeded"), "grow_submit tool_finished succeeded"],
+      [v.growSubmitAccepted(r).length > 0, "an accepted grow_events submit row for this run (survives the publish)"],
+      [/\bstaged\b|not live yet/i.test(replyText(v, r)) && !/\bnot staged\b/i.test(replyText(v, r)), "the reply reports staged, not saved"]
     ] }
 ];
 
@@ -369,20 +371,6 @@ function checkDistill(v, _runs, c) {
     [rows.some((p) => p.outcome === "ok" && p.provider === d.ticksProvider), `ok distill llm_attempt on ${d.ticksProvider} (${rows.map((p) => `${p.provider}:${p.outcome}`).join(", ") || "none"})`],
     [facts >= 1, `facts written (${facts})`]
   ];
-}
-
-function newSkillFiles(dir, sinceMs) {
-  const out = [];
-  const walk = (d) => {
-    let entries = [];
-    try { entries = readdirSync(d, { withFileTypes: true }); } catch { return; }
-    for (const e of entries) {
-      const f = join(d, e.name);
-      if (e.isDirectory()) walk(f); else if (e.name.endsWith(".md") && statSync(f).mtimeMs > sinceMs) out.push(f);
-    }
-  };
-  walk(dir);
-  return out;
 }
 
 // ── silent-degradation checks (after all cases) ─────────────────────────────────────────────────────────

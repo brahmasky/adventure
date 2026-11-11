@@ -153,7 +153,7 @@ function startRun(e, kind = "schedule") {
     ? { source: "schedule", type: "turn", program: "turn", goal: "Alishan check-in (gate)", requested_by: { kind: "schedule", id: e.schedule_id }, notify: { kind: "telegram", chat_id: CHAT },
         idempotency_key: `schedule:${e.schedule_id}:gate4a:${n}`, source_reference: `scheduled_tasks.${e.schedule_id}` }
     : { source: "telegram", type: "turn", program: "turn", goal: "post it", requested_by: OPERATOR, notify: { kind: "telegram", chat_id: CHAT }, idempotency_key: `gate4a:telegram:${n}`, source_reference: `gate4a:${n}` };
-  const r = new m.Gateway(e.store, undefined, undefined, undefined, undefined, { dataDir: e.data }).intake(m.buildTypedTaskEvent(event));
+  const r = new m.Gateway(e.store, undefined, undefined, undefined, { dataDir: e.data }).intake(m.buildTypedTaskEvent(event));
   if (!r.ok || !r.run_id) throw new Error(`intake failed: ${JSON.stringify(r)}`);
   const worker_id = `planner:${CHAT}:gate`; const claim = e.store.claimRun(r.run_id, worker_id, 600); if (!claim) throw new Error("claim failed");
   e.turn = { run_id: r.run_id, worker_id, chat_id: CHAT, requester: event.requested_by, ...(kind === "schedule" ? { approver: OPERATOR } : {}), contract: claim.contract,
@@ -194,7 +194,7 @@ let cbn = 0;
 function tapRevoke(e, chat, data) {
   const r = m.normalizeTelegramUpdate({ update_id: 900_000 + ++cbn, callback_query: { id: `gate-cb-${cbn}`, from: { id: 111 }, message: { message_id: cbn, chat: { id: Number(chat) } }, data } }, ALLOWLIST);
   if (!r.ok) return r;
-  return new m.Gateway(e.store, undefined, undefined, undefined, undefined, { dataDir: e.data }).intake(r.event);
+  return new m.Gateway(e.store, undefined, undefined, undefined, { dataDir: e.data }).intake(r.event);
 }
 
 // ---- cases ----

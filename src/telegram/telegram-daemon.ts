@@ -7,7 +7,6 @@ import { runIdeaPanelTick } from "../capabilities/idea-panel.js";
 import { buildOmpPanelSeats, type PanelSeatBindings } from "../capabilities/idea-panel-seats.js";
 import { runIdeaRadarTick } from "../capabilities/idea-radar.js";
 import { runLessonConsolidateTick } from "../capabilities/lesson-consolidate.js";
-import { runSkillReverifyTick } from "../capabilities/skill-reverify.js";
 import { resolveWikiEnabled } from "../capabilities/wiki.js";
 import { settleDeliveredReport } from "../decisions/standing-approval.js";
 import { reportOmpCheck, tickCorrelationId, tickSeat } from "../llm/registry.js";
@@ -35,7 +34,6 @@ import { pacoAddress, resolveMailEnabled } from "../mail/flag.js";
 import { clearAuthPauseAtBoot, runMailTick } from "../mail/poller.js";
 import { runMailRetention } from "../mail/retention.js";
 import { evolutionLaneSettled, evolutionLaneSnapshot } from "../core/evolution-lane.js";
-import { reconcileJobsAtBoot, skillJobHooks } from "../core/skill-job.js";
 import type { TelegramAllowlist } from "../domain/types.js";
 import { Gateway } from "../gateway/gateway.js";
 import { ANCHOR_DIR, bootJevAnchor } from "../decisions/jev-anchor-import.js";
@@ -47,11 +45,16 @@ import { resolveMediaIngestEnabled } from "../media/media-config.js";
 import { LocalNotificationAdapter } from "../notifications/local-notification-adapter.js";
 import { NotificationDispatcher, type NotificationAdapters } from "../notifications/notification-dispatcher.js";
 import { NotificationOutbox } from "../notifications/notification-outbox.js";
-import { resolveBackupEnabled, runDbBackupTick } from "../run/db-backup.js";
+import { ensureGrowBundle } from "../grow/bundle.js";
+import { resolveGrowEnabled } from "../grow/flags.js";
+import { EXEMPLAR_NAME, legacySkillsDir, migrateLegacySkills, seedExemplars } from "../grow/seed.js";
+import { GROW_CLAIM_STALE_MS, runGrowTick } from "../grow/tick.js";
+import { spawnOneShot } from "../llm/providers/omp.js";
+import { turnTrustFinal } from "../decisions/trust.js";
+import { BACKUP_DIR_NAME, resolveBackupEnabled, runDbBackupTick } from "../run/db-backup.js";
 import type { LlmCallRole, ReloadMarker, RunStore } from "../run/run-store.js";
-import { runIncidentReminder } from "../run/incident-alert.js";
+import { openAlertedIncident, runIncidentReminder } from "../run/incident-alert.js";
 import { maybeFireScheduledTasks } from "../run/schedule-tick.js";
-import { SkillStore } from "../skills/skill-store.js";
 import { runInvariantSweep, type InvariantSweepInput, type InvariantSweepResult } from "../run/invariant-sweep.js";
 import { clearParkMarker, readParkMarker } from "../run/tombstone.js";
 import { classifyBoot, hostBootedAt, readBootCode, type BootCode } from "../status/houge-status.js";
@@ -226,14 +229,13 @@ export async function runTelegramDaemon(
     options.telegramClient.downloadFile
       ? { downloadFile: options.telegramClient.downloadFile.bind(options.telegramClient) }
       : undefined,
-    ompOptionsWithOperator(options.omp, options.allowlist)
+    { ...ompOptionsWithOperator(options.omp, options.allowlist), growWriter: true } // the daemon is the zone's one writer
   );
   // After the worker: the gateway's /models reads the worker's RoleResolver (one catalog cache per process).
   const gateway = new Gateway(
     options.store,
     undefined,
     options.projectRoot,
-    undefined,
     { ...(options.requestShutdown ? { requestShutdown: options.requestShutdown } : {}),
       // `/mail off`: both Paco auth clients (the worker's, for on-demand reads, and the poller's) drop their cached access token.
       onMailOff: () => { worker.invalidatePacoGmail(); pacoAuthClient(options).invalidate(); } },
@@ -294,12 +296,7 @@ export async function runTelegramDaemon(
   const marker = consumeReloadMarkerAtBoot(options.store);
   notifyReloadOnBoot(options, marker);
   const bootId = recordBoot(options, marker, startedAt);
-  try { // the evolution lane is in-memory: a job left running by the last process can never finish (2b-ii §5.2)
-    reconcileJobsAtBoot(options.store, new SkillStore({ root: join(options.projectRoot, "skills") }),
-      options.allowlist.chats[0] ? String(options.allowlist.chats[0].telegram_chat_id) : null, startedAt);
-  } catch (error) {
-    console.error(`[telegram-daemon] improvement job boot reconcile failed: ${errorCode(error)}`);
-  }
+  await bootGrowZone(options, worker, startedAt); // the zone is consistent before anything is seeded; a failure here leaves the zone usable
   // the retry step first: a reply that went stale while the daemon was down is abandoned before this flush can send it
   await flushLogged({ retry: true }); // best-effort: the poll loop re-dispatches queued notifications anyway
 
@@ -308,6 +305,7 @@ export async function runTelegramDaemon(
   let parkMarkerCleared = false;
   const rolesTick = detachedJob();
   const mailTick = detachedJob();
+  const growTick = detachedJob(); const growRequestsTick = detachedJob();
   // SP2 mail: the documented recovery from a lost grant is "re-auth, then restart" — the restart clears the stored auth pause (once, env switch on)
   if (clearAuthPauseAtBoot(options.store, process.env)) console.error("[telegram-daemon] mail: auth pause cleared at boot, polling resumes");
 
@@ -365,7 +363,7 @@ export async function runTelegramDaemon(
       // ⓪·3 S2: the signal path rides the poll loop (before the outbox flush, so a
       // rating ask enqueued this cycle is delivered this cycle). B10b threads the
       // gateway + worker in so the scheduler tick fires due tasks down the SAME path.
-      await runSignalPathTick(options, gateway, worker, t, rolesTick, mailTick);
+      await runSignalPathTick(options, gateway, worker, t, { roles: rolesTick, mail: mailTick, grow: growTick, growRequests: growRequestsTick });
       await flushLogged({ retry: true }); // a failed drain is logged + incident'd, never a poll failure: the next flush retries
 
       options.store.recordPollHeartbeat({ now: now(), ok: true });
@@ -401,6 +399,7 @@ export async function runTelegramDaemon(
   await worker.shutdownPlanners();
   await settledWithin(gateway.whenTierTapsSettled(), TIER_TAP_SHUTDOWN_CAP_MS);
   await settledWithin(mailTick.settled(), MAIL_TICK_SHUTDOWN_CAP_MS); // the stop aborts the tick between mails; the cursor has not moved, the next boot re-reads the range
+  await settledWithin(Promise.all([growRequestsTick.settled(), growTick.settled()]).then(() => undefined), GROW_TICK_SHUTDOWN_CAP_MS); // an interrupted undo stays queued and is continued next poll; // the stop aborts the review; the row is unclaimed and the next boot's tick takes it
   await settledWithin(rolesTick.settled(), ROLES_TICK_SHUTDOWN_CAP_MS); // the stop aborts its probe; the 24 h latch re-runs the whole unit next boot
   await settledWithin(jevJobSettled(), JEV_JOB_SHUTDOWN_CAP_MS); // capped: the check resumes from its rows, the flush and the evolution lane must not wait on Jev
   await flushLogged();
@@ -434,6 +433,77 @@ export const MAIL_TICK_SHUTDOWN_CAP_MS = 5_000;
 
 /** Shutdown waits at most this long for the detached roles tick: its probe takes the stop signal, so the cap only bounds a probe that ignores it. */
 export const ROLES_TICK_SHUTDOWN_CAP_MS = 5_000;
+
+/** Shutdown waits at most this long for the detached grow tick (its review spawn takes the stop signal). */
+export const GROW_TICK_SHUTDOWN_CAP_MS = 5_000;
+
+/**
+ * Boot step for the grow zone (spec §5.11): the zone exists and is consistent (reconcile, then sync with HEAD) before
+ * anything is seeded; a seed or migration that does not pass opens `grow_seed_failed` and leaves the zone usable.
+ * Exported for its test; never throws, logs a code only.
+ */
+export async function bootGrowZone(options: RunTelegramDaemonOptions, worker: CoreWorker, at: string): Promise<void> {
+  try {
+    const svc = worker.growService();
+    if (!(await svc.ensureZone())) return;
+    await svc.reconcile(resolveGrowEnabled(process.env));
+    await svc.syncWithHead();
+    const seed = await seedExemplars({ store: options.store, svc, seedDir: join(options.projectRoot, "grow-seed"), now: at });
+    const moved = await migrateLegacySkills({ store: options.store, svc, legacyDir: legacySkillsDir(options.projectRoot), now: at });
+    if (seed.failed.length + moved.invalid.length > 0) {
+      openAlertedIncident(options.store, { kind: "grow_seed_failed", subject: "boot", detail: { exemplars: seed.failed.length, legacy: moved.invalid.length }, now: at });
+    } else {   // a clean boot closes the incident an earlier bad one opened
+      const open = options.store.findOpenIncident(options.store.incidentFingerprint("grow_seed_failed", "boot"));
+      if (open) options.store.resolveIncident(open.incident_id, at);
+    }
+  } catch (error) { console.error(`[telegram-daemon] grow boot failed: ${errorCode(error)}`); }
+}
+
+/** The bundle beside the newest snapshot (spec §5.1): a failure pages once (deduped on the open incident), a success closes it. Own catch. */
+async function growBundleStep(options: RunTelegramDaemonOptions, worker: CoreWorker, now: string): Promise<void> {
+  if (!resolveBackupEnabled(process.env)) return;
+  try {
+    const answer = await ensureGrowBundle({ zone: worker.growService().zone, backupDir: join(options.projectRoot, BACKUP_DIR_NAME) });
+    const fingerprint = options.store.incidentFingerprint("grow_backup_failed", "bundle");
+    if (answer === "failed") openAlertedIncident(options.store, { kind: "grow_backup_failed", subject: "bundle", detail: {}, now });
+    else if (answer === "written" || answer === "exists") { const open = options.store.findOpenIncident(fingerprint); if (open) options.store.resolveIncident(open.incident_id, now); }
+  } catch (error) { console.error(`[telegram-daemon] grow bundle failed: ${errorCode(error)}`); }
+}
+
+/** A review stops this long before the claim goes stale (GROW_CLAIM_STALE_MS, counted from the claim at `now`), so the stale release can never free a row whose review is still running. */
+export const GROW_REVIEW_MARGIN_MS = 60_000;
+
+/** One grow poll's review (spec §5.4): at most one review, publishing on a pass, then the bundle. Reconcile and Paco's requests are `runGrowRequestsSafe`'s. Its own catch: a failed tick logs a code and the next poll retries. Exported for its test. */
+export async function runGrowTickSafe(options: RunTelegramDaemonOptions, worker: CoreWorker, now: string): Promise<void> {
+  if (options.stopSignal.aborted) return;
+  try {
+    const svc = worker.growService();
+    // resolved when a review is claimed, not here: an invalid omp config must not stop the tick's other work, and it is an outage for that review
+    const cfg = (): ReturnType<typeof resolveOmpConfig> => resolveOmpConfig(process.env, worker.modelRoles().chains());
+    await runGrowTick({ store: options.store, svc, env: process.env, now, signal: options.stopSignal,
+      chain: () => worker.modelRoles().candidates("grow_review"),
+      spawn: async (input) => spawnOneShot({ ...input, deadlineAt: Date.parse(now) + GROW_CLAIM_STALE_MS - GROW_REVIEW_MARGIN_MS }, { cfg: cfg(), audit: options.store.llmAuditSink({ correlation_id: input.correlationId, role: "grow_review" }) }),
+      exemplar: async () => (await svc.zone.readHead(EXEMPLAR_NAME)) ?? "", settled: (id) => turnTrustFinal(options.store, id) !== null });
+  } catch (error) { console.error(`[telegram-daemon] grow tick failed: ${errorCode(error)}`); }
+  await growBundleStep(options, worker, now);
+}
+
+/** Paco's queued requests (spec §5.8) as their own short step: `/grow undo` must not wait behind a review that is minutes into a model call. Own catch; the service's lock serialises it with every zone write. */
+export async function runGrowRequestsSafe(options: RunTelegramDaemonOptions, worker: CoreWorker): Promise<void> {
+  if (options.stopSignal.aborted) return;
+  try {
+    const svc = worker.growService();
+    if (!(await svc.ensureZone())) return;
+    await svc.reconcile(resolveGrowEnabled(process.env));
+    await svc.runRequests();
+  } catch (error) { console.error(`[telegram-daemon] grow requests failed: ${errorCode(error)}`); }
+}
+
+/** One poll's grow work as two independent detached jobs: the review tick, and Paco's requests. Exported for its test. */
+export function startGrowJobs(options: RunTelegramDaemonOptions, worker: CoreWorker, now: string, jobs: { grow: DetachedJob; growRequests: DetachedJob }): void {
+  jobs.growRequests.start(() => runGrowRequestsSafe(options, worker));
+  jobs.grow.start(() => runGrowTickSafe(options, worker, now));   // one review tick in flight; never awaited by the poll loop
+}
 
 /** One detached job at a time: a start while the last run is in flight is a no-op; `settled()` is for shutdown. Exported for its test. */
 export interface DetachedJob { start(run: () => Promise<void>): void; settled(): Promise<void> }
@@ -578,8 +648,7 @@ async function runSignalPathTick(
   gateway: Gateway,
   worker: CoreWorker,
   now: string,
-  rolesTick: DetachedJob,
-  mailTick: DetachedJob
+  jobs: { roles: DetachedJob; mail: DetachedJob; grow: DetachedJob; growRequests: DetachedJob }
 ): Promise<void> {
   try {
     options.store.runLessonDecayTick(now);
@@ -601,8 +670,8 @@ async function runSignalPathTick(
     // Spec 2026-11-02 §5 (B3, N5): the daily reminder, before the model ticks and independent of HOUGE_MODEL_ROLES, so a
     // slow or stopped model tick (or a catalog outage) cannot delay that day's reminder. Its own catch.
     runReminderStep(options.store, chatId, now);
-    await runModelTicks(options, gateway, worker, now, chatId, rolesTick);
-    runMailSteps(options, chatId, mailTick);
+    await runModelTicks(options, gateway, worker, now, chatId, jobs.roles);
+    runMailSteps(options, chatId, jobs.mail);
     // ADR 0019: the metered-$ ceiling check — drives the alert-dedupe latch (the chain
     // builder's cheap enforcement read) once per cycle; the 0→1 transition enqueues ONE
     // alert, delivered by the outbox flush right after this tick.
@@ -616,6 +685,7 @@ async function runSignalPathTick(
     // ticks so it observes this cycle's work, self-throttles to 5 min, and alerts at most
     // once per incident transition. Flag-gated OFF; pure reads + incident bookkeeping —
     // it can never act on what it finds.
+    startGrowJobs(options, worker, now, jobs);
     sweepAndRearm(invariantSweepInput(options, now), worker);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -680,9 +750,8 @@ async function runImproveTickSafe(options: RunTelegramDaemonOptions, worker: Cor
       audit: options.store.llmAuditSink({ correlation_id: "improve-tick", role: "improve" }), meteredBreached: () => options.store.meteredFuseLatched(), retries: 0, timeoutMs: IMPROVE_JEV_MS });
     const cfg = resolveEmbedConfig(process.env);
     await runImproveTick({ store: options.store, env: process.env, now, signal: options.stopSignal, chatId, client,
-      llm: { pick: tickLlm(options, "improve_pick", "improve_pick", roles), distill: tickLlm(options, "improve_distill", "distill", roles), classify: tickLlm(options, "improve_gate_a", "classify", roles),
-        compose: tickLlm(options, "improve_author", "compose", roles), verify: tickLlm(options, "improve_gate_b", "verify", roles) },
-      embed: (text) => embedText(text, cfg), embedModel: cfg.model, skills: new SkillStore({ root: join(options.projectRoot, "skills") }), jobs: skillJobHooks });
+      llm: { pick: tickLlm(options, "improve_pick", "improve_pick", roles), distill: tickLlm(options, "improve_distill", "distill", roles) },
+      embed: (text) => embedText(text, cfg), embedModel: cfg.model });
   } catch (error) {
     console.error(`[telegram-daemon] improve tick failed: ${errorCode(error)}`);
   }
@@ -836,8 +905,8 @@ async function runMemoryTicks(options: RunTelegramDaemonOptions, now: string, si
 
 /**
  * Idea Radar R1 (daily sensing: fetch + ONE extract call), the R2 weekly panel (ADR 0027: seats
- * pinned per provider, NEVER a chain — a healthy-leg fallback would void the quorum), and the
- * weekly suggest-only skill re-verify. Each stamps its latch before its first model call.
+ * pinned per provider, NEVER a chain — a healthy-leg fallback would void the quorum). Each
+ * stamps its latch before its first model call.
  */
 async function runIdeaTicks(options: RunTelegramDaemonOptions, now: string, chatId: string | null, signal: AbortSignal, roles: Pick<RoleResolver, "chains">): Promise<void> {
   await runIdeaRadarTick({
@@ -848,17 +917,6 @@ async function runIdeaTicks(options: RunTelegramDaemonOptions, now: string, chat
   await runIdeaPanelTick({
     store: options.store, ...(options.panelSeats ?? buildPanelSeatBindings(options, roles)),
     env: process.env, now, chatId, projectRoot: options.projectRoot, signal
-  });
-  if (signal.aborted) return;
-  const reverifyLlm = tickLlm(options, "skill_reverify", "verify", roles);
-  await runSkillReverifyTick({
-    store: options.store,
-    skills: new SkillStore({ root: join(options.projectRoot, "skills") }),
-    anchorLlm: async (system, question) => {
-      const read = await reverifyLlm({ question, system });
-      return read.ok ? read.answer : undefined;
-    },
-    env: process.env, now, chatId, signal
   });
 }
 

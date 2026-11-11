@@ -103,7 +103,7 @@ function harness(m, store, repo, root, roles) {
   let seq = 0;
   const intake = (chat, text) => {
     const msg = 9_100_000 + (seq += 1); const upd = 8_100_000_000 + msg;
-    const r = new m.Gateway(store, undefined, undefined, undefined, undefined, { dataDir: root }).intake(m.buildTypedTaskEvent({
+    const r = new m.Gateway(store, undefined, undefined, undefined, { dataDir: root }).intake(m.buildTypedTaskEvent({
       source: "telegram", type: "turn", program: "turn", goal: text, requested_by: { kind: "user", id: "gate" }, notify: { kind: "telegram", chat_id: chat },
       idempotency_key: `telegram:${upd}:${msg}`, source_reference: `telegram:update:${upd}:message:${msg}`, metadata: { telegram_update_id: upd, telegram_message_id: msg } }));
     if (!r.ok || !r.run_id) throw new Error(`intake failed: ${JSON.stringify(r)}`);

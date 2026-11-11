@@ -137,6 +137,31 @@ describe("PlannerSupervisor — detached turns (spec §7)", () => {
     expect(kinds).toEqual(["quota", undefined]);
   });
 
+  it("commits the grow notes once for a successful turn, with its run id, and never for a failed one", async () => {
+    const commit = vi.fn();
+    const ok = harness(fakeSession(), {}, {}, { turnContext: { growNotesCommit: commit } });
+    const run_id = createQueuedTurnRun(ok.store);
+    ok.sup.submit(req(run_id)); await ok.sup.whenIdle();
+    expect(commit.mock.calls).toEqual([[run_id]]);
+    const bad = vi.fn();
+    const session = fakeSession({ onPrompt: (_t, e) => { e({ type: "turn_start" }); session.assistant("", { stopReason: "error", errorMessage: "429 quota" }); e({ type: "agent_end" }); } });
+    const f = harness(session, {}, {}, { turnContext: { growNotesCommit: bad } });
+    f.sup.submit(req(createQueuedTurnRun(f.store))); await f.sup.whenIdle();
+    expect(f.outcome.failed).toHaveLength(1);
+    expect(bad).not.toHaveBeenCalled();
+  });
+
+  it("a throwing grow-notes commit does not fail the turn", async () => {
+    const err = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const h = harness(fakeSession(), {}, {}, { turnContext: { growNotesCommit: () => { throw new Error("boom"); } } });
+    h.sup.submit(req(createQueuedTurnRun(h.store))); await h.sup.whenIdle();
+    expect(h.outcome.done).toHaveLength(1);
+    expect(h.outcome.failed).toHaveLength(0);
+    expect(h.outcome.incidents).not.toContainEqual(expect.objectContaining({ k: "planner_turn_crashed" }));
+    expect(err.mock.calls.map((c) => String(c[0]))).toContainEqual(expect.stringContaining("grow notes not committed"));
+    err.mockRestore();
+  });
+
   it("fails every planner string exhausted as no_planner_leg and opens an incident", async () => {
     const session = fakeSession({ onPrompt: (_t, e) => { e({ type: "turn_start" }); session.assistant("", { stopReason: "error", errorMessage: "429 quota" }); e({ type: "agent_end" }); } });
     const { store, sup, outcome } = harness(session); const run_id = createQueuedTurnRun(store);
@@ -2166,6 +2191,21 @@ describe("PlannerSupervisor — trust-card pause policy and the turn's trust (sp
     const active = (sup as unknown as { turn: { active: { trust?: { level(): string }; judge?: unknown } } }).turn.active;
     expect(active.trust?.level()).toBe("clean");
     expect(active.judge).toBe(judge);
+    h.end(); await sup.whenIdle();
+  });
+
+  // ADR 0035 G4 (amendment 2): the worker reads the live level through this getter; TurnTrust swallows a failed ledger write,
+  // so a worker that only read the ledger could let a hostile turn's grow_submit through.
+  it("binds the live turn's trust level into the tools buildTools returned", async () => {
+    let bound: (() => string) | undefined;
+    const h = heldSession();
+    const { store, sup } = harness(h.session, {}, { buildTools: () => ({ registry: new ToolRegistry(), quarantine: async () => ({ digest: "", contains_instructions: false, source_meta: { tool: "x", bytes: 0 } }),
+      bindTrust: (level) => { bound = level; } }) });
+    sup.submit(req(createQueuedTurnRun(store))); await h.live();
+    const active = (sup as unknown as { turn: { active: { trust: { raise(c: string): boolean } } } }).turn.active;
+    expect(bound?.()).toBe("clean");
+    active.trust.raise("injection_withheld");
+    expect(bound?.()).toBe("hostile");
     h.end(); await sup.whenIdle();
   });
 });

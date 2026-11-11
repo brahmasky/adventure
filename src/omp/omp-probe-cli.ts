@@ -6,6 +6,7 @@ import type { RunStore } from "../run/run-store.js";
 import { readOmpCatalog } from "./model-catalog.js";
 import { resolveOmpCatalogConfig, resolveOmpConfig } from "./omp-config.js";
 import { createOmpProbeRunner, type OmpProbeRunner } from "./omp-probe-runner.js";
+import { resolveGrowDir } from "../grow/flags.js";
 import { sharedOmpVersionCache } from "./omp-version-cache.js";
 import type { OmpCheckResult } from "./omp-version.js";
 import { installedBinaryDirs } from "./protected-paths.js";
@@ -60,7 +61,7 @@ async function probeAndPrint(d: ProbeCliDeps, store: RunStore, signal: AbortSign
   await roles.refreshCatalog();
   const cfg = resolveOmpConfig(d.env, roles.chains());
   // The daemon's data dir is its cwd (cli.ts telegram-poll): there is no data-dir variable.
-  const ctx = { home: homedir(), repo: d.cwd, data: d.cwd, binDirs: installedBinaryDirs(d.env, process.execPath) };
+  const ctx = { home: homedir(), repo: d.cwd, data: d.cwd, binDirs: installedBinaryDirs(d.env, process.execPath), grow: resolveGrowDir(d.env, homedir(), [d.cwd, d.cwd]) };
   const check = await (d.versionCheck ?? (() => sharedOmpVersionCache(cfg).current()))();
   if (!check.ok) {
     d.out(`omp unavailable: ${check.reason}`);

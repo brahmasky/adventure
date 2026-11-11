@@ -59,7 +59,7 @@ export function buildReaderQuestion(objective: string, rawContent: string): stri
 /**
  * Tolerant parse of a Q-LLM reply → {@link ReaderExtraction}, or `null` when no usable JSON
  * object is present (the caller retries once, then falls back to {@link unreadableDigest}).
- * Mirrors the anchor-verify parse philosophy: scan the first balanced {...}, coerce each field
+ * Tolerant parse philosophy: scan the first balanced {...}, coerce each field
  * to its schema type. Missing/typeless fields degrade safely (empty summary, no facts, null
  * answer, contains_instructions=false) — never throws, never invents an action field.
  */

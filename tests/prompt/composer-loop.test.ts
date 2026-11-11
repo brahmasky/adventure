@@ -75,21 +75,20 @@ describe("the `omp` composer surface (ADR 0002 V2: the planner acts through real
     expect(prompt).not.toContain(GUARDRAILS);
   });
 
-  it("folds lessons + skills in via the existing readers", () => {
+  it("folds lessons and the grow index in", () => {
     const prompt = composeSystemPrompt(memoryRoot(), "omp", {
       lessonsReader: (scope) => (scope === "ask" ? "- be more concise" : undefined),
       lessonsScope: "ask",
-      skillsReader: (scope) => (scope === "ask" ? "### cross-check — when: comparing\nverify" : undefined),
-      skillsScope: "ask"
+      growIndex: () => "- cross-check — comparing"
     });
     expect(prompt).toContain("## What you've learned — apply these\n- be more concise");
-    expect(prompt).toContain("## Skills — apply when relevant");
+    expect(prompt).toContain("## Your procedures (grow zone)\n- cross-check — comparing");
   });
 
   it("the other surfaces stay byte-identical (goldens safe): GUARDRAILS unchanged, no planner text", () => {
     const root = memoryRoot();
     const now = new Date("2026-07-02T00:00:00.000Z");
-    for (const surface of ["ask", "research", "research-critique", "selfcode", "skill-author"]) {
+    for (const surface of ["ask", "research", "research-critique", "selfcode"]) {
       const prompt = composeSystemPrompt(root, surface, { now });
       expect(prompt).toContain(GUARDRAILS);
       expect(prompt).not.toContain(OMP_LOOP_DISCIPLINE);
@@ -103,5 +102,14 @@ describe("the `omp` composer surface (ADR 0002 V2: the planner acts through real
 
   it("the old `loop` surface (the JSON action protocol) is gone with the inner loop (Task 14)", () => {
     expect(Object.keys(DISCIPLINES)).not.toContain("loop");
+  });
+});
+
+describe("grow index", () => {
+  it("is the only procedures section: no old skills header, and none at all without an index", () => {
+    const text = composeSystemPrompt(memoryRoot(), "omp", { growIndex: () => "- unit-convert — converting" });
+    expect(text).toContain("## Your procedures (grow zone)\n- unit-convert — converting");
+    expect(text).not.toContain("## Skills — apply when relevant");
+    expect(composeSystemPrompt(memoryRoot(), "omp", { growIndex: () => undefined })).not.toContain("## Your procedures");
   });
 });

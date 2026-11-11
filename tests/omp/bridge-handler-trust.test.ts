@@ -36,10 +36,13 @@ const meta = (name: string, side_effect_level: SideEffectLevel, execute?: Exec):
 const judging = () => vi.fn(async (req: JevRequest): Promise<JevResult> => ({ ok: true, model: "jev-1.13.0", input_tokens: 10, latency_ms: 5,
   answers: Object.fromEntries(Object.keys(req.questions).map((id) => [id, { type: "noul" as const, noul: String((req.state as Record<string, string>)[`p${id.slice(1)}`]).includes("AI assistants") ? 0.94 : 0.03 }])) }));
 
-function setup(o: { env?: NodeJS.ProcessEnv; page?: string; shellOut?: string; shellFail?: string; judge?: InjectionJudge | null; client?: (r: JevRequest) => Promise<JevResult> } = {}) {
+/** `grow`: registers grow_read / grow_submit fakes and adds both to the envelope; `preflight` is set on the turn as the worker sets its own. */
+function setup(o: { env?: NodeJS.ProcessEnv; page?: string; shellOut?: string; shellFail?: string; judge?: InjectionJudge | null; client?: (r: JevRequest) => Promise<JevResult>;
+  grow?: { read?: Exec; submit?: Exec }; preflight?: ActiveTurn["preflight"] } = {}) {
   const store = RunStore.openInMemory(); const run_id = createQueuedTurnRun(store);
   const claim = store.claimRun(run_id, "planner:c:a", 120)!;
-  const contract: CompiledTaskContract = { ...claim.contract, allowed_actions: ENVELOPE, forbidden_actions: ["coding_agent_cli", "paid_action"],
+  const envelope = o.grow ? [...ENVELOPE, "grow_read", "grow_submit"] : ENVELOPE;
+  const contract: CompiledTaskContract = { ...claim.contract, allowed_actions: envelope, forbidden_actions: ["coding_agent_cli", "paid_action"],
     approval_gates: ["external_write", "destructive", "paid"], budget: { ...claim.contract.budget, max_tool_calls: 40 } };
   const ran: string[] = [];
   const shell: Exec = async (i) => { ran.push(String(i.command)); if (o.shellFail !== undefined) return { ok: false, error: o.shellFail }; return { ok: true, output: { exit_code: 0, output: o.shellOut ?? `ran ${String(i.command)}`, truncated: false } }; };
@@ -53,6 +56,10 @@ function setup(o: { env?: NodeJS.ProcessEnv; page?: string; shellOut?: string; s
   registry.register(meta("wiki_build", "none", async () => ({ ok: true, output: { built: true } })));
   for (const [n, s] of [["shell", "local_write"], ["shell_external", "external_write"], ["shell_destructive", "destructive"]] as const) registry.register(meta(n, s, shell));
   registry.register(meta("fs_read", "none")); registry.register(meta("fs_write", "local_write"));
+  if (o.grow) {
+    registry.register(meta("grow_read", "none", o.grow.read ?? (async () => ({ ok: true, output: { answer: "body" } }))));
+    registry.register(meta("grow_submit", "none", o.grow.submit ?? (async () => ({ ok: true, output: { answer: "STAGED: x" } }))));
+  }
   const seen: Array<Record<string, unknown>> = [];
   const quarantine = vi.fn(async (tool: string, out: Record<string, unknown>): Promise<ExternalReadResult> => { seen.push(out); return { digest: "summary", contains_instructions: false, source_meta: { tool, bytes: 1 } }; });
   const pauses: Array<[boolean, PausePolicy | undefined]> = [];
@@ -62,9 +69,9 @@ function setup(o: { env?: NodeJS.ProcessEnv; page?: string; shellOut?: string; s
   const turn: ActiveTurn = { run_id, worker_id: "planner:c:a", chat_id: "555", requester: { kind: "user", id: "1" }, contract, budget: new BudgetLedger(contract.budget),
     registry, signal: new AbortController().signal, cwd: dir, step: { n: 0 }, cache: new Map(), unreported: new Map(), quarantine,
     setAwaitingApproval: (on, pause) => { pauses.push([on, pause]); }, postureOk: () => null,
-    trust: new TurnTrust({ store, run_id, chat_id: "555", born: "telegram", env }), ...(judge ? { judge } : {}) };
+    trust: new TurnTrust({ store, run_id, chat_id: "555", born: "telegram", env }), ...(judge ? { judge } : {}), ...(o.preflight ? { preflight: o.preflight } : {}) };
   const handle = createBridgeHandler({ store, cfg: resolveOmpConfig({}), ctx: { home: join(dir, "home"), repo: join(dir, "repo"), data: join(dir, "data") },
-    decls: DECLS, env, turnEnvelopeActions: ENVELOPE, activeTurn: () => turn });
+    decls: DECLS, env, turnEnvelopeActions: envelope, activeTurn: () => turn });
   const events = (t: string) => store.getLedgerEvents(run_id).filter((e) => e.event_type === t).map((e) => e.payload);
   return { store, run_id, turn, handle, ran, seen, pauses, events };
 }
@@ -357,5 +364,60 @@ describe("bridge: trust asks", () => {
     expect((await h.handle(call("lesson_write", { scope: "ask" })) as CallResult).isError).toBe(false);
     expect(h.pauses).toEqual([]);
     expect(HOSTILE_REASON.length).toBeGreaterThan(0);
+  });
+});
+
+// ADR 0035 G4(d): a skill born from outside content still holds that content, so reading it must raise the turn before the
+// text reaches the planner. grow_read takes the plain branch (no quarantine, no judge), so this raise is the only taint.
+describe("bridge: grow_read taints its reader (ADR 0035 G4)", () => {
+  const tainted = (t: boolean | undefined): Exec => async () => ({ ok: true, output: { answer: "body", ...(t === undefined ? {} : { tainted: t }) } });
+  it("a born-untrusted skill raises the turn to untrusted with cause grow_read_untrusted and returns the body as plain text, unquarantined", async () => {
+    const h = setup({ grow: { read: tainted(true) } });
+    const quarantine = vi.fn(h.turn.quarantine); h.turn.quarantine = quarantine;
+    const r = await h.handle(call("grow_read", { name: "web-notes" })) as CallResult;
+    expect(r).toEqual({ content: "body", isError: false });
+    expect(h.turn.trust!.level()).toBe("untrusted");
+    expect(h.events("turn_trust")).toEqual([{ level: "untrusted", cause: "grow_read_untrusted" }]);
+    expect(quarantine).not.toHaveBeenCalled();
+  });
+  it("a clean skill (tainted false or absent) leaves the turn clean", async () => {
+    for (const t of [false, undefined]) {
+      const h = setup({ grow: { read: tainted(t) } });
+      expect((await h.handle(call("grow_read", { name: "unit-convert" })) as CallResult).content).toBe("body");
+      expect(h.turn.trust!.level()).toBe("clean");
+      expect(h.events("turn_trust")).toEqual([]);
+    }
+  });
+  it("a failed read returns no text and raises nothing", async () => {
+    const h = setup({ grow: { read: async () => ({ ok: false, error: "boom" }) } });
+    expect((await h.handle(call("grow_read", { name: "web-notes" })) as CallResult).isError).toBe(true);
+    expect(h.turn.trust!.level()).toBe("clean");
+  });
+});
+
+// ADR 0035 G4(a): grow_submit is on no trust list, so at hostile trustAsk would card it and a tap could put a hostile turn's
+// skill live. The worker's preflight refuses it first; the bridge must honour that refusal before any ask.
+describe("bridge: a hostile turn's grow_submit is refused before any card (ADR 0035 G4)", () => {
+  const SUBMIT = { name: "web-notes", description: "d", example: "e", body: "1. step" };
+  it("with the preflight: refused turn_hostile, the executor never runs, no card", async () => {
+    const submit = vi.fn<Exec>(async () => ({ ok: true, output: { answer: "STAGED: web-notes" } }));
+    let live: ActiveTurn | undefined; // the worker's preflight reads the live level the same way (bindTrust)
+    const h = setup({ grow: { submit }, preflight: (entry) =>
+      entry === "grow_submit" && live?.trust?.level() === "hostile" ? { refused: { reason: "turn_hostile", text: "REFUSED turn_hostile: x" } } : null });
+    live = h.turn;
+    h.turn.trust!.raise("injection_withheld");
+    const r = await h.handle(call("grow_submit", SUBMIT)) as CallResult;
+    expect(r.isError).toBe(true);
+    expect(r.content).toContain("turn_hostile");
+    expect(submit).not.toHaveBeenCalled();
+    expect(h.pauses.filter(([on]) => on)).toEqual([]);
+    expect(h.events("approval_requested")).toEqual([]);
+  });
+  it("without the preflight the same hostile call would card (the contrast that makes the refusal necessary)", async () => {
+    const h = setup({ grow: {} });
+    h.turn.trust!.raise("injection_withheld");
+    await h.handle(call("grow_submit", SUBMIT));
+    expect(h.pauses.filter(([on]) => on)).toHaveLength(1);
+    expect(h.events("approval_requested")).toHaveLength(1);
   });
 });

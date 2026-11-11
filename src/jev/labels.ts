@@ -8,7 +8,7 @@ const INTENT_IN_JSON = /"intent"\s*:\s*"\s*(answer|research|feedback|clarify|sel
 export function observedAction(capabilities: string[]): ObservedAction {
   const has = (...names: string[]) => names.some((n) => capabilities.includes(n));
   if (has("self_diagnose", "self_write_propose")) return "selfcode";
-  if (has("skill_author")) return "skill";
+  if (has("grow_submit")) return "skill";
   if (has("web_search", "http_fetch")) return "research";
   return capabilities.length === 0 ? "answer" : "unknown";
 }

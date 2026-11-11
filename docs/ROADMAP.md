@@ -186,14 +186,13 @@ OS user for the planner, quota invariant) → **SP4 self-evolution v2** (weaknes
 Phase R below is subsumed by SP1 (a real agent loop replaces the step-cap fallback work); episodic/wiki stay as
 knowledge Houge owns; Earn is parked behind SP1.
 
-**Delta 2026-11-10: direction change — a small kernel and a grow zone (Paco; decided, not shipped).** The finding:
+**Delta 2026-11-10: direction change — a small kernel and a grow zone (Paco; 1a shipped 2026-11-11; 1b onward decided, not shipped).** The finding:
 capability lands as hand-written TypeScript that only the build orchestrator touches, so Houge does not evolve
 himself (3 skills, 0 improvement jobs ever). From here new capability starts in a **grow zone** Houge writes
 himself (its own local git repository), goes live on code-owned checks with no human gate, and moves into `src/`
 only when it fails the kernel test (can it weaken a floor, leak a secret, or stop Houge running?). Multi-agent
 arrives by delegation. Sequence, each its own spec: **1a** grow zone + verification on prose skills (spec
-`docs/superpowers/specs/2026-11-10-grow-zone-verification-design.md`, approved 2026-11-10, ADR 0035 to come with
-the code) → **1b** sync `delegate`, agent files, quota broker over the subscription pools (children barred from
+`docs/superpowers/specs/2026-11-10-grow-zone-verification-design.md`, approved 2026-11-10, ADR 0035 signed with it) → **1b** sync `delegate`, agent files, quota broker over the subscription pools (children barred from
 the Anthropic pool) → **1c** script skills with a sealed case executor → **2** standing agents and async jobs →
 **3** post-turn nudge, the tick writing through the door, pruning by use. This re-scopes SP4 (self-evolution v2)
 and pulls SP3's quota broker forward into 1b; the SP2 Workspace-MCP slice keeps its place in the queue.
@@ -330,8 +329,8 @@ surface, since the daily decision digest has been off since 2026-10-14 (`HOUGE_D
 improvement signals (corrections, ratings, denials and expiries, planner failures, recurrence) and one daily tick that runs
 at the digest's time, also while the digest is `off`. A code rule rung decides first (stale, a stated rule already saved,
 recurrence, expiry pattern, `review_bad` as a ladder proposal); then Jev's one `improve_target` question (provisional bar
-0.6; the sanity run suggests 0.67); then a Tiny pick. The only automatic effect is a `_pending` skill draft after a
-recurrence (one job starts per tick, up to 3 queue a day); everything else is a proposal, a tap on the digest, with Undo
+0.6; the sanity run suggests 0.67); then a Tiny pick. The only automatic effect is a grow hint after a
+recurrence (a `[context]` line that tells the planner to consider `grow_submit`; up to 3 a day, ADR 0035); everything else is a proposal, a tap on the digest, with Undo
 or Revert for lessons, facts and schedules. The digest is now three sections: improvements, proposals waiting, a watch
 line. Pre-merge sanity PASS (planted 10/10, real window 7 groups, about 0.13 proposals a day); live gate cases 1-9 PASS.
 **Known gap:** the digest no longer offers the review taps, so no new `review_bad` signals are produced until a review
@@ -395,7 +394,8 @@ preconditions, not a near-term target.
   if-chain + per-intent handlers (`runFeedback` + `resolveFeedbackTarget`/`tryAutoAuthorSkill`/
   `buildFeedbackContext`, `normalizeIntent`) and the `HOUGE_INNER_LOOP_ENABLED` flag
   (`resolveInnerLoopEnabled`) are deleted. Feedback→lesson is the `lesson_write` tool; skill
-  authoring is the `skill_author` tool (the feedback auto-author path is intentionally gone).
+  authoring is the `grow_submit` tool (the feedback auto-author path is intentionally gone; ADR 0035
+  replaced the earlier `skill_author` tool).
   The legacy-path test suites were retired/ported to the loop. Pure dead-code removal.
 
 ### Phase R — Research convergence under the evidence regime (IMMEDIATE next build)
@@ -484,7 +484,7 @@ show up in daily soak; memory compounds every future capability including the wi
 
 ### Phase K — ⑤ Skills eval metadata (tiny; anytime after soak shows need)
 
-Add Slice-A eval metadata + AVOID + reconcile to `skills/`. One small `/goal`.
+Add Slice-A eval metadata + AVOID + reconcile to the grow zone's items (`grow_events` already counts uses; ADR 0035). One small `/goal`.
 
 ### Milestone A — The autonomy flip (LATER; preconditions, not a date)
 
@@ -511,7 +511,7 @@ Flip [Merge & reload] from human-tapped to autonomous (notify-after) ONLY when A
    input before any read; reserved for evolution tools (ADR 0014).
 5. **Secrets firewall Phase 2 (broker process)** — only if self-write ever runs unsandboxed
    with merge autonomy ON (ADR 0015); pairs with Milestone A.
-6. **Skill dedup / name normalization**; **`/skills <name>` content viewer**; **self-write
+6. **Skill name normalization** (the formal checks already refuse a near-copy); **a Telegram content viewer for one grow item** (`houge grow show <name>` exists); **self-write
    observability dashboard**; **spec-driven self-write** (acceptance criteria as the human
    control surface); **Telegram formatting discipline**; **location/geo grounding** (old open
    item — Houge has no geo signal); **market-data connector** (research only; charter fork 3).

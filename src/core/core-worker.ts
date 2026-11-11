@@ -7,7 +7,7 @@ import { CapabilityRunner } from "../capabilities/capability-runner.js";
 import type { ApprovalRequestSink, CapabilityResult } from "../capabilities/capability-runner.js";
 import { createLocalFileReadAdapter } from "../capabilities/local-file-read.js";
 import { createCodingAgentAdapter, resolveCodexEnabled, resolveCodexTimeoutMs } from "../capabilities/coding-agent.js";
-import { compileCodeSelfWriteContract, compileSelfDiagnoseContract, compileSkillAuthorContract } from "../contracts/task-contract.js";
+import { compileCodeSelfWriteContract, compileSelfDiagnoseContract } from "../contracts/task-contract.js";
 import { checkSelfWriteDiff, parseDiffRaw } from "../capabilities/self-write-guard.js";
 import { bucketDenials, buildLockedRetryText, buildTestRetryText, NEEDS_LOCKED_FILE, planDenial, quoteNeedsLockedReason, renderLockedPaths, takeNeedsLockedFile } from "./self-write-locked.js";
 import type { DiffEntry, GuardResult } from "../capabilities/self-write-guard.js";
@@ -25,17 +25,6 @@ import { publishBranch, selfWriteBranchName, summarizeFocus } from "../run/branc
 import { fenceRule, fenceUntrusted, newFenceNonce } from "../prompt/untrusted-fence.js";
 import { createWorktree, removeWorktree } from "../run/worktree.js";
 import { daemonTmpRoot, gitAncestor, setDaemonDataDir } from "../run/daemon-tmp.js";
-import { buildGateAQuestion, GATE_A_DISCIPLINE, parseGateAVerdict } from "../capabilities/skill-router.js";
-import type { GateAResult } from "../capabilities/skill-router.js";
-import { authorDraft, buildGuidedRefineQuestion, parseAuthoredSkill, withFrontmatterVersion } from "../capabilities/skill-author.js";
-import type { AuthoredSkill } from "../capabilities/skill-author.js";
-import {
-  resolveGateBEnabled,
-  resolveGateBPasses,
-  resolveGateBThreshold,
-  verifySkill
-} from "../capabilities/anchor-verify.js";
-import type { VerifyResult } from "../capabilities/anchor-verify.js";
 import { buildCritiqueQuestion, buildResearchQuestion, createWebSearchAdapter } from "../capabilities/web-search.js";
 import { createHttpFetchAdapter } from "../capabilities/http-fetch.js";
 import { createTimeConvertAdapter } from "../capabilities/time-convert.js";
@@ -48,7 +37,7 @@ import type { GoogleAuthClient } from "../capabilities/google-auth.js";
 import type { SecretBroker } from "../config/secret-broker.js";
 import { resolveHttpFetchTimeoutMs } from "../web/http-fetch.js";
 import { chatContextSince, feedTurnText, resolveChatContextTurnChars, resolveChatContextTurns } from "../capabilities/intent.js";
-import { createMemoryWriteAdapter, createSrcPhraseChecker, LESSON_CAPPED_HINT, type MemoryPlan, type MemorySaveResult } from "../capabilities/lesson-write.js";
+import { createMemoryWriteAdapter, createSrcPhraseChecker, type MemoryPlan, type MemorySaveResult } from "../capabilities/lesson-write.js";
 import { memorySources, type MemorySources, type PacoMessage } from "../capabilities/memory-sources.js";
 import { askMemoryKind, MEMORY_KIND_TIMEOUT_MS, type MemoryKindAsk } from "../jev/memory-kind-ask.js";
 import { OMP_LESSON_SCOPES } from "../run/lesson-render.js";
@@ -67,9 +56,8 @@ import {
   renderExtractionDigest,
   unreadableDigest
 } from "./quarantine.js";
-import { composeSystemPrompt, memoryRootFor, SKILL_AUTHOR_DISCIPLINE } from "../prompt/composer.js";
+import { composeSystemPrompt, memoryRootFor } from "../prompt/composer.js";
 import { resolveLocalTimeZone, resolveTimeZone } from "../prompt/tz-convert.js";
-import { resolveSkillMaxPerScope, resolveSkillName, resolveSkillRefinePasses, resolveSkillsEnabled, setFrontmatterFields, SkillStore } from "../skills/skill-store.js";
 import { resolveWebMaxResults } from "../web/registry.js";
 import type { WebResult } from "../web/types.js";
 import { llmToolAdapter, oneShotAdapter, reportOmpCheck, RUNNER_TIMEOUT_BUFFER_MS, seatBudgetMs } from "../llm/registry.js";
@@ -167,6 +155,8 @@ import { isSkipReason, TURN_HANDLER, type TurnHandlerState, type TurnHandlerVerd
 import { TURN_GEAR, type TurnGearState, type TurnGearVerdict } from "../decisions/entries/turn-gear.js";
 import { SETTLE_JEV_MS } from "../decisions/entries/turn-settle.js";
 import { SELF_WRITE_GUARD } from "../decisions/entries/selfwrite-guard.js";
+import type { TrustLevel } from "../decisions/entries/turn-trust.js";
+import { turnTrustNow } from "../decisions/trust.js";
 import { storeRecorder } from "../decisions/record.js";
 import { decisionOf, recordTapOutcome } from "../decisions/tap-outcomes.js";
 import { recordCorrection, skipImproveSignal } from "../decisions/improve-signals.js";
@@ -185,6 +175,9 @@ import { buildSystemPrompt, quotedLine, type TurnContextDeps, type TurnRetrieval
 import { noRetrieval, telemetryOf, type GatedRetrieval } from "../run/relevance-gate.js";
 import { readTombstone } from "../run/tombstone.js";
 import { chatWorkspace } from "../omp/workspace.js";
+import { resolveGrowDir, resolveGrowEnabled, resolveSkillsEnabled } from "../grow/flags.js";
+import { GrowService, submitText } from "../grow/service.js";
+import { GrowZone } from "../grow/zone.js";
 import { installedBinaryDirs, type PathContext } from "../omp/protected-paths.js";
 import { hardenedGit } from "../run/git-hardened.js";
 import {
@@ -281,6 +274,8 @@ export interface OmpTurnState {
   triageFinalized?: boolean;
   /** The stored turn this message quotes (spec §2.2.1), resolved at claim; absent when not a reply or unresolved. */
   quote?: { role: "houge" | "user"; turn: ChatTurnRow };
+  /** The live turn's trust level, bound by the supervisor (ADR 0035 G4). The ledger answers only when no getter is bound. */
+  trustLevel?: () => TrustLevel;
 }
 
 /** What one tree finalisation writes (spec §6): decision rows (or the skipped row), the verdict row, the triage event. Never text. */
@@ -345,6 +340,8 @@ export interface OmpWorkerOptions {
   operator?: Identity;
   /** Tests only: the Jev client's fetch (never the real endpoint in tests). */
   jevFetch?: typeof fetch;
+  /** Only the daemon sets this: it is the one process that writes the grow zone. Any other worker (houge run, the eval runner, a gate) reads the zone and refuses grow_submit. */
+  growWriter?: boolean;
   /** Tests only: the clock for triage state ages and decision rows. */
   jevNow?: () => Date;
   /** The model-role service; default one over `omp models --json`. Tests inject a resolver over a fixture catalog. */
@@ -357,7 +354,7 @@ const OMP_CONFIG_INCIDENT: ReadonlySet<string> = new Set(["omp_config_invalid"])
 const DAEMON_TMP_INCIDENT: ReadonlySet<string> = new Set(["daemon_tmp_in_git_repo"]);
 
 /** The ⓪·2 evolution tools — their non-success outcomes are surfaced code-owned (see LoopTurnContext). */
-const EVOLUTION_TOOLS = new Set(["self_diagnose", "self_write_propose", "skill_author"]);
+const EVOLUTION_TOOLS = new Set(["self_diagnose", "self_write_propose"]);
 
 /** Multimodal ingest (spec 2026-09-29): tests inject all three; the daemon injects the downloader only. */
 export interface MediaWorkerDeps {
@@ -540,14 +537,8 @@ export class CoreWorker {
     this.httpFetchAdapter = httpFetchAdapter ?? createHttpFetchAdapter();
     this.timeConvertAdapter = timeConvertAdapter ?? createTimeConvertAdapter();
     this.embedAdapter = embedAdapter ?? ((text) => embedText(text, resolveEmbedConfig(process.env)));
-    this.skillStore = new SkillStore({
-      root: join(projectRoot, "skills"),
-      maxPerScope: resolveSkillMaxPerScope(process.env)
-    });
   }
 
-  /** Ambient skills live as markdown under `<projectRoot>/skills/<scope>/` (Phase 2a). */
-  private readonly skillStore: SkillStore;
   /** One planner supervisor per chat (created on the chat's first turn). */
   private readonly supervisors = new Map<string, PlannerSupervisor>();
   /** Live omp turns' loop-tool state, by run id. */
@@ -555,6 +546,8 @@ export class CoreWorker {
   /** The front door's ladder rows, queued at decide time and written by settleTriage (ruling 14); cleared when triageTurn returns. */
   private readonly pendingLadder = new Map<string, PendingLadderRow[]>();
   private recorderCache?: DecisionRecorder;
+  private growCache?: GrowService;
+  private growDirCache?: string;
   /** Lazy: a field initializer cannot read the runStore parameter property (it is assigned after class fields). */
   private get decisionRecorder(): DecisionRecorder { return (this.recorderCache ??= storeRecorder(this.runStore)); }
   private readonly ompDecls: { ok: true; decls: ToolDeclaration[] } | { ok: false; error: string };
@@ -587,12 +580,19 @@ export class CoreWorker {
     this.googleAuths.paco?.invalidate();
   }
 
-  /** Code-owned refusals before any execution: Paco's mail off (the text reaches the planner), memory-write trust limits. */
-  private ompPreflight(claim: ClaimedRun, state: { turnCtx: LoopTurnContext }, entry: string, input: Record<string, unknown>): ReturnType<NonNullable<ActiveTurn["preflight"]>> {
+  /** Code-owned refusals before any execution: a hostile turn's grow_submit, Paco's mail off (the text reaches the planner), memory-write trust limits. */
+  private ompPreflight(claim: ClaimedRun, state: Pick<OmpTurnState, "turnCtx" | "trustLevel">, entry: string, input: Record<string, unknown>): ReturnType<NonNullable<ActiveTurn["preflight"]>> {
+    // ADR 0035 G4: refused before any trust ask, so no approval card can ever put a hostile turn's skill live
+    if (entry === "grow_submit" && this.growTrustLevel(claim, state) === "hostile") return { refused: { reason: "turn_hostile", text: GROW_HOSTILE_TEXT } };
     if ((entry === "gmail_read" || entry === "google_api") && input.account === "paco" && !pacoMailReadable(process.env, this.runStore)) {
       return { refused: { reason: "mail_off", text: PACO_MAIL_OFF_ERROR } };
     }
     return entry === "memory_correct_write" ? memoryWritePreflight(this.memoryDeps(claim, state.turnCtx), input) : null;
+  }
+
+  /** ADR 0035 G4 (amendment 2): the live turn's level when a getter is bound; the ledger answers ONLY when none is (TurnTrust swallows a failed ledger write). */
+  private growTrustLevel(claim: ClaimedRun, state: Pick<OmpTurnState, "trustLevel">): TrustLevel {
+    return state.trustLevel?.() ?? turnTrustNow(this.runStore, claim.run_id);
   }
 
   async executeOnce(worker_id: string): Promise<CoreWorkerResult> {
@@ -909,9 +909,7 @@ export class CoreWorker {
       process.env.HOUGE_ASK_SYSTEM_PROMPT ??
       composeSystemPrompt(memoryRootFor(this.projectRoot), "ask", {
         lessonsReader: this.lessonsReader(),
-        lessonsScope: scope,
-        skillsReader: this.skillsReader(),
-        skillsScope: scope
+        lessonsScope: scope
       });
     const result = await new CapabilityRunner(registry).execute({
       contract: claim.contract,
@@ -1041,8 +1039,7 @@ export class CoreWorker {
       input: {
         question: synthQuestion,
         system: composeSystemPrompt(memoryRoot, "research", {
-          lessonsReader: this.lessonsReader(),
-          skillsReader: this.skillsReader()
+          lessonsReader: this.lessonsReader()
         })
       },
       budget
@@ -1066,9 +1063,7 @@ export class CoreWorker {
         ),
         system: composeSystemPrompt(memoryRoot, "research-critique", {
           lessonsReader: this.lessonsReader(),
-          lessonsScope: "research",
-          skillsReader: this.skillsReader(),
-          skillsScope: "research"
+          lessonsScope: "research"
         })
       },
       budget
@@ -1145,38 +1140,6 @@ export class CoreWorker {
     });
   }
 
-  /**
-   * ⓪·3 S1b — the shared lesson write for EVERY path that saves a lesson (the
-   * lesson_write loop tool, the Gate A down-routes): reconcile the
-   * candidate against the active lessons of both scopes (one cheap-chain compare, which also
-   * names the theme; any parse/chain failure defaults to ADD), then apply the verdict
-   * to the store — SUPERSEDE/UPDATE write a NEW row linked via bidirectional pointers,
-   * never a delete. Replaces the old char-cap consolidation REWRITE (the per-scope row
-   * cap prunes lowest reuse_value on overflow instead).
-   */
-  private async reconcileAndSaveLesson(
-    run_id: string,
-    candidate: { scope: string; text: string; avoid?: string },
-    source: LessonSource,
-    llm: (input: { question: string; system: string }) => Promise<{ ok: true; answer: string } | { ok: false }>,
-    now: string = new Date().toISOString()
-  ): Promise<LessonSaveResult> {
-    const r = await this.reconcileLessonVerdict(candidate, llm);
-    let change_id: string | undefined;
-    // The save and its lesson_changes row commit together, so the Undo card always has a change to revert.
-    const saved = this.runStore.inTransaction(() => {
-      const s = this.saveLessonVerdict(candidate, r, source, now);
-      if (s.id !== undefined) change_id = this.recordLessonChange(run_id, this.chatOf(run_id), { ...s, id: s.id }, source, now);
-      return s;
-    });
-    // Paco 2026-10-12: an automatic save (here the skill_author down-routes and park) is announced on the Undo card.
-    if (saved.id !== undefined && change_id) {
-      const theme = this.runStore.getLesson(saved.id)?.theme ?? r.theme;
-      this.announceSave(run_id, { lesson: savedLessonOf({ ...saved, id: saved.id }, theme, change_id) });
-    }
-    return saved;
-  }
-
   /** What Undo reverts: the save's lesson_changes row and its lesson_saved ledger event, inside the caller's transaction. */
   private recordLessonChange(run_id: string, chat_id: string, s: LessonSaveResult & { id: number }, source: LessonSource, now: string): string {
     const change = this.runStore.insertLessonChange({
@@ -1207,17 +1170,6 @@ export class CoreWorker {
     const saved = this.runStore.saveReconciledLesson({ ...candidate, theme: r.theme }, r.verdict, source, now, resolveLessonCapPerScope(process.env));
     if (!r.themeKnown && saved.id !== undefined) this.runStore.recordMemoryEvent("lesson_theme_unknown", { lesson_id: saved.id });
     return saved;
-  }
-
-  /** The reconcile compare on the turn's shared, budget-charged chain (legacy paths). */
-  private reconcileLlm(
-    claim: ClaimedRun,
-    budget: BudgetLedger
-  ): (input: { question: string; system: string }) => Promise<{ ok: true; answer: string } | { ok: false }> {
-    return async (input) => {
-      const r = await this.runLlm(claim, input.question, input.system, budget, "compose");
-      return r.ok ? { ok: true, answer: r.answer } : { ok: false };
-    };
   }
 
   /**
@@ -1252,16 +1204,6 @@ export class CoreWorker {
     if (verdict.culprit_lesson_id !== null) {
       this.runStore.flagRatingCulprit(verdict.culprit_lesson_id, verdict.reason, now);
     }
-  }
-
-  /**
-   * The composer's skills-block reader: read the scope's ambient procedures (≤cap). The
-   * kill switch lives here — `HOUGE_SKILLS_ENABLED` off → the reader returns undefined for
-   * every scope → the composer omits the skills section (byte-identical to a no-skills run).
-   */
-  private skillsReader(): (scope: string) => string | undefined {
-    if (!resolveSkillsEnabled(process.env)) return () => undefined;
-    return (scope) => this.skillStore.readScopeBlock(scope);
   }
 
   /**
@@ -1345,9 +1287,7 @@ export class CoreWorker {
         question: buildSelfDiagnoseRelayQuestion(message, diagnosis),
         system: composeSystemPrompt(memoryRootFor(this.projectRoot), "selfcode", {
           lessonsReader: this.lessonsReader(),
-          lessonsScope: "ask",
-          skillsReader: this.skillsReader(),
-          skillsScope: "ask"
+          lessonsScope: "ask"
         })
       },
       budget
@@ -1735,18 +1675,6 @@ export class CoreWorker {
     return { ok: true, text: result.text, modality: result.modality, ...(result.echo ? { echo: result.echo } : {}) };
   }
 
-  /**
-   * `llmAdapterFor`'s run-less twin: a call with NO run (Gate B verify runs walled-off under a
-   * synthetic contract) is audited under an honest correlation id instead of a phantom run id.
-   * Same injected-adapter passthrough as `llmAdapterFor`.
-   */
-  private llmAdapterRunless(
-    correlation_id: string,
-    role: LlmCallRole
-  ): (input: Record<string, unknown>) => Promise<ToolAdapterResult> {
-    return this.seatAdapter({ correlation_id, role });
-  }
-
   /** {@link quarantineRead} plus the reader's instruction flag and the raw byte count (the omp wall's result shape). */
   private async quarantineExtract(
     readerAdapter: (input: Record<string, unknown>) => Promise<ToolAdapterResult>,
@@ -1852,406 +1780,6 @@ export class CoreWorker {
         ...(buttons ? { notifyButtons: buttons } : {})
       }
     };
-  }
-
-  /**
-   * The `skill` branch (ADR 0011, Phase 2b — on-command authoring). Skills are PROSE, so this
-   * runs on the cheap pi→kimi chain (NO Codex, NO worktree): Gate A routes the request
-   * (skill/lesson/code/unsure); a "skill" verdict authors the markdown under
-   * SKILL_AUTHOR_DISCIPLINE, validates it via parseSkillFile, and writes it directly to the
-   * `skills/` root (low-risk, report-not-approve). Down-routes (lesson/code/unsure) save a
-   * lesson and/or report a flag — nothing learned is wasted. DEFENSIVE: a malformed author
-   * output retries once then fails cleanly; never throws, never writes garbage. Returns the
-   * gate-stack report (Origin · Gate A · write outcome · Gate B score · down-route · /skills).
-   */
-  private async runSkill(
-    claim: ClaimedRun,
-    message: string,
-    recentTurns: ChatTurnRow[],
-    budget: BudgetLedger,
-    turnChars: number
-  ): Promise<HelperResult> {
-    const contract = compileSkillAuthorContract(claim.contract.objective);
-    const skillClaim: ClaimedRun = { run_id: claim.run_id, contract };
-    const now = new Date().toISOString();
-
-    // 1) Gate A — is this even a skill? (the §2 routing rubric).
-    const gateRaw = await this.runLlm(skillClaim, buildGateAQuestion(message, recentTurns, turnChars), GATE_A_DISCIPLINE, budget, "classify");
-    const verdict: GateAResult = gateRaw.ok
-      ? parseGateAVerdict(gateRaw.answer)
-      : { verdict: "unsure", reason: "Gate A classification call failed" };
-
-    // 2) Branch on the verdict.
-    if (verdict.verdict === "retire" || verdict.verdict === "restore") {
-      return this.skillLifecycleFromGateA(verdict);
-    }
-    if (verdict.verdict === "skill") {
-      return this.authorAndWriteSkill(skillClaim, message, budget, verdict, "commanded");
-    }
-    if (verdict.verdict === "lesson") {
-      return this.downRouteLesson(skillClaim, verdict, now, budget);
-    }
-    if (verdict.verdict === "code") {
-      return this.skillReport("flagged a CODE capability (not built — backlog)", [
-        "Origin: you asked",
-        `Gate A qualify: → CODE (${verdict.reason})`,
-        "Gate B anchors: n/a (not authored)",
-        "→ Not authored: this needs a new capability/tool, which is the code layer (Phase 3), not a skill."
-      ]);
-    }
-    // unsure / fuzzy → save a lesson if one was offered, and ASK whether to promote.
-    return this.downRouteUnsure(skillClaim, verdict, now, budget);
-  }
-
-  /**
-   * Gate A = skill: author on the cheap chain (1 retry on malformed), run Gate B (3-pass), then
-   * apply the by-origin policy (D5):
-   *   - commanded → ADVISORY: write active regardless; stamp score+last_verified; report the real
-   *     score with a ⚠ note if below threshold.
-   *   - auto → BLOCKING + guided-refine: if Gate B fails, re-author ≤N times feeding the failing
-   *     criteria back; pass at any point ⇒ write active (stamped) + report; still failing ⇒ park in
-   *     `_pending/` + save a lightest-form lesson + report (score, failing, park, lesson, handles).
-   * DEFENSIVE: a Gate B error (unscored) NEVER blocks — it falls back to advisory-write with a note.
-   */
-  private async authorAndWriteSkill(
-    claim: ClaimedRun,
-    message: string,
-    budget: BudgetLedger,
-    verdict: GateAResult,
-    origin: "commanded" | "auto"
-  ): Promise<HelperResult> {
-    const originLine = origin === "commanded" ? "Origin: you asked" : "Origin: auto-promoted from learning";
-
-    // True-refine detection: the request names exactly ONE active skill → feed its file to the
-    // writer (the writer must see what it is improving — spec §3). Zero or many mentions → author
-    // fresh; auto-retire is gated on this feed, so a passing mention can never kill a skill.
-    // WORD-BOUNDED + case-insensitive: names are lowercase slugs, so the boundary class is the
-    // slug alphabet's complement (`\b` fails on `-`) — "verifying" must not hit a skill named
-    // "verify", and "Cross-Check-Figures" must still hit "cross-check-figures".
-    const lowered = message.toLowerCase();
-    const mentioned = this.skillStore.list().filter((m) =>
-      new RegExp(`(^|[^a-z0-9_-])${m.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^a-z0-9_-]|$)`).test(lowered)
-    );
-    const fed = mentioned.length === 1 ? mentioned[0]! : undefined;
-    const fedFile = fed ? this.skillStore.readRawSkill(fed.scope, fed.name) ?? undefined : undefined;
-    // A feed that failed to read is NOT a fed-refine (no writer sight → no retire authority).
-    const feed = fed && fedFile ? fed : undefined;
-
-    // 1) Author the initial draft — one attempt + one retry on malformed output (a capability failure
-    // such as budget → undefined → clean failure below).
-    let parsed = await authorDraft(message, fedFile, async (q, sys) => {
-      const a = await this.runLlm(claim, q, sys, budget, "compose");
-      return a.ok ? a.answer : undefined;
-    });
-    if (!parsed) {
-      return this.skillReport("couldn't author a valid skill", [
-        originLine,
-        `Gate A qualify: ✓ skill (${verdict.reason})`,
-        "→ The writer did not produce a valid skill file after a retry. Nothing was written."
-      ]);
-    }
-
-    // 2) Gate B — verify the authored draft (INDEPENDENT: when + body only, never the anchors).
-    let gate = await this.verifyAuthored(parsed);
-
-    // 3a) COMMANDED → advisory: write active regardless, score is informational.
-    if (origin === "commanded") {
-      return this.writeActiveSkill(claim, parsed, verdict, originLine, gate, feed);
-    }
-
-    // 3b) A Gate B ERROR (unscored — verifier disabled or unavailable) must NEVER block: infra
-    // flakiness must not destroy a good auto-authored skill. Fall back to advisory-write (the report's
-    // gateBLine notes "unscored — advisory only"). ONLY a real low SCORE blocks an auto skill.
-    if (gate.unscored) {
-      return this.writeActiveSkill(claim, parsed, verdict, originLine, gate, feed);
-    }
-
-    // 3c) AUTO → blocking + guided-refine. Pass now ⇒ write active.
-    if (gate.passed) {
-      return this.writeActiveSkill(claim, parsed, verdict, originLine, gate, feed);
-    }
-    const refinePasses = resolveSkillRefinePasses(process.env);
-    for (let i = 0; i < refinePasses && !gate.passed; i += 1) {
-      const refined = await this.runLlm(
-        claim,
-        buildGuidedRefineQuestion(message, parsed.file, gate.failing),
-        SKILL_AUTHOR_DISCIPLINE,
-        budget,
-        "compose"
-      );
-      if (!refined.ok) break;
-      const p = parseAuthoredSkill(refined.answer);
-      if (!p.ok) continue;
-      parsed = p.skill;
-      gate = await this.verifyAuthored(parsed);
-    }
-    if (gate.passed) {
-      return this.writeActiveSkill(claim, parsed, verdict, originLine, gate, feed);
-    }
-    // Still failing after the passes → park + lesson + report (nothing silent, nothing lost).
-    return this.parkBlockedSkill(claim, message, parsed, verdict, originLine, gate, budget);
-  }
-
-  /** Run Gate B (3-pass ensemble) on a draft, or a no-op "unscored" result when disabled. */
-  private async verifyAuthored(skill: AuthoredSkill): Promise<VerifyResult> {
-    if (!resolveGateBEnabled(process.env)) {
-      return { score: 0, passed: true, criteria: [], failing: [], scoredPasses: 0, unscored: true, threshold: 0 };
-    }
-    return verifySkill(
-      { when: skill.meta.when, body: skill.body },
-      { passes: resolveGateBPasses(process.env), threshold: resolveGateBThreshold(process.env) },
-      this.anchorLlm()
-    );
-  }
-
-  /** Write the active skill (mechanical version bump + Gate B stamp), report the gate stack. */
-  private writeActiveSkill(
-    claim: ClaimedRun,
-    parsed: AuthoredSkill,
-    verdict: GateAResult,
-    originLine: string,
-    gate: VerifyResult,
-    fed: { scope: string; name: string } | undefined
-  ): HelperResult {
-    // Refine if a skill with this name already exists; bump version MECHANICALLY (old+1).
-    const existing = this.skillStore.readSkill(parsed.scope, parsed.name);
-    const action = existing ? "Refined" : "Wrote";
-    const newVersion = existing ? (existing.meta.version ?? 1) + 1 : (parsed.meta.version ?? 1);
-    let fileToWrite = withFrontmatterVersion(parsed.file, newVersion);
-    // Stamp the Gate B score + last_verified (only when actually scored; clock passed in).
-    if (!gate.unscored) {
-      fileToWrite = setFrontmatterFields(fileToWrite, { score: gate.score, last_verified: new Date().toISOString().slice(0, 10) });
-    }
-    const write = this.skillStore.writeSkill(parsed.scope, parsed.name, fileToWrite);
-    if (!write.ok) {
-      return this.skillReport("could not write the authored skill", [
-        originLine,
-        `Gate A qualify: ✓ skill (${verdict.reason})`,
-        `→ Write failed: ${write.error}`
-      ]);
-    }
-    // Fed-refine RENAME (or scope disobedience — same failure class) → the fed predecessor is
-    // superseded: retire it with lineage. Gated on the feed (a request that named exactly ONE
-    // active skill whose file the writer saw), so a fresh authoring or a passing mention can
-    // never retire anything.
-    const retiredLines =
-      fed && (fed.scope !== parsed.scope || fed.name !== parsed.name) ? this.retireSuperseded(fed, parsed) : [];
-    const versionLine = existing ? ` (v${existing.meta.version ?? 1}→v${newVersion})` : ` (v${newVersion})`;
-    return this.skillReport(`${action.toLowerCase()} skill "${parsed.name}" (${parsed.scope})`, [
-      originLine,
-      `Gate A qualify: ✓ all 4 held (${verdict.reason})`,
-      gateBLine(gate),
-      `→ ${action} skills/${parsed.scope}/${parsed.name}.md${versionLine} ` +
-        `(${parsed.meta.anchors.length} anchors authored). /skills to view, reply to refine.`,
-      ...retiredLines
-    ]);
-  }
-
-  /** Fed-refine rename/scope-move: the predecessor moves to the graveyard with lineage (spec §3).
-   * The lineage pointer is the bare name when the successor stayed in the same scope, and the
-   * unambiguous `scope/name` when it moved. */
-  private retireSuperseded(fed: { scope: string; name: string }, successor: { scope: string; name: string }): string[] {
-    const supersededBy = fed.scope === successor.scope ? successor.name : `${successor.scope}/${successor.name}`;
-    const r = this.skillStore.retireSkill(fed.scope, fed.name, {
-      date: new Date().toISOString().slice(0, 10),
-      by: "refine",
-      supersededBy
-    });
-    return [
-      r.ok
-        ? `→ Retired predecessor skills/${fed.scope}/${fed.name}.md (superseded by ${supersededBy}). /skills retired to view.`
-        : `→ Could not retire predecessor "${fed.name}": ${r.error}`
-    ];
-  }
-
-  /** Auto-author blocked after guided-refine → park in `_pending/` + lesson + surfaced report. */
-  private async parkBlockedSkill(
-    claim: ClaimedRun,
-    message: string,
-    parsed: AuthoredSkill,
-    verdict: GateAResult,
-    originLine: string,
-    gate: VerifyResult,
-    budget: BudgetLedger
-  ): Promise<HelperResult> {
-    const parked = this.skillStore.writePending(parsed.scope, parsed.name, parsed.file);
-    // Lightest-form lesson capture — nothing learned is wasted even when the skill is blocked.
-    const scope = this.safeLessonScope(parsed.scope);
-    const lesson = (verdict.lesson?.trim() || `when ${parsed.meta.when}, follow a verified procedure`).slice(0, 200);
-    const saved = await this.reconcileAndSaveLesson(claim.run_id, { scope, text: lesson }, "user_feedback", this.reconcileLlm(claim, budget));
-    const failing = gate.failing.length > 0 ? gate.failing.slice(0, 3).map((f) => `   • ${f}`).join("\n") : "   • (no specific criteria captured)";
-    const parkLine = parked.ok
-      ? `→ Parked at skills/_pending/${parsed.scope}/${parsed.name}.md (inert — not applied).`
-      : `→ Could not park the draft: ${parked.error}`;
-    return this.skillReport(`auto-author BLOCKED "${parsed.name}" (${parsed.scope})`, [
-      originLine,
-      `Gate A qualify: ✓ all 4 held (${verdict.reason})`,
-      gateBLine(gate),
-      "Failed criteria:",
-      failing,
-      parkLine,
-      savedLessonLine(saved, `→ Saved a LESSON (${scope}): "${lesson}".`, "→ No durable lesson to save."),
-      '→ Handles: /skills pending to inspect · reply "show me the draft" · reply "write a skill for X" to retry.'
-    ]);
-  }
-
-  /**
-   * Adapt the cheap-chain LLM into Gate B's `AnchorLlm` shape (a raw `(system, question) =>
-   * answer`). Gate B runs walled-off (its own session, no answer key) under the skill-author
-   * contract's `llm_answer`. A capability failure → undefined (the verifier tolerates it).
-   */
-  private anchorLlm(): (system: string, question: string) => Promise<string | undefined> {
-    const contract = compileSkillAuthorContract("gate-b-verify");
-    return async (system, question) => {
-      // Run-less (no phantom run id): audited under `gate:b` as a "verify" call.
-      const r = await this.runLlmWith(this.llmAdapterRunless("gate:b", "verify"), "verify", contract, question, system, new BudgetLedger(contract.budget));
-      return r.ok ? r.answer : undefined;
-    };
-  }
-
-  /** Gate A = lesson: save the down-route lesson (reconciled), report it (no skill file). */
-  private async downRouteLesson(claim: ClaimedRun, verdict: GateAResult, now: string, budget: BudgetLedger): Promise<HelperResult> {
-    const scope = this.safeLessonScope(verdict.scope);
-    const lesson = verdict.lesson?.trim();
-    const saved = lesson ? await this.reconcileAndSaveLesson(claim.run_id, { scope, text: lesson }, "user_feedback", this.reconcileLlm(claim, budget), now) : undefined;
-    return this.skillReport("down-routed to a LESSON (a tweak, not a procedure)", [
-      "Origin: you asked",
-      `Gate A qualify: → LESSON (${verdict.reason})`,
-      "Gate B anchors: n/a (not authored)",
-      savedLessonLine(saved, `→ Saved a LESSON (${scope}): "${lesson}". /lessons to view.`, "→ No durable lesson to save.")
-    ]);
-  }
-
-  /** Gate A = unsure: save the offered lesson now (reconciled) and ASK whether to promote. */
-  private async downRouteUnsure(claim: ClaimedRun, verdict: GateAResult, now: string, budget: BudgetLedger): Promise<HelperResult> {
-    const scope = this.safeLessonScope(verdict.scope);
-    const lesson = verdict.lesson?.trim();
-    const saved = lesson ? await this.reconcileAndSaveLesson(claim.run_id, { scope, text: lesson }, "user_feedback", this.reconcileLlm(claim, budget), now) : undefined;
-    return this.skillReport("unsure — saved a lesson and asking whether to promote", [
-      "Origin: you asked",
-      `Gate A qualify: ? unsure between a lesson and a skill (${verdict.reason})`,
-      "Gate B anchors: n/a (not authored)",
-      savedLessonLine(saved, `→ Saved a LESSON (${scope}) for now: "${lesson}".`, "→ Nothing durable to save yet."),
-      '→ Want me to promote this to a skill? Reply "yes, write a skill for it" and I will.'
-    ]);
-  }
-
-  /** NL retire/restore: Gate A extracted the user's words; resolution + action are code. */
-  private skillLifecycleFromGateA(verdict: GateAResult): HelperResult {
-    const action = verdict.verdict as "retire" | "restore";
-    const target = verdict.target ?? "";
-    const pool = action === "retire" ? this.skillStore.list() : this.skillStore.listRetired();
-    const resolved = resolveSkillName(pool, target);
-    if (resolved.status === "none") {
-      const names = pool.map((m) => `${m.scope}/${m.name}`).join(" · ") || "(none)";
-      return this.skillReport(`${action}: no match for "${target}"`, [
-        "Origin: you asked",
-        `Gate A qualify: → ${action.toUpperCase()} (${verdict.reason})`,
-        `→ No ${action === "retire" ? "active" : "retired"} skill matches "${target}". Available: ${names}`
-      ]);
-    }
-    if (resolved.status === "many") {
-      const names = resolved.metas.map((m) => `${m.scope}/${m.name}`).join(" · ");
-      return this.skillReport(`${action}: "${target}" is ambiguous`, [
-        "Origin: you asked",
-        `Gate A qualify: → ${action.toUpperCase()} (${verdict.reason})`,
-        `→ Which one? ${names} — reply with /skills ${action} <scope>/<name>.`
-      ]);
-    }
-    const { scope, name } = resolved.meta;
-    if (action === "retire") {
-      const r = this.skillStore.retireSkill(scope, name, { date: new Date().toISOString().slice(0, 10), by: "paco" });
-      return this.skillReport(`${r.ok ? "retired" : "retire failed for"} "${name}" (${scope})`, [
-        "Origin: you asked",
-        `Gate A qualify: → RETIRE (${verdict.reason})`,
-        r.ok
-          ? `→ Retired skills/${scope}/${name}.md — inert. /skills restore ${name} to undo.`
-          : `→ ${r.error}`
-      ]);
-    }
-    // Read the lineage stamp BEFORE restoreSkill — restore strips it from the file.
-    const supersededBy = resolved.meta.superseded_by;
-    const r = this.skillStore.restoreSkill(scope, name);
-    const lines = [
-      "Origin: you asked",
-      `Gate A qualify: → RESTORE (${verdict.reason})`,
-      r.ok ? `→ Restored skills/${scope}/${name}.md — active again.` : `→ ${r.error}`
-    ];
-    if (r.ok && supersededBy) {
-      lines.push(`→ Note: it was superseded by ${supersededBy} — both are now active.`);
-    }
-    return this.skillReport(`${r.ok ? "restored" : "restore failed for"} "${name}" (${scope})`, lines);
-  }
-
-  /**
-   * Normalize a down-routed lesson scope to a filename-safe slug (symmetry with skill scopes),
-   * defaulting to "ask" if the Gate A verdict's scope is absent or sanitizes empty. The scope is
-   * the LLM's own output, not raw user data, but slugging keeps the lesson-block key well-formed.
-   */
-  private safeLessonScope(raw: string | undefined): string {
-    const slug = (raw ?? "").toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "");
-    return slug.length > 0 ? slug : "ask";
-  }
-
-  /** Assemble the gate-stack report for a skill attempt (the 🐒 banner + outcome lines). */
-  private skillReport(notify: string, lines: string[]): HelperResult {
-    const body = ["🐒 Skill attempt", "", ...lines].join("\n");
-    return {
-      ok: true,
-      answer: body,
-      report: { title: "Skill attempt", body, sources: ["intent:skill"], notifyText: `🐒 Skill attempt: ${notify}\n\n${lines.join("\n")}` }
-    };
-  }
-
-  /**
-   * Run a single `llm_answer` with an explicit system prompt on the shared budget. Used
-   * by the skill/self-diagnose helpers and the loop tools for their intermediate LLM
-   * passes (Gate A, distill, author) — the answer-back itself goes through runAnswer so
-   * it reuses the composed prompt + report shape.
-   */
-  private async runLlm(
-    claim: ClaimedRun,
-    question: string,
-    system: string,
-    budget: BudgetLedger,
-    // The call's purpose on its `llm_attempt` rows — EXPLICIT at every caller (no default), so a
-    // Gate A classification is never booked as an "answer".
-    role: LlmCallRole
-  ): Promise<{ ok: true; answer: string } | { ok: false; failure: Exclude<CapabilityResult, { status: "succeeded" }> }> {
-    return this.runLlmWith(this.llmAdapterFor(claim.run_id, role), role, claim.contract, question, system, budget);
-  }
-
-  /** `runLlm`'s body over an explicit adapter — the run-less callers (Gate B) bring their own scope. */
-  private async runLlmWith(
-    adapter: (input: Record<string, unknown>) => Promise<ToolAdapterResult>,
-    role: LlmCallRole,
-    contract: ClaimedRun["contract"],
-    question: string,
-    system: string,
-    budget: BudgetLedger
-  ): Promise<{ ok: true; answer: string } | { ok: false; failure: Exclude<CapabilityResult, { status: "succeeded" }> }> {
-    const registry = new ToolRegistry();
-    const llmTimeoutMs = this.llmTimeoutMs(role); // the called role's chain, not the planner's
-    registry.register({
-      name: "llm_answer",
-      category: "tool",
-      side_effect_level: "external_read",
-      risk_level: "low",
-      timeout_ms: llmTimeoutMs,
-      output_limit_bytes: 100_000,
-      execute: adapter
-    });
-    const result = await new CapabilityRunner(registry).execute({
-      contract,
-      capability: "llm_answer",
-      input: { question, system },
-      budget
-    });
-    if (result.status !== "succeeded") {
-      return { ok: false, failure: result };
-    }
-    const answer = typeof result.output.answer === "string" ? result.output.answer : "";
-    return { ok: true, answer };
   }
 
   // ── omp planner turns (Task 13): the daemon hands a turn over and returns at once ────────
@@ -2386,7 +1914,17 @@ export class CoreWorker {
 
   /** Floor A's path context; the binary dirs are resolved each time a supervisor or shell tool is built. */
   private ompPathContext(): PathContext {
-    return { home: homedir(), repo: this.projectRoot, data: this.ompDataDir(), binDirs: installedBinaryDirs(process.env, process.execPath) };
+    const data = this.ompDataDir();
+    return { home: homedir(), repo: this.projectRoot, data, binDirs: installedBinaryDirs(process.env, process.execPath), grow: this.growDir() };
+  }
+
+  /** The one grow directory, resolved once per worker: the sandbox denies it and the cached service writes it, so they can never differ
+   *  (resolveGrowDir reads the filesystem — a symlink appearing later must not move the deny away from the zone). */
+  private growDir(): string { return (this.growDirCache ??= resolveGrowDir(process.env, homedir(), [this.projectRoot, this.ompDataDir()])); }
+
+  /** One grow service per worker, built on first use. */
+  growService(): GrowService {
+    return (this.growCache ??= new GrowService({ store: this.runStore, zone: new GrowZone(this.growDir()), env: process.env, now: () => new Date().toISOString(), writer: this.ompOptions.growWriter === true }));
   }
 
   private supervisorDeps(chatId: string): SupervisorDeps {
@@ -2411,7 +1949,15 @@ export class CoreWorker {
   private ompTurnContext(dataDir: string): TurnContextDeps {
     return {
       store: this.runStore, memoryRoot: memoryRootFor(this.projectRoot), dataDir,
-      skillsReader: this.skillsReader(),
+      growIndex: () => {
+        if (!resolveSkillsEnabled(process.env)) return undefined;
+        try { return this.growService().indexBlock(); } catch { console.error("[grow] index unavailable"); return undefined; }
+      },
+      growNotes: (chatId, runId) => {
+        if (!resolveSkillsEnabled(process.env)) return [];
+        try { return this.growService().contextNotes(chatId, runId); } catch { console.error("[grow] notes unavailable"); return []; }
+      },
+      growNotesCommit: (runId) => this.growService().commitNotes(runId),
       coreBlock: (chatId) => {
         const core = this.renderedCore(chatId);
         return core.ids.length > 0 ? core : undefined;
@@ -2492,6 +2038,7 @@ export class CoreWorker {
    */
   buildOmpTools(claim: ClaimedRun, chatId = this.chatOf(claim.run_id)): {
     registry: ToolRegistry; quarantine: ActiveTurn["quarantine"]; preflight: NonNullable<ActiveTurn["preflight"]>; judge: InjectionJudge;
+    bindTrust: (level: () => TrustLevel) => void;
   } {
     const state = this.ompTurnState(claim, chatId);
     const registry = new ToolRegistry();
@@ -2515,6 +2062,7 @@ export class CoreWorker {
       registry, quarantine: (tool, output) => this.ompQuarantine(claim, state, tool, output),
       // memory_correct writes: the trust limits refuse before any card, else the card shows exactly what changes
       preflight: (entry, input) => this.ompPreflight(claim, state, entry, input),
+      bindTrust: (level) => { state.trustLevel = level; },
       // tool.injection (spec §7.1): every shell and wall result of this turn is judged before a model reads it
       judge: createInjectionJudge({ store: this.runStore, client: this.injectionClient(claim.run_id), home: this.ompPathContext().home })
     };
@@ -2525,11 +2073,43 @@ export class CoreWorker {
     return async (input) => {
       const objective = state.objective;
       const effective = objective ? { ...claim, contract: { ...claim.contract, objective } } : claim;
+      if (name === "grow_submit") return this.growSubmitExecute(claim, state, input);
+      if (name === "grow_read") return this.growReadExecute(claim, input);
       const r = await this.loopToolExecute(name, effective, state.turnCtx)(input);
       // Code-owned surfacing (⓪·2): a failed evolution step is appended to the reply, never model-mediated.
       if (!r.ok && EVOLUTION_TOOLS.has(name)) state.turnCtx.evolutionNotices.push(`${name} step failed: ${r.error}`);
       return r;
     };
+  }
+
+  /** grow_submit: the service decides; the level is read now, not when the tools were built (a card may have waited). Codes only in logs. */
+  private async growSubmitExecute(claim: ClaimedRun, state: OmpTurnState, input: Record<string, unknown>): Promise<ToolAdapterResult> {
+    const answer = (text: string): ToolAdapterResult => ({ ok: true, output: { answer: text } });
+    const { name, description, example, body, anchors } = input;
+    if (typeof name !== "string" || typeof description !== "string" || typeof example !== "string" || typeof body !== "string"
+      || (anchors !== undefined && !(Array.isArray(anchors) && anchors.every((a) => typeof a === "string")))) {
+      console.error("[grow] submit: bad_input");
+      return answer("REFUSED zone_unavailable");
+    }
+    if (!resolveGrowEnabled(process.env)) return answer("REFUSED grow_disabled"); // a disarmed door never touches (or pages about) the zone
+    if (this.ompOptions.growWriter !== true) return answer("REFUSED not_the_daemon"); // one writer per zone: this process never inits or commits it
+    const svc = this.growService();
+    if (!(await svc.ensureZone({ wait: false }))) return answer(svc.disabledReason() === null ? "REFUSED busy" : "REFUSED zone_unavailable");
+    const fields = { name, description, example, body, ...(anchors !== undefined ? { anchors: anchors as string[] } : {}) };
+    const level = this.growTrustLevel(claim, state);
+    return answer(submitText(await svc.submit(fields, { run_id: claim.run_id, chat_id: this.chatOf(claim.run_id) || null, level })));
+  }
+
+  /** grow_read: a skill or its last failed review as plain text; `tainted` lets the bridge raise the turn. */
+  private async growReadExecute(claim: ClaimedRun, input: Record<string, unknown>): Promise<ToolAdapterResult> {
+    const name = typeof input.name === "string" ? input.name : "";
+    const svc = this.growService();
+    if (input.what === "review") {
+      const v = svc.readReview(name);
+      return { ok: true, output: v.ok ? { answer: v.text, tainted: v.tainted } : { answer: `No failed review is stored for ${name}.`, tainted: false } };
+    }
+    const v = await svc.read(name, { run_id: claim.run_id });
+    return { ok: true, output: v.ok ? { answer: v.text, tainted: v.tainted } : { answer: `REFUSED ${v.code}`, tainted: false } };
   }
 
   /**
@@ -3598,9 +3178,7 @@ export class CoreWorker {
         const subContract =
           name === "self_diagnose"
             ? compileSelfDiagnoseContract(message)
-            : name === "self_write_propose"
-              ? compileCodeSelfWriteContract(message)
-              : compileSkillAuthorContract(message);
+            : compileCodeSelfWriteContract(message);
         const subBudget = new BudgetLedger(subContract.budget);
         const started = tryStartEvolutionPipeline({
           current: { run_id: claim.run_id, tool: name, started_at: new Date().toISOString() },
@@ -3610,9 +3188,7 @@ export class CoreWorker {
             const helper =
               name === "self_diagnose"
                 ? await this.runSelfDiagnose(claim, message, focus, turnCtx.recentTurns, subBudget, turnCtx.turnChars)
-                : name === "self_write_propose"
-                  ? await this.runSelfWrite(claim, message, focus, turnCtx.recentTurns, subBudget, turnCtx.turnChars, typeof input.title === "string" ? input.title : undefined)
-                  : await this.runSkill(claim, message, turnCtx.recentTurns, subBudget, turnCtx.turnChars);
+                : await this.runSelfWrite(claim, message, focus, turnCtx.recentTurns, subBudget, turnCtx.turnChars, typeof input.title === "string" ? input.title : undefined);
             if (!helper.ok) {
               return { text: `${name} step failed: ${capabilityFailureDetail(helper.failure)}` };
             }
@@ -3737,7 +3313,7 @@ export class CoreWorker {
       // Paco's memory (2026-10-02): every trust limit is code-owned in the adapter (re-checked after his tap); no LLM call.
       return (input) => executeMemoryCorrect({ ...this.memoryDeps(claim, turnCtx), gated: name === "memory_correct_write" }, input);
     }
-    // Only the fifteen bridge entries reach here (OMP_LOOP_TOOL_META); `llm_answer` left the tool set (D8).
+    // Only the seventeen bridge entries reach here (OMP_LOOP_TOOL_META); `llm_answer` left the tool set (D8).
     return async () => ({ ok: false, error: `unknown loop tool: ${name}` });
   }
 
@@ -4534,17 +4110,6 @@ function buildSelfDiagnoseRelayQuestion(message: string, diagnosis: string): str
 // with the lesson block (⓪·3 S1): dedupe now happens at WRITE time via reconcile-on-write,
 // and the per-scope row cap (resolveLessonCapPerScope) prunes lowest reuse_value on overflow.
 
-/**
- * Render the Gate B line for the gate-stack report. `unscored` (Gate B off or every pass
- * errored) → an advisory note (never a block on an error). Otherwise show the 3-pass score
- * vs threshold, with a ⚠ for a below-threshold (low) score.
- */
-function gateBLine(gate: VerifyResult): string {
-  if (gate.unscored) return "Gate B anchors: (unscored — verifier unavailable; advisory only)";
-  const verdict = gate.passed ? "✓ passed" : "⚠ low score";
-  return `Gate B anchors: ${verdict} — ${gate.score.toFixed(2)} vs threshold ${gate.threshold.toFixed(2)} (${gate.scoredPasses}-pass avg)`;
-}
-
 /** The tree's route as the supervisor pins it (Task 8). */
 function turnRoute(r: Route, verdict_id: string | null): TurnRoute {
   return { role: r.role, effort: r.effort, verdict_id };
@@ -4688,8 +4253,8 @@ function injectedResult(r: ToolAdapterResult): LlmResult {
 /**
  * The runner's wall-clock cap for a loop tool. The evolution tools wrap whole legacy
  * pipelines (multiple inner runner calls), so their outer race bound is the wrapped
- * sub-contract's time ceiling (self-diagnose 30 min · code-self-write 60 min ·
- * skill-author 10 min); the light tools keep their ⓪·1 bounds.
+ * sub-contract's time ceiling (self-diagnose 30 min · code-self-write 60 min);
+ * the light tools keep their ⓪·1 bounds.
  */
 function loopToolTimeoutMs(name: string, seat: (role: LlmCallRole) => number): number {
   switch (name) {
@@ -4702,6 +4267,9 @@ function loopToolTimeoutMs(name: string, seat: (role: LlmCallRole) => number): n
     case "memory_correct_write":
       // Store work plus at most one query embedding (search), which carries its own timeout.
       return resolveEmbedConfig(process.env).timeoutMs + RUNNER_TIMEOUT_BUFFER_MS;
+    case "grow_submit":
+    case "grow_read":
+      return RUNNER_TIMEOUT_BUFFER_MS + 30_000;
     case "to_local_time":
     case "houge_status":
       // Pure in-process compute — no LLM call; the runner buffer is ample headroom.
@@ -4717,8 +4285,6 @@ function loopToolTimeoutMs(name: string, seat: (role: LlmCallRole) => number): n
       return compileSelfDiagnoseContract("").budget.time_minutes * 60_000;
     case "self_write_propose":
       return compileCodeSelfWriteContract("").budget.time_minutes * 60_000;
-    case "skill_author":
-      return compileSkillAuthorContract("").budget.time_minutes * 60_000;
     case "gmail_read":
     case "google_api":
       // ADR 0025: the Gmail ops enforce their own 75s wall clock; the outer race bound adds headroom.
@@ -4730,19 +4296,15 @@ function loopToolTimeoutMs(name: string, seat: (role: LlmCallRole) => number): n
 
 /**
  * The seats lesson_write's internal calls ride: memory work on the ticks chain (spec §8), like the
- * episodic distill/consolidate ticks. /ask, /research and skill authoring stay on the planner chain.
+ * episodic distill/consolidate ticks. /ask and /research stay on the planner chain.
  * The routing lives here so the runner cap (loopToolTimeoutMs) matches it.
  */
 const LESSON_WRITE_ROLES = { distill: "distill", reconcile: "consolidate" } as const satisfies Record<string, LlmCallRole>;
 
-/** Memory A1 §2: a lesson the size cap refused is reported as refused, never as saved. */
-function savedLessonLine(saved: LessonSaveResult | undefined, savedLine: string, nothingLine: string): string {
-  if (!saved) return nothingLine;
-  return saved.verb === "capped" ? `→ Lesson NOT saved: ${LESSON_CAPPED_HINT}` : savedLine;
-}
-
 /** Tool error for `account: "paco"` while the mail switch is off. */
 const PACO_MAIL_OFF_ERROR = "Paco's mail is off (/mail on to allow)";
+/** ADR 0035 G4: what the planner reads when a hostile turn's grow_submit is refused (fixed code `turn_hostile`). */
+const GROW_HOSTILE_TEXT = "REFUSED turn_hostile: this conversation read text aimed at the assistant, so nothing from it can become a skill. /fresh starts a clean conversation.";
 
 /**
  * ⓪·3g: the kickoff digest the evolution tool adapter returns IMMEDIATELY after

@@ -206,7 +206,7 @@ export function harness(session = fakeSession(), env: Record<string, string> = {
     chatId: "42", store, cfg: resolveOmpConfig({ HOUGE_OMP_SANDBOX: "0", ...env }), ctx: { home: data, repo: data, data }, distDir: data,
     decls: [], env: {}, turnEnvelopeActions: ["shell"],
     turnContext: {
-      store, memoryRoot: new URL("../../memory", import.meta.url).pathname, dataDir: data, skillsReader: () => undefined, coreBlock: () => undefined,
+      store, memoryRoot: new URL("../../memory", import.meta.url).pathname, dataDir: data, growIndex: () => undefined, coreBlock: () => undefined,
       retrieve: async () => ({ facts: [], pages: [] }), env: {}, ...(extra.recorder ? { recorder: extra.recorder } : {}), ...(o.turnContext ?? {})
     },
     buildTools: () => ({ registry: new ToolRegistry(), quarantine: async () => ({ digest: "", contains_instructions: false, source_meta: { tool: "x", bytes: 0 } }) }),

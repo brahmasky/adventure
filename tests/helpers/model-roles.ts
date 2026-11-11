@@ -35,5 +35,6 @@ export const SEED_LISTS: Readonly<Record<string, readonly string[]>> = {
   tiny: ["kimi-code/k3:low", "google-antigravity/gemini-3.8-flash:low"],
   "judges:0": ["kimi-code/k3"], "judges:1": ["openai-codex/gpt-6.1-sol"], "judges:2": [],
   chair: ["anthropic/claude-opus-5-5:low"],
-  reviewer: ["kimi-code/k3:high", "google-antigravity/claude-opus-5-5:medium"]
+  reviewer: ["kimi-code/k3:high", "google-antigravity/claude-opus-5-5:medium"],
+  grow_review: ["kimi-code/k3:high", "openai-codex/gpt-6.1-sol:high"]
 };

@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { errorCode } from "./domain/error-code.js";
 import { loadHougeEnv } from "./config/load-env.js";
@@ -643,6 +645,37 @@ if (command === "run") {
     process.exitCode = 1;
   } finally {
     store.close();
+  }
+  process.exit(process.exitCode ?? 0);
+} else if (command === "grow") {
+  // Grow zone (spec 2026-11-10): read-only against the zone repo; `undo` and `adopt` queue a request the daemon runs (one git writer).
+  const sub = rest[0] ?? "";
+  const name = rest[1] ?? "";
+  let store: RunStore | undefined;
+  try {
+    const { GROW_CLI_USAGE, runGrowCli } = await import("./grow/cli.js");
+    const needsName = ["show", "undo", "trust", "adopt"].includes(sub);
+    if (!["list", "show", "check", "log", "undo", "trust", "adopt"].includes(sub) || (needsName && !/^[a-z0-9-]{3,48}$/.test(name))) {
+      console.error(GROW_CLI_USAGE);
+      process.exit(1);
+    }
+    if (["undo", "trust", "adopt"].includes(sub) && readTombstone()) {
+      console.error(formatTombstoneParkedMessage(resolveTombstonePath(process.env)));
+      process.exit(1);
+    }
+    // RunStore.open creates a missing database: outside the checkout that would be a fresh empty one, and `undo` would claim a queue nobody drains.
+    if (!existsSync("houge.sqlite")) {
+      console.error("houge grow: no houge.sqlite here; run from the Houge checkout");
+      process.exit(1);
+    }
+    store = RunStore.open("houge.sqlite", storeOptions);
+    console.log(await runGrowCli(store, sub, name, rest.slice(2).join(" "), process.env, new Date().toISOString(), join(process.cwd(), "backups")));
+    process.exitCode = 0;
+  } catch (error) {
+    console.error(`grow ${sub} failed: ${errorCode(error)}`);
+    process.exitCode = 1;
+  } finally {
+    store?.close();
   }
   process.exit(process.exitCode ?? 0);
 } else {

@@ -1,7 +1,7 @@
 # ADR 0032: omp runtime — agentic mode under code-owned floors (consolidated)
 
 - **Status:** accepted 2026-11-05 (signed by Paco, rulings A1–A5 included); consolidates and supersedes
-  [ADR 0028](0028-omp-runtime.md) with no change of meaning
+  [ADR 0028](0028-omp-runtime.md) with no change of meaning; amended 2026-11-10 by [ADR 0035](0035-grow-zone-verification.md) (grow zone: D8 tool set, 4.2, 4.3, 5.1, 6.3, 7.1 — signed by Paco 2026-11-10, spec approval)
 - **Date:** 2026-11-04
 - **Deciders:** Paco
 - **Supersedes:** [ADR 0028](0028-omp-runtime.md) (which superseded the agentic clause of
@@ -51,9 +51,8 @@ and the model invents a transcript. Voice notes are transcribed on the flat-rate
 from `agy models` (highest Gemini Flash at low effort, cached, re-resolved once on a retired-model refusal), not
 pinned. Photos run on the omp media seat. Follow-up: omp audio support, or local whisper (installed, but only a test
 model is present).
-1.7 **Seat routing.** `lesson_write` distill and reconcile run on the Tiny role. `/ask`, `/research` and
-`skill_author` authoring run on the planner chain (the routed planner roles since 2026-10-07), because they answer
-Paco directly.
+1.7 **Seat routing.** `lesson_write` distill and reconcile run on the Tiny role. `/ask` and `/research` run on the planner chain (the routed planner roles since 2026-10-07), because they answer
+Paco directly. (Amended 2026-11-10 by ADR 0035: `skill_author` authoring is gone; a skill's review runs on the `grow_review` role, 7.1.)
 
 ### 2. Locked decisions D1–D12
 
@@ -66,7 +65,7 @@ Paco directly.
 | D5 | Planner autonomy | **yolo under `$HOME`**: file read/write/edit and shell commands run without a prompt, **except external writes and destructive deletes** (matcher, §5.2). The tap-free local writes are conditional on the turn's trust level (`turn.trust`, ADR 0034) | workspace jail; approve-every-bash |
 | D6 | Floors | (A) secret/protected paths denied at the OS level + policy hook (§5.1); (B) external effects wait for `/approve`: for `bash` a **best-effort, code-owned command matcher** (D12), for bridge tools the registry's `external_write` level | — |
 | D7 | Models | subscription OAuth only; Claude via Anthropic Max OAuth **inside omp**, the model named by the code-owned roles resolved against omp's catalog (§7) (terms risk accepted; the fallback is each role's next code-owned leg, §7; `HOUGE_MODEL_ROLES=static` rolls back the model lists, it is not a way off Claude) | `claude -p`; metered API |
-| D8 | Tool set | port 12 as bridge tools; delete `llm_answer` + the money track (5 tools) | port all 18 |
+| D8 | Tool set | port 12 as bridge tools; delete `llm_answer` + the money track (5 tools). *Amended 2026-11-10 by ADR 0035: `skill_author` is out; `grow_submit` and `grow_read` are in (plain branch of the bridge, 6.3)* | port all 18 |
 | D9 | Gmail | port with an `account` key designed in | rewrite later |
 | D10 | Family collapse (planner and reader on one family after fallback) | **accept the degradation, audited** (Paco, 2026-09-30): the read proceeds; every such read writes a `wall_collapse` ledger event and opens/keeps an incident. In resolved mode the reader's candidates are ordered cross-family first (a stable partition), so collapse is avoided before the read, not discovered after it; the Reader role's GPT-family leg (`codex-sol`), after its Gemini and Kimi legs, makes collapse rare | fail closed |
 | D11 | Floor A residual | **accepted** (Paco, 2026-09-30): the planner must read its own OAuth store (`~/.omp/profiles/houge`), so the OS sandbox cannot deny it to that process; the policy hook denies omp's `read` of it, and with D12 no shell runs inside that process. Revisited in SP3 (separate macOS user) | block yolo until SP3 |
@@ -103,12 +102,15 @@ dedicated macOS user for the planner.
 
 4.1 **Per-turn context is composed by the daemon.** It prepends a `[context]…[/context]` block to the RPC prompt and
 writes `loop_started.applied_artifacts` at that moment (no `before_agent_start` hook; rating attribution unchanged).
-4.2 **Skills stay composer-injected** (omp `--skills` unverified against Houge's `skills/`); native omp skills move to
-SP4. The omp prompt renders lessons and skills of both `ask` and `research`; each turn credits only the ids the spawned
-prompt holds.
+4.2 **Lessons are composer-injected; skills are read through the grow zone.** (Amended 2026-11-10 by ADR 0035: skill
+bodies no longer ride in the prompt. The composer injects the grow **index** — one line per live item, `name —
+description`, alphabetical, at most 40 lines and 4,000 chars, plus two fixed sentences; a marked item shows its name only, `(from outside content; grow_read it to see it)` (ADR 0035 G4) — and the planner reads a body
+with `grow_read`. `HOUGE_SKILLS_ENABLED` off removes the index and both grow tools. Native omp skills stay in SP4.) The
+omp prompt renders the lessons of both `ask` and `research`; each turn credits only the ids the spawned prompt holds.
 4.3 **Stale sessions by fingerprint.** At every turn start the supervisor recomputes the system-prompt fingerprint; a
-change (lesson, identity or skills edit, or the UTC date line) restarts the child at that idle boundary and
-`open_session` resumes the transcript.
+change (lesson, identity or grow index change, or the UTC date line) restarts the child at that idle boundary and
+`open_session` resumes the transcript. (Amended 2026-11-10 by ADR 0035: the fingerprint covers the index, not skill
+bodies; its alphabetical order means a `grow_read` never changes it, only a change to the index text does: an item added, removed or re-described, or the door switching, never a use.)
 4.4 **A lesson change starts a fresh session.** At every spawn the supervisor compares a persisted lesson-set
 fingerprint (id, text, avoid, theme of the active ask + research lessons, from the same read as the rendered section,
 never the rendered bytes, so a reorder, rating or date flip cannot trigger it); when it differs it sends `new_session`
@@ -139,7 +141,7 @@ per-tool sequential attribute.
 budgeted. The global 24 h breaker's `tool_calls` ceiling is set in `.env` to 3× its old value; the code default is
 unchanged.
 4.11 **Background ticks stop on shutdown.** Every model-backed tick the signal path runs (episodic distill and
-consolidate, lesson consolidate, radar, panel, skill re-verify, scheduled fires) takes the daemon's stop signal and
+consolidate, lesson consolidate, radar, panel, scheduled fires) takes the daemon's stop signal and
 returns early between model calls. The one-shot seat kills an in-flight leg's process group and audits it as
 `llm_attempt` error{`shutdown`}, as the planner does for a turn shutdown cuts; `llm_leg_failing` ignores only `shutdown`
 rows, so a shutdown never opens an incident while `aborted` (a hung `frame_idle`/`turn_timeout` turn, a /kill, a
@@ -150,8 +152,8 @@ row is superseded once (UPDATE takes the merged text, SUPERSEDE the newer candid
 is never dropped). The overlay means more reconcile calls per window (a later fact always has the earlier ones as
 neighbours); accepted, since they run on the flat-rate ticks chain. A stopped tick: episodic consolidate skips its
 remaining merges but still stamps; lesson consolidate leaves its latch unstamped; radar writes no tick (its latch
-already stamped); panel writes nothing and restores its weekly latch; re-verify leaves the cut skill stale. Distill
-checks the stop before each embed too.
+already stamped); panel writes nothing and restores its weekly latch. Distill
+checks the stop before each embed too. (Amended 2026-11-10 by ADR 0035: the skill re-verify tick is deleted; it is no longer among these ticks.)
 
 ### 5. Floors as built
 
@@ -174,7 +176,13 @@ disables voice ingest; agy never runs with a cwd in a git repo; a self-write dif
 one-shots, codex, agy and the catalog (beside `cleanroom/`, ADR 0034). (g) Daemon-side git runs without user or system
 config, hooks or fsmonitor (push keeps the credential helper). (h) `sandbox-exec` and every wrapper helper run by
 absolute path. (i) `ulimit -u` is the current user process count + 256, capped by the hard limit; the group kill, `-t`
-and the adapter deadline still bound the command.
+and the adapter deadline still bound the command. (j) *Amended 2026-11-10 by ADR 0035:* the grow zone (`HOUGE_GROW_DIR`)
+and the backup folder (`<repo>/backups`, `<data>/backups`) are **read- and write-denied** to every child, at both layers
+(Seatbelt profile and policy hook path gate), as members of `secretPaths` placed after the `$HOME` allow in the profile
+and before the workspace allow in `isDeniedWrite`. Read-denied because a shell `cat` of a born-untrusted skill would
+read it without the taint `grow_read` applies; the backup folder holds the zone's bundle beside the DB snapshots (and
+now closes a hole that predates the zone: `houge.sqlite` was read-denied while its nightly copies were not). The
+planner writes the zone only through `grow_submit`.
 5.2 **Matcher posture.** Patterns are anchored to command position. The line-wise safety pass never skips heredoc
 bodies. A parse error or eval-depth overflow classifies the command as destructive (ask), never as plain. The matcher
 recurses into `bash|sh|zsh -<flags>c`, here-strings, `env -S` and `find -exec`; a shell fed its script through a pipe,
@@ -198,10 +206,17 @@ version on the first succeeded read whose text is not in the tested shape; the n
 contract probe's child still runs with no tools. Verified when this landed: `fetch.enabled: false` makes a URL `read` an
 error, and `rowPrefixes` is on whenever `edit` is among the tools.
 
+6.3 **`grow_read` is a named exception to the read wall** (amended 2026-11-10 by ADR 0035; the precedent is
+`houge_status` in 4.6). It reads kernel text that passed the grow door, so it is registered on the bridge's plain
+branch (`PLAIN_TEXT_ENTRIES`), never on the wall (`UNTRUSTED_READ_ENTRIES`) or judged-read branches, and is not judged
+for injection. For a skill born from outside content it raises the turn to `untrusted` before the text returns (cause
+`grow_read_untrusted`, ADR 0034 8.1, 8.3). `grow_submit` takes the same plain branch; its content is checked at the
+door, not on the wall.
+
 ### 7. Model roles and tiers
 
 7.1 **Roles.** Paco's rule (2026-11-02): always use the latest model under his subscriptions; tiers are how code
-follows it. Each seat names a role (Fast, Default, Thinking, Reader, Vision, Tiny, Judges, Chair, Reviewer). Each
+follows it. Each seat names a role (Fast, Default, Thinking, Reader, Vision, Tiny, Judges, Chair, Reviewer, GrowReview). *Amended 2026-11-10 by ADR 0035:* `grow_review` is the role of the asynchronous skill reviewer — a one-shot seat with no tools and three legs (Kimi, Gemini pro, Codex; the static rollback list holds Kimi and Codex), none of the Claude family that runs the planner; the legs of a family the item's author used are skipped. Each
 role is a code-owned list of `{tier, effort}` legs in `src/omp/model-roles.ts`; a leg resolves to its tier's adopted
 head, then its previous adopted head. The seven `HOUGE_OMP_*` chain variables are retired: a set value is ignored and
 named once in a boot warning. Model names change with the catalog, without an ADR amendment.
@@ -367,6 +382,7 @@ progress, or Paco's instructions about how its code, checks, memory or lessons s
 | 2026-11-03 | ADR 0031: gemini-pro reads renames; in-family card proposals; `model_change` log rows; card-tap overrides retire; omp drift kinds to log, 7-day reminder (changed "drift pages") | [chat is for Paco](../superpowers/specs/2026-11-03-chat-is-for-paco-design.md) | 2026-11-04 |
 | 2026-11-04 | Consolidated into this ADR, no change of meaning | — | 2026-11-05 |
 | 2026-11-06 | Drift rewording, no change of meaning: D7 fallback, D10 reader legs, memory-correct limits, empty-tier card conditions | — | 2026-11-06 |
+| 2026-11-10 | Grow zone: D8 (`skill_author` out, `grow_submit`/`grow_read` in); 1.7; 4.2 and 4.3 (the index, not bodies, in the prompt and fingerprint); 5.1 (j) (grow zone and backups read- and write-denied); 6.3 (`grow_read` named exception); 7.1 (role `grow_review`) | [grow zone](../superpowers/specs/2026-11-10-grow-zone-verification-design.md) (Rev 1.3.2) | 2026-11-10 (spec approval) |
 
 ## Reference map
 

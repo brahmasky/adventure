@@ -32,6 +32,7 @@ describe("the re-pinned static lists", () => {
     expect(f(c.judges)).toBe("kimi-code/k3,openai-codex/gpt-6.1-sol");
     expect(f(c.chair)).toBe("anthropic/claude-opus-5-5:low");
     expect(f(c.reviewer)).toBe("kimi-code/k3:high,google-antigravity/claude-opus-5-5:medium");
+    expect(f(c.growReview)).toBe("kimi-code/k3:high,openai-codex/gpt-6.1-sol:high");
     expect(judgeSeat(resolveOmpConfig({}, c), 2)).toEqual([]);
   });
   it("every static selector is a member of its role's tiers (judges: its seat's tier)", () => {

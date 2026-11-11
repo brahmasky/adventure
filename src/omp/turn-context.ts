@@ -30,7 +30,11 @@ export interface TurnContextDeps {
   store: RunStore;
   memoryRoot: string;
   dataDir: string;
-  skillsReader: (scope: string) => string | undefined;
+  /** The planner's own procedures: an index, never bodies (ADR 0035). */
+  growIndex: () => string | undefined;
+  /** One-shot outcome lines for this chat's grow writes, rendered in the turn's `[context]`; the cursor moves in growNotesCommit. */
+  growNotes?: (chat_id: string, run_id: string) => string[];
+  growNotesCommit?: (run_id: string) => void;
   coreBlock: (chatId: string) => { block: string; ids: number[] } | undefined;
   retrieve: (chatId: string, message: string) => Promise<TurnRetrieval>;
   env: NodeJS.ProcessEnv;
@@ -201,29 +205,19 @@ function safeLessonSection(d: TurnContextDeps): LessonSection & { failed?: true 
   }
 }
 
-/** Both scopes' skills, concatenated (the composer's skillsScope is a single string, composer.ts:320). */
-function ompSkills(d: TurnContextDeps): { block: string | undefined; scopes: string[] } {
-  const parts = OMP_LESSON_SCOPES.flatMap((scope) => {
-    const block = d.skillsReader(scope);
-    return block ? [{ scope, block }] : [];
-  });
-  return { block: parts.length > 0 ? parts.map((p) => p.block).join("\n") : undefined, scopes: parts.map((p) => p.scope) };
-}
-
 export function buildSystemPrompt(d: TurnContextDeps, chatId: string): PromptSnapshot {
   assertChatId(chatId);
   const lessons = safeLessonSection(d);
-  const skills = ompSkills(d);
   const core = d.coreBlock(chatId);
   // The date line makes the fingerprint flip daily (UTC midnight): intended, it restarts the child at the next turn so the date stays true.
   const text = composeSystemPrompt(d.memoryRoot, "omp", {
     ...(d.now ? { now: d.now() } : {}),
     lessonsReader: () => lessons.block,
-    skillsReader: () => skills.block,
+    growIndex: () => d.growIndex(),
     coreReader: () => core?.block
   });
   return {
-    text, lessonIds: lessons.ids, lessonScopes: lessons.scopes, skillScopes: skills.scopes,
+    text, lessonIds: lessons.ids, lessonScopes: lessons.scopes, skillScopes: [],
     coreFactIds: core?.ids ?? [], skipped: lessons.skipped,
     ...(lessons.fingerprint !== undefined ? { lessonFingerprint: lessons.fingerprint } : {}),
     ...(lessons.failed ? { lessonRenderFailed: true as const } : {})
@@ -387,9 +381,12 @@ function recordContextDecisions(d: TurnContextDeps, i: TurnPromptInput, r: TurnR
 }
 
 /** The `[context]` block a prompt carries (a literal close marker inside a block is neutralised); "" when retrieval found nothing. */
-export function renderContextBlock(r: Pick<TurnRetrieval, "facts" | "pages">): string {
-  const blocks = [...r.facts, ...r.pages].map((x) => x.block.replaceAll("[/context]", "[ /context]"));
-  return blocks.length > 0 ? `[context]\n${blocks.join("\n\n")}\n[/context]\n\n` : "";
+export function renderContextBlock(r: Pick<TurnRetrieval, "facts" | "pages">, notes: readonly string[] = []): string {
+  const blocks = [...notes, ...[...r.facts, ...r.pages].map((x) => x.block)].map((b) => b.replaceAll("[/context]", "[ /context]"));
+  if (blocks.length === 0) return "";
+  const head = blocks.slice(0, notes.length).join("\n");
+  const rest = blocks.slice(notes.length).join("\n\n");
+  return `[context]\n${[head, rest].filter((x) => x.length > 0).join("\n\n")}\n[/context]\n\n`;
 }
 
 export async function buildTurnPrompt(d: TurnContextDeps, i: TurnPromptInput): Promise<TurnPrompt> {
@@ -398,7 +395,9 @@ export async function buildTurnPrompt(d: TurnContextDeps, i: TurnPromptInput): P
   const s = sessionSeed(d, i);
   const caught = catchUp(d, i, s.pending ? s.run_ids : []);
   recordAttribution(d, i.run_id, i.applied ?? appliedOf(buildSystemPrompt(d, i.chat_id)), { facts, pages, ...(telemetry ? { telemetry } : {}) }, caught.run_ids);
-  const context = renderContextBlock({ facts, pages });
+  // a schedule fire cannot grow_submit and is not Paco reading: it neither shows the lines nor advances the cursor
+  const notes = i.source === "schedule" ? [] : d.growNotes?.(i.chat_id, i.run_id) ?? [];
+  const context = renderContextBlock({ facts, pages }, notes);
   const prefix = i.source === "schedule" ? SCHEDULED_PREFIX(i.goal ?? i.message) : "";
   const capState = clarifyCapState(d, i.chat_id);
   const cap = clarifyCapOf(capState) ? CLARIFY_CAP_NOTICE : "";

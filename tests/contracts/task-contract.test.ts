@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { buildTypedTaskEvent } from "../../src/domain/types.js";
-import { compileCodeSelfWriteContract, compileSelfDiagnoseContract, compileSkillAuthorContract, compileTaskContract, TURN_ACTIONS } from "../../src/contracts/task-contract.js";
+import { compileCodeSelfWriteContract, compileSelfDiagnoseContract, compileTaskContract, TURN_ACTIONS } from "../../src/contracts/task-contract.js";
 
 const runEvent = buildTypedTaskEvent({
   source: "cli",
@@ -136,17 +136,6 @@ describe("compileTaskContract", () => {
     expect(self.contract_hash).toMatch(/^[a-f0-9]{64}$/);
   });
 
-  it("the skill-author contract forbids coding_agent_cli — skills are prose (ADR 0011 Phase 2b)", () => {
-    const skill = compileSkillAuthorContract("write a skill for cross-checking figures");
-    expect(skill.allowed_actions).toEqual(["llm_answer", "write_report"]);
-    expect(skill.allowed_actions).not.toContain("coding_agent_cli");
-    expect(skill.forbidden_actions).toContain("coding_agent_cli");
-    expect(skill.forbidden_actions).toContain("external_write");
-    expect(skill.forbidden_actions).toContain("destructive");
-    expect(skill.budget.max_tool_calls).toBe(3);
-    expect(skill.contract_hash).toMatch(/^[a-f0-9]{64}$/);
-  });
-
   it("compiles /ask into the built-in ask program contract", () => {
     const askEvent = buildTypedTaskEvent({
       source: "telegram",
@@ -199,9 +188,13 @@ describe("scheduler v2 provenance strip", () => {
     if (fromTelegram.ok && fromSchedule.ok) {
       expect(fromTelegram.contract.allowed_actions).toContain("schedule_task");
       expect(fromSchedule.contract.allowed_actions).not.toContain("schedule_task");
+      for (const a of ["schedule_task", "grow_submit", "grow_read"]) expect(fromTelegram.contract.allowed_actions).toContain(a);
+      // A schedule-born run may read the grow zone but not write it (ADR 0035 G7).
+      expect(fromSchedule.contract.allowed_actions).toContain("grow_read");
+      expect(fromSchedule.contract.allowed_actions).not.toContain("grow_submit");
       // The strip is the ONLY difference in the action envelope.
       expect(fromSchedule.contract.allowed_actions).toEqual(
-        fromTelegram.contract.allowed_actions.filter((a) => a !== "schedule_task")
+        fromTelegram.contract.allowed_actions.filter((a) => a !== "schedule_task" && a !== "grow_submit")
       );
     }
   });

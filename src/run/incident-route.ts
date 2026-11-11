@@ -70,7 +70,11 @@ export const INCIDENT_ROUTE = {
   hostile_schedule_turn: log("A scheduled task read hostile content; you got a card."),
   mail_auth_lost: page("My access to Paco's Gmail was lost; mail triage is paused.", "run `npm run houge -- mail auth`, then restart the daemon"),
   mail_poll_failing: page("Mail polling has been failing for over two hours; new mail isn't being triaged."),
-  mail_jev_failing: page("Jev keeps failing on your mail; every mail is pinging you.")
+  mail_jev_failing: page("Jev keeps failing on your mail; every mail is pinging you."),
+  grow_zone_unavailable: page("My grow zone (the skills I write myself) cannot be written; I can still read the skills I have.", "run `npm run houge -- grow list` and check the grow directory"),
+  grow_publish_failed: page("I could not publish a skill I had finished; that one was dropped and I will write it again if it matters."),
+  grow_seed_failed: log("An exemplar or an old skill could not be brought into the grow zone at start-up."),
+  grow_backup_failed: log("The grow zone backup failed this round.")
 } as const satisfies Record<string, IncidentRule>;
 
 export type RoutedIncidentKind = keyof typeof INCIDENT_ROUTE;
@@ -109,9 +113,15 @@ export function maskSubject(s: string): string {
 
 type Notice = { topic: "incident_page" | "incident_log"; text: string };
 
+/** The grow zone's apply subject is one change's database half being retried, not the zone being unwritable: the page says what the code does. */
+const GROW_APPLY_RULE: IncidentRule = page("A skill write finished but I could not record it in my database yet; I retry it and writing continues.");
+function ruleFor(kind: string, subject: string): IncidentRule {
+  return kind === "grow_zone_unavailable" && subject === "apply" ? GROW_APPLY_RULE : ruleOf(kind);
+}
+
 /** What an opened incident says and where; null for a card kind (its caller sends the card). */
 export function incidentNotice(kind: string, subject: string): Notice | null {
-  const rule = ruleOf(kind);
+  const rule = ruleFor(kind, subject);
   if (rule.route === "card") return null;
   const tag = `\`${kind}\` · ${maskSubject(subject)}`;
   if (rule.route === "log") return { topic: "incident_log", text: `${rule.says} (${tag})` };
@@ -120,9 +130,8 @@ export function incidentNotice(kind: string, subject: string): Notice | null {
 
 /** The fixed notice: same words, page kinds to chat, log kinds to the log; null for a card kind. */
 export function incidentResolvedNotice(kind: string, subject: string, open_minutes: number): Notice | null {
-  const rule = ruleOf(kind);
+  const rule = ruleFor(kind, subject);
   if (rule.route === "card") return null;
-  void subject;
   return { topic: rule.route === "log" ? "incident_log" : "incident_page", text: `✅ Fixed: ${rule.says} — open ${open_minutes} min` };
 }
 

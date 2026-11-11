@@ -3,7 +3,8 @@
 /** Parser aliases that are deliberately not in the README (each with its reason). */
 export const COMMAND_ALIASES_NOT_DOCUMENTED = new Map<string, string>([
   ["/forget-memory", "typed alias of /forget_memory (a Telegram command allows no hyphen); the underscore form is documented"],
-  ["/idea", "silent alias of /radar week and /radar pick, kept for old habits (parser comment); /radar is documented"]
+  ["/idea", "silent alias of /radar week and /radar pick, kept for old habits (parser comment); /radar is documented"],
+  ["/skills", "one-release alias of /grow (list); /grow is documented"]
 ]);
 
 /** HOUGE_* names in src that are not configuration (each with its reason). */

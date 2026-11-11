@@ -71,6 +71,7 @@ import { scheduleDisplayName } from "./schedule-spec.js";
 export type LlmCallRole =
   | "writer"
   | "reviewer"
+  | "grow_review"
   | "classify"
   | "frame"
   | "answer"
@@ -1067,10 +1068,7 @@ export interface ScheduleExpiryRow { approval_id: string; run_id: string; capabi
 export type ProposalTarget = "lesson" | "fact" | "skill" | "schedule" | "knowledge" | "tool_gap" | "ladder";
 export type ProposalState = "open" | "accepted" | "reverted" | "dismissed" | "expired";
 export interface ImprovementProposalRow { proposal_id: string; decision_id: string; target: ProposalTarget; scope: string; chat_id: string | null; draft_json: string; evidence: string; state: ProposalState; result_json: string | null; created_at: string; offered_at: string | null; resolved_at: string | null }
-export type JobState = "queued" | "running" | "pending_review" | "suggested" | "collision" | "promoting" | "promoted" | "dismissed" | "failed" | "expired";
-export interface ImprovementJobRow { job_id: string; kind: "skill_author"; decision_id: string; proposal_id: string | null; chat_id: string | null; origin_json: string; idempotency_key: string; attempt: number; state: JobState; result_code: string | null; gate_a: string | null; pending_scope: string | null; pending_name: string | null; promote_mode: string | null; created_at: string; started_at: string | null; finished_at: string | null; offered_at: string | null; resolved_at: string | null }
 export interface ImprovementTapRow { tap_id: string; subject_kind: "proposal" | "job" | "move"; subject_id: string; action: string; telegram_callback_id: string; result: string; created_at: string }
-export type JobPatch = Partial<Pick<ImprovementJobRow, "result_code" | "gate_a" | "pending_scope" | "pending_name" | "promote_mode">>;
 export interface LadderMoveRow { move_id: string; entry_id: string; scope: string; from_rung: RungKind; to_rung: RungKind; evidence_json: string; granted_by: "paco" | "auto"; granted_via: string | null; paco_callback_id: string | null; revocable: number; state: "active" | "ended"; created_at: string; ended_at: string | null }
 /** Stage 4A (ADR 0030 §8.3): one row per (schedule, chat, fingerprint) streak. `ended` rows stay: audit, and the 30-day deny block is read over them. */
 export type StandingState = "streak" | "candidate" | "sealing" | "sealed" | "standing" | "ended";
@@ -1106,20 +1104,6 @@ export class DecisionRejected extends Error {
   constructor(readonly column: "stage" | "fallback_reason" | "reask") { super(`decision rejected: ${column} not allowed`); }
 }
 
-const JOB_PATCH_COLUMNS = ["result_code", "gate_a", "pending_scope", "pending_name", "promote_mode"] as const;
-const JOB_FINISHED: ReadonlySet<JobState> = new Set(["pending_review", "suggested", "failed"]);
-const JOB_RESOLVED: ReadonlySet<JobState> = new Set(["promoted", "dismissed", "expired"]);
-/** The SET list of one job transition: the patch columns, the attempt bump, and the timestamp each target state stamps. */
-function jobTransitionSets(i: { to: JobState; now: string; patch?: JobPatch; bumpAttempt?: boolean }): { sets: string[]; values: Array<string | number | null> } {
-  const sets = ["state = ?"]; const values: Array<string | number | null> = [i.to];
-  for (const c of JOB_PATCH_COLUMNS) if (i.patch && c in i.patch) { sets.push(`${c} = ?`); values.push(i.patch[c] ?? null); }
-  if (i.bumpAttempt) sets.push("attempt = attempt + 1");
-  if (i.to === "running") { sets.push("started_at = ?"); values.push(i.now); }
-  if (JOB_FINISHED.has(i.to)) { sets.push("finished_at = ?"); values.push(i.now); }
-  if (JOB_RESOLVED.has(i.to)) { sets.push("resolved_at = ?"); values.push(i.now); }
-  if (i.to === "collision" || i.to === "promoting") sets.push("offered_at = NULL");
-  return { sets, values };
-}
 const sqlList = (xs: readonly string[]): string => xs.map((x) => `'${x}'`).join(", ");
 /** The only automatic ladder move the store accepts (spec §4.3): standing approvals, on tool.policy, granted by approval.standing. */
 const AUTO_MOVE = { entry_id: "tool.policy", granted_via: "approval.standing" } as const;
@@ -1244,6 +1228,78 @@ const MAIL_TRIAGE_DDL = `
   CREATE TABLE IF NOT EXISTS mail_senders (address TEXT PRIMARY KEY, in_sent INTEGER NOT NULL, checked_at TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS mail_state (id INTEGER PRIMARY KEY CHECK (id = 1), enabled INTEGER NOT NULL, enabled_at TEXT, history_id TEXT,
     last_ok_at TEXT, last_error_code TEXT, failing_since TEXT, last_attempt_at TEXT, backoff_n INTEGER NOT NULL DEFAULT 0, retention_on TEXT);`;
+
+/** Grow zone 1a (spec 2026-11-10 §5.13): git holds content; these hold state, origin, uses, reasons, the review queue, requests and hints. */
+const GROW_DDL = `
+  CREATE TABLE IF NOT EXISTS grow_items (
+    name TEXT PRIMARY KEY, state TEXT NOT NULL CHECK (state IN ('live','removed','orphan')),
+    origin TEXT NOT NULL CHECK (origin IN ('clean','untrusted','exemplar')),
+    description TEXT NOT NULL, example TEXT NOT NULL, uses INTEGER NOT NULL DEFAULT 0, last_used_at TEXT,
+    head_commit TEXT, content_hash TEXT NOT NULL, body_hash TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+  CREATE TABLE IF NOT EXISTS grow_staged (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, run_id TEXT, chat_id TEXT,
+    origin TEXT NOT NULL CHECK (origin IN ('clean','untrusted','exemplar')),
+    fields_json TEXT NOT NULL, content_hash TEXT NOT NULL, needs_review INTEGER NOT NULL,
+    state TEXT NOT NULL CHECK (state IN ('staged','approved','publishing','failed')),
+    attempts INTEGER NOT NULL DEFAULT 0, claimed_at TEXT, next_attempt_at TEXT, author_families TEXT,
+    code TEXT, findings_json TEXT, review_input_hash TEXT,
+    created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+  CREATE INDEX IF NOT EXISTS grow_staged_state_idx ON grow_staged(state, next_attempt_at);
+  CREATE TABLE IF NOT EXISTS grow_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, run_id TEXT, chat_id TEXT, name TEXT NOT NULL,
+    action TEXT NOT NULL CHECK (action IN ('submit','publish','review_failed','undo','read','hint','seed','migrate','trust','adopt')),
+    result TEXT NOT NULL, code TEXT, reviewer_model TEXT, commit_id TEXT);
+  CREATE INDEX IF NOT EXISTS grow_events_action_at_idx ON grow_events(action, at);
+  CREATE UNIQUE INDEX IF NOT EXISTS grow_events_read_once_idx ON grow_events(run_id, name) WHERE action = 'read';
+  CREATE TABLE IF NOT EXISTS grow_undo_reasons (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, at TEXT NOT NULL, reason TEXT NOT NULL);
+  CREATE TABLE IF NOT EXISTS grow_context_cursor (chat_id TEXT PRIMARY KEY, last_event_id INTEGER NOT NULL);
+  CREATE TABLE IF NOT EXISTS grow_hints (
+    idempotency_key TEXT PRIMARY KEY, chat_id TEXT, category TEXT NOT NULL, turn_ids_json TEXT NOT NULL,
+    decision_id TEXT NOT NULL, created_at TEXT NOT NULL);
+  CREATE TABLE IF NOT EXISTS grow_reviews (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, staged_id INTEGER NOT NULL, name TEXT NOT NULL, content_hash TEXT NOT NULL,
+    pass INTEGER NOT NULL, code TEXT NOT NULL, findings_json TEXT NOT NULL, reviewer_model TEXT, input_hash TEXT,
+    author_families TEXT NOT NULL, undo_reasons_n INTEGER NOT NULL, at TEXT NOT NULL);
+  CREATE INDEX IF NOT EXISTS grow_reviews_staged_idx ON grow_reviews(staged_id, content_hash);
+  CREATE TABLE IF NOT EXISTS grow_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, idempotency_key TEXT NOT NULL UNIQUE, kind TEXT NOT NULL CHECK (kind IN ('undo','adopt')),
+    name TEXT NOT NULL, reason TEXT, chat_id TEXT, state TEXT NOT NULL CHECK (state IN ('queued','done','replied')), result TEXT,
+    created_at TEXT NOT NULL, done_at TEXT);
+  CREATE TABLE IF NOT EXISTS grow_marks (name TEXT PRIMARY KEY, marked_at TEXT NOT NULL);
+  CREATE TABLE IF NOT EXISTS grow_ops (
+    id TEXT PRIMARY KEY, kind TEXT NOT NULL CHECK (kind IN ('publish','undo')), source TEXT NOT NULL CHECK (source IN ('submit','seed','migrate','undo')),
+    name TEXT NOT NULL, staged_id INTEGER, request_id INTEGER, target_json TEXT, reason TEXT, undo_version_id INTEGER,
+    state TEXT NOT NULL CHECK (state IN ('pending','done','failed')), failures INTEGER NOT NULL DEFAULT 0, commit_id TEXT,
+    created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+  CREATE INDEX IF NOT EXISTS grow_ops_state_idx ON grow_ops(state, name);
+  CREATE UNIQUE INDEX IF NOT EXISTS grow_ops_request_idx ON grow_ops(request_id) WHERE request_id IS NOT NULL;
+  CREATE TABLE IF NOT EXISTS grow_versions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, op_id TEXT NOT NULL UNIQUE, commit_id TEXT NOT NULL, content_hash TEXT NOT NULL,
+    fields_json TEXT NOT NULL, at TEXT NOT NULL, undone INTEGER NOT NULL DEFAULT 0);
+  CREATE INDEX IF NOT EXISTS grow_versions_name_idx ON grow_versions(name, id);`;
+
+export type GrowOrigin = "clean" | "untrusted" | "exemplar";
+export interface GrowItemRow { name: string; state: "live" | "removed" | "orphan"; origin: GrowOrigin; description: string; example: string; uses: number; last_used_at: string | null; head_commit: string | null; content_hash: string; body_hash: string; created_at: string; updated_at: string }
+export interface GrowStagedRow { id: number; name: string; run_id: string | null; chat_id: string | null; origin: GrowOrigin; fields_json: string; content_hash: string; needs_review: boolean; state: "staged" | "approved" | "publishing" | "failed"; attempts: number; claimed_at: string | null; next_attempt_at: string | null; author_families: string | null; code: string | null; findings_json: string | null; review_input_hash: string | null; created_at: string; updated_at: string }
+export interface GrowEventRow { id: number; at: string; run_id: string | null; chat_id: string | null; name: string; action: "submit" | "publish" | "review_failed" | "undo" | "read" | "hint" | "seed" | "migrate" | "trust" | "adopt"; result: string; code: string | null; reviewer_model: string | null; commit_id: string | null }
+export interface GrowReviewRow { id: number; staged_id: number; name: string; content_hash: string; pass: boolean; code: string; findings_json: string; reviewer_model: string | null; input_hash: string | null; author_families: string; undo_reasons_n: number; at: string }
+export interface GrowRequestRow { id: number; idempotency_key: string; kind: "undo" | "adopt"; name: string; reason: string | null; chat_id: string | null; state: "queued" | "done" | "replied"; result: string | null; created_at: string; done_at: string | null }
+export interface GrowOpRow { id: string; kind: "publish" | "undo"; source: "submit" | "seed" | "migrate" | "undo"; name: string; staged_id: number | null; request_id: number | null; target_json: string | null; reason: string | null; undo_version_id: number | null; state: "pending" | "done" | "failed"; failures: number; commit_id: string | null; created_at: string; updated_at: string }
+export interface GrowVersionRow { id: number; name: string; op_id: string; commit_id: string; content_hash: string; fields_json: string; at: string; undone: boolean }
+type GrowVersionDbRow = Omit<GrowVersionRow, "undone"> & { undone: number };
+const GROW_OP_COLUMNS = `id, kind, source, name, staged_id, request_id, target_json, reason, undo_version_id, state, failures, commit_id, created_at, updated_at`;
+const GROW_VERSION_COLUMNS = `id, name, op_id, commit_id, content_hash, fields_json, at, undone`;
+const toGrowVersion = (r: GrowVersionDbRow): GrowVersionRow => ({ ...r, undone: r.undone === 1 });
+type GrowStagedDbRow = Omit<GrowStagedRow, "needs_review"> & { needs_review: number };
+type GrowReviewDbRow = Omit<GrowReviewRow, "pass"> & { pass: number };
+const GROW_ITEM_COLUMNS = `name, state, origin, description, example, uses, last_used_at, head_commit, content_hash, body_hash, created_at, updated_at`;
+const GROW_STAGED_COLUMNS = `id, name, run_id, chat_id, origin, fields_json, content_hash, needs_review, state, attempts, claimed_at, next_attempt_at, author_families, code, findings_json, review_input_hash, created_at, updated_at`;
+const GROW_EVENT_COLUMNS = `id, at, run_id, chat_id, name, action, result, code, reviewer_model, commit_id`;
+const GROW_REVIEW_COLUMNS = `id, staged_id, name, content_hash, pass, code, findings_json, reviewer_model, input_hash, author_families, undo_reasons_n, at`;
+const GROW_REQUEST_COLUMNS = `id, idempotency_key, kind, name, reason, chat_id, state, result, created_at, done_at`;
+const toGrowStaged = (r: GrowStagedDbRow): GrowStagedRow => ({ ...r, needs_review: r.needs_review === 1 });
+const toGrowReview = (r: GrowReviewDbRow): GrowReviewRow => ({ ...r, pass: r.pass === 1 });
+const GROW_STAGED_PATCH_COLUMNS = ["state", "claimed_at", "next_attempt_at", "author_families", "code", "findings_json", "review_input_hash"] as const;
 
 export type MailLane = "ping" | "inbox";
 export type MailKind = "fyi" | "action" | "risk" | "noise";
@@ -4370,34 +4426,6 @@ export class RunStore {
     this.db.prepare(`UPDATE radar_panel_state SET last_run_at = ? WHERE id = 1`).run(previous);
   }
 
-  // --- Skill re-verify advisor (skill retirement spec, 2026-07-29) -------------
-
-  /** Last executed re-verify tick (single-row weekly latch, like radar_panel_state). */
-  getSkillReverifyLastRun(): string | null {
-    const row = this.db.prepare(`
-      SELECT last_run_at FROM skill_reverify_state WHERE id = 1
-    `).get<{ last_run_at: string | null }>();
-    return row?.last_run_at ?? null;
-  }
-
-  /** Stamped BEFORE any Gate B call (M3 posture) — a crashing tick never retry-storms. */
-  setSkillReverifyLastRun(now: string): void {
-    this.db.prepare(`UPDATE skill_reverify_state SET last_run_at = ? WHERE id = 1`).run(now);
-  }
-
-  /** One summary event per weekly re-verify tick — counts only, no skill text. */
-  recordSkillReverifyTick(payload: { checked: number; passed: number; flagged: number }): void {
-    this.appendLedgerEvent(
-      createLedgerEvent({
-        correlation_id: "skill-reverify",
-        event_type: "skill_reverify_tick",
-        actor: "system",
-        sequence: this.nextLedgerSequence(),
-        payload
-      })
-    );
-  }
-
   /**
    * Guarded status write — the ONLY path the panel and `/idea pick` use. Allowed
    * transitions are exactly {@link IDEA_STATUS_TRANSITIONS}; anything else (same-status,
@@ -5684,75 +5712,19 @@ export class RunStore {
     for (const r of this.db.prepare(`SELECT state, COUNT(*) AS n FROM improvement_proposals WHERE created_at > ? GROUP BY state`).all<{ state: ProposalState; n: number }>(sinceIso)) out[r.state] = r.n;
     return out;
   }
-  /** §4.2 last_improvement: the newest accepted proposal or promoted job on the scope (a job's scope is its origin category). */
+  /** §4.2 last_improvement: the newest accepted proposal on the scope. */
   lastAcceptedImprovement(scope: string): { target: string; at: string } | undefined {
     return this.db.prepare(`
       SELECT target, resolved_at AS at FROM improvement_proposals WHERE scope = ? AND state = 'accepted'
-      UNION ALL SELECT 'skill' AS target, resolved_at AS at FROM improvement_jobs WHERE state = 'promoted' AND json_extract(origin_json, '$.category') = ?
       ORDER BY at DESC LIMIT 1
-    `).get<{ target: string; at: string }>(scope, scope);
+    `).get<{ target: string; at: string }>(scope);
   }
 
-  insertImprovementJob(j: { decision_id: string; proposal_id: string | null; chat_id: string | null; origin_json: string; idempotency_key: string; created_at?: string }): string | null {
-    const job_id = `job_${randomUUID()}`;
-    const r = this.db.prepare(`INSERT OR IGNORE INTO improvement_jobs (job_id, kind, decision_id, proposal_id, chat_id, origin_json, idempotency_key, state, created_at) VALUES (?, 'skill_author', ?, ?, ?, ?, ?, 'queued', ?)`)
-      .run(job_id, j.decision_id, j.proposal_id, j.chat_id, j.origin_json, j.idempotency_key, j.created_at ?? new Date().toISOString());
-    return Number(r.changes) === 1 ? job_id : null;
-  }
-  /** Ruling 14: starts are budgeted apart from queueing (a job queued by a tap starts at the next tick). */
-  countJobsStartedSince(sinceIso: string): number {
-    return this.db.prepare(`SELECT COUNT(*) AS n FROM improvement_jobs WHERE started_at > ?`).get<{ n: number }>(sinceIso)?.n ?? 0;
-  }
   listImprovementTaps(subject_id?: string): ImprovementTapRow[] {
     return subject_id === undefined
       ? this.db.prepare(`SELECT * FROM improvement_taps ORDER BY created_at ASC, rowid ASC`).all<ImprovementTapRow>()
       : this.db.prepare(`SELECT * FROM improvement_taps WHERE subject_id = ? ORDER BY created_at ASC, rowid ASC`).all<ImprovementTapRow>(subject_id);
   }
-  getImprovementJob(job_id: string): ImprovementJobRow | undefined {
-    return this.db.prepare(`SELECT * FROM improvement_jobs WHERE job_id = ?`).get<ImprovementJobRow>(job_id);
-  }
-  /** §3.3 step 4: a cluster sharing any turn id with a job created after `sinceIso` is already authored; a `failed` job never counts (final fix 2: a transient failure is no verdict). */
-  jobOverlapsTurns(turn_ids: readonly string[], sinceIso: string): boolean {
-    if (turn_ids.length === 0) return false;
-    return this.db.prepare(`
-      SELECT 1 AS hit FROM improvement_jobs j, json_each(j.origin_json, '$.turn_ids') t WHERE j.created_at > ? AND j.state != 'failed' AND t.value IN (${turn_ids.map(() => "?").join(", ")}) LIMIT 1
-    `).get<{ hit: number }>(sinceIso, ...turn_ids) !== undefined;
-  }
-  /** Final fix D6: the origin turn ids of the jobs of one category created after `sinceIso`, `failed` jobs excluded (final fix 2). */
-  jobOriginTurnIds(category: string, sinceIso: string): string[] {
-    return this.db.prepare(`SELECT DISTINCT t.value AS turn_id FROM improvement_jobs j, json_each(j.origin_json, '$.turn_ids') t WHERE j.created_at > ? AND j.state != 'failed' AND json_extract(j.origin_json, '$.category') = ?`)
-      .all<{ turn_id: string }>(sinceIso, category).map((r) => r.turn_id);
-  }
-  listJobsByState(states: readonly JobState[]): ImprovementJobRow[] {
-    if (states.length === 0) return [];
-    return this.db.prepare(`SELECT * FROM improvement_jobs WHERE state IN (${states.map(() => "?").join(", ")}) ORDER BY created_at ASC, rowid ASC`).all<ImprovementJobRow>(...states);
-  }
-  countJobsCreatedSince(sinceIso: string): number {
-    return this.db.prepare(`SELECT COUNT(*) AS n FROM improvement_jobs WHERE created_at > ?`).get<{ n: number }>(sinceIso)?.n ?? 0;
-  }
-  /**
-   * §5.2: one fenced UPDATE (state in `from`, and `attempt` when given) is the only thing that lets an ending write; the loser
-   * updates zero rows and enqueues nothing. A move to `collision` or back to `promoting` clears offered_at (a new card is due).
-   * The ledger event names the exact from state. The caller holds the transaction that also enqueues the card.
-   */
-  transitionJob(i: { job_id: string; from: readonly JobState[]; to: JobState; now: string; attempt?: number; patch?: JobPatch; bumpAttempt?: boolean }): boolean {
-    const row = this.getImprovementJob(i.job_id);
-    if (!row || !i.from.includes(row.state) || (i.attempt !== undefined && row.attempt !== i.attempt)) return false;
-    const { sets, values } = jobTransitionSets(i);
-    const r = this.db.prepare(`UPDATE improvement_jobs SET ${sets.join(", ")} WHERE job_id = ? AND state = ? AND attempt = ?`).run(...values, i.job_id, row.state, row.attempt);
-    if (Number(r.changes) !== 1) return false;
-    const attempt = i.bumpAttempt ? row.attempt + 1 : row.attempt;
-    this.recordMemoryEvent("improvement_job", { job_id: i.job_id, from: row.state, to: i.to, attempt, ...(i.patch?.result_code ? { result_code: i.patch.result_code } : {}) }, "improve");
-    return true;
-  }
-  markJobsOffered(ids: readonly string[], now: string): void {
-    if (ids.length === 0) return;
-    this.db.prepare(`UPDATE improvement_jobs SET offered_at = ? WHERE offered_at IS NULL AND job_id IN (${ids.map(() => "?").join(", ")})`).run(now, ...ids);
-  }
-  listJobsFinishedSince(sinceIso: string): ImprovementJobRow[] {
-    return this.db.prepare(`SELECT * FROM improvement_jobs WHERE finished_at > ? OR resolved_at > ? ORDER BY COALESCE(resolved_at, finished_at) ASC, rowid ASC`).all<ImprovementJobRow>(sinceIso, sinceIso);
-  }
-
   /** §5.1 tap history: one row per Telegram callback id (a redelivered tap is the same tap). */
   insertImprovementTap(t: { subject_kind: "proposal" | "job" | "move"; subject_id: string; action: string; telegram_callback_id: string; result: string; created_at?: string }): boolean {
     const r = this.db.prepare(`INSERT OR IGNORE INTO improvement_taps (tap_id, subject_kind, subject_id, action, telegram_callback_id, result, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
@@ -7633,6 +7605,278 @@ export class RunStore {
     return this.db.prepare(`SELECT COUNT(*) AS n FROM change_log WHERE created_at >= ?`).get<{ n: number }>(sinceIso)?.n ?? 0;
   }
 
+  // --- Grow zone 1a (spec 2026-11-10 §5.13). Git holds content; these rows hold state, queue and evidence. ---
+
+  upsertGrowItem(i: Omit<GrowItemRow, "uses" | "last_used_at" | "created_at" | "updated_at">, now: string): void {
+    this.db.prepare(`INSERT INTO grow_items (name, state, origin, description, example, head_commit, content_hash, body_hash, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(name) DO UPDATE SET state = excluded.state, origin = excluded.origin, description = excluded.description, example = excluded.example,
+        head_commit = excluded.head_commit, content_hash = excluded.content_hash, body_hash = excluded.body_hash, updated_at = excluded.updated_at`)
+      .run(i.name, i.state, i.origin, i.description, i.example, i.head_commit, i.content_hash, i.body_hash, now, now);
+  }
+
+  getGrowItem(name: string): GrowItemRow | undefined {
+    return this.db.prepare(`SELECT ${GROW_ITEM_COLUMNS} FROM grow_items WHERE name = ?`).get<GrowItemRow>(name);
+  }
+
+  listGrowItems(state?: GrowItemRow["state"]): GrowItemRow[] {
+    return state === undefined
+      ? this.db.prepare(`SELECT ${GROW_ITEM_COLUMNS} FROM grow_items ORDER BY name`).all<GrowItemRow>()
+      : this.db.prepare(`SELECT ${GROW_ITEM_COLUMNS} FROM grow_items WHERE state = ? ORDER BY name`).all<GrowItemRow>(state);
+  }
+
+  setGrowItemState(name: string, state: GrowItemRow["state"], now: string): void {
+    this.db.prepare(`UPDATE grow_items SET state = ?, updated_at = ? WHERE name = ?`).run(state, now, name);
+  }
+
+  setGrowItemOrigin(name: string, origin: GrowItemRow["origin"], now: string): void {
+    this.db.prepare(`UPDATE grow_items SET origin = ?, updated_at = ? WHERE name = ?`).run(origin, now, name);
+  }
+
+  countGrowItems(state: GrowItemRow["state"]): number {
+    return this.db.prepare(`SELECT COUNT(*) AS n FROM grow_items WHERE state = ?`).get<{ n: number }>(state)?.n ?? 0;
+  }
+
+  insertGrowStaged(i: { name: string; run_id: string | null; chat_id: string | null; origin: GrowStagedRow["origin"]; fields_json: string; content_hash: string; needs_review: boolean; now: string }): number {
+    const r = this.db.prepare(`INSERT INTO grow_staged (name, run_id, chat_id, origin, fields_json, content_hash, needs_review, state, next_attempt_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'staged', ?, ?, ?)`)
+      .run(i.name, i.run_id, i.chat_id, i.origin, i.fields_json, i.content_hash, i.needs_review ? 1 : 0, i.now, i.now, i.now);
+    return Number(r.lastInsertRowid);
+  }
+
+  getGrowStaged(id: number): GrowStagedRow | undefined {
+    const r = this.db.prepare(`SELECT ${GROW_STAGED_COLUMNS} FROM grow_staged WHERE id = ?`).get<GrowStagedDbRow>(id);
+    return r ? toGrowStaged(r) : undefined;
+  }
+
+  listGrowStaged(state?: GrowStagedRow["state"]): GrowStagedRow[] {
+    const rows = state === undefined
+      ? this.db.prepare(`SELECT ${GROW_STAGED_COLUMNS} FROM grow_staged ORDER BY id`).all<GrowStagedDbRow>()
+      : this.db.prepare(`SELECT ${GROW_STAGED_COLUMNS} FROM grow_staged WHERE state = ? ORDER BY id`).all<GrowStagedDbRow>(state);
+    return rows.map(toGrowStaged);
+  }
+
+  dueGrowReviews(now: string): GrowStagedRow[] {
+    return this.db.prepare(`SELECT ${GROW_STAGED_COLUMNS} FROM grow_staged WHERE state = 'staged' AND needs_review = 1 AND next_attempt_at <= ? AND claimed_at IS NULL ORDER BY id`)
+      .all<GrowStagedDbRow>(now).map(toGrowStaged);
+  }
+
+  claimGrowReview(id: number, now: string): boolean {
+    const r = this.db.prepare(`UPDATE grow_staged SET claimed_at = ?, attempts = attempts + 1, updated_at = ? WHERE id = ? AND state = 'staged' AND claimed_at IS NULL`).run(now, now, id);
+    return Number(r.changes) === 1;
+  }
+
+  releaseStaleGrowClaims(staleBefore: string): number {
+    return Number(this.db.prepare(`UPDATE grow_staged SET claimed_at = NULL WHERE state = 'staged' AND claimed_at IS NOT NULL AND claimed_at < ?`).run(staleBefore).changes);
+  }
+
+  /** A review cut short by shutdown: the attempt does not count against the item. */
+  unclaimGrowReview(id: number): void {
+    this.db.prepare(`UPDATE grow_staged SET claimed_at = NULL, attempts = MAX(attempts - 1, 0) WHERE id = ?`).run(id);
+  }
+
+  patchGrowStaged(id: number, patch: Partial<Pick<GrowStagedRow, (typeof GROW_STAGED_PATCH_COLUMNS)[number]>>, now: string): void {
+    const keys = GROW_STAGED_PATCH_COLUMNS.filter((k) => k in patch);
+    const sets = [...keys.map((k) => `${k} = ?`), "updated_at = ?"].join(", ");
+    this.db.prepare(`UPDATE grow_staged SET ${sets} WHERE id = ?`).run(...keys.map((k) => patch[k] ?? null), now, id);
+  }
+
+  deleteGrowStaged(id: number): void {
+    this.db.prepare(`DELETE FROM grow_staged WHERE id = ?`).run(id);
+  }
+
+  /** Pending (staged|approved) rows of `name`, except `exceptId`, fail with `code`; a row mid-publish is never touched. */
+  supersedeGrowStaged(name: string, exceptId: number | null, code: "superseded" | "undone", now: string): number {
+    return Number(this.db.prepare(`UPDATE grow_staged SET state = 'failed', code = ?, claimed_at = NULL, updated_at = ? WHERE name = ? AND state IN ('staged','approved') AND (? IS NULL OR id <> ?)`)
+      .run(code, now, name, exceptId, exceptId).changes);
+  }
+
+  /** Operation log: plain statements only, so the executor can call these inside its own transaction. */
+  insertGrowOp(i: { id: string; kind: GrowOpRow["kind"]; source: GrowOpRow["source"]; name: string; staged_id: number | null; request_id: number | null; target_json: string | null; reason: string | null; undo_version_id: number | null; now: string }): GrowOpRow {
+    this.db.prepare(`INSERT INTO grow_ops (id, kind, source, name, staged_id, request_id, target_json, reason, undo_version_id, state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`)
+      .run(i.id, i.kind, i.source, i.name, i.staged_id, i.request_id, i.target_json, i.reason, i.undo_version_id, i.now, i.now);
+    const row = this.getGrowOp(i.id);
+    if (!row) throw new Error(`grow op ${i.id} missing after insert`);
+    return row;
+  }
+
+  getGrowOp(id: string): GrowOpRow | undefined {
+    return this.db.prepare(`SELECT ${GROW_OP_COLUMNS} FROM grow_ops WHERE id = ?`).get<GrowOpRow>(id);
+  }
+
+  pendingGrowOps(name?: string): GrowOpRow[] {
+    return name === undefined
+      ? this.db.prepare(`SELECT ${GROW_OP_COLUMNS} FROM grow_ops WHERE state = 'pending' ORDER BY created_at, rowid`).all<GrowOpRow>()
+      : this.db.prepare(`SELECT ${GROW_OP_COLUMNS} FROM grow_ops WHERE state = 'pending' AND name = ? ORDER BY created_at, rowid`).all<GrowOpRow>(name);
+  }
+
+  getGrowOpByRequest(request_id: number): GrowOpRow | undefined {
+    return this.db.prepare(`SELECT ${GROW_OP_COLUMNS} FROM grow_ops WHERE request_id = ?`).get<GrowOpRow>(request_id);
+  }
+
+  bumpGrowOpFailure(id: string): number {
+    const r = this.db.prepare(`UPDATE grow_ops SET failures = failures + 1 WHERE id = ? RETURNING failures`).get<{ failures: number }>(id);
+    if (!r) throw new Error("grow op not found");
+    return r.failures;
+  }
+
+  finishGrowOp(id: string, state: "done" | "failed", commit_id: string | null, now: string): void {
+    this.db.prepare(`UPDATE grow_ops SET state = ?, commit_id = ?, updated_at = ? WHERE id = ? AND state = 'pending'`).run(state, commit_id, now, id);
+  }
+
+  insertGrowVersion(v: { name: string; op_id: string; commit_id: string; content_hash: string; fields_json: string; at: string }): number {
+    const r = this.db.prepare(`INSERT INTO grow_versions (name, op_id, commit_id, content_hash, fields_json, at) VALUES (?, ?, ?, ?, ?, ?)`)
+      .run(v.name, v.op_id, v.commit_id, v.content_hash, v.fields_json, v.at);
+    return Number(r.lastInsertRowid);
+  }
+
+  latestGrowVersion(name: string): GrowVersionRow | undefined {
+    const r = this.db.prepare(`SELECT ${GROW_VERSION_COLUMNS} FROM grow_versions WHERE name = ? AND undone = 0 ORDER BY id DESC LIMIT 1`).get<GrowVersionDbRow>(name);
+    return r ? toGrowVersion(r) : undefined;
+  }
+
+  previousGrowVersion(name: string, beforeId: number): GrowVersionRow | undefined {
+    const r = this.db.prepare(`SELECT ${GROW_VERSION_COLUMNS} FROM grow_versions WHERE name = ? AND undone = 0 AND id < ? ORDER BY id DESC LIMIT 1`).get<GrowVersionDbRow>(name, beforeId);
+    return r ? toGrowVersion(r) : undefined;
+  }
+
+  markGrowVersionUndone(id: number): void {
+    this.db.prepare(`UPDATE grow_versions SET undone = 1 WHERE id = ?`).run(id);
+  }
+
+  listGrowVersions(name: string): GrowVersionRow[] {
+    return this.db.prepare(`SELECT ${GROW_VERSION_COLUMNS} FROM grow_versions WHERE name = ? ORDER BY id`).all<GrowVersionDbRow>(name).map(toGrowVersion);
+  }
+
+  insertGrowReview(r: Omit<GrowReviewRow, "id">): number {
+    const res = this.db.prepare(`INSERT INTO grow_reviews (staged_id, name, content_hash, pass, code, findings_json, reviewer_model, input_hash, author_families, undo_reasons_n, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(r.staged_id, r.name, r.content_hash, r.pass ? 1 : 0, r.code, r.findings_json, r.reviewer_model, r.input_hash, r.author_families, r.undo_reasons_n, r.at);
+    return Number(res.lastInsertRowid);
+  }
+
+  getPassingGrowReview(staged_id: number, content_hash: string): GrowReviewRow | undefined {
+    const r = this.db.prepare(`SELECT ${GROW_REVIEW_COLUMNS} FROM grow_reviews WHERE staged_id = ? AND content_hash = ? AND pass = 1 ORDER BY id DESC LIMIT 1`).get<GrowReviewDbRow>(staged_id, content_hash);
+    return r ? toGrowReview(r) : undefined;
+  }
+
+  listGrowReviews(name: string): GrowReviewRow[] {
+    return this.db.prepare(`SELECT ${GROW_REVIEW_COLUMNS} FROM grow_reviews WHERE name = ? ORDER BY id`).all<GrowReviewDbRow>(name).map(toGrowReview);
+  }
+
+  enqueueGrowRequest(i: { idempotency_key: string; kind: "undo" | "adopt"; name: string; reason: string | null; chat_id: string | null; now: string }): boolean {
+    const r = this.db.prepare(`INSERT OR IGNORE INTO grow_requests (idempotency_key, kind, name, reason, chat_id, state, created_at) VALUES (?, ?, ?, ?, ?, 'queued', ?)`)
+      .run(i.idempotency_key, i.kind, i.name, i.reason, i.chat_id, i.now);
+    return Number(r.changes) === 1;
+  }
+
+  dueGrowRequests(): GrowRequestRow[] {
+    return this.db.prepare(`SELECT ${GROW_REQUEST_COLUMNS} FROM grow_requests WHERE state = 'queued' ORDER BY id`).all<GrowRequestRow>();
+  }
+
+  finishGrowRequest(id: number, result: string, now: string): void {
+    this.db.prepare(`UPDATE grow_requests SET state = 'done', result = ?, done_at = ? WHERE id = ? AND state = 'queued'`).run(result, now, id);
+  }
+
+  doneGrowRequests(): GrowRequestRow[] {
+    return this.db.prepare(`SELECT ${GROW_REQUEST_COLUMNS} FROM grow_requests WHERE state = 'done' ORDER BY id`).all<GrowRequestRow>();
+  }
+
+  markGrowRequestReplied(id: number, now: string): void {
+    this.db.prepare(`UPDATE grow_requests SET state = 'replied', done_at = COALESCE(done_at, ?) WHERE id = ? AND state = 'done'`).run(now, id);
+  }
+
+  markGrowName(name: string, now: string): void {
+    this.db.prepare(`INSERT OR IGNORE INTO grow_marks (name, marked_at) VALUES (?, ?)`).run(name, now);
+  }
+
+  isGrowMarked(name: string): boolean {
+    return this.db.prepare(`SELECT 1 AS x FROM grow_marks WHERE name = ?`).get(name) !== undefined;
+  }
+
+  unmarkGrowName(name: string): void {
+    this.db.prepare(`DELETE FROM grow_marks WHERE name = ?`).run(name);
+  }
+
+  appendGrowEvent(e: Omit<GrowEventRow, "id">): number {
+    const r = this.db.prepare(`INSERT INTO grow_events (at, run_id, chat_id, name, action, result, code, reviewer_model, commit_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(e.at, e.run_id, e.chat_id, e.name, e.action, e.result, e.code, e.reviewer_model, e.commit_id);
+    return Number(r.lastInsertRowid);
+  }
+
+  listGrowEvents(opts: { sinceId?: number; chat_id?: string; actions?: GrowEventRow["action"][]; limit?: number; newest?: boolean }): GrowEventRow[] {
+    const where: string[] = []; const args: Array<string | number> = [];
+    if (opts.sinceId !== undefined) { where.push("id > ?"); args.push(opts.sinceId); }
+    if (opts.chat_id !== undefined) { where.push("chat_id = ?"); args.push(opts.chat_id); }
+    if (opts.actions) { where.push(`action IN (${opts.actions.map(() => "?").join(", ") || "NULL"})`); args.push(...opts.actions); }
+    const w = where.length ? `WHERE ${where.join(" AND ")}` : "";
+    const limit = opts.limit !== undefined ? " LIMIT ?" : "";
+    if (opts.limit !== undefined) args.push(Math.max(0, Math.trunc(opts.limit)));
+    if (opts.newest) return this.db.prepare(`SELECT ${GROW_EVENT_COLUMNS} FROM grow_events ${w} ORDER BY id DESC${limit}`).all<GrowEventRow>(...args).reverse();
+    return this.db.prepare(`SELECT ${GROW_EVENT_COLUMNS} FROM grow_events ${w} ORDER BY id${limit}`).all<GrowEventRow>(...args);
+  }
+
+  /** Accepted submits since `since`, of one budget: an untrusted turn's carry the code `untrusted`. */
+  countGrowAcceptedSubmitsSince(since: string, untrusted: boolean): number {
+    return this.db.prepare(`SELECT COUNT(*) AS n FROM grow_events WHERE action = 'submit' AND result = 'accepted' AND at >= ? AND (CASE WHEN code = 'untrusted' THEN 1 ELSE 0 END) = ?`)
+      .get<{ n: number }>(since, untrusted ? 1 : 0)?.n ?? 0;
+  }
+
+  /** One 'read' event per (run, name) bumps uses once; a planner re-reading in one turn is not more evidence. */
+  recordGrowUse(name: string, run_id: string, now: string): boolean {
+    return this.joinTransaction(() => {
+      const r = this.db.prepare(`INSERT OR IGNORE INTO grow_events (at, run_id, chat_id, name, action, result) VALUES (?, ?, NULL, ?, 'read', 'ok')`).run(now, run_id, name);
+      if (Number(r.changes) === 0) return false;
+      this.db.prepare(`UPDATE grow_items SET uses = uses + 1, last_used_at = ? WHERE name = ?`).run(now, name);
+      return true;
+    });
+  }
+
+  addGrowUndoReason(name: string, reason: string, now: string): void {
+    this.db.prepare(`INSERT INTO grow_undo_reasons (name, at, reason) VALUES (?, ?, ?)`).run(name, now, reason);
+  }
+
+  listGrowUndoReasons(name: string): Array<{ at: string; reason: string }> {
+    return this.db.prepare(`SELECT at, reason FROM grow_undo_reasons WHERE name = ? ORDER BY id`).all<{ at: string; reason: string }>(name);
+  }
+
+  getGrowContextCursor(chat_id: string): number {
+    return this.db.prepare(`SELECT last_event_id FROM grow_context_cursor WHERE chat_id = ?`).get<{ last_event_id: number }>(chat_id)?.last_event_id ?? 0;
+  }
+
+  setGrowContextCursor(chat_id: string, last_event_id: number): void {
+    this.db.prepare(`INSERT INTO grow_context_cursor (chat_id, last_event_id) VALUES (?, ?) ON CONFLICT(chat_id) DO UPDATE SET last_event_id = excluded.last_event_id`).run(chat_id, last_event_id);
+  }
+
+  /** `category` is code-owned (the improve tick's enum), so it is safe in the event's `code`. */
+  recordGrowHint(i: { idempotency_key: string; chat_id: string | null; category: string; turn_ids: string[]; decision_id: string; now: string }): boolean {
+    return this.joinTransaction(() => {
+      const r = this.db.prepare(`INSERT OR IGNORE INTO grow_hints (idempotency_key, chat_id, category, turn_ids_json, decision_id, created_at) VALUES (?, ?, ?, ?, ?, ?)`)
+        .run(i.idempotency_key, i.chat_id, i.category, JSON.stringify(i.turn_ids), i.decision_id, i.now);
+      if (Number(r.changes) === 0) return false;
+      this.appendGrowEvent({ at: i.now, run_id: null, chat_id: i.chat_id, name: "-", action: "hint", result: "ok", code: i.category, reviewer_model: null, commit_id: null });
+      return true;
+    });
+  }
+
+  growHintExists(idempotency_key: string): boolean {
+    return this.db.prepare(`SELECT 1 AS x FROM grow_hints WHERE idempotency_key = ?`).get(idempotency_key) !== undefined;
+  }
+
+  growHintOverlapsTurns(turn_ids: string[], since: string): boolean {
+    const wanted = new Set(turn_ids);
+    return this.db.prepare(`SELECT turn_ids_json FROM grow_hints WHERE created_at >= ?`).all<{ turn_ids_json: string }>(since)
+      .some((r) => (JSON.parse(r.turn_ids_json) as string[]).some((t) => wanted.has(t)));
+  }
+
+  countGrowHintsSince(since: string): number {
+    return this.db.prepare(`SELECT COUNT(*) AS n FROM grow_hints WHERE created_at >= ?`).get<{ n: number }>(since)?.n ?? 0;
+  }
+
+  runAuthorFamilies(run_id: string): { families: string[]; unknown: boolean } {
+    const rows = this.db.prepare(`SELECT json_extract(payload_json,'$.family') AS family FROM ledger_events
+      WHERE run_id = ? AND event_type = 'llm_attempt' AND json_extract(payload_json,'$.role') = 'compose' AND json_extract(payload_json,'$.outcome') = 'ok'`).all<{ family: string | null }>(run_id);
+    const families = [...new Set(rows.map((r) => r.family).filter((f): f is string => typeof f === "string" && f.length > 0))].sort();
+    return { families, unknown: rows.length === 0 || rows.some((r) => !r.family) };
+  }
+
   // --- SP2 mail triage (spec 2026-11-09 §4). Text columns hold redacted text only; never log them. ---
 
   insertMailItem(i: MailItemInsert): void {
@@ -8820,6 +9064,17 @@ export class RunStore {
     this.applyLoudDegradationMigration();
     this.applyHostileScheduleEventMigration();
     this.applyMailTriageMigration();
+    this.applyGrowZoneMigration();
+  }
+
+  /** Grow zone 1a: additive tables, guarded by IF NOT EXISTS like the mail migration. */
+  private applyGrowZoneMigration(): void {
+    const version = "2026-11-10-grow-zone";
+    this.inTransaction(() => {
+      const applied = this.db.prepare(`SELECT version FROM schema_migrations WHERE version = ?`).get<{ version: string }>(version);
+      this.db.exec(GROW_DDL);
+      if (!applied) this.db.prepare(`INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)`).run(version, new Date().toISOString());
+    });
   }
 
   /** SP2 mail triage: five additive tables, guarded by IF NOT EXISTS like the standing-approval migration. */
@@ -9371,8 +9626,7 @@ export class RunStore {
 
   /**
    * Skill retirement spec (2026-07-29): `skill_reverify_state` — the single-row weekly
-   * latch for the suggest-only re-verify advisor (seeded NULL so arming fires immediately
-   * — a first sweep today, then weekly at the slot; mirrors radar_panel_state).
+   * latch of the re-verify advisor, which ADR 0035 deleted; the table stays with no reader or writer (seeded NULL).
    */
   private applySkillReverifyMigration(): void {
     const version = "2026-07-29-skill-reverify";

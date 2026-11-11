@@ -56,7 +56,7 @@ describe("composeSystemPrompt — the wiki section (Phase W W2)", () => {
       episodicReader: () => "- Paco lives in Sydney",
       wikiReader: () => "- ASML Q2 2026 earnings (unverified):",
       lessonsReader: () => "- be concise",
-      skillsReader: () => "### s — when: x\nbody"
+      growIndex: () => "- unit-convert — converting"
     });
     expect(prompt.indexOf(EPISODIC_SECTION_HEADER)).toBeLessThan(prompt.indexOf(WIKI_SECTION_HEADER));
     expect(prompt.indexOf(WIKI_SECTION_HEADER)).toBeLessThan(prompt.indexOf("## What you've learned"));

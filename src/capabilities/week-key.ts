@@ -83,8 +83,7 @@ const PANEL_AT_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;
 export const PANEL_DEFAULT_SCHEDULE: PanelSchedule = { day: "sun", at: "09:00" };
 
 /**
- * The shared weekly-slot grammar (spec §4, EXACT — one parser for the panel AND the skill
- * re-verify advisor, so the grammars can never drift):
+ * The shared weekly-slot grammar (spec §4, EXACT — the panel's one parser):
  *   - `undefined` → a copy of `fallback`;
  *   - trim+lowercase `"off"` → `null` (the tick never fires — no interval fallback);
  *   - else trim → lowercase → split on whitespace → exactly 2 tokens, token 1 ∈ the

@@ -10,6 +10,8 @@ describe("capability map — code decides a call's policy class, never the decla
   it("maps every other bridge tool one-to-one and unknown names to null", () => {
     expect(capabilityFor("web_search", { query: "x" })).toBe("web_search");
     expect(capabilityFor("houge_status", {})).toBe("houge_status");
+    expect(capabilityFor("grow_submit", {})).toBe("grow_submit");
+    expect(capabilityFor("grow_read", {})).toBe("grow_read");
     expect(capabilityFor("nope", {})).toBeNull();
   });
   it("classifies built-ins: read is fs_read, edit and write are fs_write", () => {

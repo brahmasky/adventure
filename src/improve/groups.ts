@@ -1,17 +1,14 @@
 import { resolveWikiEnabled } from "../capabilities/wiki.js";
-import { cosineSimilarity } from "../llm/embeddings.js";
 import type { ImproveState } from "../decisions/entries/improve-route.js";
 import type { DecisionSignal } from "../decisions/types.js";
-import type { Category } from "../jev/questions/tree.js";
+import { CATEGORIES, type Category } from "../jev/questions/tree.js";
 import type { LedgerEvent } from "../run/run-ledger.js";
 import type { ImproveSignalRow, JevVerdictRow, RunStore } from "../run/run-store.js";
-import type { SkillStore } from "../skills/skill-store.js";
 
 /** 2b-ii §3.2 grouping and §4.2 the state. Everything here is code-built; the only text is Paco's, through the redactor. */
 export const PACO_TEXT_CAP = 500;
+/** A grow hint holding any turn of a cluster this recent marks the cluster already authored. */
 export const JOB_OVERLAP_DAYS = 30;
-/** Final fix D6: a habit re-drafted every two weeks is the same theme; a job of the category this recent with a like origin turn counts. */
-export const JOB_THEME_DAYS = 90;
 export const RECURRENCE_WINDOW_DAYS = 14;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const CATEGORY_SCOPED: ReadonlySet<DecisionSignal> = new Set(["correction", "think_harder", "dig_deeper", "lesson_undone"]);
@@ -56,26 +53,26 @@ export function toolSummaryOf(events: readonly LedgerEvent[]): string {
   return counts.size === 0 ? "none" : [...counts].map(([t, n]) => `${t} ${n}`).join(" · ");
 }
 
-/** Step 0 of authorAndWriteSkill (core-worker.ts): a skill name mentioned word-bounded (the slug alphabet's complement), case-folded. */
-export function skillMentioned(metas: readonly { name: string }[], texts: readonly string[]): boolean {
+/**
+ * A live grow item is mentioned when a lower-cased text contains its name word-bounded (the slug alphabet's complement),
+ * its name with hyphens as spaces, or its whole non-empty description. Plain containment only: no fuzzy matching.
+ */
+export function skillMentioned(metas: ReadonlyArray<{ name: string; when: string }>, texts: readonly string[]): boolean {
   const lowered = texts.map((t) => t.toLowerCase());
-  return metas.some((m) => { const re = new RegExp(`(^|[^a-z0-9_-])${m.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^a-z0-9_-]|$)`); return lowered.some((t) => re.test(t)); });
+  return metas.some((m) => {
+    const name = m.name.toLowerCase();
+    const re = new RegExp(`(^|[^a-z0-9_-])${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^a-z0-9_-]|$)`);
+    const spaced = name.includes("-") ? name.replace(/-/g, " ") : null;
+    const when = m.when.trim().toLowerCase();
+    return lowered.some((t) => re.test(t) || (spaced !== null && t.includes(spaced)) || (when.length > 0 && t.includes(when)));
+  });
 }
 
-/** Final fix D6: any origin turn of a same-category job in JOB_THEME_DAYS embeds at or over the gate with any turn of the cluster. */
-function likeRecentJob(d: StateDeps, rec: RecurrenceInfo): boolean {
-  if (d.recurrenceGate === undefined) return false;
-  const since = new Date(Date.parse(d.now) - JOB_THEME_DAYS * DAY_MS).toISOString();
-  const past = [...d.store.getTurnEmbeddings(d.store.jobOriginTurnIds(rec.category, since)).values()];
-  if (past.length === 0) return false;
-  const mine = [...d.store.getTurnEmbeddings(rec.turnIds).values()];
-  return mine.some((v) => past.some((p) => p.length === v.length && cosineSimilarity(v, p) >= d.recurrenceGate!));
-}
+/** The category a grow hint may carry (its event code): the code's own enum; anything else (a stored TEXT value) is `other`. */
+export const hintCategory = (c: unknown): Category => (CATEGORIES.includes(c as Category) ? (c as Category) : "other");
 
-export interface StateDeps { store: RunStore; env: NodeJS.ProcessEnv; now: string; skills: SkillStore; redact: (text: string) => string;
-  scheduleHints: ReadonlyMap<string, { schedule_id: string; hour: number }>; since14: readonly ImproveSignalRow[];
-  /** The recurrence cosine gate; with it, a cluster like a recent job's origin is already authored (final fix D6). Unset: turn-id overlap only. */
-  recurrenceGate?: number }
+export interface StateDeps { store: RunStore; env: NodeJS.ProcessEnv; now: string; redact: (text: string) => string;
+  scheduleHints: ReadonlyMap<string, { schedule_id: string; hour: number }>; since14: readonly ImproveSignalRow[] }
 
 const capPoints = (s: string, n: number): string => Array.from(s).slice(0, n).join("");
 
@@ -96,8 +93,9 @@ export function buildImproveState(g: SignalGroup, d: StateDeps): ImproveState {
     pacoText, toolSummary: about ? toolSummaryOf(d.store.getLedgerEvents(about)) : "none",
     lastImprovement: last ? { target: last.target, ageDays: Math.floor((Date.parse(d.now) - Date.parse(last.at)) / DAY_MS) } : null,
     recurrence: g.recurrence ? { clusterId: g.recurrence.clusterId, turnIds: g.recurrence.turnIds, idempotencyKey: g.recurrence.idempotencyKey, spanDays: g.recurrence.spanDays } : null,
-    alreadyAuthored: g.recurrence ? d.store.jobOverlapsTurns(g.recurrence.turnIds, overlapSince) || likeRecentJob(d, g.recurrence) : false,
-    skillExists: g.recurrence ? skillMentioned(d.skills.list(), g.recurrence.texts) : false,
+    // ADR 0035: a hint for the key, or one holding any of the cluster's turns, means the planner was already told
+    alreadyAuthored: g.recurrence ? d.store.growHintExists(g.recurrence.idempotencyKey) || d.store.growHintOverlapsTurns(g.recurrence.turnIds, overlapSince) : false,
+    skillExists: g.recurrence ? skillMentioned(d.store.listGrowItems("live").map((i) => ({ name: i.name, when: i.description })), g.recurrence.texts) : false,
     wikiArmed: resolveWikiEnabled(d.env),
     scheduleHint: g.signal === "approval_expired" ? d.scheduleHints.get(g.value) ?? null : null,
     stale: g.stale, statedRuleSaved: g.signal === "correction" && g.newest.run_id !== null && d.store.memorySaveTriggered(g.newest.run_id),

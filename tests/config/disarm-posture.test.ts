@@ -55,9 +55,6 @@ describe("DISARM_FLAGS", () => {
       // identity reads too.
       "HOUGE_GOOGLE_ENABLED",
       "HOUGE_LESSON_CONSOLIDATE_ENABLED",
-      // Skill retirement spec (2026-07-29): the weekly re-verify advisor re-scores Houge's
-      // OWN procedures — evolution surface, covered like lesson consolidation.
-      "HOUGE_SKILL_REVERIFY_ENABLED",
       // Idea Radar R1 (spec 2026-07-24): unattended external reads + a daily metered LLM
       // call + durable card writes — the STOP switch covers it.
       "HOUGE_RADAR_ENABLED",
@@ -69,10 +66,12 @@ describe("DISARM_FLAGS", () => {
       "HOUGE_MEDIA_INGEST_ENABLED",
       // Jev System One master (ADR 0029): /disarm switches every Jev lane off in one write.
       "HOUGE_JEV_ENABLED",
-      // 2b-ii follow-up: the improvement tick turns Paco's taps into proposals and skill jobs — an evolution surface.
+      // 2b-ii follow-up: the improvement tick turns Paco's taps into proposals and grow hints — an evolution surface.
       "HOUGE_IMPROVE_ENABLED",
       // SP2 mail triage: polls Paco's inbox unattended.
-      "HOUGE_MAIL_ENABLED"
+      "HOUGE_MAIL_ENABLED",
+      // grow zone writes (ADR 0035): Houge adding or changing his own skills.
+      "HOUGE_GROW_ENABLED"
     ]);
     expect(DISARM_FLAGS).not.toContain("HOUGE_EPISODIC_ENABLED");
   });

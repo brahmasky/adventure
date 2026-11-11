@@ -23,7 +23,7 @@ function statusText(dataDir: string = dir): string {
   const root = join(dir, "project-root");
   mkdirSync(root, { recursive: true });
   const s = RunStore.openInMemory();
-  new Gateway(s, undefined, root, undefined, undefined, { dataDir }).intake(buildTypedTaskEvent({ source: "telegram", type: "status", requested_by: { kind: "user", id: "paco" },
+  new Gateway(s, undefined, root, undefined, { dataDir }).intake(buildTypedTaskEvent({ source: "telegram", type: "status", requested_by: { kind: "user", id: "paco" },
     notify: { kind: "telegram", chat_id: "222" }, idempotency_key: "telegram:fd", source_reference: "telegram:update:fd" }), NOW);
   const text = String([...drainOutbox(s).values()][0]?.text);
   s.close();

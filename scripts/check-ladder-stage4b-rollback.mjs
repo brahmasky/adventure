@@ -108,11 +108,13 @@ function quietOtherSchedules(store, schedule_id) {
   store.db.prepare(`UPDATE scheduled_tasks SET state = 'disabled' WHERE state = 'enabled' AND schedule_id <> ?`).run(schedule_id);
 }
 const dueSchedule = (store) => store.addScheduledTask({ ...SCHEDULE_SPEC, next_run_at: new Date(Date.now() - 60_000).toISOString(), now: new Date().toISOString() }).schedule_id;
+/** The old Gateway constructor has one more positional parameter than the new one (length 5 vs 4): put the options object where the loaded build expects it. */
+const gatewayPad = (m, options) => (m.Gateway.length >= 5 ? [undefined, options] : [options]);
 function seedStanding(d, s, root) {
   const now = new Date().toISOString();
   const schedule_id = dueSchedule(s); // due: the old build's tick must fire it
   quietOtherSchedules(s, schedule_id);
-  const r = new d.Gateway(s, undefined, undefined, undefined, undefined, { dataDir: root }).intake(d.buildTypedTaskEvent({ source: "schedule", type: "turn", program: "turn", goal: "rollback 4B check-in",
+  const r = new d.Gateway(s, undefined, undefined, undefined, ...gatewayPad(d, { dataDir: root })).intake(d.buildTypedTaskEvent({ source: "schedule", type: "turn", program: "turn", goal: "rollback 4B check-in",
     requested_by: { kind: "schedule", id: schedule_id }, notify: { kind: "telegram", chat_id: CHAT }, idempotency_key: `schedule:${schedule_id}:rb4b:${nextN()}`, source_reference: `scheduled_tasks.${schedule_id}` }));
   if (!r.ok || !r.run_id) throw new Error("standing seed intake failed");
   const run = r.run_id;

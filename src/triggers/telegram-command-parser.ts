@@ -13,7 +13,7 @@ export type TelegramCommand =
   | { type: "help" }
   | { type: "unknown_command"; attempted: string }
   | { type: "lessons"; scope?: string }
-  | { type: "skills"; scope?: string; action?: "retire" | "restore"; name?: string }
+  | { type: "grow"; action: "list" | "undo" | "trust"; name?: string; reason?: string }
   | { type: "forget"; scope: string }
   | { type: "schedule_admin"; action: "list" }
   | { type: "schedule_admin"; action: "cancel"; schedule_id: string }
@@ -66,7 +66,8 @@ export function parseTelegramCommand(text: string): TelegramCommandParseResult {
   if (command === "/idea") return parseIdea(rest);
   if (command === "/help") return { ok: true, command: { type: "help" } };
   if (command === "/lessons") return parseLessons(rest);
-  if (command === "/skills") return parseSkills(rest);
+  if (command === "/grow") return parseGrow(rest);
+  if (command === "/skills") return { ok: true, command: { type: "grow", action: "list" } }; // one-release alias of /grow
   if (command === "/forget") return parseForget(rest);
   if (command === "/schedule") return parseSchedule(rest);
   if (command === "/approve") return requiredApproval("approve", rest);
@@ -144,17 +145,14 @@ function parseLessons(words: string[]): TelegramCommandParseResult {
     : { ok: true, command: { type: "lessons" } };
 }
 
-function parseSkills(words: string[]): TelegramCommandParseResult {
-  if (words.length === 0) return { ok: true, command: { type: "skills" } };
-  const first = words[0]!.toLowerCase();
-  // Lifecycle verbs (`retire`/`restore <name>`) take exactly one name; everything else is
-  // the scope-arg form — including `/skills retired` (the graveyard view), deliberately.
-  if (first === "retire" || first === "restore") {
-    if (words.length !== 2) return invalid(`/skills ${first} requires exactly one skill name`);
-    return { ok: true, command: { type: "skills", action: first, name: words[1]! } };
-  }
-  if (words.length > 1) return invalid("/skills requires at most one scope");
-  return { ok: true, command: { type: "skills", scope: words[0]! } };
+function parseGrow(words: string[]): TelegramCommandParseResult {
+  const action = words[0]?.toLowerCase();
+  if (words.length === 0 || (action === "list" && words.length === 1)) return { ok: true, command: { type: "grow", action: "list" } };
+  if (action !== "undo" && action !== "trust") return invalid("/grow takes nothing (or: list), or: undo <name> [reason], or: trust <name>");
+  const name = words[1] ?? "";
+  if (!/^[a-z0-9-]{3,48}$/.test(name)) return invalid("/grow undo|trust requires a skill name");
+  const reason = action === "undo" ? words.slice(2).join(" ") : "";
+  return { ok: true, command: { type: "grow", action, name, ...(reason ? { reason } : {}) } };
 }
 
 function parseForget(words: string[]): TelegramCommandParseResult {
@@ -373,22 +371,18 @@ export function parseDecisionReviewCallback(data: unknown): { decision_id: strin
 export const PR_PREFIX = "dec:pr:";
 export const LM_PREFIX = "dec:lm:";
 const DEC_PROPOSAL = new RegExp(`^${PR_PREFIX}(pr_${LC_UUID}):(acc|dis|rev)$`);
-const DEC_SKILL = new RegExp(`^dec:sk:(job_${LC_UUID}):(accept|dismiss|replace|keep)$`);
 const DEC_STANDING = new RegExp(`^dec:sa:(sa_${LC_UUID}):(revoke)$`);
 const DEC_MOVE = new RegExp(`^${LM_PREFIX}(lm_${LC_UUID}):(revoke)$`);
 export type ImprovementTap =
   | { kind: "pr"; id: string; action: "acc" | "dis" | "rev" }
-  | { kind: "sk"; id: string; action: "accept" | "dismiss" | "replace" | "keep" }
   | { kind: "lm"; id: string; action: "revoke" }
   | { kind: "sa"; id: string; action: "revoke" };
 
-/** 2b-ii §6.3: the four improvement tap families (`dec:sa:` is Stage 4A's Revoke, 53 bytes); at most 64 bytes; anything else is null. */
+/** 2b-ii §6.3: the three improvement tap families (`dec:sa:` is Stage 4A's Revoke, 53 bytes); at most 64 bytes; anything else is null (a stale `dec:sk:` job button included, ADR 0035). */
 export function parseImprovementCallback(data: unknown): ImprovementTap | null {
   if (typeof data !== "string") return null;
   const pr = DEC_PROPOSAL.exec(data);
   if (pr) return { kind: "pr", id: pr[1]!, action: pr[2] as "acc" | "dis" | "rev" };
-  const sk = DEC_SKILL.exec(data);
-  if (sk) return { kind: "sk", id: sk[1]!, action: sk[2] as "accept" | "dismiss" | "replace" | "keep" };
   const lm = DEC_MOVE.exec(data);
   if (lm) return { kind: "lm", id: lm[1]!, action: "revoke" };
   const sa = DEC_STANDING.exec(data);

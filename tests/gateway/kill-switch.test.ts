@@ -73,7 +73,7 @@ describe("/kill (ADR 0018)", () => {
     const store = RunStore.openInMemory();
     try {
       let shutdowns = 0;
-      const gateway = new Gateway(store, undefined, undefined, undefined, {
+      const gateway = new Gateway(store, undefined, undefined, {
         requestShutdown: () => { shutdowns += 1; }
       });
 
@@ -102,7 +102,7 @@ describe("/kill (ADR 0018)", () => {
       const event = killEvent();
       let ackQueuedAtShutdown = -1;
       let tombstoneAtShutdown: unknown = null;
-      const gateway = new Gateway(store, undefined, undefined, undefined, {
+      const gateway = new Gateway(store, undefined, undefined, {
         requestShutdown: () => {
           ackQueuedAtShutdown = store.countNotificationsByIdempotencyKey(`${event.idempotency_key}:kill`);
           tombstoneAtShutdown = readTombstone(process.env);
@@ -135,7 +135,7 @@ describe("/kill (ADR 0018)", () => {
     const store = RunStore.openInMemory();
     try {
       let shutdowns = 0;
-      const gateway = new Gateway(store, undefined, undefined, undefined, {
+      const gateway = new Gateway(store, undefined, undefined, {
         requestShutdown: () => { shutdowns += 1; }
       });
       const event = killEvent();
@@ -168,7 +168,7 @@ describe("/kill (ADR 0018)", () => {
   it("is EXEMPT from the per-chat command rate limit — the emergency stop can't be queued behind chatter", () => {
     const store = RunStore.openInMemory();
     try {
-      const gateway = new Gateway(store, undefined, undefined, undefined, { requestShutdown: () => {} });
+      const gateway = new Gateway(store, undefined, undefined, { requestShutdown: () => {} });
       // Saturate the 60s window (5 accepted commands) for this actor+chat.
       for (let i = 0; i < 5; i += 1) {
         store.recordTelegramCommandAudit({

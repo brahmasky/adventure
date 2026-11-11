@@ -70,8 +70,10 @@ function isolate(root) {
     HOUGE_TOMBSTONE_PATH: join(root, "houge.kill"), HOUGE_PARK_MARKER_PATH: join(root, "houge.parked"), HOUGE_DISARM_PATH: join(root, "houge.disarm") });
 }
 
+/** The old Gateway constructor has one more positional parameter than the new one (length 5 vs 4): put the options object where the loaded build expects it. */
+const gatewayPad = (m, options) => (m.Gateway.length >= 5 ? [undefined, options] : [options]);
 function intake(m, store, dataDir, event) {
-  const r = new m.Gateway(store, undefined, undefined, undefined, undefined, { dataDir }).intake(m.buildTypedTaskEvent(event));
+  const r = new m.Gateway(store, undefined, undefined, undefined, ...gatewayPad(m, { dataDir })).intake(m.buildTypedTaskEvent(event));
   if (!r.ok || !r.run_id) throw new Error(`intake failed: ${JSON.stringify(r)}`);
   return r.run_id;
 }

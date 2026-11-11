@@ -1,0 +1,13 @@
+{
+  "name": "grow_read",
+  "description": "Read one of your own procedures from your grow zone by its name in the index. Read it before a task it matches, then follow it. With what set to review, returns why your last submission of that name failed review.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "name": { "type": "string", "maxLength": 48 },
+      "what": { "type": "string", "enum": ["skill", "review"] }
+    },
+    "required": ["name"],
+    "additionalProperties": false
+  }
+}

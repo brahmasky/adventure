@@ -1,6 +1,6 @@
 # ADR 0031: Chat carries what needs Paco; the change log carries the rest
 
-- **Status:** accepted 2026-11-04, signed off by Paco (scope and decisions 1-A, 2-A, 3-A, 4-A approved by Paco 2026-11-03; spec approved 2026-11-03); amended 2026-11-07 (the digest leaves chat; improvement cards and two log topics join — signed by Paco 2026-11-08); amended 2026-11-09 (spec 2026-11-09-sp2-mail-triage: `mail_card` chat and `mail_log` log join the topic set; silent sends and URL buttons; three mail incident kinds; retention strips the outbox) — awaiting Paco's signature
+- **Status:** accepted 2026-11-04, signed off by Paco (scope and decisions 1-A, 2-A, 3-A, 4-A approved by Paco 2026-11-03; spec approved 2026-11-03); amended 2026-11-07 (the digest leaves chat; improvement cards and two log topics join — signed by Paco 2026-11-08); amended 2026-11-09 (spec 2026-11-09-sp2-mail-triage: `mail_card` chat and `mail_log` log join the topic set; silent sends and URL buttons; three mail incident kinds; retention strips the outbox) — awaiting Paco's signature; amended 2026-11-10 by [ADR 0035](0035-grow-zone-verification.md) (grow zone: the `/skills retire` line is gone; incident routes `grow_zone_unavailable`, `grow_publish_failed`, `grow_seed_failed`, `grow_backup_failed`; log topic `grow_log`) — signed by Paco 2026-11-10 (spec approval)
 - **Date:** 2026-11-03
 - **Deciders:** Paco
 - **Amends:** [0024](0024-introspection-invariant-sweep.md) (sweep alerts), [0028](0028-omp-runtime.md) (model tiers, omp
@@ -36,8 +36,8 @@ in ledger rows but nothing read it back in plain words.
 ## Consequences
 
 - Chat carries replies, run reports, approvals, memory cards, rating asks, idea panel, standing cards,
-  **improvement proposal cards** (`improve_card`), self-write notices, budget fuses, a failing skill re-check (it asks for `/skills retire`) and real
-  outages. Model switches, internal self-checks and routine Jev notices are read with `/changes`.
+  **improvement proposal cards** (`improve_card`), self-write notices, budget fuses, and real
+  outages. (Amended 2026-11-10 by ADR 0035: the failing skill re-check and its `/skills retire` ask are gone with the re-verify tick.) Model switches, internal self-checks and routine Jev notices are read with `/changes`.
 - Two messages for one event become one where an incident and its card both fired (`hostile_schedule_turn`).
 - What else changed in code: a duplicate log write returns `duplicate_log` (no outbox record exists), not `duplicate`;
   an urgent card with no chat now throws instead of queueing an undeliverable row (`standing_grant` keeps "no grant
@@ -64,6 +64,13 @@ in ledger rows but nothing read it back in plain words.
 - Rollback: revert + rebuild. The previous build ignores `change_log` and sends background notices to chat again; after a
   tick that retired the card-tap override, its narrower gemini-pro pattern reopens `role_unresolved` for judges:2 and the
   card returns (a re-tap restores it).
+
+Amended 2026-11-10 by ADR 0035 (grow zone, signed by Paco 2026-11-10): four incident kinds join `INCIDENT_ROUTE` and one
+topic joins the closed set. `grow_zone_unavailable` (**page**: the zone cannot be written; reading continues; with subject `apply`, the page says a commit's database half is being retried and writing continues) and
+`grow_publish_failed` (**page**: a finished skill was dropped after repeated write failures) tell Paco what to do or what
+was lost; `grow_seed_failed` (**log**: an exemplar or migrated skill could not be brought in at start-up) and
+`grow_backup_failed` (**log**: the zone's bundle failed this round; retried) are self-checks. The topic `grow_log` is
+**log**: one `/changes` line per publish and per undo, from the grow operation log. No Telegram push for a grow write.
 
 ## Alternatives considered
 

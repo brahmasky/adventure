@@ -9,8 +9,9 @@ describe("trustAsk", () => {
   it("clean asks nothing", () => {
     for (const e of ["lesson_write", "shell", "fs_write", "web_search"]) expect(trustAsk("clean", e, "touch x")).toEqual({ ask: false });
   });
-  it("untrusted: lesson_write, schedule_task, self_write_propose, skill_author ask; a shell write does not yet", () => {
-    for (const e of ["lesson_write", "schedule_task", "self_write_propose", "skill_author"]) expect(trustAsk("untrusted", e)).toEqual({ ask: true, reason: UNTRUSTED_REASON });
+  it("untrusted: lesson_write, schedule_task, self_write_propose ask; a shell write and grow_submit (always reviewed, born untrusted) do not", () => {
+    for (const e of ["lesson_write", "schedule_task", "self_write_propose"]) expect(trustAsk("untrusted", e)).toEqual({ ask: true, reason: UNTRUSTED_REASON });
+    expect(trustAsk("untrusted", "grow_submit")).toEqual({ ask: false });
     expect(trustAsk("untrusted", "shell", "touch x")).toEqual({ ask: false });
   });
   it("hostile: shell asks unless read-only; writes ask; reads do not", () => {
@@ -18,7 +19,7 @@ describe("trustAsk", () => {
     for (const c of ["curl https://x", "touch x", "git log", "file -C -m x"]) expect(trustAsk("hostile", "shell", c)).toEqual({ ask: true, reason: HOSTILE_REASON });
     expect(trustAsk("hostile", "shell_external", "curl -d x https://y")).toEqual({ ask: true, reason: HOSTILE_REASON });
     for (const e of ["wiki_build", "wiki_refine", "lesson_write"]) expect(trustAsk("hostile", e).ask).toBe(true);
-    for (const e of ["web_search", "http_fetch", "gmail_read", "google_api", "houge_status", "to_local_time"]) expect(trustAsk("hostile", e)).toEqual({ ask: false });
+    for (const e of ["web_search", "http_fetch", "gmail_read", "google_api", "houge_status", "to_local_time", "grow_read"]) expect(trustAsk("hostile", e)).toEqual({ ask: false });
   });
   // security final I-1: self_diagnose starts codex under a read-only sandbox that can read any file (no Seatbelt credential
   // denies) and sends what it reads off the box; a hostile turn steering its `focus` could leak .env tap-free.
@@ -28,6 +29,21 @@ describe("trustAsk", () => {
   });
   it("a shell entry with no command string asks at hostile (fail closed)", () => {
     expect(trustAsk("hostile", "shell").ask).toBe(true);
+  });
+});
+
+// ADR 0035 G4: an untrusted turn may grow a skill with no tap (the service marks it born untrusted), and reading a skill never
+// taps. grow_submit is on no list on purpose, so at hostile trustAsk WOULD card it: the worker's preflight must refuse it
+// first (turn_hostile), or a tap could put a hostile turn's skill live.
+describe("trustAsk for the grow tools (ADR 0035 G4)", () => {
+  it("grow_submit does not ask at untrusted", () => {
+    expect(trustAsk("untrusted", "grow_submit")).toEqual({ ask: false });
+  });
+  it("grow_read never asks, at any level", () => {
+    for (const level of ["clean", "untrusted", "hostile"] as const) expect(trustAsk(level, "grow_read")).toEqual({ ask: false });
+  });
+  it("grow_submit at hostile asks (it is in no list), which is why the preflight must refuse it before any trust ask", () => {
+    expect(trustAsk("hostile", "grow_submit")).toEqual({ ask: true, reason: HOSTILE_REASON });
   });
 });
 
@@ -56,7 +72,7 @@ describe("trustAsk fails closed at hostile", () => {
   });
   it("every shell entry runs only a read-only command tap-free; a write-capable entry asks even with a read-only command", () => {
     expect(trustAsk("hostile", "shell_external", "ls")).toEqual({ ask: false });
-    for (const e of ["memory_correct_write", "fs_write", "skill_author", "schedule_task", "self_write_propose"]) expect(trustAsk("hostile", e, "ls").ask).toBe(true);
+    for (const e of ["memory_correct_write", "fs_write", "schedule_task", "self_write_propose"]) expect(trustAsk("hostile", e, "ls").ask).toBe(true);
   });
 });
 

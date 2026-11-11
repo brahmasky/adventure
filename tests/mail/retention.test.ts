@@ -104,6 +104,8 @@ describe("/inbox replies in the outbox", () => {
     const n = store.enqueueNotification({ topic: "reply", target: { kind: "telegram", chat_id: "555" }, intent_type: "progress", idempotency_key: "mail:inbox:u9:inbox",
       correlation_id: "t", payload: { text: "1. Ann · Invoice (cleared)" } });
     if (n.status !== "queued") throw new Error("not queued");
+    // Pin the row to the fixture clock: purge's cutoff is NOW + 1 day, not the wall clock.
+    (store as any).db.prepare("UPDATE notification_outbox SET created_at = ? WHERE notification_id = ?").run(daysAgo(0), n.record.notification_id);
     expect(purgeMail(store, NOW).stripped).toBe(1);
     expect(payload(store, n.record.notification_id).payload_json).not.toContain("Invoice");
     expect(purgeMail(store, NOW).stripped).toBe(0);

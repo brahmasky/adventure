@@ -39,7 +39,7 @@ describe("memlane callbacks", () => {
     const vid = store.insertJevVerdict({ run_id: original, category: "memory", breadth: 1, reasoning: 1, actions: 0, sets_rule: 0.95, rule_scope: "ask",
       lane: "memory", role: "default", effort: null, cascade: null, save_outcome: "saved", route_outcome: "act", reason: "routed", skip_reason: null, quoted_turn_id: null });
     store.updateJevVerdict(vid, { paco_correction: "think_harder" }); // an earlier, weaker label is overwritten by the tap
-    const gateway = new Gateway(store, undefined, undefined, undefined, undefined, { dataDir: dir });
+    const gateway = new Gateway(store, undefined, undefined, undefined, { dataDir: dir });
     expect(gateway.intake(tap("memlane_ask", { run_id: original })).ok).toBe(true);
     expect(store.getJevVerdictForRun(original)).toMatchObject({ verdict_id: vid, paco_correction: "ask_anyway" });
     store.close();
@@ -63,7 +63,7 @@ describe("memlane callbacks", () => {
     const store = RunStore.openInMemory(); const dir = mkdtempSync(join(tmpdir(), "mla-"));
     const original = seedRun(store, "以后回复短一点");
     const jd = decision(store, original);
-    const gateway = new Gateway(store, undefined, undefined, undefined, undefined, { dataDir: dir });
+    const gateway = new Gateway(store, undefined, undefined, undefined, { dataDir: dir });
     const r = gateway.intake(tap("memlane_ask", { run_id: original }));
     expect(r.ok && r.status).toBe("created");
     const newRun = r.ok && "run_id" in r ? r.run_id : "";
@@ -85,7 +85,7 @@ describe("memlane callbacks", () => {
   it("a redelivered callback returns the same run with no second triage_override row", () => {
     const store = RunStore.openInMemory(); const dir = mkdtempSync(join(tmpdir(), "mla-"));
     const original = seedRun(store, "msg");
-    const gateway = new Gateway(store, undefined, undefined, undefined, undefined, { dataDir: dir });
+    const gateway = new Gateway(store, undefined, undefined, undefined, { dataDir: dir });
     const first = gateway.intake(tap("memlane_ask", { run_id: original }, "555", "same-key"));
     const again = gateway.intake(tap("memlane_ask", { run_id: original }, "555", "same-key"));
     expect(first.ok && again.ok && again.run_id).toBe(first.ok && first.run_id);
@@ -95,7 +95,7 @@ describe("memlane callbacks", () => {
   it("a label-write failure leaves no new run", () => {
     const store = RunStore.openInMemory(); const dir = mkdtempSync(join(tmpdir(), "mla-"));
     const original = seedRun(store, "msg");
-    const gateway = new Gateway(store, undefined, undefined, undefined, undefined, { dataDir: dir });
+    const gateway = new Gateway(store, undefined, undefined, undefined, { dataDir: dir });
     const spy = vi.spyOn(store, "recordMemoryEvent").mockImplementationOnce(() => { throw new Error("boom"); });
     expect(() => gateway.intake(tap("memlane_ask", { run_id: original }, "555", "fail-key"))).toThrow("boom");
     spy.mockRestore();
@@ -109,7 +109,7 @@ describe("memlane callbacks", () => {
   // one lane in seven days page Paco for that lane; nothing is disarmed (he raises a bar or switches the lane off).
   it("three taps on the answer lane in seven days open triage_overrides for that lane, and write no disarm marker", () => {
     const store = RunStore.openInMemory(); const dir = mkdtempSync(join(tmpdir(), "mla-"));
-    const gateway = new Gateway(store, undefined, undefined, undefined, undefined, { dataDir: dir });
+    const gateway = new Gateway(store, undefined, undefined, undefined, { dataDir: dir });
     for (let i = 0; i < TRIAGE_OVERRIDE_LIMIT; i++) {
       const run = laneRun(store, `msg ${i}`, "answer");
       expect(gateway.intake(tap("memlane_ask", { run_id: run }, "555", `k:${i}`, `actor${i}`)).ok).toBe(true);
@@ -120,7 +120,7 @@ describe("memlane callbacks", () => {
   });
   it("two taps on answer and one on lookup open nothing (the count is per lane)", () => {
     const store = RunStore.openInMemory(); const dir = mkdtempSync(join(tmpdir(), "mla-"));
-    const gateway = new Gateway(store, undefined, undefined, undefined, undefined, { dataDir: dir });
+    const gateway = new Gateway(store, undefined, undefined, undefined, { dataDir: dir });
     for (const [i, lane] of (["answer", "answer", "lookup"] as const).entries()) {
       expect(gateway.intake(tap("memlane_ask", { run_id: laneRun(store, `m${i}`, lane) }, "555", `p:${i}`, `b${i}`)).ok).toBe(true);
     }
@@ -129,7 +129,7 @@ describe("memlane callbacks", () => {
   });
   it("the quiet resolver closes a lane's page once its taps age out of the window, so the next episode pages again", () => {
     const store = RunStore.openInMemory(); const dir = mkdtempSync(join(tmpdir(), "mla-"));
-    const gateway = new Gateway(store, undefined, undefined, undefined, undefined, { dataDir: dir });
+    const gateway = new Gateway(store, undefined, undefined, undefined, { dataDir: dir });
     for (let i = 0; i < TRIAGE_OVERRIDE_LIMIT; i++) gateway.intake(tap("memlane_ask", { run_id: laneRun(store, `q${i}`, "lookup") }, "555", `r:${i}`, `c${i}`));
     expect(resolveQuietTriageOverrides(store)).toBe(0);
     expect(overridePages(store)).toHaveLength(1);
@@ -148,7 +148,7 @@ describe("memlane callbacks", () => {
   });
   it("an override older than seven days (by the injected clock) does not count toward the limit", () => {
     const store = RunStore.openInMemory(); const dir = mkdtempSync(join(tmpdir(), "mla-"));
-    const gateway = new Gateway(store, undefined, undefined, undefined, undefined, { dataDir: dir });
+    const gateway = new Gateway(store, undefined, undefined, undefined, { dataDir: dir });
     const t0 = "2026-10-01T00:00:00.000Z"; const later = "2026-10-09T00:00:00.000Z"; // 8 days
     for (let i = 0; i < TRIAGE_OVERRIDE_LIMIT - 1; i++) {
       const run = laneRun(store, `old ${i}`, "answer");
@@ -165,7 +165,7 @@ describe("memlane callbacks", () => {
   // writes null and is still re-admitted, so Paco's tap always gets an answer.
   it("ask: triage_override.lane is the original verdict's lane, or null when the run has no verdict", () => {
     const store = RunStore.openInMemory(); const dir = mkdtempSync(join(tmpdir(), "mla-"));
-    const gateway = new Gateway(store, undefined, undefined, undefined, undefined, { dataDir: dir });
+    const gateway = new Gateway(store, undefined, undefined, undefined, { dataDir: dir });
     const withVerdict = seedRun(store, "你觉得 NAS 放在客厅还是书房更好？");
     store.insertJevVerdict({ run_id: withVerdict, category: "answer", breadth: 1, reasoning: 1, actions: 0, sets_rule: 0.05, rule_scope: null,
       lane: "answer", role: "fast", effort: "low", cascade: null, save_outcome: "none", route_outcome: "act", reason: "routed", skip_reason: null, quoted_turn_id: null });

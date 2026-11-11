@@ -160,7 +160,7 @@ function harness(m, store, repo, root, roles) {
     undefined, undefined, { dataDir: root, distDir: DIST, roles, ...(jevFetch ? { jevFetch } : {}) });
   const intake = (chat, text, replyTo) => {
     const msg = 9_000_000 + Math.floor(Math.random() * 1_000_000); const upd = 8_000_000_000 + msg;
-    const r = new m.Gateway(store, undefined, undefined, undefined, undefined, { dataDir: root }).intake(m.buildTypedTaskEvent({
+    const r = new m.Gateway(store, undefined, undefined, undefined, { dataDir: root }).intake(m.buildTypedTaskEvent({
       source: "telegram", type: "turn", program: "turn", goal: text, requested_by: { kind: "user", id: "gate" },
       notify: { kind: "telegram", chat_id: chat }, idempotency_key: `telegram:${upd}:${msg}`, source_reference: `telegram:update:${upd}:message:${msg}`,
       metadata: { telegram_update_id: upd, telegram_message_id: msg, ...(replyTo !== undefined ? { reply_to_message_id: replyTo } : {}) } }));
@@ -455,7 +455,7 @@ async function caseDigDeeper(g) {
     return;
   }
   const tapKey = `telegram:gate-tap:${randomUUID()}`;
-  const r = new g.m.Gateway(g.store, undefined, undefined, undefined, undefined, { dataDir: g.root }).intake(g.m.buildTypedTaskEvent({
+  const r = new g.m.Gateway(g.store, undefined, undefined, undefined, { dataDir: g.root }).intake(g.m.buildTypedTaskEvent({
     source: "telegram", type: "memlane_ask", requested_by: { kind: "user", id: "gate" }, notify: { kind: "telegram", chat_id: g.chat },
     idempotency_key: tapKey, source_reference: tapKey, metadata: { telegram_update_id: 1, telegram_callback_id: tapKey, run_id: original } }));
   check("B5 dig deeper: the tap re-admits the message as a new run", r.ok && r.status === "created" && Boolean(r.run_id), JSON.stringify(r));

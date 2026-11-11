@@ -38,7 +38,6 @@ const CAPABILITY_FLAGS: Record<string, string> = {
 // Ruled 2026-11-05 (orchestrator; listed for Paco with the signature): capability arming flags that predate the ladder and
 // switch a capability, not an entry's arming. The entries in their path still record on every call.
 const RULED_CAPABILITY_FLAGS: Record<string, string> = {
-  HOUGE_GATE_B_ENABLED: "Gate B kill switch for skill scoring (ADR 0011/0012, protected gate machinery); not a ladder entry",
   HOUGE_SECRETS_FIREWALL_ENABLED: "arms the ADR 0015 firewall capability; secret.redact records only while it is armed, as ADR 0034's 4B entry row states (signed 2026-10-30)",
   HOUGE_TZ_EVIDENCE_ENABLED: "arms timezone-source evidence in time_convert; not a ladder entry",
   HOUGE_DUAL_LLM_ENABLED: "retired (ADR 0032 D3: the wall is unconditional); matched only by a comment in src/core/quarantine.ts, documented retired in configuration.md"

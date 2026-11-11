@@ -35,6 +35,7 @@ memory/briefs/
 # generated REGISTRY.md. Graduating a skill into the repo is a manual `git add`.
 # Anchored to top-level only: must NOT swallow src/skills/ or tests/skills/.
 /skills/
+/skills.migrated-*/
 .context/
 
 # Jev shadow replay output (labels/numbers only, no message text) — local runtime state

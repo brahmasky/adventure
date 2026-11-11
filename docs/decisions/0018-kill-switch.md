@@ -1,6 +1,6 @@
 # ADR 0018: Durable kill switch — park-alive tombstone + disarm posture
 
-- **Status:** accepted
+- **Status:** accepted; amended 2026-11-10 by [ADR 0035](0035-grow-zone-verification.md) (`HOUGE_GROW_ENABLED` joins the disarm flags) — signed by Paco 2026-11-10 (spec approval)
 - **Date:** 2026-07-15
 - **Deciders:** Paco
 - **Relates to:** the safety floor for [ADR 0004](0004-long-poll-daemon.md)'s always-on daemon
@@ -113,6 +113,15 @@ Commit b11f8ed; regression tests `tests/run/invariant-sweep-park.test.ts`.
 
 Also from that day: the revival command is now written `gui/$(id -u)/` everywhere — `$UID`
 is a bash/zsh variable that fish does not define, and the operator's shell is fish.
+
+### Amendment 2026-11-10 — grow zone flag (ADR 0035)
+
+Amended 2026-11-10 by [ADR 0035](0035-grow-zone-verification.md). `HOUGE_GROW_ENABLED` is in `DISARM_FLAGS`
+(`src/config/disarm-posture.ts`): `/disarm` forces it to `"false"`, so no new submission is accepted and no new review is claimed.
+With only `HOUGE_GROW_ENABLED` off, `grow_submit` answers `grow_disabled` and `grow_read` still works. (`HOUGE_SKILLS_ENABLED` was already a
+disarm flag and arms both grow tools and the index, so under `/disarm` both tools are unarmed.) `HOUGE_SKILL_REVERIFY_ENABLED` is not in the set: the
+weekly skill re-verify tick it covered is deleted. (The flag list in section 3 is the 2026-07 set; the code's
+`DISARM_FLAGS` is the truth and `tests/adr/0035-grow-zone.test.ts` pins this flag's membership.)
 
 ## Consequences
 

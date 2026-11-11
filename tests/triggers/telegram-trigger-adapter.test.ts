@@ -124,17 +124,23 @@ describe("normalizeTelegramUpdate", () => {
     expect(taskEvent(pick).metadata).toMatchObject({ idea_action: "pick", idea_number: 2 });
   });
 
-  it("normalizes a /skills lifecycle command with '<action> <name>' riding program", () => {
-    const retire = normalizeTelegramUpdate(
+  it("normalizes /grow undo with '<action> <name>' riding program and the reason beside the base metadata", () => {
+    const undo = normalizeTelegramUpdate(
       {
         update_id: 1018,
-        message: { message_id: 78, text: "/skills retire old-skill", from: { id: 111 }, chat: { id: 222 } }
+        message: { message_id: 78, text: "/grow undo old-skill wrong unit", from: { id: 111 }, chat: { id: 222 } }
       },
       allowlist
     );
-    const event = taskEvent(retire);
-    expect(event.type).toBe("skills");
-    expect(event.program).toBe("retire old-skill");
+    const event = taskEvent(undo);
+    expect(event.type).toBe("grow");
+    expect(event.program).toBe("undo old-skill");
+    expect(event.metadata).toMatchObject({ telegram_update_id: 1018, telegram_message_id: 78, grow_reason: "wrong unit" });
+    const list = taskEvent(normalizeTelegramUpdate(
+      { update_id: 1019, message: { message_id: 79, text: "/skills", from: { id: 111 }, chat: { id: 222 } } }, allowlist));
+    expect(list.type).toBe("grow");
+    expect(list.program).toBe("list");
+    expect(list.metadata).not.toHaveProperty("grow_reason");
   });
 
   it("normalizes /approve without creating a program", () => {

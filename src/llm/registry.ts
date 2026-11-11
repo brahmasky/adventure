@@ -135,6 +135,7 @@ export function seatChain(cfg: OmpConfig, role: LlmCallRole): ModelString[] {
     case "judge": return cfg.judges;
     case "chair": return cfg.chair;
     case "reviewer": return cfg.reviewer;
+    case "grow_review": return cfg.growReview;
     case "answer":
     case "compose": return cfg.planner;
     case "writer": throw new Error("the writer seat is codex, not an omp chain");

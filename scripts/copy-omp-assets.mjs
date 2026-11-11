@@ -1,13 +1,19 @@
 // Build step (spec §12): tsc does not copy .sh files.
-import { copyFileSync, mkdirSync } from "node:fs";
-mkdirSync(new URL("../dist/omp/", import.meta.url), { recursive: true });
-copyFileSync(new URL("../src/omp/shell-wrapper.sh", import.meta.url), new URL("../dist/omp/shell-wrapper.sh", import.meta.url));
+// Optional argv[2]: the dist directory to write into (default ../dist/); lets a test run against a temp dist.
+import { copyFileSync, mkdirSync, readdirSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+const dist = process.argv[2] ?? fileURLToPath(new URL("../dist/", import.meta.url));
+const src = fileURLToPath(new URL("../src/omp/", import.meta.url));
+mkdirSync(join(dist, "omp"), { recursive: true });
+copyFileSync(join(src, "shell-wrapper.sh"), join(dist, "omp/shell-wrapper.sh"));
 console.log("copied dist/omp/shell-wrapper.sh");
 
-// Declarative tool JSON (tsc does not copy .json): Task 5.
-import { readdirSync } from "node:fs";
-mkdirSync(new URL("../dist/omp/tools/", import.meta.url), { recursive: true });
-for (const f of readdirSync(new URL("../src/omp/tools/", import.meta.url)).filter((x) => x.endsWith(".json"))) {
-  copyFileSync(new URL(`../src/omp/tools/${f}`, import.meta.url), new URL(`../dist/omp/tools/${f}`, import.meta.url));
+// Declarative tool JSON (tsc does not copy .json): Task 5. The folder is cleared first so a
+// tool declaration deleted from src cannot survive in dist (it would fail tool_decl_invalid).
+rmSync(join(dist, "omp/tools"), { recursive: true, force: true });
+mkdirSync(join(dist, "omp/tools"), { recursive: true });
+for (const f of readdirSync(join(src, "tools")).filter((x) => x.endsWith(".json"))) {
+  copyFileSync(join(src, "tools", f), join(dist, "omp/tools", f));
 }
 console.log("copied dist/omp/tools/*.json");

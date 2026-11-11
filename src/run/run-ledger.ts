@@ -287,8 +287,8 @@ const requiredPayloadFields = {
     // model ids per seat (spec 2026-11-02 §2), code-owned catalog strings
     "judge_models"
   ],
-  // Skill retirement spec (2026-07-29): one summary per weekly re-verify tick — counts only,
-  // no skill text (bodies-out-of-the-ledger invariant).
+  // Historical (ADR 0035): the weekly skill re-verify tick is gone; this kind stays so old ledger rows still read.
+  // One summary per tick, counts only, no skill text.
   skill_reverify_tick: ["checked", "passed", "flagged"],
   project_created: ["project_id", "source_url"],
   project_state_changed: ["project_id", "from", "to"],
@@ -331,8 +331,8 @@ const requiredPayloadFields = {
   // `lane` the corrected verdict's lane (null when the run had no verdict row).
   triage_override: ["run_id", "new_run_id", "change_id", "lane"],
   // Decision ladder stage 2a (spec §7.2): a rise of the turn's trust level (`level`: untrusted | hostile; `cause`:
-  // wall_read | shell_netread | judge_timeout | injection_withheld | unjudged_outside | unjudged_local | judge_lost_outside), and the level a
-  // turn ended at, written at every end.
+  // wall_read | shell_netread | judge_timeout | injection_withheld | unjudged_outside | unjudged_local | judge_lost_outside |
+  // carried_untrusted | carried_hostile | grow_read_untrusted), and the level a turn ended at, written at every end.
   turn_trust: ["level", "cause"],
   turn_trust_final: ["max_level"],
   // Jev decision tree, stage A (spec §4–§6). Ids, enums and numbers only — never message text, never omp's error text.
@@ -358,6 +358,7 @@ const requiredPayloadFields = {
   model_probe: ["tier", "selector", "purpose", "result", "kind"],
   improve_signal_skipped: ["signal", "code"],
   improve_tick: ["phase", "local_date"],
+  // Historical (ADR 0035): the skill job is gone; old rows keep this kind.
   improvement_job: ["job_id", "from", "to", "attempt"],
   // Stage 4A standing approvals (ADR 0030 §8.3): ids, reasons and counts only; the command bytes never enter the ledger.
   standing_streak: ["standing_id", "run_id", "approval_id", "streak"],

@@ -2,7 +2,7 @@
 
 - **Status:** accepted 2026-11-05 (signed by Paco, rulings A1–A5 included); consolidates and supersedes
   [ADR 0030](0030-decision-ladder.md) with no change of meaning; amended 2026-11-07 (improvement proposals
-  auto-apply, the digest goes — signed by Paco 2026-11-08); amended 2026-11-08 (remainder R7: `attach.path`; rows after the end signal — signed by Paco 2026-11-09); amended 2026-11-09 (spec 2026-11-09-sp2-mail-triage: rule 2.6, the second named allowance; `mail.triage`; stage `inbound`; a change of meaning, Tier C, approved by Paco's spec approval 2026-11-09) — awaiting Paco's signature
+  auto-apply, the digest goes — signed by Paco 2026-11-08); amended 2026-11-08 (remainder R7: `attach.path`; rows after the end signal — signed by Paco 2026-11-09); amended 2026-11-09 (spec 2026-11-09-sp2-mail-triage: rule 2.6, the second named allowance; `mail.triage`; stage `inbound`; a change of meaning, Tier C, approved by Paco's spec approval 2026-11-09) — awaiting Paco's signature; amended 2026-11-10 by [ADR 0035](0035-grow-zone-verification.md) (grow zone: 1.5, 2.1, 2.4, 5.1, 7.1, 8.1–8.3, 10.3–10.5; a change of meaning, Tier C, approved by Paco's spec approval 2026-11-10)
 - **Date:** 2026-11-04
 - **Deciders:** Paco
 - **Supersedes:** [0030](0030-decision-ladder.md) (17 amendment sections) and
@@ -50,9 +50,8 @@ code-owned registry under `src/decisions/`. Everything else stays plain code (me
 - 1.5 **Protected surface.** `src/decisions/` is in `PROTECTED_DIRS` (if the registry decides the gates, editing it can
   open a gate). In `PROTECTED_FILES`: `src/run/store-options.ts` (the only builder of a store with a decision recorder;
   `{ redact }` without a recorder does not compile), `src/triggers/telegram-auth.ts` (the allowlist predicate behind
-  `intake.sender`; the evidence it reads stays in the self-writable adapter, pinned by a test), `src/notifications/attachment-check.ts` (the send-time attachment predicate behind `attach.path`, R7 4-A; the loop, upload and follow-up line stay in the adapter, itself protected), `src/skills/promote.ts`
-  (nothing reaches the active skills tree without Paco's tap), `src/gateway/improvement-commands.ts` (taps chat-bound
-  and state-fenced). A gate entry's glue lives under `src/decisions/entries/`; a non-gate entry's may live outside (as
+  `intake.sender`; the evidence it reads stays in the self-writable adapter, pinned by a test), `src/notifications/attachment-check.ts` (the send-time attachment predicate behind `attach.path`, R7 4-A; the loop, upload and follow-up line stay in the adapter, itself protected), `src/gateway/improvement-commands.ts` (taps chat-bound
+  and state-fenced). (Amended 2026-11-10 by ADR 0035: `src/skills/promote.ts` is deleted and leaves `PROTECTED_FILES`; "nothing reaches the active skills tree without Paco's tap" is replaced by ADR 0035 G3 — a skill goes live on the formal checks and a different-family review, with no trust tap. `src/grow` joins `PROTECTED_DIRS`: the door, the checks, the review gate and the publisher are Paco's hand only.) A gate entry's glue lives under `src/decisions/entries/`; a non-gate entry's may live outside (as
   `turn.handler`'s `src/core/turn-handler-ladder.ts` and `src/jev/tree-policy.ts`).
 - 1.6 **No off switch, no shadow by design (R13).** No env var, no switchable check; a new entry ships armed and stays
   armed. The only env switch over the front door's arming is the STOP flag
@@ -71,7 +70,7 @@ code-owned registry under `src/decisions/`. Everything else stays plain code (me
 - 2.1 ADR 0029's accepted risk stands: Jev is steerable by injected text, so its labels stay advisory or monotone and
   steering degrades quality, never safety. Over **tool-derived input** (web, mail, calendar, shell output, files, tool
   results) a verdict may only tighten — withhold a passage, add a tap, send the planner back once — and any lasting
-  change it suggests (lesson, fact, skill, wiki page) is a proposal for Paco's tap. One named allowance: rule 2.6
+  change it suggests (lesson, fact, wiki page) is a proposal for Paco's tap. (Amended 2026-11-10 by ADR 0035: a lasting skill change derived from tool input is no longer a proposal for a tap; it is governed by ADR 0035 G4: `grow_submit` is refused at `hostile`, and at `untrusted` the item is staged, always reviewed and marked born-untrusted.) One named allowance: rule 2.6
   (routing one inbound mail between two lanes that both deliver it to Paco).
 - 2.2 Over **Paco's own message** a verdict may cause an effect directly if reversible and announced: a `turn.handler`
   lane reply (Dig deeper); the memory shortcut's instant lesson save (permanent; Undo on its card). Every automatic
@@ -88,7 +87,7 @@ code-owned registry under `src/decisions/`. Everything else stays plain code (me
   taps count toward the 3-a-day budget). Every other Jev verdict stays out of deny paths. Under ADR 0029 decision 2
   (word for word): withholding a passage is a data transform, not an action deny; the send-back is one bounded
   continuation in which every side effect asks after a Jev-rung send-back and the normal gates apply after a code-rung
-  one; the redirect is the ask form of a gate that cannot wait.
+  one; the redirect is the ask form of a gate that cannot wait. (Amended 2026-11-10 by ADR 0035: stated precisely: refusing a `grow_submit` at `hostile` and publishing a grow item are code decisions. The grow reviewer's `pass` is an admission check on content, not a gate on an action, so this exception stays the only one; a reviewer talked into `pass: true` lets through an item that already passed the formal checks, and a born-untrusted item still taints its reader.)
 - 2.5 **Effect contract.** A registry test (`entryProblems`) fails any entry whose Jev or model rung can cause an
   unannounced or irreversible effect, or anything but tightening or a proposal from tool input. A rule-only entry may
   carry an `effect` verdict over `tool` or `mixed` input (`steer` and `retry` are irreversible `effect`s over tool
@@ -221,7 +220,7 @@ write.
 
 - 5.1 A move changes who decides, recorded in `ladder_moves`. Houge may move on its own, from code rungs only: standing
   approvals (after three consecutive approvals of one action and one proven sealed run; rule 11); skill authoring after
-  a recurrence (into the inert pending area, active only on Paco's tap); lessons through the existing save path for a
+  a recurrence (a hint to the planner to `grow_submit`, rule 10.4; the skill goes live through the grow door's checks and review, ADR 0035 G3, not on a tap); lessons through the existing save path for a
   stated rule, with Undo. Only the standing-approval code may insert an automatic row, only for `tool.policy`, enforced
   in the store. Every other loosening (trusting a source, retiring a judge, lowering a bar) is a proposal for Paco's
   tap; adding a rung to a rule-only entry is a ladder move with Paco's tap. Callbacks pass the sender allowlist and are
@@ -267,7 +266,7 @@ write.
 
 - 7.1 **`tool.injection`** runs at the bridge on shell output (success and failure), on the four wall tools' results
   before the reader (it withholds passages, never decides whether the wall applies), on gmail's code-built side channel,
-  and on built-in `read`. A passage that may not leave is never passed: withheld with a note from outside, framed and
+  and on built-in `read`. (Amended 2026-11-10 by ADR 0035: `grow_read` output is kernel text that passed the grow door, not a judged local read: it is on the bridge's plain branch and is not judged.) A passage that may not leave is never passed: withheld with a note from outside, framed and
   shown redacted from a local read. Floor and content check read raw text locally; the planner reads raw text outside
   withheld or framed passages. A judge that throws falls back to the local floor, content and path checks, never to raw
   text.
@@ -309,11 +308,11 @@ write.
 
 ### 8. Turn trust (`turn.trust`, locked code)
 
-- 8.1 **Levels.** clean → untrusted (a wall read, a network shell read, a lost judgement, a framed local passage) →
+- 8.1 **Levels.** clean → untrusted (a wall read, a network shell read, a lost judgement, a framed local passage, or a `grow_read` of a grow item born from outside content — cause `grow_read_untrusted`, amended 2026-11-10 by ADR 0035) →
   hostile (a withheld passage, an outside passage withheld unjudged, or one whose judgement was lost, which reaches the
   planner in a "not checked" frame). Jev down, timed out or partial counts as lost. Inside a turn the level only rises.
-- 8.2 **Taps.** Trust only adds taps: untrusted asks before `lesson_write`, `schedule_task`, `self_write_propose` and
-  `skill_author`; hostile also asks for every shell command off a strict read-only list and every write, and redirects
+- 8.2 **Taps.** Trust only adds taps: untrusted asks before `lesson_write`, `schedule_task` and `self_write_propose`
+  (Amended 2026-11-10 by ADR 0035: `skill_author` is gone; `grow_submit` never asks for trust — it is refused at `hostile` in a preflight before any ask, and at `untrusted` it is staged, reviewed and marked; after a Jev-rung send-back it asks like every side effect (`settleAsk`, rule 2.4, 2b-R7); `grow_read` never asks); hostile also asks for every shell command off a strict read-only list and every write, and redirects
   the built-in writers (rule 2.4). The list admits exact flag sets per program, globs only after `--`; device paths ask;
   `wc` is not on it and any word containing `libxo` asks. A trust card pauses the turn's timers for its TTL
   (`HOUGE_TRUST_ASK_TTL_MS`), at most once per turn; under 5 s left is refused. Trust asks count toward the 3-a-day
@@ -321,7 +320,7 @@ write.
 - 8.3 **Carry.** `TurnTrust` keeps every cause it was asked to raise; a transcript carries at turn end the highest carry
   level of that set, and a turn starts at what its transcript carries. A cause carries its `CAUSE_LEVEL` except
   `injection_withheld`, which carries `untrusted`; `carried_hostile`, `judge_lost_outside`, `unjudged_outside` carry
-  `hostile`. `endTrust`'s `keepOld` compares carry levels. Standing credit is refused only while the stored level is
+  `hostile`; `grow_read_untrusted` carries `untrusted` (amended 2026-11-10 by ADR 0035), so a conversation that read a born-untrusted skill carries `untrusted` until `/fresh`. `endTrust`'s `keepOld` compares carry levels. Standing credit is refused only while the stored level is
   `hostile`.
 - 8.4 **`/fresh` is the exit.** Paco-only control command; a persisted `fresh_requested_at` marker on
   `planner_session_state`. The next planner start honours it whatever the lesson fingerprint says, resets and sets
@@ -379,13 +378,12 @@ write.
   stays unconsumed. 120 s per cycle, resumed next cycle; the daemon loop waits meanwhile; at most 40 groups per date;
   counts accumulate over the date.
 - 10.3 **Rungs.** `after_turn`, `mixed`, fail-open on `nothing`, every signal an outcome. Rules: stale (30 days); a
-  stated rule is `memory.kind`'s; recurrence → the skill job (lookup categories → knowledge, recorded only while the
+  stated rule is `memory.kind`'s; recurrence → a grow hint to the planner, never a job (Amended 2026-11-10 by ADR 0035: rule 10.4; lookup categories → knowledge, recorded only while the
   wiki is disarmed); expiry pattern → a schedule proposal, no text; `review_bad` → `ladder` on an unlocked entry
   (`retire_judge` at ≥ 3 in 14 days, else `lower_bar`), `nothing`/`locked_entry` on a locked one. `ladder` applies only
   to `review_bad`, so Jev never chooses it. Jev: one choice question `improve_target` (escape first, applicable targets,
   masking after the answer); Tiny: one word among the top two.
-- 10.4 **The only automatic effect:** a `_pending` skill draft after ≥ 3 turns of one category at cosine ≥
-  `HOUGE_RECURRENCE_COSINE_GATE` (0.6) in 14 days, once per root turn. The job is an evolution-lane row, never a run: at
+- 10.4 **The only automatic effect:** Amended 2026-11-10 by ADR 0035: a recurrence — ≥ 3 turns of one category at cosine ≥ `HOUGE_RECURRENCE_COSINE_GATE` (0.6) in 14 days, once per root turn — records one **grow hint** (a `grow_hints` row keyed once per recurrence, plus a `hint` row in `grow_events`), which reaches the planner as a code-built `[context]` line in that chat's next turn: `grow: a task of kind <category> keeps recurring; consider grow_submit`. No text of Paco's, at most three hints per rolling 24 hours, none in a schedule-born turn. It starts no job; the planner decides and the door's rules apply as for any submit. `improvement_jobs` and `skill_reverify_state` stay as tables with no reader or writer. What follows described the superseded job and no longer runs: the job is an evolution-lane row, never a run: at
   most one starts per tick (none on a busy lane), 3 queue a day, a queued job expires at 3 days; each ending is one
   fenced transition with its card and the wall clock; a restart fails running jobs; an offer untapped 14 days ends
   `expired` (`offer_expired`) and its draft retires; a failed Gate A ends `failed` (`gate_a_unavailable`), never
@@ -427,7 +425,7 @@ write.
   button), and `/forget <scope>` undoes each such lesson newest first, then prunes the scope empty — each moving its
   proposal `accepted → reverted` in the same transaction; `/forget_memory <id>` on a row saved in another chat takes
   today's path; Undo is no `turn.handler` label. Schedule Accept applies only while the row equals `before`; Revert
-  restores; both recompute `next_run_at`. A skill Accept whose job exists dismisses. A ladder Accept records a
+  restores; both recompute `next_run_at`. A skill Accept records the same grow hint (once per key; amended 2026-11-10 by ADR 0035) and changes nothing else. A ladder Accept records a
   `ladder_moves` row and changes nothing; a tool gap replies the `self_write_propose` text. Residual (accepted): with no
   prior and Paco's line as both numbered evidence lines a fact can over-generalise his words; it is his words' reading,
   never another source's, and one `/forget_memory` away.
@@ -611,6 +609,7 @@ write.
 | 2026-11-08 | R7: `attach.path` (locked) at parse and send; 3.2 adds settle-stage and delivery rows; `attachment-check.ts` protected | [R7](../superpowers/specs/2026-11-08-ladder-remainder-r7-attach-path-design.md) | signed by Paco 2026-11-09 |
 | 2026-11-08 | 10.5: the 14-day block covers repeats, not the category — a lesson or fact draft is skipped only as a near-copy (`LESSON_REPEAT_COSINE`) of one reverted (or an accepted fact) on the pair, and is the 'lesson did not hold' card only as a near-copy of a lesson accepted within 30 days; `/forget` and `/forget_memory` undo an improvement's whole change (Q1-B, Q2-A; controller ruling R1') | [auto-apply addendum Rev 2.3.1](../superpowers/specs/2026-11-07-improve-auto-apply-design.md) | 2026-11-08 |
 | 2026-11-09 | SP2 mail triage (Jev lane 4 re-scoped; D1–D5): rule 2.6, the second named allowance (per-item routing of inbound mail between two delivering lanes; a change of meaning, Tier C, approved with the spec); 2.1 names it; 2.5 gains the `perItemRouting` arm; 1.1 the stage list with `inbound`; 3.2 the queuing recorder flushed strictly in the caller's transaction, 3.4 its rollback; rule 4 row `mail.triage`; 6.1 and 6.5 the mail bars; 13.3 `mail_auth_lost`; Consequences the retention gaps; Revisit when a second inbound source | [sp2-mail-triage](../superpowers/specs/2026-11-09-sp2-mail-triage-design.md) (Rev 1.3.1) | awaiting Paco's signature |
+| 2026-11-10 | Grow zone: 1.5 (`promote.ts` deleted and unprotected, `src/grow` protected; G3 replaces the skills-tree tap), 2.1, 2.4 (the reviewer's `pass` is an admission check), 5.1, 7.1 (`grow_read` is kernel text), 8.1–8.3 (cause `grow_read_untrusted`; ask list without `skill_author`; `grow_submit` refused at hostile, never asks for trust), 10.3–10.5 (recurrence and an accepted `skill` proposal give a grow hint, never a job) | [grow zone](../superpowers/specs/2026-11-10-grow-zone-verification-design.md) (Rev 1.3.2) | 2026-11-10 (spec approval) |
 
 ## Reference map
 

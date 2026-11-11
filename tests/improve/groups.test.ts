@@ -1,11 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { buildImproveState, groupSignals, scopeOf, skillMentioned, toolSummaryOf, type RecurrenceInfo } from "../../src/improve/groups.js";
 import { RunStore, type ImproveSignalRow, type JevVerdictRow } from "../../src/run/run-store.js";
-import { SkillStore } from "../../src/skills/skill-store.js";
 import { createTelegramTurn } from "../helpers/runs.js";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 
 // Spec 2b-ii §3.2 (codex D13): groups are (signal, scope) where scope is the category for corrections and think_harder,
 // category+value for ratings, the capability for approvals, the failure kind, the settle reason, the entry id; one decision
@@ -58,10 +54,17 @@ describe("toolSummaryOf and skillMentioned", () => {
     expect(toolSummaryOf([ev("builtin:read"), ev("builtin:read"), ev("bash")])).toBe("builtin:read 2 · bash 1");
     expect(toolSummaryOf([])).toBe("none");
   });
-  it("skillMentioned matches an active skill name word-bounded, case-folded, as authorAndWriteSkill's step 0 does", () => {
-    const metas = [{ name: "weekly-report" }, { name: "verify" }];
+  it("skillMentioned matches a live grow item's name word-bounded, case-folded", () => {
+    const metas = [{ name: "weekly-report", when: "asked for the weekly report" }, { name: "verify", when: "asked to verify" }];
     expect(skillMentioned(metas, ["run the Weekly-Report again"])).toBe(true);
     expect(skillMentioned(metas, ["verifying the numbers"])).toBe(false);
+  });
+  it("skillMentioned also matches the name with hyphens as spaces, or the whole description; never an unrelated text, and an empty description never matches everything", () => {
+    const metas = [{ name: "unit-convert", when: "  Converting Recipe Quantities  " }];
+    expect(skillMentioned(metas, ["please unit convert these grams"])).toBe(true);                   // Paco rarely types the slug
+    expect(skillMentioned(metas, ["I am converting recipe quantities for dinner again"])).toBe(true); // the description, trimmed and case-folded
+    expect(skillMentioned(metas, ["what is the weather in Lima"])).toBe(false);
+    expect(skillMentioned([{ name: "weekly-report", when: "" }, { name: "x-y", when: "   " }], ["anything at all"])).toBe(false);
   });
 });
 
@@ -82,9 +85,8 @@ describe("buildImproveState", () => {
       save_outcome: "none", route_outcome: "fallback", reason: "jev_skipped", skip_reason: null, quoted_turn_id: null });
     const r3 = row({ signal_id: 3, signal: "rating", value: "0", run_id: null, about_run_id: about });
     const r4 = row({ signal_id: 4, run_id: null, about_run_id: other });
-    const skills = new SkillStore({ root: mkdtempSync(join(tmpdir(), "hg-skills-")) });
     const g = groupSignals([r1], (id) => s.getJevVerdictForRun(id), new Map(), "2026-01-01T00:00:00.000Z")[0]!;
-    const state = buildImproveState(g, { store: s, env: { HOUGE_WIKI_ENABLED: "false" }, now: NOW, skills, redact: (t) => t.replace("483920", "‹secret›"), scheduleHints: new Map(), since14: [r1, r2, r3, r4] });
+    const state = buildImproveState(g, { store: s, env: { HOUGE_WIKI_ENABLED: "false" }, now: NOW, redact: (t) => t.replace("483920", "‹secret›"), scheduleHints: new Map(), since14: [r1, r2, r3, r4] });
     expect(state).toMatchObject({ signal: "correction", value: "answer", scope: "answer", count: 1, count14d: 2, category: "answer", lane: "answer", capability: null, toolSummary: "none",
       lastImprovement: null, recurrence: null, alreadyAuthored: false, skillExists: false, wikiArmed: false, scheduleHint: null, stale: false, statedRuleSaved: true });
     expect(state.pacoText).not.toContain("483920");
@@ -95,58 +97,38 @@ describe("buildImproveState", () => {
   });
   it("an approval group carries the capability and the schedule hint; a recurrence group carries the cluster, the overlap check and the skill check", () => {
     const s = RunStore.openInMemory();
-    const skills = new SkillStore({ root: mkdtempSync(join(tmpdir(), "hg-skills-")) });
-    skills.writeSkill("ask", "weekly-report", "---\nname: weekly-report\nscope: ask\nwhen: asked for the weekly report\nanchors:\n  - report\n---\n1. do it\n");
+    const item = (name: string, state: "live" | "removed") => s.upsertGrowItem({ name, state, origin: "clean", description: `when asked for the ${name}`, example: "e", head_commit: null, content_hash: "h", body_hash: "b" }, NOW);
+    item("weekly-report", "live"); item("monthly-report", "removed");
     const hint = { schedule_id: "sched_1", hour: 11 };
     const ga = groupSignals([row({ signal: "approval_expired", value: "shell_external", about_run_id: null })], () => undefined, new Map(), "2026-01-01T00:00:00.000Z")[0]!;
-    expect(buildImproveState(ga, { store: s, env: {}, now: NOW, skills, redact: (t) => t, scheduleHints: new Map([["shell_external", hint]]), since14: [] })).toMatchObject({ capability: "shell_external", scheduleHint: hint, pacoText: "" });
+    expect(buildImproveState(ga, { store: s, env: {}, now: NOW, redact: (t) => t, scheduleHints: new Map([["shell_external", hint]]), since14: [] })).toMatchObject({ capability: "shell_external", scheduleHint: hint, pacoText: "" });
     const rec: RecurrenceInfo = { clusterId: "rec_abc", turnIds: ["t1", "t2", "t3"], idempotencyKey: "answer:t1", texts: ["make the weekly-report", "weekly-report please", "weekly-report again"], category: "answer", spanDays: 1 };
     const gr = groupSignals([row({ signal: "recurrence", value: "3", source_outcome_id: "rec:rec_abc:3", about_run_id: null })], () => undefined, new Map([["rec:rec_abc", rec]]), "2026-01-01T00:00:00.000Z")[0]!;
-    expect(buildImproveState(gr, { store: s, env: {}, now: NOW, skills, redact: (t) => t, scheduleHints: new Map(), since14: [] })).toMatchObject({ recurrence: { clusterId: "rec_abc", turnIds: ["t1", "t2", "t3"], idempotencyKey: "answer:t1" }, skillExists: true, alreadyAuthored: false, category: "answer" });
+    expect(buildImproveState(gr, { store: s, env: {}, now: NOW, redact: (t) => t, scheduleHints: new Map(), since14: [] })).toMatchObject({ recurrence: { clusterId: "rec_abc", turnIds: ["t1", "t2", "t3"], idempotencyKey: "answer:t1" }, skillExists: true, alreadyAuthored: false, category: "answer" });
+    // only a LIVE grow item counts: a removed one is no reason to hold back the hint
+    const gone: RecurrenceInfo = { ...rec, clusterId: "rec_gone", idempotencyKey: "answer:t9", texts: ["make the monthly-report", "monthly-report please", "monthly-report again"] };
+    const gg = groupSignals([row({ signal: "recurrence", value: "3", source_outcome_id: "rec:rec_gone:3", about_run_id: null })], () => undefined, new Map([["rec:rec_gone", gone]]), "2026-01-01T00:00:00.000Z")[0]!;
+    expect(buildImproveState(gg, { store: s, env: {}, now: NOW, redact: (t) => t, scheduleHints: new Map(), since14: [] }).skillExists).toBe(false);
   });
   it("caps Paco's text at 500 code points, never splitting a surrogate pair", () => {
     const s = RunStore.openInMemory();
     const correcting = createTelegramTurn(s, `ok ${"😀".repeat(600)}`).run_id;
-    const skills = new SkillStore({ root: mkdtempSync(join(tmpdir(), "hg-skills-")) });
     const g = groupSignals([row({ run_id: correcting, about_run_id: null })], () => undefined, new Map(), "2026-01-01T00:00:00.000Z")[0]!;
-    const state = buildImproveState(g, { store: s, env: {}, now: NOW, skills, redact: (t) => t, scheduleHints: new Map(), since14: [] });
+    const state = buildImproveState(g, { store: s, env: {}, now: NOW, redact: (t) => t, scheduleHints: new Map(), since14: [] });
     expect(Array.from(state.pacoText)).toHaveLength(500);
     expect(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(state.pacoText)).toBe(false);
   });
-  it("D6: a recurrence cluster whose turns embed like an origin turn of a job of the same category in the last 90 days is already authored; an unlike, other-category or older job is not", () => {
+  it("a recurrence is already authored once a hint holds its key or any of its turns (30 days); an older overlap or another cluster's hint does not count", () => {
     const s = RunStore.openInMemory();
-    const skills = new SkillStore({ root: mkdtempSync(join(tmpdir(), "hg-skills-")) });
-    const dec = s.insertDecision({ entry_id: "improve.route", entry_version: 1, run_id: null, tool_call_id: null, stage: "after_turn", rung: "rule", verdict: "skill", p: null, reason_code: "recurrence", fallback_reason: null, fallback_rung: null, armed_mode: "on", latency_ms: 1, created_at: NOW });
-    const job = (key: string, turn: string, category: string, created_at: string) => s.insertImprovementJob({ decision_id: dec, proposal_id: null, chat_id: "555", origin_json: JSON.stringify({ turn_ids: [turn], run_ids: [], category, text_hashes: [] }), idempotency_key: key, created_at });
-    s.putTurnEmbedding("old1", "m", Float32Array.from([1, 0]), NOW); s.putTurnEmbedding("new1", "m", Float32Array.from([0.95, 0.05]), NOW); s.putTurnEmbedding("unlike", "m", Float32Array.from([0, 1]), NOW);
     const rec: RecurrenceInfo = { clusterId: "rec_n", turnIds: ["new1", "new2", "new3"], idempotencyKey: "answer:new1", texts: ["a", "b", "c"], category: "answer", spanDays: 2 };
     const gr = groupSignals([row({ signal: "recurrence", value: "3", source_outcome_id: "rec:rec_n:3", about_run_id: null })], () => undefined, new Map([["rec:rec_n", rec]]), "2026-01-01T00:00:00.000Z")[0]!;
-    const authored = () => buildImproveState(gr, { store: s, env: {}, now: NOW, skills, redact: (t) => t, scheduleHints: new Map(), since14: [], recurrenceGate: 0.6 }).alreadyAuthored;
-    job("k_unlike", "unlike", "answer", NOW); job("k_cat", "old1", "lookup", NOW); job("k_old", "old1", "answer", "2026-07-01T00:00:00.000Z");
-    expect(authored()).toBe(false);
-    job("k_like", "old1", "answer", "2026-09-01T00:00:00.000Z");
-    expect(authored()).toBe(true);
-  });
-  it("R2-3: a failed job never marks a cluster authored (neither the 30-day turn overlap nor the 90-day like-origin check); a promoted, dismissed or suggested one does", () => {
-    const dec = (s: RunStore) => s.insertDecision({ entry_id: "improve.route", entry_version: 1, run_id: null, tool_call_id: null, stage: "after_turn", rung: "rule", verdict: "skill", p: null, reason_code: "recurrence", fallback_reason: null, fallback_rung: null, armed_mode: "on", latency_ms: 1, created_at: NOW });
-    const rec: RecurrenceInfo = { clusterId: "rec_n", turnIds: ["new1", "new2", "new3"], idempotencyKey: "answer:new1", texts: ["a", "b", "c"], category: "answer", spanDays: 2 };
-    const gr = groupSignals([row({ signal: "recurrence", value: "3", source_outcome_id: "rec:rec_n:3", about_run_id: null })], () => undefined, new Map([["rec:rec_n", rec]]), "2026-01-01T00:00:00.000Z")[0]!;
-    const ended = (s: RunStore, turn: string, to: "failed" | "promoted" | "dismissed" | "suggested") => {
-      const id = s.insertImprovementJob({ decision_id: dec(s), proposal_id: null, chat_id: "555", origin_json: JSON.stringify({ turn_ids: [turn], run_ids: [], category: "answer", text_hashes: [] }), idempotency_key: `k_${turn}_${to}`, created_at: "2026-10-10T00:00:00.000Z" })!;
-      s.transitionJob({ job_id: id, from: ["queued"], to: "running", now: NOW, bumpAttempt: true });
-      if (to === "failed" || to === "suggested") { s.transitionJob({ job_id: id, from: ["running"], to, now: NOW, attempt: 1 }); return; }
-      s.transitionJob({ job_id: id, from: ["running"], to: "pending_review", now: NOW, attempt: 1, patch: { pending_scope: "ask", pending_name: "x" } });
-      if (to === "dismissed") { s.transitionJob({ job_id: id, from: ["pending_review"], to: "dismissed", now: NOW }); return; }
-      s.transitionJob({ job_id: id, from: ["pending_review"], to: "promoting", now: NOW, patch: { promote_mode: "refuse" } }); s.transitionJob({ job_id: id, from: ["promoting"], to: "promoted", now: NOW });
-    };
-    for (const [to, expected] of [["failed", false], ["promoted", true], ["dismissed", true], ["suggested", true]] as const) {
-      for (const turn of ["new1", "old1"]) {   // new1: a shared turn id (30-day overlap); old1: a like origin turn (90-day check)
-        const s = RunStore.openInMemory();
-        const skills = new SkillStore({ root: mkdtempSync(join(tmpdir(), "hg-skills-")) });
-        s.putTurnEmbedding("old1", "m", Float32Array.from([1, 0]), NOW); s.putTurnEmbedding("new1", "m", Float32Array.from([0.95, 0.05]), NOW);
-        ended(s, turn, to);
-        expect([to, turn, buildImproveState(gr, { store: s, env: {}, now: NOW, skills, redact: (t) => t, scheduleHints: new Map(), since14: [], recurrenceGate: 0.6 }).alreadyAuthored]).toEqual([to, turn, expected]);
-      }
-    }
+    const authored = (st: RunStore) => buildImproveState(gr, { store: st, env: {}, now: NOW, redact: (t) => t, scheduleHints: new Map(), since14: [] }).alreadyAuthored;
+    const hint = (st: RunStore, key: string, turn_ids: string[], now = NOW) => st.recordGrowHint({ idempotency_key: key, chat_id: "555", category: "answer", turn_ids, decision_id: "dec_x", now });
+    hint(s, "answer:other", ["unrelated"]); hint(s, "answer:old", ["new2"], "2026-09-01T00:00:00.000Z");
+    expect(authored(s)).toBe(false);
+    const byKey = RunStore.openInMemory(); hint(byKey, "answer:new1", ["elsewhere"]);
+    expect(authored(byKey)).toBe(true);
+    const byTurn = RunStore.openInMemory(); hint(byTurn, "answer:new3", ["new3"], "2026-10-01T00:00:00.000Z");
+    expect(authored(byTurn)).toBe(true);
   });
 });

@@ -108,9 +108,9 @@ Telegram ──long-poll──▶ houge daemon (launchd; ledger, scheduler, swee
 2. The poll loop hands the run to the chat's `PlannerSupervisor` and goes back to polling. This
    **detached turn** is what lets `/approve`, `/kill` and a second message land while a turn runs.
 3. The supervisor makes sure a planner child is up: omp answers with a version, Seatbelt profiles
-   rendered, system prompt written (identity, discipline, the `ask` lessons, skills), bridge socket
+   rendered, system prompt written (identity, discipline, the `ask` lessons, the skills index), bridge socket
    minted. A child counts as started only after the bridge has served it the tool manifest within
-   15 s. `open_session` resumes the chat's transcript. A changed lesson, identity or skill restarts
+   15 s. `open_session` resumes the chat's transcript. A changed lesson, identity or skills index (a skill added, removed or re-described) restarts
    the child at the next idle boundary.
 4. The daemon prepends a `[context]` block (episodic facts and wiki pages) to the prompt and
    records what it applied, so rating attribution still works.
@@ -141,7 +141,8 @@ declaration under `src/omp/tools/` plus a daemon-side adapter:
 | `schedule_task` | Create, list, update or cancel this chat's schedules ([ADR 0017](docs/decisions/0017-scheduler.md)). |
 | `wiki_build` · `wiki_refine` | Save or improve a durable knowledge page ([ADR 0020](docs/decisions/0020-llm-wiki.md)). |
 | `self_diagnose` · `self_write_propose` | Read Houge's own source, or propose a code change through the self-write pipeline. Both run in the background and end the turn. |
-| `skill_author` | Author or refine a skill (Gate A routing, Gate B verification). Runs in the background. |
+| `grow_submit` | Add or improve one of Houge's own procedures; checked by code; a new or large change is reviewed by another model family before it goes live. |
+| `grow_read` | Read one of Houge's own procedures by name. |
 | `houge_status` | Read-only view of Houge's own runtime (uptime, why he booted, live build, open incidents, kill and park state); the planner calls it before answering a question about a restart or his health. |
 | `memory_correct` | Search, then retire or correct one remembered fact when Paco asks. Every change waits for his tap and has an Undo. |
 
@@ -198,13 +199,13 @@ merged lesson and supersedes the originals; it never deletes. Preview with
 Slash commands keep it inspectable (idempotent, no run, no budget unless noted):
 
 - `/lessons [scope]` view lessons · `/forget <scope|id>` retire them (a reversible status flip; one the improvement check saved has its whole change undone).
-- `/skills [scope]` view skills; `/skills retire|restore <name>`, `/skills retired`, `/skills pending`.
+- `/grow` lists the skills Houge wrote for himself ([guide](docs/reference/grow-zone.md)); `/grow undo <name> [reason]` steps back one version (removes the skill if it had none) (queued, the daemon confirms); `/grow trust <name>` clears the "from outside content" mark (refused while a new version of that skill is waiting for review).
 - `/schedule` · `/schedule cancel <N>` list or cancel this chat's schedules. Schedules are created and
   updated conversationally through `schedule_task`.
 - `/status` health digest (with a `Jev front door: armed` or `off (cause)` line, plus 24 h decision counts, the settle health line, per-entry Jev skips when there were any, and the Improvement (7 d) line) · `/status decisions` the last 10 decisions · `/changes` background changes of the last 30 days in plain words (model switches, internal self-checks, routine Jev notices — what no longer comes to chat) · `/usage` token use per model (omp rows show "sub", never dollars).
 - `/memories [query]` view what Houge remembers about Paco · `/forget_memory <id>` retire one fact (with an Undo card; one the improvement check saved has its whole change undone, with no card).
 - `/models` which model each role resolves to; `/models set` and `/models reset` override or restore one · `/fresh` a new planner conversation at the next message.
-- `/inbox` the unseen mail that was filed rather than pinged (30 a page, grouped by kind, "next" taps for the rest; `/inbox all` the last 7 days) · `/mail on|off|status` the mail triage switch and its status line · `/mail_undo <rule id>` undo a sender rule made from a card tap. CLI: `houge mail auth` runs Paco's one-time Gmail consent (then restart the daemon), `houge mail purge --yes` clears every stored mail text now.
+- `/inbox` the unseen mail that was filed rather than pinged (30 a page, grouped by kind, "next" taps for the rest; `/inbox all` the last 7 days) · `/mail on|off|status` the mail triage switch and its status line · `/mail_undo <rule id>` undo a sender rule made from a card tap. CLI: `houge mail auth` runs Paco's one-time Gmail consent (then restart the daemon), `houge mail purge --yes` clears every stored mail text now. `houge grow list|show|check|log` reads the grow zone (`log` also lists the database snapshots and whether each has its zone bundle), `houge grow trust <name>` clears a skill's outside-content mark, and `houge grow undo <name> [reason]` / `houge grow adopt <name>` queue a request the daemon runs within a minute.
 - `/run <program> <goal>` start a named program run by hand.
 - Improvements learned from your own corrections apply on their own and show in `/changes` with their undo command; anything else arrives as one card with Accept / Dismiss; `/forget <id>` and `/forget_memory <id>` undo an applied one
   ([configuration](docs/reference/configuration.md#decision-ladder-adr-0034)).
@@ -229,13 +230,11 @@ Learning-loop design: [ADR 0007](docs/decisions/0007-learning-loop.md); prompt-c
 tracked files, so gitignored secrets are absent by construction. Off by default
 ([configuration](docs/reference/configuration.md#self-evolution-phase-1--code-self-diagnose)).
 
-**Skills (Phase 2).** A skill is a reusable procedure under `skills/<scope>/<name>.md` that the
-composer folds into the planner's prompt; skills are ambient, never invoked by name. `skill_author`
-writes one through a two-gate stack: **Gate A** routes (skill vs lesson vs code), then **Gate B**, a
-separate 3-pass anchor verifier, scores whether following the procedure is sound. A commanded skill
-is advisory; an auto-authored one is kept only if Gate B passes, else it is refined up to 3 times and
-then parked in `skills/_pending/`. Skills retire, never delete (`skills/_retired/`), and a weekly
-advisor suggests retirements ([configuration](docs/reference/configuration.md#self-evolution-phase-2a--ambient-skills)).
+**Skills (the grow zone).** A skill is a reusable procedure Houge wrote for himself, kept in the grow
+zone and indexed into the planner's prompt; skills are ambient, never invoked by name. The planner
+stages one with `grow_submit`, which runs the formal checks and queues it for review (a small update to a clean, never-undone live
+skill, from a clean turn, goes live at once; a skill from outside content is listed by name only until Paco trusts it), and reads one back with `grow_read`. `/grow` lists them and `/grow undo` steps back one version (removes the skill if it had none)
+([operator guide](docs/reference/grow-zone.md), [configuration](docs/reference/configuration.md)).
 
 **Code self-write (Phase 3).** When the fix belongs in Houge's own code, the planner calls
 `self_write_propose`. Codex writes the diff in a fresh worktree under `<data>/selfwrite`, and three
@@ -401,7 +400,8 @@ the planner's tools.
 dist/cli.js                     the CLI and daemon entry
 dist/omp/extension/houge.js     the one extension the planner loads (policy hook + tool stubs)
 dist/omp/shell-wrapper.sh       the bash wrapper (copied; its hash is checked before use)
-dist/omp/tools/*.json           the tool declarations (copied; validated at boot)
+dist/omp/tools/*.json           the tool declarations (copied after the folder is cleared, so a tool
+                                removed from src leaves dist too; validated at boot)
 ```
 
 **Runtime state.** `<data>` is the directory holding `houge.sqlite`. Under it, `omp/` holds the

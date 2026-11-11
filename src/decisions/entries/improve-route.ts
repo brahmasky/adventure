@@ -9,8 +9,8 @@ import { DECISION_SIGNALS, type DecisionSignal, type Entry, type ProvisionalBar,
 
 /**
  * `improve.route` (2b-ii spec §4; parent §7.4; ADR 0030 decision 8): once a day, over the inbox's grouped signals, what
- * should Houge change? Rule rungs cause the only automatic effect (a recurrence → the skill-authoring job, started by the
- * tick on a rule-rung `skill`/`recurrence` row; plan ruling 1); Jev (one fixed choice question, bar 0.67) and the Tiny pick
+ * should Houge change? Rule rungs cause the only automatic effect (a recurrence → a grow hint, recorded by the tick on a
+ * rule-rung `skill`/`recurrence` row; the planner then decides whether to `grow_submit`, ADR 0035); Jev (one fixed choice question, bar 0.67) and the Tiny pick
  * propose, except a lesson or fact behind `autoApplies` (spec 2026-11-07 §3), which applies with a /changes line. Fail-open on `nothing`; every signal is one of its outcomes (§4.4). Always recorded; the row's run is the
  * group's newest run.
  */
@@ -143,7 +143,7 @@ export const IMPROVE_ROUTE: Entry<ImproveState, ImproveTarget, ImproveDetail> = 
     nothing: NONE,
     lesson: applied("from a correction Paco typed (autoApplies): saved at the tick, one /changes line with /forget <id>; otherwise a card whose Accept saves it with ↩️ Undo"),
     fact: applied("from a correction Paco typed (autoApplies): saved at the tick, one /changes line with /forget_memory <id>; otherwise a card whose Accept saves it with ↩️ Undo"),
-    skill: proposal("a proposal whose Accept queues the authoring job; a rule-rung recurrence row is queued by the tick itself (code-made; the job's cards announce it)"),
+    skill: proposal("a proposal whose Accept records a grow hint; a rule-rung recurrence row records the hint itself (code-made); the planner then decides whether to grow_submit"),
     schedule: proposal("a time shift on a card; Accept applies it, Revert restores the row"),
     knowledge: proposal("recorded only while the wiki is disarmed (R5); a later slice adds the handler"),
     tool_gap: proposal("the self_write_propose focus text for Paco to send as his own message (R7)"),

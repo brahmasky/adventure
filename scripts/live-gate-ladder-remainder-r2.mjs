@@ -47,7 +47,7 @@ const outboxN = () => countOf("SELECT COUNT(*) AS n FROM notification_outbox");
 const runsN = () => countOf("SELECT COUNT(*) AS n FROM runs");
 const chatOutbox = (chat) => all("SELECT target_json FROM notification_outbox").filter((r) => String(JSON.parse(r.target_json).chat_id) === chat).length;
 const skipCode = (id) => G.store.db.prepare("SELECT reason_code FROM skipped_telegram_updates WHERE update_id = ?").get(id)?.reason_code ?? "none";
-const gateway = (caps = {}, options = {}) => new G.d.Gateway(G.store, { ...G.d.DEFAULT_GLOBAL_BUDGET_CAPS, runs: BIG, tool_calls: BIG, gated_attempts: BIG, ...caps }, undefined, undefined, undefined, options);
+const gateway = (caps = {}, options = {}) => new G.d.Gateway(G.store, { ...G.d.DEFAULT_GLOBAL_BUDGET_CAPS, runs: BIG, tool_calls: BIG, gated_attempts: BIG, ...caps }, undefined, undefined, options);
 const whoFor = (n) => ({ chat: `gate-r2-chat-${n}`, actor: `gate-r2-actor-${n}` });
 /** A fresh update id above the copy's offset and every id this gate used. */
 const nextId = () => { G.nid = Math.max(G.nid, G.store.getOffset("telegram")) + 1000; return G.nid; };

@@ -223,7 +223,7 @@ async function line5() {
 
 // ---- line 6: a simulated tap probes the proposal, writes the override, and judges:2 gets a head ----
 async function line6() {
-  const gw = new G.d.Gateway(G.store, undefined, undefined, undefined, undefined, { roles: G.roles, modelProbe: G.d.ompProbe(G.store, G.cfg) });
+  const gw = new G.d.Gateway(G.store, undefined, undefined, undefined, { roles: G.roles, modelProbe: G.d.ompProbe(G.store, G.cfg) });
   const mark = seqMark(); const key = "gate-model-tiers:tap:1";
   const r = gw.intake(G.d.buildTypedTaskEvent({ source: "telegram", type: "model_tier_tap", requested_by: { kind: "user", id: "paco" }, notify: { kind: "telegram", chat_id: STUB_CHAT },
     idempotency_key: key, source_reference: `${key}:ref`, metadata: { tier: "gemini-pro", model_hash: G.d.tierModelHash(PROPOSAL) } }));

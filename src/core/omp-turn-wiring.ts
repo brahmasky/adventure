@@ -5,7 +5,7 @@ import type { PlannerFailure } from "../run/run-store.js";
 export interface OmpToolMeta { side_effect_level: SideEffectLevel; risk_level: RiskLevel; output_limit_bytes: number }
 
 /**
- * The fifteen Houge loop-tool entries (fourteen tools; memory_correct is two entries) the planner reaches over the bridge, with the registration metadata
+ * The seventeen Houge loop-tool entries (sixteen tools; memory_correct is two entries) the planner reaches over the bridge, with the registration metadata
  * the deleted src/core/tool-manifest.ts gave them (copied here before Task 14 deleted it). The
  * timeout per tool stays `loopToolTimeoutMs` in core-worker.ts.
  */
@@ -19,11 +19,13 @@ export const OMP_LOOP_TOOL_META: Readonly<Record<string, OmpToolMeta>> = Object.
   wiki_refine: { side_effect_level: "none", risk_level: "low", output_limit_bytes: 100_000 },
   self_diagnose: { side_effect_level: "external_read", risk_level: "medium", output_limit_bytes: 200_000 },
   self_write_propose: { side_effect_level: "external_read", risk_level: "medium", output_limit_bytes: 200_000 },
-  skill_author: { side_effect_level: "none", risk_level: "low", output_limit_bytes: 100_000 },
   gmail_read: { side_effect_level: "external_read", risk_level: "medium", output_limit_bytes: 200_000 },
   google_api: { side_effect_level: "external_read", risk_level: "medium", output_limit_bytes: 200_000 },
   // Read-only, Houge's own state only (never external content): not quarantined, never gated.
   houge_status: { side_effect_level: "none", risk_level: "low", output_limit_bytes: 8_000 },
+  // Grow zone (ADR 0035): the door and the index are Houge's own state, never external content; the door's own rules gate a submit.
+  grow_submit: { side_effect_level: "none", risk_level: "low", output_limit_bytes: 8_000 },
+  grow_read: { side_effect_level: "none", risk_level: "low", output_limit_bytes: 64_000 },
   // memory_correct search (2026-10-02): reads Houge's own memory, never gated.
   memory_correct: { side_effect_level: "none", risk_level: "low", output_limit_bytes: 8_000 },
   // memory_correct retire/correct: reversible (Undo), but an edit to durable memory that a steered session could

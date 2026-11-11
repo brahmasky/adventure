@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { entryById, entryProblems } from "../../src/decisions/registry.js";
 import { CARRY_LEVEL, CAUSE_LEVEL, TRUST_ORDER, trustRule, type TrustCause, type TrustLevel } from "../../src/decisions/entries/turn-trust.js";
-import { HOSTILE_CARD_TEXT, resolveTrustAskTtlMs, TRUST_ASK_TTL_DEFAULT_MS, TurnTrust, turnTrustFinal } from "../../src/decisions/trust.js";
+import { HOSTILE_CARD_TEXT, resolveTrustAskTtlMs, TRUST_ASK_TTL_DEFAULT_MS, TurnTrust, turnTrustFinal, turnTrustNow } from "../../src/decisions/trust.js";
 import type { AnyEntry } from "../../src/decisions/types.js";
 import { RunStore } from "../../src/run/run-store.js";
 import { createQueuedTurnRun } from "../helpers/runs.js";
@@ -43,6 +43,12 @@ describe("turn.trust", () => {
     const { store, run_id, trust } = setup();
     trust.raise("injection_withheld", "tc9");
     expect(store.listDecisionsForRun(run_id).filter((d) => d.entry_id === "turn.trust")).toEqual([expect.objectContaining({ verdict: "hostile", rung: "rule", reason_code: "injection_withheld", tool_call_id: "tc9" })]);
+  });
+  // reasonCodes is hand-kept: a cause missing from it would leave its decision row without a reason (ADR 0035 G4)
+  it("a born-untrusted grow read records its own reason code on the decisions row, linked to the tool call", () => {
+    const { store, run_id, trust } = setup();
+    trust.raise("grow_read_untrusted", "tc7");
+    expect(store.listDecisionsForRun(run_id).filter((d) => d.entry_id === "turn.trust")).toEqual([expect.objectContaining({ verdict: "untrusted", reason_code: "grow_read_untrusted", tool_call_id: "tc7" })]);
   });
   it("finalize writes turn_trust_final exactly once, and a turn without it reads as not clean", () => {
     const { store, run_id, trust, events } = setup();
@@ -134,8 +140,46 @@ describe("carry level (D2-A)", () => {
     const { trust } = setup(); trust.raise("injection_withheld"); trust.finalize(); trust.raise("unjudged_outside");
     expect(trust.carryLevel()).toBe("untrusted");
   });
+  // ADR 0035 G4(d): a skill born from outside content still carries what it read, so reading it leaves the transcript untrusted
+  it("grow_read_untrusted raises untrusted in the turn and carries untrusted after it", () => {
+    expect(CAUSE_LEVEL.grow_read_untrusted).toBe("untrusted");
+    expect(carryOf(["grow_read_untrusted"])).toEqual(["untrusted", "untrusted"]);
+  });
   it("CARRY_LEVEL differs from CAUSE_LEVEL only at injection_withheld", () => {
     expect(Object.keys(CAUSE_LEVEL).filter((c) => CARRY_LEVEL[c as TrustCause] !== CAUSE_LEVEL[c as TrustCause])).toEqual(["injection_withheld"]);
+  });
+});
+
+// ADR 0035 G4: the worker reads the level a running turn reached from its ledger when no live getter is bound (unit 8c's
+// grow_submit stamps the skill with it, the preflight refuses on it), so the ledger rows `raise` writes must be counted.
+describe("turnTrustNow", () => {
+  it("is clean with no turn_trust rows", () => {
+    const { store, run_id } = setup();
+    expect(turnTrustNow(store, run_id)).toBe("clean");
+  });
+  it("is untrusted after a wall read and hostile after a withheld passage", () => {
+    const { store, run_id, trust } = setup();
+    trust.raise("wall_read"); expect(turnTrustNow(store, run_id)).toBe("untrusted");
+    trust.raise("injection_withheld"); expect(turnTrustNow(store, run_id)).toBe("hostile");
+  });
+  it("counts a carried level: a turn that starts carrying untrusted text is untrusted", () => {
+    const { store, run_id, trust } = setup();
+    trust.carry("untrusted");
+    expect(turnTrustNow(store, run_id)).toBe("untrusted");
+  });
+  it("ignores a turn_trust row whose payload is null instead of throwing (a bad row must not blind the preflight)", () => {
+    const { store, run_id, trust } = setup();
+    trust.raise("wall_read");
+    trust.raise("injection_withheld");
+    // the write path validates payloads, so a null one can only come from a damaged row: damage the newest turn_trust row directly
+    (store as unknown as { db: { prepare(s: string): { run(): unknown } } }).db
+      .prepare("UPDATE ledger_events SET payload_json = 'null' WHERE event_id = (SELECT event_id FROM ledger_events WHERE event_type = 'turn_trust' ORDER BY sequence DESC LIMIT 1)").run();
+    expect(turnTrustNow(store, run_id)).toBe("untrusted");
+  });
+  it("reads only its own run: another run's hostile row does not leak in", () => {
+    const a = setup(); const other = createQueuedTurnRun(a.store);
+    new TurnTrust({ store: a.store, run_id: other, chat_id: "555", born: "telegram", env: { HOUGE_TELEGRAM_CHAT_ID: "555" } }).raise("injection_withheld");
+    expect(turnTrustNow(a.store, a.run_id)).toBe("clean");
   });
 });
 

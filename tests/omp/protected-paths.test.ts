@@ -24,6 +24,26 @@ describe("floor A path sets — the planner may touch anything under home except
     expect(isDeniedRead("/Users/p/Projects/x/.foo.env", ctx)).toBe(false);
   });
 
+  it("denies read and write of the grow zone though it sits under $HOME, where writes are otherwise allowed (ADR 0035 G2, G4)", () => {
+    const c = { ...ctx, grow: "/Users/p/Library/Application Support/houge/grow" };
+    for (const p of [`${c.grow}/skills/x/SKILL.md`, `${c.grow}/.git/config`]) {
+      expect(isDeniedRead(p, c), p).toBe(true);
+      expect(isDeniedWrite(p, c), p).toBe(true);
+    }
+    expect(isDeniedRead("/Users/p/Library/Application Support/houge/other/f", c)).toBe(false);
+    expect(isDeniedWrite("/Users/p/Library/Application Support/houge/other/f", c)).toBe(false);
+  });
+
+  it("denies the backup folder: nightly snapshots are copies of the read-denied database, and the grow bundle sits beside them", () => {
+    for (const p of ["/Users/p/Projects/adventure/backups/houge-20261103T233023Z.sqlite", "/Users/p/Projects/adventure/backups/x.grow.bundle"]) {
+      expect(isDeniedRead(p, ctx), p).toBe(true);
+      expect(isDeniedWrite(p, ctx), p).toBe(true);
+    }
+    const split = { ...ctx, data: "/Users/p/data" };
+    expect(isDeniedRead("/Users/p/data/backups/houge-20261103T233023Z.sqlite", split)).toBe(true);
+    expect(secretPaths(ctx).filter((x) => x.endsWith("/backups"))).toHaveLength(1);
+  });
+
   it("allows Paco's own files — yolo under home is the decision", () => {
     expect(isDeniedRead("/Users/p/Documents/taxes.pdf", ctx)).toBe(false);
     expect(isDeniedWrite("/Users/p/Downloads/out.csv", ctx)).toBe(false);
