@@ -157,17 +157,69 @@ describe("A. the door and the review gate", () => {
     expect(store.listGrowEvents({ actions: ["trust"] })).toHaveLength(1);
   });
 
-  it("an untrusted submit cannot supersede Houge's own pending clean version: refused pending_clean, the clean row stays", async () => {
+  it("an untrusted submit is refused while any version of the name is pending; the pending row stays, a clean turn may still replace it", async () => {
     const s = await growSetup(); const { svc, store } = s;
     expect(await svc.submit(growFields(), CLEAN)).toEqual({ status: "STAGED", name: "unit-convert" });
     const clean = stagedOf(store, "unit-convert")[0]!;
-    expect(await svc.submit({ ...growFields(), body: growBody(40, " junk") }, UNTRUSTED)).toEqual({ status: "REFUSED", code: "pending_clean" });
+    expect(await svc.submit({ ...growFields(), body: growBody(40, " junk") }, UNTRUSTED)).toEqual({ status: "REFUSED", code: "pending" });
     expect(stagedOf(store, "unit-convert")).toMatchObject([{ id: clean.id, state: "staged", origin: "clean" }]);
     expect(store.isGrowMarked("unit-convert")).toBe(false);
     expect(store.listGrowEvents({ actions: ["submit"] })).toHaveLength(1);           // the refused submit is no submit
-    svc.recordReview(clean.id, FAIL_REVIEW);                                          // once the clean row is final, the door is open again
+    svc.recordReview(clean.id, PASS);                                                 // approved: still pending
+    expect((await svc.submit({ ...growFields(), body: growBody(40, " junk") }, UNTRUSTED)).status).toBe("REFUSED");
+    store.patchGrowStaged(clean.id, { state: "publishing" }, s.now());               // publishing: still pending
+    expect((await svc.submit({ ...growFields(), body: growBody(40, " junk") }, UNTRUSTED)).status).toBe("REFUSED");
+    store.patchGrowStaged(clean.id, { state: "failed", code: "review_failed" }, s.now());   // once final, the door is open again
     expect(await svc.submit({ ...growFields(), body: growBody(40, " junk") }, UNTRUSTED)).toEqual({ status: "STAGED", name: "unit-convert" });
-    expect(submitText({ status: "REFUSED", code: "pending_clean" })).toBe("REFUSED pending_clean");
+    expect(await svc.submit({ ...growFields(), body: growBody(40, " clean again") }, CLEAN)).toEqual({ status: "STAGED", name: "unit-convert" });
+    expect(submitText({ status: "REFUSED", code: "pending" })).toBe("REFUSED pending");
+  });
+
+  it("on an already marked name an untrusted submit still cannot supersede a clean turn's pending row", async () => {
+    const s = await growSetup(); const { svc, store } = s;
+    await svc.submit({ ...growFields(), body: growBody(40, " evil") }, UNTRUSTED);
+    svc.recordReview(stagedOf(store, "unit-convert")[0]!.id, FAIL_REVIEW);          // the mark outlives the failed row
+    expect(await svc.submit(growFields(), CLEAN)).toEqual({ status: "STAGED", name: "unit-convert" });
+    const clean = stagedOf(store, "unit-convert").find((r) => r.state === "staged")!;
+    expect(await svc.submit({ ...growFields(), body: growBody(40, " evil2") }, UNTRUSTED)).toEqual({ status: "REFUSED", code: "pending" });
+    expect(store.getGrowStaged(clean.id)?.state).toBe("staged");
+  });
+
+  it("a refused untrusted submit runs no pending operation of the name: the clean row keeps its last write try", async () => {
+    const s = await growSetup(); const { svc, store, zone } = s;
+    errSpy();
+    await svc.submit(growFields(), CLEAN);
+    const row = stagedOf(store, "unit-convert")[0]!;
+    svc.recordReview(row.id, PASS);
+    blockWrite(zone, "unit-convert");
+    expect(await svc.publishStaged(row.id)).toBe("retry");
+    blockWrite(zone, "unit-convert");
+    expect(await svc.submit({ ...growFields(), body: growBody(40, " evil") }, UNTRUSTED)).toEqual({ status: "REFUSED", code: "pending" });
+    expect(store.getGrowStaged(row.id)?.state).toBe("publishing");
+    expect(store.pendingGrowOps("unit-convert")).toMatchObject([{ failures: 1 }]);
+  });
+
+  it("a submit whose staging throws spends no budget: the accepted event is written with the row", async () => {
+    const s = await growSetup(); const { svc, store } = s;
+    errSpy();
+    vi.spyOn(store, "insertGrowStaged").mockImplementationOnce(() => { throw new Error("disk"); });
+    expect(await svc.submit(growFields(), CLEAN)).toEqual({ status: "REFUSED", code: "zone_unavailable" });
+    expect(store.listGrowEvents({ actions: ["submit"] })).toEqual([]);
+    expect(await svc.submit(growFields(), CLEAN)).toEqual({ status: "STAGED", name: "unit-convert" });
+    expect(store.listGrowEvents({ actions: ["submit"] })).toMatchObject([{ result: "accepted" }]);
+  });
+
+  it("failUnsettled fails only a row that is still staged: an approved or already failed row is left as it is", async () => {
+    const s = await growSetup(); const { svc, store } = s;
+    await svc.submit(growFields(), CLEAN);
+    const a = stagedOf(store, "unit-convert")[0]!.id;
+    svc.recordReview(a, PASS);
+    svc.failUnsettled(a);
+    expect(store.getGrowStaged(a)).toMatchObject({ state: "approved", code: null });
+    await svc.submit(rewrite(growFields()), CLEAN);                                  // supersedes a
+    svc.failUnsettled(a);
+    expect(store.getGrowStaged(a)).toMatchObject({ state: "failed", code: "superseded" });
+    expect(store.listGrowEvents({ actions: ["review_failed"] })).toEqual([]);
   });
 
   it("G4/G6: an untrusted turn's small edit of a clean live skill is staged for review, never live on submit", async () => {

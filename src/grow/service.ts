@@ -16,7 +16,7 @@ export type TrustLevelName = "clean" | "untrusted" | "hostile";
 export type SubmitResult =
   | { status: "LIVE"; name: string } | { status: "STAGED"; name: string }
   | { status: "FAIL"; code: GrowFailCode | "zone_full" | "publish_failed"; message: string }
-  | { status: "REFUSED"; code: "grow_disabled" | "turn_hostile" | "name_is_exemplar" | "pending_clean" | "rate_capped" | "zone_full" | "busy" | "zone_unavailable" };
+  | { status: "REFUSED"; code: "grow_disabled" | "turn_hostile" | "name_is_exemplar" | "pending" | "rate_capped" | "zone_full" | "busy" | "zone_unavailable" };
 /** `writer` false: this process is not the zone's one writer (its grow_submit is refused), so the index offers no writing. Default true. */
 export interface GrowDeps { store: RunStore; zone: GrowZone; env: NodeJS.ProcessEnv; now: () => string; writer?: boolean }
 export interface SubmitCtx { run_id: string; chat_id: string | null; level: TrustLevelName }
@@ -192,6 +192,8 @@ export class GrowService {
     const { store } = this.d; const now = this.d.now();
     try {
       await this.d.zone.assertToplevel();
+      // before settling: a submit that is refused must not run (and spend the write tries of) another version's operation
+      if (ctx.level === "untrusted" && this.pending(f.name)) return refused("pending");
       if (!(await this.settle(f.name, true))) return refused("busy");     // I2: one operation in motion per name
       const stop = this.admit(f, ctx, now);
       if (stop) return stop;
@@ -214,6 +216,8 @@ export class GrowService {
       const newId = store.insertGrowStaged({ name: f.name, run_id: ctx.run_id, chat_id: ctx.chat_id, origin, fields_json: JSON.stringify(f), content_hash: contentHash(f), needs_review, now });
       store.supersedeGrowStaged(f.name, newId, "superseded", now);
       if (!needs_review) store.patchGrowStaged(newId, { state: "approved" }, now);   // I3: a row needing no review is recoverable as approved
+      // the accepted event (the cap's count) lands with the row: a submit that throws before it spends no budget
+      store.appendGrowEvent({ at: now, run_id: ctx.run_id, chat_id: ctx.chat_id, name: f.name, action: "submit", result: "accepted", code: ctx.level === "untrusted" ? "untrusted" : null, reviewer_model: null, commit_id: null });
       return newId;
     });
   }
@@ -231,29 +235,29 @@ export class GrowService {
   }
 
   /**
-   * The exemplar, pending-clean, rate, cap and formal gates; the submit event is recorded for every submit that reaches
-   * the checks. An accepted one from an untrusted turn carries the code `untrusted`: it counts toward that budget.
+   * The exemplar, rate, cap and formal gates. A failed check is recorded here; an accepted submit is recorded by `stage`,
+   * with its row (an untrusted turn's carries the code `untrusted`: it counts toward that budget).
    */
   private admit(f: GrowFields, ctx: SubmitCtx, now: string): SubmitResult | null {
     const { store } = this.d;
     const existing = store.getGrowItem(f.name);
     if (existing?.origin === "exemplar") return refused("name_is_exemplar");
-    if (ctx.level === "untrusted" && this.pendingClean(f.name)) return refused("pending_clean");
     if (growCapReached(store, now, ctx.level === "untrusted")) return refused("rate_capped");
     if (existing?.state !== "live" && store.countGrowItems("live") >= GROW_ITEMS_MAX) return refused("zone_full");
     const check = checkFields(f, store.listGrowItems("live"), fieldScrub(store));
-    store.appendGrowEvent({ at: now, run_id: ctx.run_id, chat_id: ctx.chat_id, name: f.name, action: "submit", result: check.ok ? "accepted" : "failed", code: check.ok ? (ctx.level === "untrusted" ? "untrusted" : null) : check.code, reviewer_model: null, commit_id: null });
-    return check.ok ? null : { status: "FAIL", code: check.code, message: check.message };
+    if (check.ok) return null;
+    store.appendGrowEvent({ at: now, run_id: ctx.run_id, chat_id: ctx.chat_id, name: f.name, action: "submit", result: "failed", code: check.code, reviewer_model: null, commit_id: null });
+    return { status: "FAIL", code: check.code, message: check.message };
   }
 
   /**
-   * A version of the name is in motion and the name is unmarked: it came from a clean turn (an untrusted one marks the
-   * name, and trust is refused while a version is pending). An untrusted submit must not supersede it: that would drop
-   * Houge's own work and mark the name, a side effect outside text could aim at any name.
+   * A version of the name is in motion: a staged, approved or publishing row, or a pending operation. An untrusted
+   * submit must not supersede it, whatever the mark says: that would drop work it never saw (possibly Houge's own, from a
+   * clean turn) and mark the name, a side effect outside text could aim at any name. A clean turn may still replace it.
    */
-  private pendingClean(name: string): boolean {
+  private pending(name: string): boolean {
     const { store } = this.d;
-    return !store.isGrowMarked(name) && store.listGrowStaged().some((r) => r.name === name && r.state !== "failed");
+    return store.listGrowStaged().some((r) => r.name === name && r.state !== "failed") || store.pendingGrowOps(name).length > 0;
   }
 
   private async needsReview(f: GrowFields, isLive: boolean, untrusted: boolean): Promise<boolean> {

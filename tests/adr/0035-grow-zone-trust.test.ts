@@ -25,10 +25,10 @@ describe("ADR 0035 G4: the trust rule (marked text, the trust tap, the budgets)"
     expect(s.store.isGrowMarked("unit-convert")).toBe(true);
   });
 
-  it("an untrusted submit cannot supersede (or mark) a pending clean version", async () => {
+  it("an untrusted submit cannot supersede (or mark) a pending version", async () => {
     const s = await growSetup();
     await s.svc.submit(growFields(), CLEAN);
-    expect(await s.svc.submit(growFields({ body: growBody(40, " outside") }), UNTRUSTED)).toEqual({ status: "REFUSED", code: "pending_clean" });
+    expect(await s.svc.submit(growFields({ body: growBody(40, " outside") }), UNTRUSTED)).toEqual({ status: "REFUSED", code: "pending" });
     expect(s.store.isGrowMarked("unit-convert")).toBe(false);
   });
 
