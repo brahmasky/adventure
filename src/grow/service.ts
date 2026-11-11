@@ -630,11 +630,13 @@ export class GrowService {
    * item shows its name and a label only: its description is outside text, and the index rides in every system prompt
    * and in the reviewer's LIVE_INDEX unread, where the taint of `grow_read` cannot follow it (G4).
    */
-  indexBlock(): string | undefined {
+  /** `exclude`: the item a review is judging, left out of the reviewer's LIVE_INDEX so an update is not read as a duplicate of itself. */
+  indexBlock(exclude?: string): string | undefined {
     const write = this.d.writer !== false && resolveGrowEnabled(this.d.env) && !this.disabled;
     const lines = [INDEX_HEAD];
     let chars = INDEX_HEAD.length;
     for (const i of this.d.store.listGrowItems("live")) {
+      if (i.name === exclude) continue;
       const line = `- ${i.name} — ${this.d.store.isGrowMarked(i.name) ? INDEX_MARKED : i.description}`;
       if (lines.length > GROW_INDEX_LINES || chars + 1 + line.length > GROW_INDEX_CHARS) break;
       lines.push(line); chars += 1 + line.length;

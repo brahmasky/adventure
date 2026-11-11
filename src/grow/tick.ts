@@ -58,7 +58,7 @@ async function reviewOne(d: GrowTickDeps, row: GrowStagedRow): Promise<void> {
     base = { author_families: families.families, undo_reasons_n: reasons.length };
     outcome = await runReview({
       fields: JSON.parse(row.fields_json) as GrowFields, previous: parseSkillFile((await d.svc.zone.readHead(row.name)) ?? ""),
-      exemplar: await d.exemplar(), index: d.svc.indexBlock() ?? "", undoReasons: reasons, authorFamilies: families, chain: d.chain(),
+      exemplar: await d.exemplar(), index: d.svc.indexBlock(row.name) ?? "", undoReasons: reasons, authorFamilies: families, chain: d.chain(),
       correlationId: `grow_review:${row.id}:${attempt}:${d.now}`, signal: d.signal, scrub: (s) => redactForImprove(d.store, s)   // unique per claim: the audit ledger dedupes on it
     }, { spawn: d.spawn });
   } catch (error) {

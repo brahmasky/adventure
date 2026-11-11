@@ -231,6 +231,20 @@ describe("grow tick", () => {
     expect(index).toContain("- bbb-clean — a clean procedure that Houge wrote for itself");
   });
 
+  it("the reviewer's LIVE_INDEX leaves out the item under review, so an update is never failed as a duplicate of itself", async () => {
+    const s = await staged();
+    await s.tick(async () => pass());
+    expect(s.store.getGrowItem("unit-convert")?.state).toBe("live");
+    await s.live(growFields({ name: "bbb-clean", description: "a clean procedure that Houge wrote for itself", body: growBody(40, " c") }));
+    expect((await s.svc.submit(growFields({ description: "converting recipe amounts, now with weights too" }), CLEAN)).status).toBe("STAGED");
+    const prompts: string[] = [];
+    await s.tick(async (...a: unknown[]) => { prompts.push((a[0] as { prompt: string }).prompt); return pass(); });
+    const index = prompts[0]!.slice(prompts[0]!.indexOf("LIVE_INDEX"), prompts[0]!.indexOf("EXEMPLAR_OF_GOOD_SHAPE"));
+    expect(index).not.toContain("- unit-convert —");
+    expect(index).toContain("- bbb-clean — a clean procedure that Houge wrote for itself");
+    expect(s.svc.indexBlock()).toContain("- unit-convert —");   // the planner's index still lists it
+  });
+
   it("a row whose run ended with no final trust (failed by lease expiry after a crash) fails run_unsettled, unreviewed", async () => {
     const s = await staged();
     vi.spyOn(s.store, "getRunStatus").mockReturnValue({ state: "failed" } as ReturnType<typeof s.store.getRunStatus>);
