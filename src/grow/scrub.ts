@@ -35,10 +35,12 @@ const DOTENV_PATH = new RegExp(`(?:^|[^A-Za-z0-9_.-])\\.env(?!\\.(?:example|samp
 const DOT_DOT_HOP = /\/(?!\.\.(?:\/|$))[^/\s]+\/\.\.(?=\/|$)/;
 const samePath = (s: string): string => {
   let p = s.replace(/\/(?:\.?\/)+/g, "/");
-  for (let i = 0; i < 64 && DOT_DOT_HOP.test(p); i++) p = p.replace(DOT_DOT_HOP, "");
+  while (DOT_DOT_HOP.test(p)) p = p.replace(DOT_DOT_HOP, "");   // terminates: each pass shortens the text
   return p;
 };
-const isSecretPath = (s: string): boolean => { const p = samePath(s); return HOME_SECRET_PATH.test(p) || DOTENV_PATH.test(p); };
+/** A `..` the hops could not resolve (`~/../paco/.ssh`, a segment with a space) followed by a credential store: judged a secret path, fail closed. */
+const UNRESOLVED_HOP_SECRET = new RegExp(`(?:^|[\\s/])\\.\\.(?=/|$)[\\s\\S]*?/(?:${HOME_SECRETS.map(esc).join("|")})(?!${NAME_CHAR})`, "i");
+const isSecretPath = (s: string): boolean => { const p = samePath(s); return HOME_SECRET_PATH.test(p) || UNRESOLVED_HOP_SECRET.test(p) || DOTENV_PATH.test(p); };
 
 /**
  * What a skill field may not contain: a known secret value, a secret-shaped token, or a secret path. Changes the text
