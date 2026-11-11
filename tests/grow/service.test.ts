@@ -170,6 +170,28 @@ describe("A. the door and the review gate", () => {
     expect(submitText({ status: "REFUSED", code: "pending_clean" })).toBe("REFUSED pending_clean");
   });
 
+  it("G4/G6: an untrusted turn's small edit of a clean live skill is staged for review, never live on submit", async () => {
+    const s = await growSetup(); const f = growFields();
+    await s.live(f);
+    expect(await s.svc.submit(small(f), UNTRUSTED)).toEqual({ status: "STAGED", name: f.name });
+    expect(s.store.getGrowItem(f.name)?.content_hash).toBe(contentHash(f));
+    expect(await s.zone.readHead(f.name)).toBe(renderSkillFile(f, "clean"));
+    expect(stagedOf(s.store, f.name)).toMatchObject([{ state: "staged", needs_review: true, origin: "untrusted" }]);
+  });
+
+  it("I1: a late passing review of a superseded row records nothing and approves nothing", async () => {
+    const { svc, store } = await growSetup();
+    await svc.submit(growFields(), CLEAN);
+    const a = stagedOf(store, "unit-convert")[0]!.id;
+    await svc.submit(rewrite(growFields()), CLEAN);
+    svc.recordReview(a, PASS);
+    expect(store.getGrowStaged(a)).toMatchObject({ state: "failed", code: "superseded" });
+    expect(store.listGrowReviews("unit-convert")).toEqual([]);
+    expect(await svc.publishStaged(a)).toBe("gone");
+    expect(store.getGrowItem("unit-convert")).toBeUndefined();
+    expect(countRows(store, "grow_ops")).toBe(0);
+  });
+
   it("I5: an untrusted item undone to removal keeps its mark, so a clean resubmit is untrusted", async () => {
     const s = await growSetup();
     await s.live(growFields(), UNTRUSTED);
