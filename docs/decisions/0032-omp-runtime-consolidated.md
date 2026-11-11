@@ -104,7 +104,7 @@ dedicated macOS user for the planner.
 writes `loop_started.applied_artifacts` at that moment (no `before_agent_start` hook; rating attribution unchanged).
 4.2 **Lessons are composer-injected; skills are read through the grow zone.** (Amended 2026-11-10 by ADR 0035: skill
 bodies no longer ride in the prompt. The composer injects the grow **index** — one line per live item, `name —
-description`, alphabetical, at most 40 lines and 4,000 chars, plus two fixed sentences — and the planner reads a body
+description`, alphabetical, at most 40 lines and 4,000 chars, plus two fixed sentences; a marked item shows its name only, `(from outside content; grow_read it to see it)` (ADR 0035 G4) — and the planner reads a body
 with `grow_read`. `HOUGE_SKILLS_ENABLED` off removes the index and both grow tools. Native omp skills stay in SP4.) The
 omp prompt renders the lessons of both `ask` and `research`; each turn credits only the ids the spawned prompt holds.
 4.3 **Stale sessions by fingerprint.** At every turn start the supervisor recomputes the system-prompt fingerprint; a

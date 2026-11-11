@@ -1,9 +1,9 @@
 # ADR 0035: Grow zone and its verification — a place Houge writes himself, and the checks that decide what goes live
 
-- **Status:** accepted — signed by Paco 2026-11-10 (spec approval, Rev 1.3; Rev 1.3.1 and 1.3.2 add plan-time errata that change no decision, plus `/grow trust`); amends [0011](0011-self-evolution-architecture.md), [0032](0032-omp-runtime-consolidated.md), [0034](0034-decision-ladder-consolidated.md) (and [0030](0030-decision-ladder.md)'s carried text), [0018](0018-kill-switch.md), [0031](0031-chat-carries-what-needs-paco.md); restates [0013](0013-llm-inner-composition.md)
+- **Status:** accepted — signed by Paco 2026-11-10 (spec approval, Rev 1.3; Rev 1.3.1 and 1.3.2 add plan-time errata that change no decision, plus `/grow trust`; Rev 1.3.3 records the final review round, approved by Paco 2026-11-11); amends [0011](0011-self-evolution-architecture.md), [0032](0032-omp-runtime-consolidated.md), [0034](0034-decision-ladder-consolidated.md) (and [0030](0030-decision-ladder.md)'s carried text), [0018](0018-kill-switch.md), [0031](0031-chat-carries-what-needs-paco.md); restates [0013](0013-llm-inner-composition.md)
 - **Date:** 2026-11-10
 - **Deciders:** Paco
-- **Spec:** [2026-11-10-grow-zone-verification-design.md](../superpowers/specs/2026-11-10-grow-zone-verification-design.md) (Rev 1.3.2; §2 D1–D10, §2a P1–P3, §14 review record, §15 errata). Plan: [2026-11-10-grow-zone-1a.md](../superpowers/plans/2026-11-10-grow-zone-1a.md).
+- **Spec:** [2026-11-10-grow-zone-verification-design.md](../superpowers/specs/2026-11-10-grow-zone-verification-design.md) (Rev 1.3.3; §2 D1–D10, §2a P1–P3, §14 review record, §15 errata 1–54). Plan: [2026-11-10-grow-zone-1a.md](../superpowers/plans/2026-11-10-grow-zone-1a.md).
 
 ## Context
 
@@ -46,10 +46,11 @@ stated). A rule changes only by a new ADR and Paco's hand, and its test changes 
 
 A file belongs in the kernel (`src/`, the full build flow of AGENTS.md) if it can weaken a floor, leak a secret, or
 stop Houge running. Otherwise it belongs in the grow zone. Existing TypeScript features stay as built; the rule
-applies forward. The orchestrator writes no grow-zone item except the exemplar in `grow-seed/skills/`.
+applies forward. The orchestrator writes no grow-zone item except the exemplar in `grow-seed/skills/`; `grow-seed/` is on the protected
+surface, so a self-write cannot add or edit an exemplar (an exemplar publishes unreviewed).
 
 Conformance: `ADR 0035 G1: the orchestrator seeds only the exemplar` (`grow-seed/skills/` holds exactly the exemplar
-`option-comparison`). The rest of the rule is a placement rule: AGENTS.md carries the wording; the final review of a slice asks
+`option-comparison`); `tests/adr/0035-grow-zone-door.test.ts` (`grow-seed` in `PROTECTED_DIRS`, the exemplar's content hash pinned). The rest of the rule is a placement rule: AGENTS.md carries the wording; the final review of a slice asks
 "was this built in `src/` though it passes the kernel test?"
 
 ### G2. One write door, one read door, the daemon the only writer
@@ -57,13 +58,20 @@ Conformance: `ADR 0035 G1: the orchestrator seeds only the exemplar` (`grow-seed
 - **Write door** `grow_submit({ name, description, example, body, anchors? })`: a bridge tool, content by arguments
   (no file is copied from the workspace, so there is no path, symlink or check-to-copy race). **Read door**
   `grow_read({ name, what? })`: returns the committed body (or, with `what: "review"`, the stored findings).
-- The daemon is the only writer. Inside the daemon, only the publish operation (`src/grow/ops.ts`), the exemplar
+- The daemon is the only writer: a worker built without the writer role (`growWriter`, passed by the daemon alone) answers
+  `grow_submit` with `REFUSED not_the_daemon` before it creates or commits anything (`grow_read` still works). Inside the daemon, only the publish operation (`src/grow/ops.ts`), the exemplar
   seeder and the one-shot migration write the repository. Nothing writes `<repo>/skills/`; the one-shot migration only renames it aside.
 - The zone lives at `HOUGE_GROW_DIR` (default `~/Library/Application Support/houge/grow`), outside the code checkout.
   The override is accepted only when absolute, at least three segments deep, not the home directory or an ancestor of
-  it, and overlapping neither the checkout, the data dir nor `~/.omp`. Every git call goes through the hardened
+  it, and overlapping neither the checkout, the data dir nor `~/.omp`; it is judged as the canonical path it reaches
+  (symlinks, also dangling ones, and a `/System/Volumes/Data` firmlink prefix are resolved; any other failure falls back
+  to the default). The daemon resolves it once per worker, so the sandbox deny and the zone never part. Every git call goes through the hardened
   wrapper (`src/run/git-hardened.ts`) with explicit `--git-dir` / `--work-tree`, and the toplevel is asserted before
-  any call that discards or rewrites. A repository is created only for an empty zone; items present and `.git` gone
+  any call that discards or rewrites. Zone git pins `GIT_COMMON_DIR`, `GIT_ATTR_NOSYSTEM=1`, `core.attributesFile` and
+  `core.excludesFile` (both `/dev/null`), refuses `.git/commondir`, `.git/config.worktree` and a `.gitattributes` in any
+  case anywhere in the tree on every call, adds with `-f`, and cleans planted ignored files and nested repositories
+  before a retry. A repository is created only in an absent or empty directory (an empty `skills/` allowed; anything
+  else is `not_empty` and is left untouched); items present and `.git` gone
   is a fault that disables the write door with the incident `grow_zone_unavailable`.
 - The grow root **and the backup folder** are read- and write-denied to every child, at both layers of ADR 0032 5.1
   (Seatbelt profile and policy hook path gate), through `secretPaths` in `src/omp/protected-paths.ts`. Read-denied,
@@ -77,26 +85,34 @@ Conformance: `ADR 0035 G1: the orchestrator seeds only the exemplar` (`grow-seed
   `grow_disabled` when `HOUGE_GROW_ENABLED` is off.
 
 Conformance: `ADR 0035 G2: one door into the zone's repository` (no caller of `writeAndCommit` / `removeAndCommit`
-outside `src/grow/ops.ts`); `ADR 0035 G2: nothing in src writes the old skills folder` (no `join(…, "skills")` in `src` outside `src/grow/`); `tests/adr/0032-grow-root-denied.test.ts` (read and write deny by function and in both
+outside `src/grow/ops.ts`); `ADR 0035 G2: nothing in src writes the old skills folder` (no `join(…, "skills")` in `src` outside `src/grow/`); `tests/adr/0035-grow-zone-writer.test.ts` (`ADR 0035 G2: the daemon is the only writer`: a worker without `growWriter` answers `REFUSED not_the_daemon` and creates no zone); `tests/adr/0032-grow-root-denied.test.ts` (read and write deny by function and in both
 profiles, run with data dir different from the repo so it cannot pass on the repo deny).
 
 ### G3. Staged, then live on checks; no human gate; every live write a commit
 
 - A submit runs the formal checks in milliseconds and never waits for a model. Formal checks, first failure ends:
   field rules (name slug 3–48, description one line 20–200, example one line 10–300, body 200–8,000 chars, at most
-  eight anchors, 16 KB total, UTF-8, no control characters); a secret scan of every field (the judge redactor
-  without link-token and code masking, plus the secret paths of ADR 0032 3.2 as literals; a failure never quotes the
-  match); no fenced block of more than three lines that is not marked as prose (an exact procedure needs a script, and
+  eight anchors, 16 KB total, UTF-8, no hidden characters: refused by Unicode class (Cc except newline and tab, Cf, Co, Cn,
+  Cs, variation selectors, default-ignorable code points, fillers and blanks, U+2028/2029), so a zero-width joiner or
+  VS16 is refused and **emoji sequences are not allowed**); a secret scan of every field (the judge redactor
+  without link-token and code masking, plus the secret paths of ADR 0032 3.2 as literals, case-insensitively and through
+  `//` and `/./`; it also reads the text with hidden characters dropped and NFKC applied, so a secret split by an
+  invisible character or written fullwidth is caught; a failure never quotes the match); no fenced block of more than three lines that is not marked as prose (an exact procedure needs a script, and
   scripts arrive in 1c); no near-copy of a live item (same normalised description, or same normalised body hash).
 - The answer is `LIVE` (a small update of a clean live item), `STAGED`, `FAIL <code>` or a refusal with a fixed code:
-  `grow_disabled`, `turn_hostile`, `name_is_exemplar`, `rate_capped` (20 submits per rolling 24 hours), `zone_full`
-  (200 items), `busy`, `zone_unavailable`.
+  `grow_disabled`, `turn_hostile`, `name_is_exemplar`, `pending` (an untrusted submit while any version of the name is
+  staged, approved, publishing or has a pending operation; a clean turn may still supersede), `rate_capped` (20
+  accepted submits per rolling 24 hours; an untrusted turn's accepted submits have their own 5, which do not use up the
+  20; failed checks, refusals and submits that throw count toward neither), `zone_full` (200 items), `busy`,
+  `zone_unavailable`. A worker that is not the daemon's answers `REFUSED not_the_daemon` (G2).
 - **Review is an enforced gate.** An item that needs review is reviewed after the turn ends by a one-shot seat on the
   role `grow_review` (no tools; three legs (Kimi, Gemini pro, Codex; the static rollback list holds Kimi and Codex): none is of the Claude family that runs the planner, and
   none draws on the Anthropic pool). The author's families are read at claim time from the run's successful `compose`
   `llm_attempt` rows; a leg whose family is among them is skipped; an unknown family fails closed. The review is a
   persistent queue claimed from the daemon's poll loop (`grow_staged`, `next_attempt_at`), at most one at a time;
-  an outage retries after 1 h, 6 h, 24 h and then ends `review_unavailable`. The verdict must be the reviewer's whole
+  an outage retries after 1 h, 6 h, 24 h and then ends `review_unavailable`. A due row whose authoring run is terminal
+  with no final trust level, or that has waited over 24 h unsettled, fails `run_unsettled` without a review. The switch
+  is read again after a review: a pass recorded with `HOUGE_GROW_ENABLED` off stays `approved` until an armed reconcile. The verdict must be the reviewer's whole
   reply (strict JSON, one optional code fence); anything else is a seat failure. A pass is stored
   (`grow_reviews`: content hash, hash of the exact input sent, model, the author's families, number of undo reasons
   shown) and moves the row to `approved`. **Publishing refuses a row that needs review and has no passing review of
@@ -114,9 +130,10 @@ profiles, run with data dir different from the repo so it cannot pass on the rep
   publishing are code decisions. A reviewer talked into `pass: true` lets through an item that already passed the
   formal checks; a born-untrusted item it lets through still taints whoever reads it (G4).
 - Undo: `/grow undo <name> [reason]` (and `houge grow undo`) restores the previous published version, or removes the
-  item if it had none, by a new commit. The request is queued and the daemon's grow tick runs it within one poll cycle
+  item if it had none, by a new commit. The request is queued and the daemon's request job (`runGrowRequestsSafe`, its own job each poll: reconcile, then the
+  requests; the review tick only reviews, so neither waits behind a review) runs it within one poll cycle
   (the zone has one git writer); the request key is the Telegram trigger's, so a redelivery cannot undo twice. Each
-  undo steps back one published version. A reason is always stored ("(no reason given)" when none), and every later
+  undo steps back one published version (adopted content and an outside edit synced from HEAD are versions too). A reason is always stored ("(no reason given)" when none), and every later
   review of that name receives every stored reason.
 - `/changes` shows one line per publish and per undo (topic `grow_log`). No Telegram card, no trust tap, no push (the send-back ask of G4 is the one exception, and only in that continuation).
 
@@ -131,12 +148,17 @@ operation`, `I1: a passing review of superseded content does not approve the new
   ask. The turn's level is the live turn's when bound, else its `turn_trust` ledger rows (a carried level is one of them). `grow_submit` is
   on no trust ask list, so no card can put a hostile turn's skill live.
 - **`untrusted` conversation:** accepted, always `STAGED` (never the small-update path), always reviewed, stored with
-  `origin: untrusted`. There is no trust tap: ADR 0034 8.2's ask for `skill_author` is gone with the tool, and `grow_submit`
+  `origin: untrusted`; refused with `pending` while any version of the name is in motion, so outside text cannot
+  supersede Houge's own pending version. There is no trust tap: ADR 0034 8.2's ask for `skill_author` is gone with the tool, and `grow_submit`
   never asks for trust at any level. One ask remains, and it is not about trust: after a Jev-rung send-back it asks like every side effect (`settleAsk`, ADR 0034 2.4, 2b-R7), because it is not on the read-only list (`effectiveAsk`, `src/decisions/trust-ask.ts`). `grow_read` never asks, not even then.
 - **`clean` conversation:** `origin: clean`.
 - **The mark is per name.** It is kept in its own table, so a removed item, a failed submission or a row in flight
-  cannot lose it. A name's mark survives every later submit, pending or live, whatever level it comes from. Only Paco
-  clears it: `/grow trust <name>` or `houge grow trust <name>`. A passing review never does.
+  cannot lose it. A name's mark survives every later submit, pending or live, whatever level it comes from, and
+  outlives a failed review (mark-at-stage; residual R7). Only Paco clears it: `/grow trust <name>` or `houge grow trust
+  <name>`, and only when nothing of that name is in motion: while a staged, approved or publishing row or a pending
+  operation exists, trust is refused ("A new version of X is waiting for review; trust it once it is live or failed.")
+  and pending rows are never flipped to clean. A passing review never clears it. One carve-out: the seed publish of an
+  exemplar unmarks its name (an exemplar is orchestrator-written, so a mark on one is a sync artefact).
 - **`grow_read` of a marked item** (its body, or its review findings) raises the turn to `untrusted` before the text
   returns, through the trust cause `grow_read_untrusted` (`CAUSE_LEVEL` and `CARRY_LEVEL` both `untrusted`). Reading a
   clean item or the exemplar raises nothing. `grow_read` never asks, at any level. Its output is kernel text that
@@ -144,13 +166,15 @@ operation`, `I1: a passing review of superseded content does not approve the new
 - Both tools are on the bridge's plain branch (`PLAIN_TEXT_ENTRIES`), the branch `houge_status` uses, and never on the
   wall or judged-read branches.
 - The skills index is part of the system prompt (G2's read door's companion): one line per live item, `name —
-  description`, alphabetical, at most 40 lines and 4,000 chars, plus two fixed sentences. Alphabetical order keeps the
+  description`, alphabetical, at most 40 lines and 4,000 chars, plus two fixed sentences. A marked item shows its name
+  only: `name — (from outside content; grow_read it to see it)`, in the system prompt and in the reviewer's index; the
+  description returns after `/grow trust`. The write sentence is left out in a process that is not the zone's writer. Alphabetical order keeps the
   prompt stable: the planner restarts only when the index text changes (an item added, removed or re-described, or the door switching), never when one is used.
 
 Conformance: `ADR 0035 G4: the trust rule` (`grow_submit` never asks for trust at untrusted, and asks after a send-back;  `grow_read` never asks at any
 level; reading a born-untrusted item is an untrusted cause that carries as untrusted; the grow tools take the plain
 branch); `ADR 0035 G4 clause a: a hostile turn's grow_submit is refused in the preflight` (a bound getter, and the
-ledger's `carried_hostile` with none bound); `ADR 0035: index stable order`; `tests/decisions/trust-ask.test.ts` (the ADR 0034 8.2
+ledger's `carried_hostile` with none bound); `ADR 0035: index stable order`; `ADR 0035 G4: the trust rule` in `tests/adr/0035-grow-zone-trust.test.ts` (a marked item's description never reaches the index; trust is refused while a version is pending; an untrusted submit is refused `pending`; only accepted submits count, and the untrusted budget of five never uses up the 20); `tests/decisions/trust-ask.test.ts` (the ADR 0034 8.2
 trust table, updated in the same commit as the rule).
 
 ### G5. The verifier is out of Houge's reach, and an undo reason cannot be deleted
@@ -171,8 +195,9 @@ updates a `grow_undo_reasons` or `grow_reviews` row).
 
 ### G6. What is reviewed is decided by code
 
-- Every **new** item is reviewed. An update is unreviewed only when it is small: at most 20 changed lines and at most
-  25% of the body (changed lines counted in order, so a reordering is a change), with `description`, `example` and
+- Every **new** item is reviewed. An update is unreviewed only when it is small: at most 20 changed lines, at most 800
+  changed characters and at most 25% of the old body's characters (changed lines counted in order, so a reordering is a
+  change), with `description`, `example` and
   `anchors` unchanged. Anything larger is reviewed as new.
 - An item with a stored undo reason is reviewed on every later submit, whatever its size; a name undone once stays
   reviewed.
@@ -223,7 +248,7 @@ test lives in the G4 describe block and names G7).
 - **Orphans.** An item in the repository but unknown to the database is listed `orphan` in `/grow`, kept out of the index,
   and adopted as untrusted by `houge grow adopt <name>` (queued like undo).
 - **Surface.** `houge grow list | show | check | log | undo | trust | adopt`; Telegram `/grow`, `/grow undo`, `/grow trust`;
-  `/skills` is an alias of the `/grow` list for one release; `/status` shows a review pending over a day, a disabled door, orphans.
+  `/skills` is an alias of the `/grow` list for one release; `/status` shows a review pending over a day, a disabled door, orphans, each submit cap that is reached, and the count of live skills shown by name only; `/grow` shows the origin of each pending row.
 - **Incidents (ADR 0031).** `grow_zone_unavailable` (page), `grow_publish_failed` (page), `grow_seed_failed` (log),
   `grow_backup_failed` (log); notification topic `grow_log` (log).
 
@@ -238,13 +263,22 @@ test lives in the G4 describe block and names G7).
   on the roadmap. Marking every Houge-written item `untrusted` would close it inside 1a but would turn every skill read
   into a trust downgrade; it was rejected.
 - **The reviewer is a model.** A wrong but honest procedure can pass; the answer is undo, and the stored reason binds every
-  later review. A small update of a clean item escapes review (20 lines, capped at 20 submits a day).
+  later review. A small update of a clean item escapes review (20 lines and 800 characters, capped at 20 accepted submits a day).
 - **Personal detail that is not a secret** can be in a skill. It stays on this machine and goes to the reviewer's
   provider.
 - **Undone text outlives the undo** in the database snapshots and the zone's bundle until they rotate.
 - **`/ask` and `/research` carry no skills:** the one-shot command paths have no tools, so they cannot call `grow_read`.
   Every run in the 30 days before the change was an omp turn.
 - **No pruning of unused items** until slice 3; the item cap (200) and the rate cap bound growth.
+- **R7. The mark outlives a failed review (accepted by Paco 2026-11-11, Tier C).** An untrusted submit marks the name when
+  it is staged, and the mark stays if that submit fails review or is superseded (fail closed; only Paco clears it, once
+  nothing is pending). So an untrusted submit can make a clean live skill show by name only and taint whoever reads it
+  until `/grow trust`; at most five names a day (the untrusted budget). `/status` counts such skills ("N skill(s) from
+  outside content (shown by name only)") and a reached cap. Closing it would mean marking at publish, which lets a
+  failed outside submit leave no trace.
+- **R8. Attributes in the index or HEAD alone (open: Paco's acceptance is owed, Tier C).** A `.gitattributes` present only in the index or HEAD can
+  still convert text, but cannot run a command: a filter needs a config definition, and the config is byte-checked and
+  pinned. Closing it needs `--attr-source`, which the system git (2.39) lacks.
 
 ## Consequences
 
@@ -281,3 +315,4 @@ test lives in the G4 describe block and names G7).
 | Date | What changed | Spec | Signed by Paco on |
 |---|---|---|---|
 | 2026-11-10 | This ADR: G1–G7; amends ADR 0011 (skills gate), 0032 (D8, 4.2, 4.3, 5.1, 6.3, 7.1), 0034 (1.5, 2.1, 2.4, 5.1, 7.1, 8.1–8.3, 10.3–10.5), 0030 (carried text), 0018 (disarm flags), 0031 (routes) | [grow zone](../superpowers/specs/2026-11-10-grow-zone-verification-design.md) (Rev 1.3.2) | 2026-11-10 (spec approval) |
+| 2026-11-11 | Final review round (Paco, AskUserQuestion): trust refuses while a version is pending; a marked item shows by name only; the submit caps count accepted submits, untrusted turns have their own 5; residual R7 accepted. Door by Unicode class (emoji sequences refused), NFKC scrub, character bound on small updates, zone init and git pins, canonical `HOUGE_GROW_DIR`, `grow-seed/` protected, `pending` and `not_the_daemon` refusals, `run_unsettled`, request job | [grow zone](../superpowers/specs/2026-11-10-grow-zone-verification-design.md) (Rev 1.3.3, errata 37–54) | 2026-11-11 |
