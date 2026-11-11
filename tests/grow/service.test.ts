@@ -157,6 +157,15 @@ describe("A. the door and the review gate", () => {
     expect(store.listGrowEvents({ actions: ["trust"] })).toHaveLength(1);
   });
 
+  it("an untrusted submit is refused while an op of the name is pending even with no staged row (an undo in motion), and the op is left untouched", async () => {
+    const s = await growSetup(); const { svc, store } = s;
+    await s.live(growFields());
+    const op = store.insertGrowOp({ id: "op-pending-undo", kind: "undo", source: "undo", name: "unit-convert", staged_id: null, request_id: null, target_json: null, reason: "r", undo_version_id: null, now: s.now() });
+    expect(stagedOf(store, "unit-convert").filter((r) => r.state !== "failed")).toHaveLength(0);
+    expect(await svc.submit({ ...growFields(), body: growBody(40, " junk") }, UNTRUSTED)).toEqual({ status: "REFUSED", code: "pending" });
+    expect(store.getGrowOp(op.id)).toMatchObject({ state: "pending", failures: 0 });
+  });
+
   it("an untrusted submit is refused while any version of the name is pending; the pending row stays, a clean turn may still replace it", async () => {
     const s = await growSetup(); const { svc, store } = s;
     expect(await svc.submit(growFields(), CLEAN)).toEqual({ status: "STAGED", name: "unit-convert" });
