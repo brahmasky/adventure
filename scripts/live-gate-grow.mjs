@@ -285,7 +285,7 @@ async function tick(now, chain) {
 async function promptHash(row, reasons) {
   const previous = G.D.parseSkillFile((await G.svc.zone.readHead(row.name)) ?? "");
   const exemplar = (await G.svc.zone.readHead(EXEMPLAR)) ?? "";
-  return sha(G.D.buildReviewPrompt({ fields: JSON.parse(row.fields_json), previous, exemplar, index: G.svc.indexBlock() ?? "", undoReasons: reasons }, (s) => G.D.redactForImprove(G.store, s)));
+  return sha(G.D.buildReviewPrompt({ fields: JSON.parse(row.fields_json), previous, exemplar, index: G.svc.indexBlock(row.name) ?? "", undoReasons: reasons }, (s) => G.D.redactForImprove(G.store, s)));
 }
 /** The hash of exactly the request the tick will send, with and without the undo reasons: computed from the same inputs just before each tick. */
 async function precompute(now) {
@@ -443,7 +443,7 @@ async function line6() {
   const name = G.s1.name; const f = G.s1.fields;
   const { origin: _o, ...base } = f;
   // one short added line: small under the line AND character bounds (changed chars <= 25% of the body and <= 800)
-  const small = { ...base, body: `${base.body.trimEnd()}\nFan oven: set it 20 °C lower.\n` };
+  const small = { ...base, body: `${base.body.trimEnd()}\nFor a fan oven, use 20 °C below a conventional-oven recipe.` };   // no trailing newline: parseSkillFile bodies have none, and an extra empty line would be a second changed line
   const ctx = { run_id: G.s1.run, chat_id: String(CHAT_ID), level: "clean" };
   const smallOk = G.D.isSmallUpdate(base, small);
   const r1 = await G.svc.submit(small, ctx);
@@ -477,7 +477,7 @@ async function line7() {
   const confirm = repliesSince(before).find((x) => x.key.includes(`grow:req:${req?.id}`));
   const item = G.store.getGrowItem(name);
   const f = await committed(name); const { origin: _o, ...base } = f;
-  const next = { ...base, body: `${base.body.trimEnd()}\nCheck with an oven thermometer.\n` };   // one short added line: small by lines and characters
+  const next = { ...base, body: `${base.body.trimEnd()}\nCheck with an oven thermometer.` };   // one short added line: small by lines and characters
   const r = await G.svc.submit(next, { run_id: G.s1.run, chat_id: String(CHAT_ID), level: "clean" });
   const staged = q1("SELECT * FROM grow_staged WHERE name = ? ORDER BY id DESC LIMIT 1", name);
   const small = G.D.isSmallUpdate(base, next);
