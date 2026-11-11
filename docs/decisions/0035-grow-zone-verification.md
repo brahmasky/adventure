@@ -195,9 +195,9 @@ updates a `grow_undo_reasons` or `grow_reviews` row).
 
 ### G6. What is reviewed is decided by code
 
-- Every **new** item is reviewed. An update is unreviewed only when it is small: at most 20 changed lines, at most 800
-  changed characters and at most 25% of the old body's characters (changed lines counted in order, so a reordering is a
-  change), with `description`, `example` and
+- Every **new** item is reviewed. An update is unreviewed only when it is small: at most 20 changed lines and at most
+  25% of the body's lines, at most 800 changed characters and at most 25% of the old body's characters (changed lines
+  counted in order, so a reordering is a change), with `description`, `example` and
   `anchors` unchanged. Anything larger is reviewed as new.
 - An item with a stored undo reason is reviewed on every later submit, whatever its size; a name undone once stays
   reviewed.
