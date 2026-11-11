@@ -1,7 +1,7 @@
 # Mandate and follow-up — why a run was allowed, and where later input goes
 
-**Rev 0.1 · 2026-11-11 · status: DRAFT for design review by a separate Claude session.** Not reviewed by
-spec-review-senior or codex yet. No code until every BLOCKER is closed and Paco approves.
+**Rev 0.1 · 2026-11-11 · status: REVIEWED 2026-11-12, NOT READY. There are four blockers, and M1 and F1 wait on
+Paco (§11).** No code until every BLOCKER is closed and Paco approves.
 
 - **Origin:** the comparison of Houge with `deepseek-ai/dsh-superagent-prototype` (MIT, research prototype released
   2026-10-31), Paco in chat 2026-11-11: "go ahead with the Houge spec for mandate + PR follow-up". Its domain model
@@ -189,3 +189,44 @@ run may exist"; add **Mandate** as a term. No new env var in slice M. Slice F ma
 ## 10. Change log
 
 - **Rev 0.1 (2026-11-11):** first draft from the dsh-superagent comparison; PR follow-up reframed (no PR seam).
+- **Review of Rev 0.1 (2026-11-12):** probes by the orchestrator (Opus 5.5), spec-review-senior on Fable 5.2, codex
+  design pass. Verdict: **not ready; four blockers.** Rev 0.2 waits on Paco's M1 and F1 calls (§11.3), because
+  the two reviews disagree on both.
+
+## 11. Review record (Rev 0.1)
+
+Stale text: grow zone 1a shipped on 2026-11-11 (merge `24f13aa1`), so the header's "being built" is out of date.
+§2's `run-store.ts:2167` citation now points at lesson code; `resolveQuotedTurn` is at `:2223`.
+
+### 11.1 Confirmed first-hand
+
+| Finding (source) | Evidence | Consequence |
+|---|---|---|
+| **B1** `decision_ids` and `trust` cannot be inside the hash (all three) | The ledger for a schedule run goes `run_created`, then `contract_attached`, then `turn.contract` (3 ms later), then `turn_trust` (3 s later). The recorder skips default verdicts (`src/decisions/record.ts:40`). Since 2026-11-05, `turn.contract` has a row on 8 of 8 schedule runs and 0 of 10 Telegram runs. `turn.handler` is written at claim, after attach. | Admission facts are not known at compile time. Decisions already join on `run_id`, and trust already sits in the ledger. |
+| **B2** MD1 is false as worded (all three) | `attachContract` runs `UPDATE … WHERE state='created'` (`run-store.ts:1594`). `resumeDuplicate` re-attaches on redelivery (`gateway.ts:1404`). | Reword: "set only while `created`". Any hashed block must then recompile identically. |
+| **B3** Live code already breaks MD2 and MD3 (senior) | The self-diagnose and self-write sub-contracts open `coding_agent_cli`, which the turn contract forbids (`task-contract.ts:53`). They run on a fresh `BudgetLedger` (`core-worker.ts:3170`). | The spec must name this path as an exemption or absorb it. |
+| **B4** Follow-up "skips admission" (codex, senior) | That would skip the global budget breaker (`gateway.ts` intake), authentication, replay checks and kill posture. Quote resolution runs at worker claim (`core-worker.ts:2024`), after the reply is already an admitted run. | Follow-ups pass intake in full and skip only contract compilation. |
+| MD3 bounds only action names, gates and budget (codex) | The objective, output destination and ADR 0035 G7 `grow_submit` strip are not bound. `BudgetLedger` is in memory, counts tool calls only and is not persisted. `max_agent_delegations` is 0 everywhere, so "parent − 1" gives −1. | Subset-check the whole contract. Budget works for a synchronous `delegate` only. |
+| MD4 is stale and points one way only (all three) | Trust tightened mid-run in 2 of 72 runs. | A child takes the parent's **live** level at spawn. A child's raised trust flows back to the parent and to the chat carry when its output returns. |
+| MD6 cannot be built (codex, senior) | `decisions` stores verdicts, not inputs. `REGISTRY` is a static import, so a version change means a restart, which kills children. Allowlists, Jev model, standing approvals and mail rules change without a version bump. `RunState` has no `revoked`. | Replace MD6 with "re-run the ordinary gates on the new input". |
+| Slice F's mapping has nothing to map (probe, both) | Since 2026-10-09, `progress` outbox rows carry a `run_id` 0/95 times, `approval_prompt` 30/30, `final_report` 114/114. Paco used Telegram reply once (2026-11-01), on a run-less `progress` message, which gave `quote_unresolved{no_mapping}`. The resolver is not broken. | Reply-to is the wrong primary channel. A button carrying the run id matches the approvals path. |
+| M2's premise is wrong (senior) | `src/contracts/task-contract.ts` and `run-store.ts` are in `PROTECTED_FILES` (`self-write-guard.ts:80,84`). | Option B is moot. The open question is a protected spawn call site. |
+| Fields duplicate run columns; enum mismatch (senior, codex) | `source`, `requester` and `trigger_ref` duplicate `runs.source`, `requested_by_json` and `idempotency_key`. `TriggerSource` includes `event` (`types.ts:3`). | Drop the duplicates. |
+| `strength` is dsh-shaped (senior) | §5 gates nothing on `explicit`, and `source` already separates Paco from everything else. | Drop it, unless the answer to F1 needs it (codex: a reply must never upgrade an inferred job). |
+| Work outside runs has no contract (senior) | `improvement_jobs` has no `run_id`, and the grow publishes have a NULL `run_id`. | Slice 2 must say whether a job is a run. |
+
+### 11.2 Rejected or corrected
+
+- **Probe note: "contract_hash fixed per program"** was wrong. `base` includes `objective`, which gives 445
+  distinct hashes over 604 runs, and `selectContext` has no caller outside its test. A per-run block therefore breaks
+  nothing. §2's wording is wrong in the same way.
+- **`mandate.admitted` ledger event:** it duplicates `contract_attached`. Dropped.
+
+### 11.3 Open for Paco: the reviews disagree
+
+| Id | Fable senior | Codex | Orchestrator's recommendation |
+|---|---|---|---|
+| M1 | **A, reduced:** keep `parent{run_id, contract_hash}`, `trust_at_spawn` and `registry_version` in the contract, on child runs only | **B:** a separate immutable admission row | **A reduced.** Every fact that B would store is either already joinable on `run_id` or known at spawn, so B adds a table without adding a fact. |
+| M2 | A, with a named protected spawn call site | A, with the validator protected and checked at attach and at spawn | A, with both additions |
+| M3 | A, smaller cut: parent link, MD3, spawn-time MD4 and reworded MD1 go into the 1b spec; MD5 and MD6 wait for slice 2 | A, once the blockers are closed | Senior's cut |
+| F1 | **B:** drop it here and redesign it with slice 2 once job rows exist | A, redesigned before slice 2 | **B.** Its design depends on what a job row is, and live use of reply-to is close to zero. |
