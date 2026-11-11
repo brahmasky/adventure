@@ -17,7 +17,8 @@ export type SubmitResult =
   | { status: "LIVE"; name: string } | { status: "STAGED"; name: string }
   | { status: "FAIL"; code: GrowFailCode | "zone_full" | "publish_failed"; message: string }
   | { status: "REFUSED"; code: "grow_disabled" | "turn_hostile" | "name_is_exemplar" | "pending_clean" | "rate_capped" | "zone_full" | "busy" | "zone_unavailable" };
-export interface GrowDeps { store: RunStore; zone: GrowZone; env: NodeJS.ProcessEnv; now: () => string }
+/** `writer` false: this process is not the zone's one writer (its grow_submit is refused), so the index offers no writing. Default true. */
+export interface GrowDeps { store: RunStore; zone: GrowZone; env: NodeJS.ProcessEnv; now: () => string; writer?: boolean }
 export interface SubmitCtx { run_id: string; chat_id: string | null; level: TrustLevelName }
 export interface ReviewRecord { pass: boolean; findings: Array<{ step: string; problem: string }>; reviewer_model: string | null; input_hash: string | null; author_families: string[]; undo_reasons_n: number; code: "review_passed" | "review_failed" | "review_unavailable" }
 export type PublishOutcome = "published" | "retry" | "failed" | "gone" | "not_approved" | "held";
@@ -626,7 +627,7 @@ export class GrowService {
    * and in the reviewer's LIVE_INDEX unread, where the taint of `grow_read` cannot follow it (G4).
    */
   indexBlock(): string | undefined {
-    const write = resolveGrowEnabled(this.d.env) && !this.disabled;
+    const write = this.d.writer !== false && resolveGrowEnabled(this.d.env) && !this.disabled;
     const lines = [INDEX_HEAD];
     let chars = INDEX_HEAD.length;
     for (const i of this.d.store.listGrowItems("live")) {

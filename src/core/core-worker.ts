@@ -1922,7 +1922,7 @@ export class CoreWorker {
 
   /** One grow service per worker, built on first use. */
   growService(): GrowService {
-    return (this.growCache ??= new GrowService({ store: this.runStore, zone: new GrowZone(this.growDir()), env: process.env, now: () => new Date().toISOString() }));
+    return (this.growCache ??= new GrowService({ store: this.runStore, zone: new GrowZone(this.growDir()), env: process.env, now: () => new Date().toISOString(), writer: this.ompOptions.growWriter === true }));
   }
 
   private supervisorDeps(chatId: string): SupervisorDeps {

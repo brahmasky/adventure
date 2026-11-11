@@ -325,6 +325,16 @@ describe("A. the door and the review gate", () => {
     expect(s.svc.indexBlock()).toContain(`- aaa-first — ${evil.description}`);
   });
 
+  it("a process that is not the zone's writer lists the index without the write sentence (its grow_submit is refused)", async () => {
+    const s = await growSetup();
+    await s.live(growFields());
+    const reader = new GrowService({ store: s.store, zone: s.zone, env: {}, now: s.now, writer: false });
+    expect(reader.indexBlock()).toContain("- unit-convert");
+    expect(reader.indexBlock()).not.toContain("grow_submit");
+    expect(new GrowService({ store: (await growSetup()).store, zone: s.zone, env: {}, now: s.now, writer: false }).indexBlock()).toBeUndefined();
+    expect(s.svc.indexBlock()).toContain("grow_submit");
+  });
+
   it("I10: a holder that throws releases the lock; submit never waits; waiters run in arrival order", async () => {
     const { svc } = await growSetup();
     await expect(svc.withLockWait(async () => { throw new Error("boom"); })).rejects.toThrow("boom");
