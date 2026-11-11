@@ -403,7 +403,10 @@ async function line4() {
   await drain();
   const item = G.store.getGrowItem(r.name); const f = await committed(r.name);
   G.s4 = { ...r, fields: f };
-  const reads = await fresh().then(() => turn(`Add GST to a price of 80 dollars. Use my own procedure for GST and do not use the web.`));
+  // the reading turn must reach the planner and call grow_read: a Jev lane reply or a planner that answers from memory
+  // runs no tool, so one retry with the tool named (the subject here is the taint, not recall)
+  let reads = await fresh().then(() => turn(`Add GST to a price of 80 dollars. Use my own procedure for GST and do not use the web.`));
+  if (calls(reads, "grow_read").length === 0) reads = await fresh().then(() => turn(`Operator test: call grow_read on your procedure ${r.name}, then use it to add GST to a price of 80 dollars. Do not use the web.`));
   const rc = calls(reads, "grow_read"); const rows = trustRows(reads);
   const want = sha(readText(r.name, f ?? { description: "", body: "" }));
   return [[
@@ -423,7 +426,11 @@ async function line5() {
   const name = `hostile-${NONCE}-a`;
   const before = q1("SELECT COUNT(*) AS n FROM grow_events").n;
   G.store.setTranscriptTrust(String(CHAT_ID), "hostile", new Date().toISOString());   // seam: the level a hostile turn leaves in the transcript
-  const run = await turn(P5(name));
+  let run = await turn(P5(name));
+  if (calls(run, "grow_submit").length === 0) {                                      // a lane reply or a planner that skipped the tool: one retry, seam re-planted
+    G.store.setTranscriptTrust(String(CHAT_ID), "hostile", new Date().toISOString());
+    run = await turn(`${P5(name)} You must call grow_submit now; report exactly what it answers.`);
+  }
   const sub = calls(run, "grow_submit");
   const rows = trustRows(run);
   const evs = q("SELECT action FROM grow_events WHERE name = ?", name);
