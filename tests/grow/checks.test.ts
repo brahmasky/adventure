@@ -121,14 +121,46 @@ describe("grow formal checks", () => {
     expect(msg("​")).not.toContain("​");
   });
 
-  it("a small update is at most 20 changed lines and a quarter of the body, with description and example untouched", () => {
-    const prev = ok({ body: body(40) });
-    const edit = (n: number): GrowFields => ({ ...prev, body: prev.body.split("\n").map((l, i) => (i < n ? `${l} (edited)` : l)).join("\n") });
-    expect(isSmallUpdate(prev, edit(10))).toBe(true);
-    expect(isSmallUpdate(prev, edit(11))).toBe(false);          // 11 of 40 lines is over 25%
-    expect(isSmallUpdate(ok({ body: body(200) }), { ...ok({ body: body(200) }), body: body(200).split("\n").map((l, i) => (i < 21 ? `${l}!` : l)).join("\n") })).toBe(false);
-    expect(isSmallUpdate(prev, { ...edit(1), description: "a different description of this skill" })).toBe(false);
-    expect(isSmallUpdate(prev, { ...edit(1), example: "a different example request" })).toBe(false);
+  // A small update goes live unreviewed, so each of its four bounds must bite on its own. The changed characters are
+  // the removed plus the added lines' lengths.
+  describe("a small update", () => {
+    const prev = ok({ body: body(40) });                  // 2,301 chars, 40 lines of 55-57
+    const edit = (f: GrowFields, n: number, at = (l: string) => `${l} (edited)`): GrowFields => ({ ...f, body: f.body.split("\n").map((l, i) => (i < n ? at(l) : l)).join("\n") });
+    /** `short` one-char lines, then `long` lines of exactly 100 chars: line bounds and character bounds pulled apart. */
+    const mixed = (short: number, long: number): GrowFields => ok({ body: [...Array.from({ length: short }, () => "s"), ...Array.from({ length: long }, (_, i) => `${String(i).padStart(3, "0")} ${"x".repeat(96)}`)].join("\n") });
+    const flip = (l: string): string => (l === "s" ? "t" : `${l.slice(0, 4)}${"y".repeat(96)}`);
+
+    it("is at most 20 changed lines, whatever their share", () => {
+      const f = mixed(30, 70);                              // 100 lines: the 25% line share would allow 25
+      expect(isSmallUpdate(f, edit(f, 20, flip))).toBe(true);
+      expect(isSmallUpdate(f, edit(f, 21, flip))).toBe(false);   // 42 changed chars: only the 20-line cap bites
+    });
+
+    it("is at most a quarter of the lines", () => {
+      const f = mixed(15, 25);                              // 40 lines, 2,554 chars
+      expect(isSmallUpdate(f, edit(f, 10, flip))).toBe(true);
+      expect(isSmallUpdate(f, edit(f, 11, flip))).toBe(false);   // 22 changed chars: only the line share bites
+    });
+
+    it("changes at most a quarter of the old body's characters", () => {
+      expect(isSmallUpdate(prev, edit(prev, 4))).toBe(true);     // 476 changed chars of 2,262 (newlines not counted)
+      expect(isSmallUpdate(prev, edit(prev, 5))).toBe(false);    // 595 > a quarter of 2,262, yet 5 lines and under 800
+    });
+
+    it("changes at most 800 characters, however long the body", () => {
+      const f = mixed(0, 70);                               // 7,000 chars: a quarter would allow 1,750
+      expect(isSmallUpdate(f, edit(f, 4, flip))).toBe(true);     // 4 x (100 + 100) = 800
+      expect(isSmallUpdate(f, edit(f, 5, flip))).toBe(false);    // 1,000 changed chars in 5 of 70 lines
+    });
+
+    it("is not two lines swapped for 7,000 characters (the reviewers' probe)", () => {
+      expect(isSmallUpdate(prev, edit(prev, 2, () => "z".repeat(3500)))).toBe(false);
+    });
+
+    it("leaves description and example untouched", () => {
+      expect(isSmallUpdate(prev, { ...edit(prev, 1), description: "a different description of this skill" })).toBe(false);
+      expect(isSmallUpdate(prev, { ...edit(prev, 1), example: "a different example request" })).toBe(false);
+    });
   });
 
   it("reordering every step is not a small update", () => {

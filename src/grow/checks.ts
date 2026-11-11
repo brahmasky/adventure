@@ -10,7 +10,7 @@ export type GrowFailCode = "bad_name" | "bad_description" | "bad_example" | "bad
 export type CheckResult = { ok: true } | { ok: false; code: GrowFailCode; message: string };
 
 export const GROW_LIMITS = { nameRe: /^[a-z0-9-]{3,48}$/, descMin: 20, descMax: 200, exampleMin: 10, exampleMax: 300, bodyMin: 200, bodyMax: 8000,
-  totalMax: 16_384, anchorsMax: 8, anchorMax: 300, smallLines: 20, smallShare: 0.25 } as const;
+  totalMax: 16_384, anchorsMax: 8, anchorMax: 300, smallLines: 20, smallShare: 0.25, smallChars: 800 } as const;
 export const EXEMPLAR_HINT = "see the exemplar option-comparison (grow_read it) for the expected shape";
 
 const fail = (code: GrowFailCode, message: string): CheckResult => ({ ok: false, code, message: `${message}; ${EXEMPLAR_HINT}` });
@@ -65,22 +65,32 @@ export function checkFields(f: GrowFields, live: ReadonlyArray<{ name: string; d
   return twin ? fail("duplicate", `the live skill ${twin.name} already covers this; update that one`) : { ok: true };
 }
 
-function commonLines(a: string[], b: string[]): number {
+/** The heaviest in-order common subsequence of lines, each line weighing `weight(line)`. */
+function common(a: string[], b: string[], weight: (line: string) => number): number {
   let prev = new Array<number>(b.length + 1).fill(0);
   for (const x of a) {
     const cur = [0];
-    for (let j = 1; j <= b.length; j++) cur[j] = x === b[j - 1] ? prev[j - 1]! + 1 : Math.max(prev[j]!, cur[j - 1]!);
+    for (let j = 1; j <= b.length; j++) cur[j] = Math.max(x === b[j - 1] ? prev[j - 1]! + weight(x) : 0, prev[j]!, cur[j - 1]!);
     prev = cur;
   }
   return prev[b.length]!;
 }
 
+const chars = (lines: string[]): number => lines.reduce((n, l) => n + l.length, 0);
+
+/**
+ * Goes live unreviewed (P3), so it is bounded in lines and in characters: at most 20 changed lines and a quarter of
+ * them, and at most 800 changed characters and a quarter of the old body's (removed plus added lines' lengths).
+ */
 export function isSmallUpdate(prev: GrowFields, next: GrowFields): boolean {
+  const L = GROW_LIMITS;
   if (prev.description !== next.description || prev.example !== next.example) return false;
   if (JSON.stringify(prev.anchors ?? []) !== JSON.stringify(next.anchors ?? [])) return false;
   const a = prev.body.split("\n"); const b = next.body.split("\n");
-  const changed = Math.max(a.length, b.length) - commonLines(a, b);
-  return changed <= GROW_LIMITS.smallLines && changed <= Math.floor(Math.max(a.length, b.length) * GROW_LIMITS.smallShare);
+  const lines = Math.max(a.length, b.length) - common(a, b, () => 1);
+  if (lines > L.smallLines || lines > Math.floor(Math.max(a.length, b.length) * L.smallShare)) return false;
+  const changedChars = chars(a) + chars(b) - 2 * common(a, b, (l) => l.length);
+  return changedChars <= L.smallChars && changedChars <= Math.floor(chars(a) * L.smallShare);
 }
 
 export function renderSkillFile(f: GrowFields, origin: GrowOrigin): string {
