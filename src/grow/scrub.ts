@@ -31,8 +31,13 @@ const NAME_CHAR = "[A-Za-z0-9_-]";
 const HOME_SECRET_PATH = new RegExp(`(?:~|\\$HOME|\\$\\{HOME\\}|/Users/[^/\\s]+|/home/[^/\\s]+)/(?:${HOME_SECRETS.map(esc).join("|")})(?!${NAME_CHAR})`, "i");
 /** A dotenv file after anything but a name character or a dot, any case; `.env.example|sample|template` are templates, not secrets. */
 const DOTENV_PATH = new RegExp(`(?:^|[^A-Za-z0-9_.-])\\.env(?!\\.(?:example|sample|template)(?!${NAME_CHAR}))(?:\\.${NAME_CHAR}+)?(?!${NAME_CHAR})`, "im");
-/** `//` and `/./` read as `/`, so `~//.ssh` and `~/./.ssh` are judged as `~/.ssh`. */
-const samePath = (s: string): string => s.replace(/\/(?:\.?\/)+/g, "/");
+/** `//` and `/./` read as `/`, and `seg/..` as nothing, so `~//.ssh`, `~/./.ssh` and `~/Documents/../.ssh` are judged as `~/.ssh`. */
+const DOT_DOT_HOP = /\/(?!\.\.(?:\/|$))[^/\s]+\/\.\.(?=\/|$)/;
+const samePath = (s: string): string => {
+  let p = s.replace(/\/(?:\.?\/)+/g, "/");
+  for (let i = 0; i < 64 && DOT_DOT_HOP.test(p); i++) p = p.replace(DOT_DOT_HOP, "");
+  return p;
+};
 const isSecretPath = (s: string): boolean => { const p = samePath(s); return HOME_SECRET_PATH.test(p) || DOTENV_PATH.test(p); };
 
 /**

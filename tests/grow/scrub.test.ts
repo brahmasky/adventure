@@ -10,7 +10,8 @@ describe("fieldScrub", () => {
     "read .env.", "see .env!", "edit .env.local.", "~/.ssh.", "~/.ssh?", "Credentials live in ~/.aws.", "${HOME}/.ssh/id_rsa",
     "/home/paco/.ssh/id_rsa", "the .ENV file", "~/.claude.json", "read .env.production",
     "Authorization: Bearer abcdefghijklmnopqrstuvwxyz012345",
-    "~/.SSH/id_rsa", "~//.ssh/id_rsa", "~/./.ssh/id_rsa", "$HOME/.ssh//id_rsa", "path=.env", "see[.env]", "{.env}", "a,.env", "/Users/paco/LIBRARY/Keychains"
+    "~/.SSH/id_rsa", "~//.ssh/id_rsa", "~/./.ssh/id_rsa", "$HOME/.ssh//id_rsa", "path=.env", "see[.env]", "{.env}", "a,.env", "/Users/paco/LIBRARY/Keychains",
+    "~/Documents/../.ssh/id_rsa", "/Users/x/../x/.ssh/id_rsa", "~/a/b/../../.aws/credentials"
   ])("changes %s, so a secret never lands in a skill", (s) => { expect(scrub(s)).not.toBe(s); });
 
   it.each([
