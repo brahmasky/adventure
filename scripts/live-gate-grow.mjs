@@ -233,7 +233,14 @@ const reviewerFamily = (rv) => G.D.familyOf({ model: String(rv?.reviewer_model ?
 const gitLog = (args) => spawnSync("git", ["--git-dir", join(G.zone, ".git"), ...args], { encoding: "utf8", env: { PATH: process.env.PATH ?? "/usr/bin:/bin" } }).stdout ?? "";
 
 // ---- driving the daemon's paths ----
-function send(text) {
+/** Houge's intake allows 5 commands per chat per minute (TELEGRAM_MAX_COMMANDS_PER_WINDOW): the gate paces itself instead of tripping it. */
+async function pace() {
+  G.sent = (G.sent ?? []).filter((t) => Date.now() - t < 61_000);
+  if (G.sent.length >= 4) await sleep(61_000 - (Date.now() - G.sent[0]));
+  G.sent.push(Date.now());
+}
+async function send(text) {
+  await pace();
   G.n += 1;
   const norm = G.D.normalizeTelegramUpdate({ update_id: 2_000_000_000 + G.n, message: { message_id: G.n, text, from: { id: USER_ID }, chat: { id: CHAT_ID } } }, ALLOW, {});
   if (!norm.ok) throw new Error(`gate: update refused ${norm.error?.code}`);
@@ -252,8 +259,8 @@ async function done(run) {
   }
   return false;
 }
-async function turn(text) { const { intake } = send(text); if (intake.status !== "created") throw new Error(`gate: not a turn (${intake.status})`); await done(intake.run_id); return intake.run_id; }
-async function fresh() { send("/fresh"); await sleep(2000); }
+async function turn(text) { const { intake } = await send(text); if (intake.status !== "created") throw new Error(`gate: not a turn (${intake.status})`); await done(intake.run_id); return intake.run_id; }
+async function fresh() { await send("/fresh"); await sleep(2000); }
 /** A planner-driven submit: up to two tries (a refusal or an unused tool gets a second name); every try starts after /fresh. */
 async function attempt(base, prompt, used = (run) => calls(run, "grow_submit").length > 0) {
   let last;
@@ -435,7 +442,8 @@ async function line5() {
 async function line6() {
   const name = G.s1.name; const f = G.s1.fields;
   const { origin: _o, ...base } = f;
-  const small = { ...base, body: base.body.replace(/^(.*)$/m, "$1 (a fan oven runs about 20 degrees Celsius hotter, so lower the setting)") };
+  // one short added line: small under the line AND character bounds (changed chars <= 25% of the body and <= 800)
+  const small = { ...base, body: `${base.body.trimEnd()}\nFor a fan (convection) oven, set the dial about 20 °C (about 35 °F) lower.\n` };
   const ctx = { run_id: G.s1.run, chat_id: String(CHAT_ID), level: "clean" };
   const smallOk = G.D.isSmallUpdate(base, small);
   const r1 = await G.svc.submit(small, ctx);
@@ -453,7 +461,8 @@ async function line6() {
     [r2.status === "STAGED" && staged?.needs_review === 1, "the large edit was not staged for review"],
     [e.rv?.pass === 1 && e.rv?.content_hash === e.chash && HEX64.test(e.rv?.input_hash ?? "") && Boolean(e.rv?.reviewer_model), "no passing review of the large edit's exact content"],
     [q1("SELECT COUNT(*) AS n FROM grow_versions WHERE name = ?", name).n === 3, "the skill does not have three versions"]
-  ], [`small edit ${r1.status} op ${h12(op1?.id)} reviews for its hash ${noReview} reviewer attempts ${noAttempt}`, `large edit ${r2.status} staged#${staged?.id} review#${e.rv?.id} pass ${e.rv?.pass} model ${e.rv?.reviewer_model} input ${h12(e.rv?.input_hash)} versions ${q1("SELECT COUNT(*) AS n FROM grow_versions WHERE name = ?", name).n}`]];
+  ], [`small edit ${r1.status} op ${h12(op1?.id)} reviews for its hash ${noReview} reviewer attempts ${noAttempt}`, `large edit ${r2.status} staged#${staged?.id} review#${e.rv?.id} pass ${e.rv?.pass} model ${e.rv?.reviewer_model} input ${h12(e.rv?.input_hash)} versions ${q1("SELECT COUNT(*) AS n FROM grow_versions WHERE name = ?", name).n}`,
+    ...JSON.parse(e.rv?.findings_json ?? "[]").slice(0, 3).map((x) => `finding step "${ex(String(x.step))}": ${ex(String(x.problem))}`)]];
 }
 
 // ---- line 7 ----
@@ -461,7 +470,7 @@ async function line7() {
   const name = G.s1.name; const reason = `reason-${rand(8)}`;
   const v = q("SELECT * FROM grow_versions WHERE name = ? ORDER BY id", name);
   const before = maxOutbox();
-  const { before: b } = send(`/grow undo ${name} ${reason}`);
+  const { before: b } = await send(`/grow undo ${name} ${reason}`);
   const ack = repliesSince(b);
   await drain();
   const req = q1("SELECT * FROM grow_requests WHERE name = ? AND kind = 'undo' ORDER BY id DESC LIMIT 1", name);
@@ -491,7 +500,7 @@ async function line7() {
 async function line12() {
   const { name, fields: f } = G.s4;
   const before = maxOutbox();
-  const { before: b } = send(`/grow trust ${name}`);
+  const { before: b } = await send(`/grow trust ${name}`);
   const ack = repliesSince(b).map((x) => x.text).join(" ");
   const item = G.store.getGrowItem(name);
   await fresh();
@@ -544,7 +553,8 @@ async function line11() {
     [Boolean(probe), "the local embedding sidecar did not answer (recurrence cannot run)"],
     [res.ran === true && res.result === "done" && res.counts.hints === 1 && res.counts.embed_unavailable === 0, "the improve tick did not run clean with one hint"],
     [hints.length === 1 && q1("SELECT COUNT(*) AS n FROM grow_hints WHERE chat_id = ?", String(CHAT_ID)).n === 1, "not exactly one hint event and one grow_hints row"],
-    [notes.length === 1 && /keeps recurring/.test(notes[0]), "the next turn's context would not carry exactly one hint line"],
+    // other grow outcome lines for this chat (e.g. line 6's review) may be pending too; the subject here is the hint line
+    [notes.filter((l) => /keeps recurring/.test(l)).length === 1, "the next turn's context would not carry exactly one hint line"],
     [hints[0] && cursor >= hints[0].id && after.length === 0, "the next real turn did not carry and commit the hint line"],
     [q1("SELECT COUNT(*) AS n FROM improvement_jobs").n === jobs0, "an improvement_jobs row was created"]
   ], [`improve tick ${JSON.stringify(res.ran ? { result: res.result, hints: res.counts.hints, recurrence: res.counts.recurrence, embed_unavailable: res.counts.embed_unavailable } : "not run")}`,
@@ -571,8 +581,9 @@ async function line8() {
   await tick(t1, () => bogus);                                              // the reviewer role overridden to a model that does not exist
   const out = G.store.getGrowStaged(row.id); const att = reviewAttempts(row.id);
   G.store.db.prepare("UPDATE grow_staged SET created_at = ? WHERE id = ?").run(new Date(Date.now() - 2 * 86_400_000).toISOString(), row.id);   // seam: the one-day threshold, lowered
-  const st = send("/status"); const status = repliesSince(st.before).map((x) => x.text).join("\n");
+  const st = await send("/status"); const status = repliesSince(st.before).map((x) => x.text).join("\n");
   const out2 = !(G.svc.indexBlock() ?? "").includes(r.name);
+  const passesWhileMissing = q1("SELECT COUNT(*) AS n FROM grow_reviews WHERE staged_id = ? AND pass = 1", row.id).n;   // read BEFORE the role is restored
   const t2 = new Date(Date.parse(t1) + 7 * 3_600_000).toISOString();
   await precompute(t2); await tick(t2);                                      // the role restored: the real chain
   const final = await reviewedAndPublished(r.name, row.id);
@@ -581,7 +592,7 @@ async function line8() {
     [claimed, "the abandoned claim could not be made"],
     [out?.attempts === 2 && out?.claimed_at === null && out?.state === "staged" && Boolean(out?.next_attempt_at), "after the restart the claim was not released and retried (attempts 2, staged, rescheduled)"],
     [att.some((a) => a.outcome === "error" && a.error_kind === "model_missing"), "no reviewer llm_attempt shows the missing model (the review never ran)"],
-    [out2 && q1("SELECT COUNT(*) AS n FROM grow_reviews WHERE staged_id = ? AND pass = 1", row.id).n === 0, "the skill reached the index or got a passing review while the role was missing"],
+    [out2 && passesWhileMissing === 0, "the skill reached the index or got a passing review while the role was missing"],
     [/review.*pending over a day|pending over a day/i.test(status), "/status does not show the pending review"],
     [final.rv?.pass === 1 && Boolean(final.rv?.reviewer_model) && G.store.getGrowItem(r.name)?.state === "live", "restoring the role did not publish the skill after a passing review"]
   ], [`skill ${r.name} staged#${row.id} claimed ${claimed} -> after restart attempts ${out?.attempts} claimed_at ${out?.claimed_at} next ${out?.next_attempt_at?.slice(0, 16)}`,
@@ -674,7 +685,7 @@ const P10 = (name) => `Operator test. Call grow_read for option-comparison, then
 async function line10() {
   const rows = []; const checks = [];
   const t0 = new Date().toISOString();
-  const dis = send("/disarm");
+  const dis = await send("/disarm");
   checks.push([dis.intake.status === "disarmed" && !G.D.isToolArmed("grow_submit", process.env) && !G.D.isToolArmed("grow_read", process.env) && !G.D.resolveSkillsEnabled(process.env), "/disarm left a grow tool armed or the index on"]);
   await fresh();
   const runA = await turn(P10(`disarmed-${NONCE}`));
