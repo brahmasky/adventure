@@ -629,8 +629,8 @@ export class GrowService {
    * Live items in name order under the line and char caps, plus the write sentence while writing is possible. A marked
    * item shows its name and a label only: its description is outside text, and the index rides in every system prompt
    * and in the reviewer's LIVE_INDEX unread, where the taint of `grow_read` cannot follow it (G4).
+   * @param exclude the item a review is judging, left out of the reviewer's LIVE_INDEX so an update is not read as a duplicate of itself.
    */
-  /** `exclude`: the item a review is judging, left out of the reviewer's LIVE_INDEX so an update is not read as a duplicate of itself. */
   indexBlock(exclude?: string): string | undefined {
     const write = this.d.writer !== false && resolveGrowEnabled(this.d.env) && !this.disabled;
     const lines = [INDEX_HEAD];
