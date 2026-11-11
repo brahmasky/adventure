@@ -159,6 +159,18 @@ describe("grow formal checks", () => {
       expect(isSmallUpdate(f, edit(f, 5, flip))).toBe(false);    // 1,000 changed chars in 5 of 70 lines
     });
 
+    it("finds the alignment across a shift of 20 inserted lines, and is fast on an 8,000-line body", () => {
+      const lines = Array.from({ length: 100 }, (_, i) => `l${i}`);
+      const f = ok({ body: lines.join("\n") });
+      expect(isSmallUpdate(f, { ...f, body: [...Array.from({ length: 20 }, () => "x"), ...lines].join("\n") })).toBe(true);
+      expect(isSmallUpdate(f, { ...f, body: [...lines.slice(0, 50), ...Array.from({ length: 20 }, () => "x"), ...lines.slice(50)].join("\n") })).toBe(true);
+      expect(isSmallUpdate(f, { ...f, body: [...Array.from({ length: 21 }, () => "x"), ...lines].join("\n") })).toBe(false);
+      const t0 = performance.now();
+      isSmallUpdate(ok({ body: `${"\n".repeat(7999)}a` }), ok({ body: `b${"\n".repeat(7999)}` }));
+      isSmallUpdate(ok({ body: Array.from({ length: 4000 }, (_, i) => String(i % 7)).join("\n") }), ok({ body: Array.from({ length: 4000 }, (_, i) => String((i + 3) % 7)).join("\n") }));
+      expect(performance.now() - t0).toBeLessThan(300);   // the door answers in milliseconds (spec 5.3); a full table took 1.65 s
+    });
+
     it("is not two lines swapped for 7,000 characters (the reviewers' probe)", () => {
       expect(isSmallUpdate(prev, edit(prev, 2, () => "z".repeat(3500)))).toBe(false);
     });

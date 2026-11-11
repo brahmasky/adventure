@@ -65,13 +65,19 @@ export function checkFields(f: GrowFields, live: ReadonlyArray<{ name: string; d
   return twin ? fail("duplicate", `the live skill ${twin.name} already covers this; update that one`) : { ok: true };
 }
 
-/** The heaviest in-order common subsequence of lines, each line weighing `weight(line)`. */
-function common(a: string[], b: string[], weight: (line: string) => number): number {
-  let prev = new Array<number>(b.length + 1).fill(0);
-  for (const x of a) {
-    const cur = [0];
-    for (let j = 1; j <= b.length; j++) cur[j] = Math.max(x === b[j - 1] ? prev[j - 1]! + weight(x) : 0, prev[j]!, cur[j - 1]!);
-    prev = cur;
+/**
+ * The heaviest in-order common subsequence of lines, each line weighing `weight(line)`, over alignments that stay
+ * within `band` lines of the diagonal. A small update has at most 20 changed lines, so at most 40 insertions plus
+ * deletions, and its alignment never leaves a band of 40: the answer is exact there and an under-estimate (the safe
+ * side: more change) beyond, at O(lines x band) instead of O(lines^2).
+ */
+function common(a: string[], b: string[], weight: (line: string) => number, band: number): number {
+  // Two rows reused: a cell outside the band keeps an older row's value, never more than its true one.
+  let prev = new Array<number>(b.length + 1).fill(0); let cur = new Array<number>(b.length + 1).fill(0);
+  for (let i = 1; i <= a.length; i++) {
+    const x = a[i - 1]!;
+    for (let j = Math.max(1, i - band); j <= Math.min(b.length, i + band); j++) cur[j] = Math.max(x === b[j - 1] ? prev[j - 1]! + weight(x) : 0, prev[j]!, cur[j - 1]!);
+    [prev, cur] = [cur, prev];
   }
   return prev[b.length]!;
 }
@@ -87,9 +93,11 @@ export function isSmallUpdate(prev: GrowFields, next: GrowFields): boolean {
   if (prev.description !== next.description || prev.example !== next.example) return false;
   if (JSON.stringify(prev.anchors ?? []) !== JSON.stringify(next.anchors ?? [])) return false;
   const a = prev.body.split("\n"); const b = next.body.split("\n");
-  const lines = Math.max(a.length, b.length) - common(a, b, () => 1);
+  if (Math.abs(a.length - b.length) > L.smallLines) return false;   // that many lines were added or removed outright
+  const band = 2 * L.smallLines;
+  const lines = Math.max(a.length, b.length) - common(a, b, () => 1, band);
   if (lines > L.smallLines || lines > Math.floor(Math.max(a.length, b.length) * L.smallShare)) return false;
-  const changedChars = chars(a) + chars(b) - 2 * common(a, b, (l) => l.length);
+  const changedChars = chars(a) + chars(b) - 2 * common(a, b, (l) => l.length, band);
   return changedChars <= L.smallChars && changedChars <= Math.floor(chars(a) * L.smallShare);
 }
 
