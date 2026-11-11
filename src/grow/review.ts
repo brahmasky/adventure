@@ -3,6 +3,7 @@ import type { OneShotInput } from "../llm/providers/omp.js";
 import type { LlmResult } from "../llm/types.js";
 import { familyOf, type ModelFamily, type ModelString } from "../omp/model-string.js";
 import type { GrowFields } from "./checks.js";
+import { HIDDEN_CLASSES } from "./scrub.js";
 
 export interface ReviewInput { fields: GrowFields; previous: GrowFields | null; exemplar: string; index: string; undoReasons: string[] }
 export type ReviewVerdict = { pass: boolean; findings: Array<{ step: string; problem: string }> };
@@ -27,11 +28,12 @@ const isKnownFamily = (f: string): boolean => Object.hasOwn(KNOWN_FAMILIES, f);
 
 /**
  * A run of three or more marker characters as a model reads it: `<` or `>` in any form that folds to it under NFKC
- * (fullwidth, small), with invisible format characters, combining marks or fillers allowed between them. Content
- * reaches here from places the door never checked (undo reasons, the index, an adopted orphan), so this does not rely
- * on the door's character rule.
+ * (fullwidth, small), with anything the door calls hidden (controls but newline and tab, format, private-use,
+ * unassigned, separators, fillers, default-ignorables) or a combining mark between them. Content reaches here from
+ * places the door never checked (undo reasons, the index, an adopted orphan), so this does not rely on the door.
  */
-const MARKER_UNIT = "[<>\\uFE64\\uFE65\\uFF1C\\uFF1E][\\p{Cf}\\p{M}\\u115F\\u1160\\u3164\\uFFA0]*";
+const SEE_THROUGH = `(?:${HIDDEN_CLASSES.map(([, re]) => re.source).join("|")}|\\p{M})`;
+const MARKER_UNIT = `[<>\\uFE64\\uFE65\\uFF1C\\uFF1E]${SEE_THROUGH}*`;
 const MARKER_RUN = new RegExp(`(?:${MARKER_UNIT}){3,}`, "gu");
 const MARKER_SPLIT = new RegExp(MARKER_UNIT, "gu");
 /** Content is neutralised so an item can neither close its own block early nor forge another block's opener. */
