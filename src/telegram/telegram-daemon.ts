@@ -473,12 +473,12 @@ async function growBundleStep(options: RunTelegramDaemonOptions, worker: CoreWor
 /** A review stops this long before the claim goes stale (GROW_CLAIM_STALE_MS, counted from the claim at `now`), so the stale release can never free a row whose review is still running. */
 export const GROW_REVIEW_MARGIN_MS = 60_000;
 
-/** One grow poll (spec §5.4): review and publish, then the bundle. Its own catch: a failed tick logs a code and the next poll retries. Exported for its test. */
+/** One grow poll's review (spec §5.4): at most one review, publishing on a pass, then the bundle. Reconcile and Paco's requests are `runGrowRequestsSafe`'s. Its own catch: a failed tick logs a code and the next poll retries. Exported for its test. */
 export async function runGrowTickSafe(options: RunTelegramDaemonOptions, worker: CoreWorker, now: string): Promise<void> {
   if (options.stopSignal.aborted) return;
   try {
     const svc = worker.growService();
-    // resolved when a review is claimed, not here: an invalid omp config must not stop reconcile or Paco's requests, and it is an outage for that review
+    // resolved when a review is claimed, not here: an invalid omp config must not stop the tick's other work, and it is an outage for that review
     const cfg = (): ReturnType<typeof resolveOmpConfig> => resolveOmpConfig(process.env, worker.modelRoles().chains());
     await runGrowTick({ store: options.store, svc, env: process.env, now, signal: options.stopSignal,
       chain: () => worker.modelRoles().candidates("grow_review"),

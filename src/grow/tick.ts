@@ -35,8 +35,8 @@ export async function runGrowTick(d: GrowTickDeps): Promise<{ reviewed: number |
 
 /**
  * The first due row whose authoring turn has settled (its final trust level is written). A row whose turn never will —
- * its run is terminal with no final level (a crash, then a lease expiry), or it has waited a day — is failed
- * `run_unsettled`: it is never reviewed at its submit-time level, which may be lower than the turn ended at.
+ * its run is terminal with no final level (a crash, then a lease expiry), or it has waited a day unsettled — is failed
+ * `run_unsettled` without a review: no review is ever started for a row whose turn has no final level.
  */
 function reviewable(d: GrowTickDeps): GrowStagedRow | undefined {
   let first: GrowStagedRow | undefined;

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { buildTypedTaskEvent } from "../../src/domain/types.js";
 import { formatGrowList, growStatusLines, handleGrow } from "../../src/gateway/grow-commands.js";
 import type { RunStore } from "../../src/run/run-store.js";
-import { GROW_ITEMS_MAX } from "../../src/grow/service.js";
+import { GROW_ITEMS_MAX, trustItem } from "../../src/grow/service.js";
 import { markdownToTelegramHtml } from "../../src/telegram/markdown-to-telegram-html.js";
 import { CLEAN, growBody, growFields, growSetup, outboxTexts, PASS } from "../helpers/grow.js";
 
@@ -210,6 +210,18 @@ describe("/grow", () => {
     accepted(29, null);
     expect(growStatusLines(s.store, NOW)).toContain("Grow zone: 20 skills accepted in 24 hours, the cap; new submits wait");
     expect(growStatusLines(s.store, "2026-11-11T11:00:01.000Z")).toEqual([]);   // rolling: a day later both have room
+  });
+
+  it("says in /status how many live skills are from outside content and so shown by name only, until each is trusted", async () => {
+    const s = await growSetup();
+    await s.live(growFields());
+    expect(growStatusLines(s.store, NOW)).toEqual([]);
+    await s.svc.submit(growFields({ body: growBody(40, " outside") }), { ...CLEAN, level: "untrusted" });   // marks the clean live skill
+    s.svc.recordReview(s.store.listGrowStaged("staged")[0]!.id, { ...PASS, pass: false, code: "review_failed" });
+    await s.live(growFields({ name: "second-skill", description: "a second skill used for the status test", body: growBody(40, " b") }), { ...CLEAN, level: "untrusted" });
+    expect(growStatusLines(s.store, NOW)).toEqual(["Grow zone: 2 skills from outside content (shown by name only) · /grow"]);
+    trustItem(s.store, "unit-convert", NOW);
+    expect(growStatusLines(s.store, NOW)).toEqual(["Grow zone: 1 skill from outside content (shown by name only) · /grow"]);
   });
 
   it("a dropped publish says so and does not claim that writing is paused", async () => {

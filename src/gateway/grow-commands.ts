@@ -69,6 +69,8 @@ function fitEntries(all: string[]): string[] {
 export function growStatusLines(store: RunStore, now: string): string[] {
   const late = store.listGrowStaged("staged").filter((r) => Date.parse(now) - Date.parse(r.created_at) > DAY_MS).length;
   const orphans = store.countGrowItems("orphan");
+  // a marked live skill is shown by name only in the index until Paco trusts it: say how many, so the hidden ones are seen
+  const marked = store.listGrowItems("live").filter((i) => i.origin !== "exemplar" && store.isGrowMarked(i.name)).length;
   const open = store.listOpenIncidents();
   const paused = open.some((i) => i.kind === "grow_zone_unavailable" && i.subject !== "apply");
   const unrecorded = open.some((i) => i.kind === "grow_zone_unavailable" && i.subject === "apply");
@@ -78,6 +80,7 @@ export function growStatusLines(store: RunStore, now: string): string[] {
     ...(dropped ? ["Grow zone: a finished skill was dropped after repeated write failures; writing continues"] : []),
     ...(late > 0 ? [`Grow zone: ${late} review${late === 1 ? "" : "s"} pending over a day · /grow`] : []),
     ...(orphans > 0 ? [`Grow zone: ${orphans} skill${orphans === 1 ? "" : "s"} in the repository unknown to me · /grow`] : []),
+    ...(marked > 0 ? [`Grow zone: ${marked} skill${marked === 1 ? "" : "s"} from outside content (shown by name only) · /grow`] : []),
     ...(growCapReached(store, now, false) ? [`Grow zone: ${GROW_SUBMITS_PER_DAY} skills accepted in 24 hours, the cap; new submits wait`] : []),
     ...(growCapReached(store, now, true) ? [`Grow zone: ${GROW_UNTRUSTED_SUBMITS_PER_DAY} skills from outside content accepted in 24 hours, the cap; more from outside content wait`] : [])];
 }
@@ -99,7 +102,7 @@ function growText(store: RunStore, event: TypedTaskEvent, now: string): string {
   return formatGrowList(store, now);
 }
 
-/** Never touches git: `undo` records a request the daemon's grow tick runs (one git writer), and the tick sends the result. */
+/** Never touches git: `undo` records a request the daemon's grow request job runs (one git writer), and that job sends the result. */
 export function handleGrow(store: RunStore, event: TypedTaskEvent, now: string): GatewayIntakeResult {
   return oncePerTrigger(store, event, () => {
     replyTo(store, event, "grow", growText(store, event, now));
