@@ -232,7 +232,7 @@ From [ADR 0035 Residuals](../decisions/0035-grow-zone-verification.md#residuals)
   skill escapes review.
 - **Personal detail that is not a secret** can be in a skill. It stays on this machine and goes to the reviewer's
   provider.
-- **Undone text outlives the undo** in database snapshots, the zone bundle, and the zone's own git history and version rows until they rotate.
+- **Undone text outlives the undo** in database snapshots and the zone bundle until they rotate, and in the zone's own git history and version rows for good.
 - **`/ask` and `/research`** carry no skills.
 - **No pruning** of unused skills until slice 3. The 200-item cap and the rate cap bound growth.
 - **R7.** The mark outlives a failed review. An untrusted submit can make a clean live skill name-only and taint its
@@ -420,7 +420,7 @@ The zone refuses every write unless all of these hold:
 - `.git/config` is byte-for-byte the canonical config (`CANONICAL_CONFIG`, `src/grow/zone.ts`);
 - there is no `.gitattributes` anywhere in the tree (any case) and no `.git/info/attributes`;
 - there is no `.git/commondir` and no `.git/config.worktree` (these also refuse reads);
-- the git toplevel is the grow directory itself. (A symlink at `skills/` or `skills/<name>` refuses a write of that one name.)
+- the git toplevel is the grow directory itself. (A symlink at `skills/`, `skills/<name>` or the skill file latches the door on the first write of that name. A git failure, a missing HEAD or a work tree that cannot be reset latches it too.)
 
 Fix the first one that fails; the next ensure reopens the door.
 
@@ -457,8 +457,8 @@ grow tables. It needs a snapshot with a bundle (`houge grow log`), which exists 
 The bundle is taken on the first poll after the snapshot, so the zone can be slightly ahead of the database. Such
 skills come back as orphans, or as changed and marked, and need `adopt` / `/grow trust`.
 
-**Zone-only failure (database fine, repository broken).** Do steps 2 to 5 only (in step 5, `bootstrap` after a
-`bootout` in step 1; no database copy). The bundle is older than the database, so sync with HEAD treats the
+**Zone-only failure (database fine, repository broken).** Stop the daemon (`launchctl bootout gui/$(id -u)/com.houge.daemon`),
+then do steps 2 to 5; no database copy. The bundle is older than the database, so sync with HEAD treats the
 difference as outside changes: a skill that went live after the bundle was taken has no file and is marked `removed`;
 a skill updated since has older content at HEAD, so it becomes a new, untrusted, marked version (`/grow trust` after
 reading it); a file the database does not know is an orphan. Cost against the paired restore: nothing else in Houge
