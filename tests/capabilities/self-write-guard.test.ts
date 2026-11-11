@@ -167,6 +167,14 @@ describe("checkSelfWriteDiff — every protected class is hard-denied", () => {
     expect(check(entry({ status: "M", path: "src/core/../decisions/record.ts" })).allowed).toBe(false);
     expect(check(entry({ status: "M", path: "src/decisionsmore.ts" }))).toEqual({ allowed: true }); // segment-precise
   });
+
+  // ADR 0035 G1: the orchestrator alone writes the exemplars; a seeded exemplar is published as `exemplar`, unreviewed,
+  // so a self-write that edits or adds one would publish its own text past the review gate.
+  it("denies editing or adding an exemplar under grow-seed/", () => {
+    expect(check(entry({ status: "M", path: "grow-seed/skills/option-comparison/SKILL.md" })).allowed).toBe(false);
+    expect(check(entry({ status: "A", path: "grow-seed/skills/new-one/SKILL.md", oldMode: "000000" })).allowed).toBe(false);
+    expect(check(entry({ status: "M", path: "grow-seedling/x.md" }))).toEqual({ allowed: true }); // segment-precise
+  });
 });
 
 // ── DENIED: test-integrity (net-new only) ──────────────────────────────────────────────────
