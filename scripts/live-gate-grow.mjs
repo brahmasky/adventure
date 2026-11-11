@@ -443,7 +443,7 @@ async function line6() {
   const name = G.s1.name; const f = G.s1.fields;
   const { origin: _o, ...base } = f;
   // one short added line: small under the line AND character bounds (changed chars <= 25% of the body and <= 800)
-  const small = { ...base, body: `${base.body.trimEnd()}\nFor a fan (convection) oven, set the dial about 20 °C (about 35 °F) lower.\n` };
+  const small = { ...base, body: `${base.body.trimEnd()}\nFan oven: set it 20 °C lower.\n` };
   const ctx = { run_id: G.s1.run, chat_id: String(CHAT_ID), level: "clean" };
   const smallOk = G.D.isSmallUpdate(base, small);
   const r1 = await G.svc.submit(small, ctx);
@@ -477,7 +477,7 @@ async function line7() {
   const confirm = repliesSince(before).find((x) => x.key.includes(`grow:req:${req?.id}`));
   const item = G.store.getGrowItem(name);
   const f = await committed(name); const { origin: _o, ...base } = f;
-  const next = { ...base, body: base.body.replace(/^(.*)$/m, "$1 (check the oven thermometer too)") };
+  const next = { ...base, body: `${base.body.trimEnd()}\nCheck with an oven thermometer.\n` };   // one short added line: small by lines and characters
   const r = await G.svc.submit(next, { run_id: G.s1.run, chat_id: String(CHAT_ID), level: "clean" });
   const staged = q1("SELECT * FROM grow_staged WHERE name = ? ORDER BY id DESC LIMIT 1", name);
   const small = G.D.isSmallUpdate(base, next);
