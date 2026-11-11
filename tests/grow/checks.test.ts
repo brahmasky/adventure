@@ -161,6 +161,13 @@ describe("grow formal checks", () => {
       expect(isSmallUpdate(prev, { ...edit(prev, 1), description: "a different description of this skill" })).toBe(false);
       expect(isSmallUpdate(prev, { ...edit(prev, 1), example: "a different example request" })).toBe(false);
     });
+
+    it("is not an anchors-only change: an anchor is a fact the item asserts, and a new fact needs review", () => {
+      const anchored = ok({ body: body(40), anchors: ["1 US cup is 236.6 mL"] });
+      expect(isSmallUpdate(anchored, { ...anchored, anchors: ["1 US cup is 240 mL"] })).toBe(false);
+      expect(isSmallUpdate(anchored, { ...anchored, anchors: [] })).toBe(false);
+      expect(isSmallUpdate(anchored, { ...anchored })).toBe(true);
+    });
   });
 
   it("reordering every step is not a small update", () => {
