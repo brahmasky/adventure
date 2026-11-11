@@ -133,7 +133,7 @@ const MODULES = ["config/load-env.js", "config/disarm-posture.js", "config/secre
   "omp/model-string.js", "omp/tool-arming.js", "omp/tool-decls.js", "omp/protected-paths.js", "omp/seatbelt.js", "decisions/egress.js", "decisions/trust.js", "run/schedule-tick.js",
   "improve/tick.js", "llm/embeddings.js", "run/db-backup.js", "run/daemon-tmp.js"];
 const NEEDED = ["loadHougeEnv", "DISARM_FLAGS", "createSecretBroker", "stripSecretsFromEnv", "resolveSecretsFirewallEnabled", "RunStore", "storeOptionsFor", "CoreWorker", "buildTypedTaskEvent", "Gateway",
-  "DEFAULT_GLOBAL_BUDGET_CAPS", "normalizeTelegramUpdate", "onPlannerControl", "bootGrowZone", "createOutboxDispatcher", "workspaceTelegramAdapter", "TelegramClient", "LocalNotificationAdapter",
+  "DEFAULT_GLOBAL_BUDGET_CAPS", "normalizeTelegramUpdate", "onPlannerControl", "bootGrowZone", "runGrowRequestsSafe", "createOutboxDispatcher", "workspaceTelegramAdapter", "TelegramClient", "LocalNotificationAdapter",
   "runGrowTick", "GROW_CLAIM_STALE_MS", "buildReviewPrompt", "contentHash", "parseSkillFile", "isSmallUpdate", "submitText", "resolveGrowDir", "resolveSkillsEnabled", "seedExemplars", "spawnOneShot",
   "resolveOmpConfig", "familyOf", "isToolArmed", "loadToolDeclarations", "TOOL_DECLS_DIR", "isDeniedRead", "isDeniedWrite", "installedBinaryDirs", "renderSeatbelt", "redactForImprove", "turnTrustFinal",
   "maybeFireScheduledTasks", "runImproveTick", "embedText", "resolveEmbedConfig", "BACKUP_FILE_PATTERN", "resolveDaemonTmpDir"];
@@ -262,7 +262,7 @@ async function attempt(base, prompt, used = (run) => calls(run, "grow_submit").l
   return { ...last, missed: true };
 }
 
-// ---- the grow tick (the daemon's runGrowTickSafe body without the bundle step) ----
+// ---- the grow tick (the daemon's runGrowTickSafe body without the bundle step; requests run in drain via runGrowRequestsSafe) ----
 async function tick(now, chain) {
   const svc = G.worker.growService(); const cfg = G.D.resolveOmpConfig(process.env, G.worker.modelRoles().chains());
   return G.D.runGrowTick({ store: G.store, svc, env: process.env, now, signal: G.abort.signal,
@@ -288,9 +288,11 @@ async function drain(maxTicks = 8) {
     const now = new Date().toISOString();
     const requests = G.store.dueGrowRequests().length + G.store.doneGrowRequests().length;
     if (pendingRows().length === 0 && requests === 0) return;
+    // the daemon runs Paco's requests and the reconcile as their own job each poll (runGrowRequestsSafe), the review tick separately
+    await G.D.runGrowRequestsSafe({ stopSignal: G.abort.signal }, G.worker);
     await precompute(now);
     const r = await tick(now);
-    if (r.reviewed === null && r.requests === 0) await sleep(3000);
+    if (r.reviewed === null) await sleep(3000);
   }
 }
 
