@@ -60,8 +60,7 @@ The door answers `FAIL <code>` with a message and the exemplar hint (`src/grow/c
 | `secret_shape` | A field holds something shaped like a secret, a known secret value, or a secret path (`~/.ssh`, `.env`, ...). |
 | `needs_script` | A fenced block of more than three lines that is not marked as prose (`text`, `md`, `output`, `quote`, ...). Scripts arrive in slice 1c. |
 | `duplicate` | A different live skill has the same description or the same body. Update that one. |
-| `zone_full` | 200 live skills already (a new name only). |
-| `publish_failed` | A small update was accepted but the commit failed twice. |
+| `publish_failed` | A small update was accepted but the commit failed twice. (`FAIL zone_full` can also come from a small update at publish time; the door's own `zone_full` is a refusal, below.) |
 
 Other answers are `REFUSED <code>`, covered in [section 4](#4-trust-and-safety).
 
@@ -85,9 +84,9 @@ turn. The planner is told `STAGED ... it is not live yet` and should report "sta
 
 | Step | Rule |
 |------|------|
-| When | On the daemon's grow tick, once per poll, at most one review per tick. A staged row waits until its authoring turn has written its final trust level. |
+| When | On the daemon's grow tick, once per poll, at most one review per tick. A staged row waits until its authoring turn has written its final trust level. With `HOUGE_GROW_ENABLED` off no review runs: staged rows wait too. |
 | Who | Seat `grow_review`. Legs are listed in [configuration.md, Model roles](configuration.md#model-roles). None is Claude family. |
-| Family rule | The reviewer must be a different model family from every family that composed the authoring turn. If the author's families are unknown, empty or unrecognised, there is no review (`no_family`). A leg of the author's family is skipped; if none is left, `no_reviewer`. The family that actually answered is checked again. Fail closed. |
+| Family rule | The reviewer must be a different model family from every family that composed the authoring turn. If the author's families are unknown, empty or unrecognised, there is no review (`no_family`). A leg of the author's family is skipped; if none is left, `no_reviewer`. The family that actually answered is checked again. Fail closed. These reasons (and `bad_json`, `seat_failed`) are not stored: Paco sees retries, then `review_unavailable` about 31 h later. |
 | Input | The skill, the live version, every stored undo reason of that name, the live index and the exemplar, all passed as data and through the secret redaction. |
 | Output | Strict JSON `{pass, findings[]}` as the whole reply. Anything else counts as an outage (`bad_json`). |
 | Outage | Retried after 1 h, then 6 h, then 24 h. The fourth outage ends the row as `review_unavailable`. |
@@ -191,7 +190,8 @@ after a Jev send-back (ADR 0034 2b-R7). `grow_read` never asks.
 | `grow_disabled` | `HOUGE_GROW_ENABLED` is off (also under `/disarm`). | Re-enable by hand (see below). |
 | `zone_unavailable` | The zone is latched or a write faulted. | See [section 8](#8-troubleshooting). |
 | `busy` | The zone's lock is held; the planner never waits. | The planner can retry. |
-| `turn_hostile`, `name_is_exemplar`, `zone_full` | As described above. | |
+| `zone_full` | 200 live skills and the name is new. | Undo one. |
+| `turn_hostile`, `name_is_exemplar` | As described above. | |
 
 ### What stops a skill from doing harm
 
@@ -206,7 +206,7 @@ after a Jev send-back (ADR 0034 2b-R7). `grow_read` never asks.
 - **Git.** Every zone git call names its own git dir and work tree and inherits no `GIT_*` variable. The repository
   is created only in an absent or empty directory. `.git/config` must be byte-for-byte the canonical one, so a planted
   filter, hooks path or alias never runs. `commondir`, `config.worktree` and any `.gitattributes` in the tree make
-  the zone refuse every call. Global and system attribute and ignore files are off. Publishes add with `-f`, and a
+  the zone refuse every write (reading still works; only `commondir` and `config.worktree` also refuse reads). Global and system attribute and ignore files are off. Publishes add with `-f`, and a
   restore to HEAD runs `clean -ffdqx`.
 - **Reviewer input** is framed as data, passed through the secret redaction, and has runs of `<` and `>` (including
   fullwidth and combining-mark disguises) broken so an item cannot close its own block.
@@ -218,7 +218,7 @@ after a Jev send-back (ADR 0034 2b-R7). `grow_read` never asks.
 |--------|--------|
 | `/disarm` | Forces `HOUGE_GROW_ENABLED` and `HOUGE_SKILLS_ENABLED` (and the other `DISARM_FLAGS`) off, live and across restarts. Index and both tools disappear. Re-enabling is by hand: [configuration.md](configuration.md). |
 | `HOUGE_SKILLS_ENABLED` off | The index leaves the prompt and both `grow_*` tools are gone. Recurrence hints are held. |
-| `HOUGE_GROW_ENABLED` off | `grow_submit` answers `grow_disabled`; the index drops its write sentence; the index and `grow_read` keep working. No new commit is created: an approved row waits. A publish whose commit already landed is still recorded. |
+| `HOUGE_GROW_ENABLED` off | `grow_submit` answers `grow_disabled`; the index drops its write sentence; the index and `grow_read` keep working. No review runs (staged rows wait). No new commit is created: an approved row waits. A publish whose commit already landed is still recorded. |
 
 Rows for both switches are in [configuration.md](configuration.md#self-evolution-phase-2a--skills-in-the-grow-zone).
 
@@ -232,7 +232,7 @@ From [ADR 0035 Residuals](../decisions/0035-grow-zone-verification.md#residuals)
   skill escapes review.
 - **Personal detail that is not a secret** can be in a skill. It stays on this machine and goes to the reviewer's
   provider.
-- **Undone text outlives the undo** in database snapshots and the zone bundle until they rotate.
+- **Undone text outlives the undo** in database snapshots, the zone bundle, and the zone's own git history and version rows until they rotate.
 - **`/ask` and `/research`** carry no skills.
 - **No pruning** of unused skills until slice 3. The 200-item cap and the rate cap bound growth.
 - **R7.** The mark outlives a failed review. An untrusted submit can make a clean live skill name-only and taint its
@@ -254,15 +254,15 @@ Replies:
 ```
 /grow
 🌱 **Grow zone**
+**weekly-recap** · failed (review_failed)
+`step 3: asks for the account number before checking the order`
+
 **option-comparison** · exemplar · used 3×
 `how to compare options when deciding between them`
 
 **refund-lookup** · from outside content · used 0×
 `how to look up a refund status in the vendor portal`
 /grow trust refund-lookup clears the mark
-
-**weekly-recap** · failed (review_failed)
-`step 3: asks for the account number before checking the order`
 
 Undo one: /grow undo <name> [reason]
 ```
@@ -278,10 +278,12 @@ dotted domains defanged, so nothing in them is tappable. The list is cut at 3,80
 | `/grow undo <name> [reason]` | `⏳ Undoing <name>; I will confirm in a moment.` Then `↩️ <name> restored to its previous version. Its next version will be reviewed.` or `↩️ <name> removed. Its next version will be reviewed.` |
 | `/grow undo` of a name not live | `No live skill of that name. /grow lists them.` |
 | `/grow undo` of the exemplar | `That one is an exemplar and cannot be undone.` |
-| `/grow undo` when the zone cannot be written | `The grow zone could not be written. See /status.` |
+| `/grow undo` when the zone cannot be written | `The grow zone could not be written. See /status.` Sent when the undo's commit failed twice. While the zone is latched (`/status`: writing is paused) the undo waits silently and runs once the zone works again. |
 | `/grow trust <name>` | `✅ <name> now reads as Houge's own. Reading it no longer marks the conversation.` |
 | `/grow trust` of a clean name | `Nothing to clear: <name> is not a skill marked as outside content.` |
 | `/grow trust` while pending | `A new version of <name> is waiting for review; trust it once it is live or failed.` |
+| `/grow undo` or `/grow trust` with no valid name | `/grow undo|trust requires a skill name` |
+| `/grow` with no skills (cannot happen while the exemplar is live) | `🌱 **Grow zone**` then `No skills yet.` |
 | `/grow foo` | `/grow takes nothing (or: list), or: undo <name> [reason], or: trust <name>` |
 
 The undo is a request the daemon runs on its next poll (it never touches git from the gateway). Redelivered Telegram
@@ -310,12 +312,14 @@ Run from the checkout: `npm run houge -- grow <sub>`. Usage:
 | Command | Prints | Writes |
 |---------|--------|--------|
 | `list` | One line per item: `name  state  origin  uses` (state `live`, `orphan` or `removed`; origin `clean`, `untrusted` or `exemplar`), or `(empty)`. | Nothing. |
-| `show <name>` | The committed skill file at HEAD, or `no skill named <name> at HEAD`. | Nothing. |
+| `show <name>` | The committed skill file at HEAD, or `no skill named <name> at HEAD`, or `cannot read <name>: <code>` when git fails. | Nothing. |
 | `check [name]` | `PASS <name>` or `FAIL <name>: <code>` per live skill, rerunning the formal checks on what is committed (`unreadable` if the file cannot be parsed). `(nothing to check)` when none. | Nothing. |
-| `log` | The last 30 grow events, newest first (`<time> <action> <name> <result>`), then one line per database snapshot: `houge-<stamp>.sqlite  bundle: yes\|no`. | Nothing. |
+| `log` | The last 30 grow events, oldest first, newest at the bottom (`<time> <action> <name> <result>`), then one line per database snapshot: `houge-<stamp>Z.sqlite  bundle: yes\|no`. | Nothing. |
 | `trust <name>` | `trusted <name>`, `nothing to clear for <name>`, or the pending refusal. | The database, at once. |
 | `undo <name> [reason]` | `queued: the daemon runs it within a minute`, or `already queued`. | Only a request row; the daemon commits. |
 | `adopt <name>` | Same as `undo`. Adopts an orphan as a live, untrusted, marked skill; its HEAD content becomes its first version. | Only a request row; the daemon commits. |
+
+`undo` and `adopt` never confirm: there is no chat to reply to. Check `houge grow log` or `houge grow list` after a minute. CLI `undo` also queues for a name that is not live; the daemon then finishes it with no one to tell.
 
 Refusals: a bad subcommand, or a name outside `a-z`, `0-9`, hyphen (3-48 characters), prints the usage line and exits 1.
 `undo`, `trust` and `adopt` also refuse under the kill-switch tombstone (the parked message). Outside the checkout
@@ -373,49 +377,93 @@ At daemon start (`bootGrowZone`), in this order:
    (kept; gitignored). If any file is invalid (a repeated name, the exemplar's name, a symlink, a failed check or
    publish), the folder keeps its name and `grow_seed_failed` opens; the valid ones are already live.
 
-Every poll after that, the daemon writes `<snapshot>.grow.bundle` beside the newest database snapshot in `backups/`
-when that snapshot has none. A snapshot without a bundle is valid; `houge grow log` lists which have one.
+While `HOUGE_BACKUP_ENABLED` is on (default off), every poll the daemon writes `houge-<stamp>Z.grow.bundle` beside the
+newest snapshot in `backups/` when it has none. With backups off there is no bundle and nothing to restore the zone
+from. A snapshot without a bundle is valid; `houge grow log` lists which have one.
 
 ## 8. Troubleshooting
+
+### What do I do when...
+
+| You see | Go to |
+|---------|-------|
+| `/status`: `writing is paused` or a `grow_zone_unavailable` page | [Incidents](#incidents), [Why is the zone latched](#why-is-the-zone-latched) |
+| `/status`: `a skill write finished but I could not record it yet` | [Incidents](#incidents) (subject `apply`) |
+| `/status`: `a finished skill was dropped` or a `grow_publish_failed` page | [Incidents](#incidents) |
+| `/status`: `N reviews pending over a day` | [A stuck review](#a-stuck-review) |
+| `/status` or `/grow`: skills in the repository unknown to me | [An orphan in the zone](#an-orphan-in-the-zone) |
+| `/status`: skills from outside content | [section 6, example b](#6-day-to-day) |
+| A `/changes` line about a start-up skill or a backup | [Incidents](#incidents) (`grow_seed_failed`, `grow_backup_failed`) |
+| The zone directory is damaged or gone | [Restoring](#restoring-from-a-snapshot-and-bundle) |
 
 ### Incidents
 
 | Incident | Routed | Meaning | What to do |
 |----------|--------|---------|------------|
-| `grow_zone_unavailable` (subject `zone`) | page | The zone cannot be written (not a git repository there, an unexpected `.git/config` or attribute file, git failed, the work tree could not be restored). Reading still works. | Run `npm run houge -- grow list`, check the grow directory (`git status` there with the zone's own git dir), fix it. The door reopens on the next successful ensure. |
+| `grow_zone_unavailable` (subject `zone`) | page | The zone cannot be written (not a git repository there, an unexpected `.git/config` or attribute file, git failed, the work tree could not be restored). Reading still works. | See [Why is the zone latched](#why-is-the-zone-latched). The door reopens on the next successful ensure. |
 | `grow_zone_unavailable` (subject `apply`) | page | A commit landed but its database effects could not be recorded; retried each poll. | Usually nothing. If it persists, check the database for errors. |
 | `grow_publish_failed` | page | A finished skill failed to publish twice and was dropped. | Nothing; Houge writes it again if it matters. Check the zone if it repeats. |
-| `grow_seed_failed` | log | An exemplar or an old skill could not be brought in at start-up. | Check the boot log for which; fix the file; restart. A clean boot closes it. |
-| `grow_backup_failed` | log | The bundle beside the snapshot failed this round. | The next poll retries. Check the zone with `houge grow list`. |
+| `grow_seed_failed` | log | An exemplar or an old skill could not be brought in at start-up. The incident holds counts only (exemplars, legacy). | An exemplar is at fault if `houge grow list` lacks it. An old skill is at fault while `skills/` keeps its name: look for a repeated name, a file name that differs from `name:`, a symlink, or a file that fails the `bad_*` limits. Fix, restart. A clean boot closes it. |
+| `grow_backup_failed` | log | The bundle beside the snapshot failed this round. | The next poll retries. Check the zone with the checklist below. |
+
+Log-routed incidents are not pushed to chat. They are rows in the change log, read with `/changes` (topic
+`incident_log`, ADR 0031).
+
+After any hand change to the repository, restart the daemon so the HEAD sync runs. `houge grow list` reads the
+database only; it does not test the repository.
+
+### Why is the zone latched
+
+The zone refuses every write unless all of these hold:
+
+- `<grow dir>/.git` is a real directory (not a file or symlink);
+- `.git/config` is byte-for-byte the canonical config (`CANONICAL_CONFIG`, `src/grow/zone.ts`);
+- there is no `.gitattributes` anywhere in the tree (any case) and no `.git/info/attributes`;
+- there is no `.git/commondir` and no `.git/config.worktree` (these also refuse reads);
+- the git toplevel is the grow directory itself. (A symlink at `skills/` or `skills/<name>` refuses a write of that one name.)
+
+Fix the first one that fails; the next ensure reopens the door.
 
 ### A stuck review
 
 A skill sits in `/grow` as waiting and `/status` says `N reviews pending over a day`. Cases: no reviewer leg is
 reachable (outage; retries at 1 h, 6 h, 24 h, then it fails `review_unavailable`); the authoring turn never settled
-(fails `run_unsettled` within a day); or `HOUGE_GROW_ENABLED` is off (approved rows wait). Look at `houge grow log`.
-A failed row is not retried; the planner or Paco can ask Houge to submit again.
+(fails `run_unsettled` within a day); or `HOUGE_GROW_ENABLED` is off (staged and approved rows wait). Look at
+`houge grow log`. A failed row is not retried; the planner or Paco can ask Houge to submit again.
 
 ### An orphan in the zone
 
-`/status` and `/grow` show it as unknown to the database. Read it (`houge grow show <name>`). Adopt it with
+`/status` and `/grow` show it as unknown to the database. Read it (`houge grow show <name>` reads HEAD). Adopt it with
 `houge grow adopt <name>`: it becomes live, untrusted and marked, and you then `/grow trust` it if it is yours.
-There is no command to discard an orphan; it stays listed until adopted.
+To discard one: `houge grow adopt <name>`, then `/grow undo <name>`.
 
 ### Restoring from a snapshot and bundle
 
-There is no restore command. Only with the daemon stopped, and as Paco's decision:
+There is no restore command. Do this only with the daemon stopped, and as Paco's decision.
 
-1. Restore the database snapshot (`backups/houge-<stamp>.sqlite`) over `houge.sqlite`.
+**Full restore (database and zone together).** This rolls back all of Houge's state to the snapshot, not only the
+grow tables. It needs a snapshot with a bundle (`houge grow log`), which exists only if `HOUGE_BACKUP_ENABLED` was on.
+
+1. Stop the daemon and restore the database exactly as in [README, Backup & restore](../../README.md#backup--restore):
+   `launchctl bootout gui/$(id -u)/com.houge.daemon`, `cp backups/houge-<stamp>Z.sqlite houge.sqlite`,
+   `rm -f houge.sqlite-wal houge.sqlite-shm`.
 2. Move the broken grow directory aside.
-3. `git clone <snapshot>.grow.bundle <grow dir>`.
-4. Replace `<grow dir>/.git/config` with the canonical config (a `[core]` section only: `repositoryformatversion = 0`,
-   `filemode = true`, `bare = false`, `logallrefupdates = true`; see `CANONICAL_CONFIG` in `src/grow/zone.ts`). Without
-   this the zone refuses every call (`not_toplevel`), because a clone adds a remote.
-5. Start the daemon. Boot reconcile and sync with HEAD bring the database and repository into line; anything that
-   disagrees is shown as an orphan, a changed skill or a removed one.
+3. `git clone backups/houge-<stamp>Z.grow.bundle "<grow dir>"` (quote it: the default path has a space).
+4. Replace the clone's config with the canonical one (a clone adds a remote, and the zone refuses any other config):
+   `printf '[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = true\n' > "<grow dir>/.git/config"`
+5. Start the daemon with `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.houge.daemon.plist` (kickstart
+   fails after bootout). Boot reconcile and sync with HEAD bring the database and repository into line.
 
-Use a snapshot that has a bundle (`houge grow log`). Pairing them is the point: a bundle is the zone as it was when
-the snapshot was taken.
+The bundle is taken on the first poll after the snapshot, so the zone can be slightly ahead of the database. Such
+skills come back as orphans, or as changed and marked, and need `adopt` / `/grow trust`.
+
+**Zone-only failure (database fine, repository broken).** Do steps 2 to 5 only (in step 5, `bootstrap` after a
+`bootout` in step 1; no database copy). The bundle is older than the database, so sync with HEAD treats the
+difference as outside changes: a skill that went live after the bundle was taken has no file and is marked `removed`;
+a skill updated since has older content at HEAD, so it becomes a new, untrusted, marked version (`/grow trust` after
+reading it); a file the database does not know is an orphan. Cost against the paired restore: nothing else in Houge
+rolls back, but the grow tables then describe history the repository no longer has, and each newer skill must be
+written again by Houge. Exemplars are restored by the seeder.
 
 ## 9. Design and decisions
 
