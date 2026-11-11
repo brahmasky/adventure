@@ -10,8 +10,9 @@ import type { RunStore } from "../run/run-store.js";
 export const HIDDEN_CLASSES: ReadonlyArray<readonly [label: string, re: RegExp]> = [
   ["a control character", /(?![\n\t])\p{Cc}/u],
   ["an invisible format character (zero-width, joiner, bidi, tag)", /\p{Cf}/u],
-  ["a variation selector", /[\u{FE00}-\u{FE0F}\u{E0100}-\u{E01EF}]/u],
-  ["an invisible filler character", /[\u115F\u1160\u3164\uFFA0]/u],
+  ["a variation selector", /\p{Variation_Selector}/u],
+  ["an invisible filler or blank character", /[\u115F\u1160\u3164\uFFA0\u2800\u{16FE4}\u{1D159}]/u],
+  ["an invisible default-ignorable character (such as a combining grapheme joiner)", /\p{Default_Ignorable_Code_Point}/u],
   ["a line or paragraph separator", /[\u2028\u2029]/u],
   ["a private-use character", /\p{Co}/u],
   ["an unassigned code point", /\p{Cn}/u],

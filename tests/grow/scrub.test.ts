@@ -25,6 +25,9 @@ describe("fieldScrub", () => {
     ["a home secret path with a soft hyphen", "read ~/.s\u00adsh/id_rsa first"],
     ["a dotenv path with a joiner", "open the .\u200denv file"],
     ["a fullwidth home secret path", "read ~/\uff0e\uff53\uff53\uff48/id_rsa first"],
+    ["a token split by a combining grapheme joiner", `use ${token.slice(0, 10)}\u034f${token.slice(10)} here`],
+    ["a home secret path split by a combining grapheme joiner", "read ~/.s\u034fsh/id_rsa first"],
+    ["a dotenv path split by a Mongolian variation selector", "open the .\u180benv file"],
     ["a fullwidth token", `use ${[...token].map((c) => String.fromCodePoint(c.codePointAt(0)! + 0xfee0)).join("")} here`]
   ])("changes %s", (_n, s) => { expect(scrub(s)).not.toBe(s); });
 

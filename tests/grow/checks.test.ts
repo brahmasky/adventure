@@ -90,7 +90,10 @@ describe("grow formal checks", () => {
     ["Hangul filler", "ㅤ"], ["Hangul choseong filler", "ᅟ"], ["Hangul jungseong filler", "ᅠ"], ["halfwidth Hangul filler", "ﾠ"],
     ["interlinear annotation anchor", "\ufff9"], ["interlinear annotation terminator", "\ufffb"],
     ["C1 control (first)", "\u0080"], ["C1 control (last)", "\u009f"], ["inhibit symmetric swapping", "\u206a"], ["nominal digit shapes", "\u206f"],
-    ["bare carriage return", "\r"], ["private-use character", "\ue000"], ["unassigned code point", "\u0378"], ["lone surrogate", "\ud800"]
+    ["bare carriage return", "\r"], ["private-use character", "\ue000"], ["unassigned code point", "\u0378"], ["lone surrogate", "\ud800"],
+    ["combining grapheme joiner", "\u034f"], ["Khmer inherent vowel AQ", "\u17b4"], ["Khmer inherent vowel AA", "\u17b5"],
+    ["Mongolian free variation selector 1", "\u180b"], ["Mongolian free variation selector 3", "\u180d"], ["Mongolian free variation selector 4", "\u180f"],
+    ["Braille blank", "\u2800"], ["musical null notehead", "\u{1D159}"], ["Khitan filler", "\u{16FE4}"], ["Hangul-Hanja tone mark area (default ignorable)", "\u{1BCA0}"]
   ])("rejects %s in any field", (_n, ch) => {
     expect(code(ok({ body: `${body(8)}\nsee th${ch}is step` }))).toBe("control_chars");
     expect(code(ok({ anchors: [`a fact${ch} here`] }))).toBe(ch === "\r" ? "bad_anchors" : "control_chars");   // a one-line field refuses \r first
@@ -118,6 +121,9 @@ describe("grow formal checks", () => {
     expect(msg("\u2028")).toMatch(/a line or paragraph separator/);
     expect(msg("\ue000")).toMatch(/a private-use character/);
     expect(msg("\u0378")).toMatch(/an unassigned code point/);
+    expect(msg("\u034f")).toMatch(/an invisible default-ignorable character/);
+    expect(msg("\u2800")).toMatch(/an invisible filler or blank character/);
+    expect(msg("\u180b")).toMatch(/a variation selector/);
     expect(msg("\u200b")).not.toContain("\u200b");
   });
 
