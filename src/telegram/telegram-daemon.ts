@@ -305,8 +305,7 @@ export async function runTelegramDaemon(
   let parkMarkerCleared = false;
   const rolesTick = detachedJob();
   const mailTick = detachedJob();
-  const growTick = detachedJob();
-  const growRequestsTick = detachedJob();
+  const growTick = detachedJob(); const growRequestsTick = detachedJob();
   // SP2 mail: the documented recovery from a lost grant is "re-auth, then restart" — the restart clears the stored auth pause (once, env switch on)
   if (clearAuthPauseAtBoot(options.store, process.env)) console.error("[telegram-daemon] mail: auth pause cleared at boot, polling resumes");
 
@@ -400,8 +399,7 @@ export async function runTelegramDaemon(
   await worker.shutdownPlanners();
   await settledWithin(gateway.whenTierTapsSettled(), TIER_TAP_SHUTDOWN_CAP_MS);
   await settledWithin(mailTick.settled(), MAIL_TICK_SHUTDOWN_CAP_MS); // the stop aborts the tick between mails; the cursor has not moved, the next boot re-reads the range
-  await settledWithin(growRequestsTick.settled(), GROW_TICK_SHUTDOWN_CAP_MS); // a short step; an interrupted undo stays queued and its operation is continued next poll
-  await settledWithin(growTick.settled(), GROW_TICK_SHUTDOWN_CAP_MS); // the stop aborts the review; the row is unclaimed and the next boot's tick takes it
+  await settledWithin(Promise.all([growRequestsTick.settled(), growTick.settled()]).then(() => undefined), GROW_TICK_SHUTDOWN_CAP_MS); // an interrupted undo stays queued and is continued next poll; // the stop aborts the review; the row is unclaimed and the next boot's tick takes it
   await settledWithin(rolesTick.settled(), ROLES_TICK_SHUTDOWN_CAP_MS); // the stop aborts its probe; the 24 h latch re-runs the whole unit next boot
   await settledWithin(jevJobSettled(), JEV_JOB_SHUTDOWN_CAP_MS); // capped: the check resumes from its rows, the flush and the evolution lane must not wait on Jev
   await flushLogged();

@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { CoreWorker } from "../../src/core/core-worker.js";
 import { OMP_LOOP_TOOL_META } from "../../src/core/omp-turn-wiring.js";
 import { compileTaskContract } from "../../src/contracts/task-contract.js";
 import { TurnTrust } from "../../src/decisions/trust.js";
@@ -12,7 +13,7 @@ import { isToolArmed } from "../../src/omp/tool-arming.js";
 import { RunStore } from "../../src/run/run-store.js";
 import { telegramTurnEvent } from "../helpers/events.js";
 import { growBody, PASS } from "../helpers/grow.js";
-import { pinEnabledFlags, pinOmpEnv, shortTmp } from "../helpers/omp-env.js";
+import { pinEnabledFlags, pinOmpEnv, shortTmp, tmpOmpDist } from "../helpers/omp-env.js";
 import { bridgeTurn, ompWorker } from "../helpers/omp-worker.js";
 
 // Unit 8c: grow_submit / grow_read over the real bridge path (bridge call -> policy -> buildOmpTools -> ompLoopExecute -> GrowService).
@@ -230,9 +231,31 @@ describe("the single writer (spec: one process writes the zone)", () => {
     expect(store.listGrowStaged("staged")).toEqual([]);
     expect((await t.call("grow_read", { name: "web-notes" })).content).toContain("REFUSED unknown_skill");
   });
+  it("the production default is not the writer: a raw CoreWorker (as houge run and the eval runner build it) refuses a submit, creates no zone, and reads a live skill", async () => {
+    const writer = ompWorker(store, tmp.dir, { project: join(tmp.dir, "project") });
+    await writer.growService().ensureZone();
+    const sub = await writer.growService().submit({ ...SUBMIT }, { run_id: "run_w", chat_id: "555", level: "clean" });
+    expect(sub.status).toBe("STAGED");
+    const row = store.listGrowStaged("staged")[0]!; writer.growService().recordReview(row.id, PASS); await writer.growService().publishStaged(row.id);
+    expect(store.getGrowItem("web-notes")?.state).toBe("live");
+    const raw = new CoreWorker(store, join(tmp.dir, "project"), async () => ({ ok: true, output: { answer: "stub" } }), undefined, undefined, undefined, undefined, undefined, undefined, async () => null,
+      undefined, undefined, { dataDir: tmp.dir, distDir: tmpOmpDist(tmp.dir) });   // no growWriter option
+    const t = turn({ worker: raw as never });
+    const heads = execFileSync("git", ["--git-dir", join(process.env.HOUGE_GROW_DIR as string, ".git"), "rev-parse", "HEAD"], { encoding: "utf8" });
+    expect((await t.call("grow_submit", { ...SUBMIT, name: "other-notes" })).content).toContain("REFUSED not_the_daemon");
+    expect(execFileSync("git", ["--git-dir", join(process.env.HOUGE_GROW_DIR as string, ".git"), "rev-parse", "HEAD"], { encoding: "utf8" })).toBe(heads);
+    expect((await t.call("grow_read", { name: "web-notes" })).content).toContain(BODY_LINE);
+  });
+  it("a raw worker over an empty root creates no zone directory", async () => {
+    const raw = new CoreWorker(store, join(tmp.dir, "project"), async () => ({ ok: true, output: { answer: "stub" } }), undefined, undefined, undefined, undefined, undefined, undefined, async () => null,
+      undefined, undefined, { dataDir: tmp.dir, distDir: tmpOmpDist(tmp.dir) });
+    const t = turn({ worker: raw as never });
+    expect((await t.call("grow_submit", SUBMIT)).content).toContain("REFUSED not_the_daemon");
+    expect(existsSync(process.env.HOUGE_GROW_DIR as string)).toBe(false);
+  });
   it("no process but the daemon asks for the writer role", () => {
     const hits = execFileSync("grep", ["-rln", "growWriter", "src", "scripts"], { encoding: "utf8" }).split("\n").filter(Boolean).sort();
-    expect(hits).toEqual(["scripts/live-gate-grow.mjs", "scripts/live-gate-omp.mjs", "src/core/core-worker.ts", "src/telegram/telegram-daemon.ts"]);
+    expect(hits).toEqual(["scripts/live-gate-grow.mjs", "src/core/core-worker.ts", "src/telegram/telegram-daemon.ts"]);
   });
 });
 

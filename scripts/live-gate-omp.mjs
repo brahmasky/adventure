@@ -756,12 +756,10 @@ async function runSmoke(args) {
   if (!existsSync(live)) throw new Error(`no DB at ${live} (pass --db)`);
   const root = mkdtempSync("/tmp/hg-smoke-"); // temp data dir, short: bridge sockets must fit sun_path (104 bytes)
   smokeEnv(root, DISARM_FLAGS);
-  process.env.HOUGE_GROW_DIR = join(mkdtempSync("/tmp/hg-growz-"), "grow"); // gate 24 writes a gate-own zone, never the daemon's
   copyDb(live, join(root, "houge.sqlite"));
   const store = RunStore.open(join(root, "houge.sqlite"));
   const worker = new CoreWorker(store, repo, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
-    // gate 24 submits a skill: this worker is the writer, against a DB copy and a gate-own zone (HOUGE_GROW_DIR is pinned by smokeEnv or the temp data dir)
-    { dataDir: root, distDir: DIST, growWriter: true });
+    { dataDir: root, distDir: DIST });
   const view = openView(join(root, "houge.sqlite"));
   const results = []; const seen = [];
   const intake = (chat, text) => new Gateway(store).intake(buildTypedTaskEvent({
