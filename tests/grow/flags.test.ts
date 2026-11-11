@@ -70,6 +70,24 @@ describe("grow flags", () => {
       expect(resolveGrowDir({ HOUGE_GROW_DIR: join(w.repo, "grow") }, w.home, [join(w.t, "repo-link")])).toBe(w.fallback);
     });
 
+    it("refuses an override through a dangling symlink that points into an avoided dir (it would come alive there)", () => {
+      const w = world(); const out = join(w.t, "out"); mkdirSync(out);
+      symlinkSync(join(w.repo, "notyet"), join(out, "leaf")); symlinkSync(join(w.repo, "notyet2"), join(out, "mid")); symlinkSync("../repo/sub", join(out, "rel"));
+      const pick = (dir: string): string => resolveGrowDir({ HOUGE_GROW_DIR: dir }, w.home, [w.repo, w.data]);
+      for (const bad of [join(out, "leaf"), join(out, "mid", "zone"), join(out, "rel")]) expect(pick(bad), bad).toBe(w.fallback);
+    });
+
+    // macOS reaches the data volume under /System/Volumes/Data as well (a firmlink, which realpath does not fold), and
+    // a Seatbelt deny on that spelling denies nothing at the usual one.
+    it("judges and returns a /System/Volumes/Data spelling as the path it reaches", () => {
+      const w = world();
+      const pick = (dir: string): string => resolveGrowDir({ HOUGE_GROW_DIR: dir }, w.home, [w.repo, w.data]);
+      expect(pick(`/System/Volumes/Data${join(w.repo, "zone")}`)).toBe(w.fallback);
+      expect(pick(`/system/volumes/data${join(w.repo, "zone")}`)).toBe(w.fallback);
+      expect(pick(`/System/Volumes/Data${join(w.t, "zone", "grow")}`)).toBe(join(w.t, "zone", "grow"));
+      expect(pick("/System/Volumes/Data")).toBe(w.fallback);
+    });
+
     it("keeps the override's own spelling when its real path is allowed", () => {
       const w = world(); mkdirSync(join(w.t, "real-zone")); symlinkSync(join(w.t, "real-zone"), join(w.t, "zone-link"));
       expect(resolveGrowDir({ HOUGE_GROW_DIR: join(w.t, "zone-link", "grow") }, w.home, [w.repo, w.data])).toBe(join(w.t, "zone-link", "grow"));
