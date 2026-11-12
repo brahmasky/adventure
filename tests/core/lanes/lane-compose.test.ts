@@ -57,8 +57,8 @@ describe("rewritePrompt / validateQuery / finalQuery", () => {
   // The engine once matched on the assistant's name. The instruction is what tells the Tiny model to leave it out,
   // and to answer SAME only for a message that needs no change, since SAME means the message is searched as typed.
   it("the rewrite instruction names the address to leave out and narrows SAME", () => {
-    expect(REWRITE_INSTRUCTION).toContain("猴哥");
-    expect(REWRITE_INSTRUCTION).toContain("Houge");
+    expect(REWRITE_INSTRUCTION).toMatch(/Houge \(猴哥\): leave that name out/);
+    expect(REWRITE_INSTRUCTION).toMatch(/leave out request wording/);
     expect(REWRITE_INSTRUCTION).toMatch(/SAME only when/);
   });
   it("rewritePrompt gives the last two Paco lines, the last Houge line and the quote, each clipped to 200 chars, then the message", () => {

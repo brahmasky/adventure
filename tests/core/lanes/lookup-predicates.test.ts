@@ -51,6 +51,15 @@ describe("lookup predicates (spec R6 §4.1, §4.2)", () => {
     expect(stripAddress("tell me about houge")).toBe("tell me about houge");
     // a message that is only the address stays whole: an empty search is worse
     expect(stripAddress("猴哥！")).toBe("猴哥！");
+    expect(stripAddress("  猴哥， 帮我查一下  ")).toBe("帮我查一下");
+  });
+  // It runs on every lookup over whatever Telegram delivers; a pattern that rescans whitespace from each position took
+  // 400 ms on 20,000 spaces (codex re-review, 2026-11-12).
+  it("stripAddress stays linear on long runs of whitespace and separators", () => {
+    const inputs = [" ".repeat(50_000), `${"， ".repeat(20_000)}x`, `猴哥${" ".repeat(50_000)}x`, `x${" ".repeat(50_000)}，`];
+    const t0 = performance.now();
+    for (const s of inputs) stripAddress(s);
+    expect(performance.now() - t0).toBeLessThan(200);
   });
   it("queryCheckOf classifies the model's answer: same, invalid, or the stripped query", () => {
     expect(queryCheckOf("")).toEqual({ kind: "invalid" });

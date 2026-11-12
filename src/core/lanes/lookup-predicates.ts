@@ -12,15 +12,17 @@ export function earlierLinesOf(message: string, quoted: boolean, ageMs: number |
   return ageMs !== null && !(ageMs > REWRITE_RECENT_MS) && (quoted || [...message.trim()].length <= REWRITE_MAX_CHARS);
 }
 
-const ADDRESS_HEAD = /^\s*(?:猴哥|houge)\s*[,，:：!！、]\s*/i;
-const ADDRESS_TAIL = /\s*[,，、]\s*(?:猴哥|houge)\s*[.。!！?？]*\s*$/i;
+// Both run on the trimmed message and start on a fixed character, so neither rescans a run of whitespace from every position.
+const ADDRESS_HEAD = /^(?:猴哥|houge)\s*[,，:：!！、]\s*/i;
+const ADDRESS_TAIL = /[,，、]\s*(?:猴哥|houge)\s*[.。!！?？]*$/i;
 /**
  * The message without the name Paco addresses Houge by, for the search of the bare message (the rewrite late, failed or
- * SAME). Only at the very start or end and set off by punctuation, so the name as the subject of a question stays; a
- * message that is nothing but the address stays whole.
+ * SAME). Only at the very start or end and set off by punctuation, so the name as the subject of a question stays ("猴哥
+ * 帮我查" with a bare space is left to the rewrite: "Houge is …" reads the same way); a message that is nothing but the
+ * address stays whole.
  */
 export function stripAddress(message: string): string {
-  const s = message.replace(ADDRESS_HEAD, "").replace(ADDRESS_TAIL, "").trim();
+  const s = message.trim().replace(ADDRESS_HEAD, "").replace(ADDRESS_TAIL, "").trim();
   return s.length > 0 ? s : message;
 }
 
