@@ -220,8 +220,9 @@ ladder entries or record-only slices; floor work (ADR 0032 D11, memory provenanc
 is exempt. (4) **Provider exposure is first and urgent:** most model calls ride on two OAuth legs the vendors'
 terms restrict, the planner's fallback from one is the other, and a suspension would reach beyond Houge; a probe
 (which also reads the Kimi Code and OpenAI Codex terms, not read so far), then Paco picks (ADR 0032 D7 stays as written until that code ships). The ranked queue with first steps and done
-criteria is the top of `tasks/todo.md`; beyond these four decisions it is the orchestrator's draft. **Open for Paco:** whether Houge is a product for his day or a
-harness-engineering lab; §1 is unchanged until he answers.
+criteria is the top of `tasks/todo.md`; beyond these four decisions it is the orchestrator's draft. **Answered by Paco 2026-11-12:** Houge is both a product for his day
+and a place he learns by building; he wants to use it more, over Telegram or by voice, ahead of more backend rounds.
+§1 is unchanged.
 
 **Delta 2026-10-06: Jev lane 1 is built** (`feat/jev-lane1`, not merged; 3438 tests green, live gate PASS). It cannot act until Paco commits calibration rows after the replay, labelling sitting and shadow period; see `tasks/todo.md` for what he owes. Lane 2 starts after lane 1 is armed or Paco reorders.
 
