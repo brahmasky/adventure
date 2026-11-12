@@ -1,13 +1,10 @@
-/** Stage B §5 step 2 constants; the lane's rewrite filter and query check live here so the decision entries import a leaf (spec R6 §4.1, plan P9). */
-export const REWRITE_MAX_CHARS = 40;
+/** Stage B §5 step 2 constants; the lane's recent-context rule and query check live here so the decision entries import a leaf (spec R6 §4.1, plan P9). */
 export const REWRITE_RECENT_MS = 30 * 60_000;
 export const QUERY_MAX_CHARS = 120;
 
-export type RewriteFilter = "no_recent_line" | "long_message" | "needed";
-/** Paco's previous Telegram line at most 30 min old, AND quoting or at most 40 code points. `ageMs > …` as today: NaN or a negative age passes. */
-export function rewriteFilterOf(message: string, quoted: boolean, ageMs: number | null): RewriteFilter {
-  if (ageMs === null || ageMs > REWRITE_RECENT_MS) return "no_recent_line";
-  return quoted || [...message.trim()].length <= REWRITE_MAX_CHARS ? "needed" : "long_message";
+/** Earlier lines go into the rewrite prompt only when Paco's previous Telegram line is at most 30 min old. `ageMs > …` as before: NaN or a negative age counts as recent. */
+export function recentContextOf(ageMs: number | null): boolean {
+  return ageMs !== null && !(ageMs > REWRITE_RECENT_MS);
 }
 
 export type QueryCheck = { kind: "same" } | { kind: "invalid" } | { kind: "query"; q: string };

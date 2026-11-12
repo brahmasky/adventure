@@ -4,7 +4,7 @@ import { sanitizeLaneText } from "./lane-card.js";
 import { INSTRUCTIONS_NOTE } from "../../omp/external-read.js";
 import { quotedLine, renderContextBlock, type TurnRetrieval } from "../../omp/turn-context.js";
 import type { ChatTurnRow } from "../../run/run-store.js";
-import { queryCheckOf, rewriteFilterOf } from "./lookup-predicates.js";
+import { queryCheckOf } from "./lookup-predicates.js";
 
 /** Stage B §4: the first line of every lane prompt. No tool exists in a lane, so the model must say when one is needed. */
 export const LANE_PREFACE = "Quick reply: no tool, file or action is available this turn; answer in the message's language; say plainly when the question needs a search or an action.";
@@ -12,7 +12,7 @@ export const SOURCES_OPEN = "[sources — reader summaries of web results; refer
 export const SOURCES_CLOSE = "[/sources]";
 const SOURCES_INSTRUCTION = "Answer from these sources only, cite them by [n], and say plainly when they do not answer the question.";
 export const SOURCE_LINE_LABEL = "来源 / Sources:";
-export const REWRITE_INSTRUCTION = "Turn the chat message below into one standalone web-search query. Reply with the query on a single line, or with the word SAME when the message already works as a search on its own. No other text.";
+export const REWRITE_INSTRUCTION = "Turn the chat message below into one standalone web-search query. The message is written to an assistant called Houge (猴哥): leave that name out when it only addresses the assistant, and leave out request wording such as \"please find\" or \"help me look up\"; keep the subject and every qualifier. Reply with the query on a single line, in the message's language, or with the word SAME when the message already works as a search on its own. No other text.";
 const REWRITE_INPUT_CHARS = 200;
 const FINAL_QUERY_CHARS = 200;
 const SOURCE_URL_MAX_CHARS = 200;
@@ -55,11 +55,6 @@ export function withSourceLine(text: string, urls: readonly string[]): string {
     if (u !== undefined && !cited.includes(u)) cited.push(u);
   }
   return `${text}\n\n${SOURCE_LINE_LABEL} ${(cited.length > 0 ? cited : [urls[0]!]).join(" ")}`;
-}
-
-/** Stage B §5 step 2 pre-filter: short or quoting, AND Paco's previous Telegram line at most 30 minutes old. */
-export function needsRewrite(message: string, quoted: boolean, previousTelegramLineAgeMs: number | null): boolean {
-  return rewriteFilterOf(message, quoted, previousTelegramLineAgeMs) === "needed";
 }
 
 /** The Tiny rewrite's prompt: the last two Paco lines, the last Houge line, the quote (each clipped to 200), the message. */

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  catchUpLine, finalQuery, LANE_PREFACE, needsRewrite, renderLanePrompt, renderSourcesBlock, REWRITE_INSTRUCTION, rewritePrompt, SOURCE_LINE_LABEL,
+  catchUpLine, finalQuery, LANE_PREFACE, renderLanePrompt, renderSourcesBlock, REWRITE_INSTRUCTION, rewritePrompt, SOURCE_LINE_LABEL,
   SOURCES_CLOSE, SOURCES_OPEN, sourceUrl, validateQuery, withSourceLine
 } from "../../../src/core/lanes/lane-compose.js";
 import { INSTRUCTIONS_NOTE } from "../../../src/omp/external-read.js";
@@ -53,22 +53,15 @@ describe("renderSourcesBlock / sourceUrl / withSourceLine", () => {
 
 // Stage B §5 step 2: whether a short message is a follow-up is a judgment call (a model), behind a cheap code gate; whatever the
 // model returns is validated by code, and any doubt searches the bare message.
-describe("needsRewrite / rewritePrompt / validateQuery / finalQuery", () => {
-  const MIN = 60_000;
-  it.each([
-    ["a short message after a recent line", "melbourne呢？", false, 10 * MIN, true],
-    ["a long message after a recent line", "x".repeat(41), false, 10 * MIN, false],
-    ["a long message that quotes a turn", "x".repeat(41), true, 10 * MIN, true],
-    ["40 chars exactly", "x".repeat(40), false, 10 * MIN, true],
-    ["a previous line older than 30 minutes", "再查一次", false, 31 * MIN, false],
-    ["30 minutes exactly", "再查一次", false, 30 * MIN, true],
-    ["no previous Telegram line", "再查一次", false, null, false]
-  ] as const)("needsRewrite: %s", (_n, m, q, age, want) => expect(needsRewrite(m, q, age)).toBe(want));
+describe("rewritePrompt / validateQuery / finalQuery", () => {
   it("rewritePrompt gives the last two Paco lines, the last Houge line and the quote, each clipped to 200 chars, then the message", () => {
     const prev = [turn("user", "old one"), turn("user", "悉尼明天天气"), turn("assistant", "y".repeat(300)), turn("user", "z".repeat(250))];
     const p = rewritePrompt(prev, { role: "houge", kind: "answer", age_s: 5, text: "quoted text" }, "melbourne呢？");
     expect(p).toBe([REWRITE_INSTRUCTION, "", "Paco earlier: 悉尼明天天气", `Paco earlier: ${"z".repeat(200)}`, `Houge earlier: ${"y".repeat(200)}`,
       "Quoted (houge): quoted text", "Message: melbourne呢？"].join("\n"));
+  });
+  it("rewritePrompt with no earlier lines and no quote is the instruction, a blank line, the message", () => {
+    expect(rewritePrompt([], null, "x")).toBe([REWRITE_INSTRUCTION, "", "Message: x"].join("\n"));
   });
   it.each([
     ["SAME", "SAME", "melbourne呢？"],

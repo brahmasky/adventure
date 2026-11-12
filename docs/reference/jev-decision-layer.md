@@ -178,9 +178,10 @@ carrying `routed_by` = the verdict id), at most 45 s. The prompt is the planner'
 a one-line preface ("Quick reply: no tool, file or action is available this turn …"), the `[context]` block, the thread and
 the message. A rule stated in the same message is saved first; the card then ends with `📒 Saved lesson #<id> · <theme>`.
 
-The **lookup lane** has a 75 s budget with a 15 s reserve for the compose. A short follow-up (at most 40 chars, or a quote,
-within 30 minutes of Paco's previous Telegram line) is rewritten into one standalone query by a Tiny-role one-shot (12 s,
-code-validated, the bare message on any doubt). One search (25 s), then the strict reader on the result set (two attempts,
+The **lookup lane** has a 75 s budget with a 15 s reserve for the compose. Every lookup is rewritten into one
+standalone query by a Tiny-role one-shot (12 s, code-validated, the bare message on any doubt); the assistant's name and
+request wording are dropped. Earlier lines are given to it only when Paco's previous Telegram line is at most 30 minutes
+old; a quoted turn always. One search (25 s), then the strict reader on the result set (two attempts,
 20 s each); when the reader says the sources did not answer, one fetch of the top result (15 s) and a second read. The
 composer cites by `[n]`; code appends `来源 / Sources:` with the cited URLs. A question no search answers (the Mac's public
 IP, a detail of Houge's own earlier report) gets a reply saying the sources do not answer; Dig deeper is the way on.
@@ -395,7 +396,7 @@ read with `/changes`. The kinds named here:
   sent meanwhile are queued, not steered.
 - **A cascade can add up to 20 s.** A below-bar turn waits for the Tiny pick before the planner starts. A slow Tiny leg
   (Kimi measured 13 s on the live gate) eats most of the bound; the failure path costs nothing but the wait.
-- **A lookup can take up to 75 s.** Typical: rewrite 0 or about 7 s, search 2–5 s, reader 5–12 s, compose 3–8 s; a thin
+- **A lookup can take up to 75 s.** Typical: rewrite about 7 s, search 2–5 s, reader 5–12 s, compose 3–8 s; a thin
   result adds a fetch and a second read. The chat shows nothing meanwhile; messages sent then are queued.
 - **A lane answers what it can.** The answer lane has no tool; the lookup lane makes one search. A question that needs more
   gets a plain reply saying so, and 🔍 Dig deeper hands it to the planner.

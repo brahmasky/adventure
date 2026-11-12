@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { COMPOSE_RESERVE_MS, LOOKUP_BUDGET_MS, runLookupLane } from "../../../src/core/lanes/lookup-lane.js";
 import type { ComposeRequest, LaneInput, LookupLaneDeps, StrictRead } from "../../../src/core/lanes/lane-types.js";
+import { REWRITE_INSTRUCTION } from "../../../src/core/lanes/lane-compose.js";
 import { LOOKUP_REWRITE } from "../../../src/decisions/entries/lookup-rewrite.js";
 import type { DecisionRecorder, RuleRung } from "../../../src/decisions/types.js";
 import type { LlmResult } from "../../../src/llm/types.js";
@@ -45,17 +46,42 @@ const recent = (s: ReturnType<typeof setup>, text = "悉尼明天天气") => { s
 const answer = (text: string) => vi.fn(async (): Promise<LlmResult> => ({ ok: true, provider: "kimi-code", model: "k3", answer: text }));
 
 describe("lookup.rewrite and lookup.thin rows (spec R6 §4.1, §4.2)", () => {
-  it("1. no previous line: bare/no_recent_line then none/answered, written after the mid-lane tool.wall / reader.family pair", async () => {
+  it("1. no previous line: the rewrite is still called, with no earlier lines; bare/same then none/answered, written after the mid-lane pair", async () => {
     const s = setup();
     expect((await runLookupLane(s.input(), s.d)).kind).toBe("reply");
-    expect(s.r6()).toEqual([["lookup.rewrite", "bare", "no_recent_line", "run_1"], ["lookup.thin", "none", "answered", "run_1"]]);
+    expect(s.d.rewrite).toHaveBeenCalledTimes(1);
+    const prompt = (s.d.rewrite as ReturnType<typeof vi.fn>).mock.calls[0]![0].prompt as string;
+    expect(prompt).not.toMatch(/Paco earlier|Houge earlier/);
+    expect(prompt.split("\n").at(-1)).toBe("Message: 明天悉尼天气怎么样？");
+    expect(s.r6()).toEqual([["lookup.rewrite", "bare", "same", "run_1"], ["lookup.thin", "none", "answered", "run_1"]]);
     expect(s.ids()).toEqual(["tool.wall", "reader.family", "lookup.rewrite", "lookup.thin"]);
   });
-  it("2a. a 41-char message after a recent line is long_message; the rewrite is never called", async () => {
-    const s = setup(); recent(s);
+  // Stale context must not resolve references ("那个呢"), but a fresh line is how a follow-up gets its subject.
+  it("1b. earlier lines reach the rewrite only when Paco's previous line is at most 30 minutes old", async () => {
+    const promptOf = async (minutesAgo: number): Promise<string> => {
+      const s = setup(); s.d.previousTelegramTurns = () => [paco("悉尼明天天气", minutesAgo, s.clock.t)];
+      await runLookupLane(s.input({ userText: "melbourne呢？" }), s.d);
+      return (s.d.rewrite as ReturnType<typeof vi.fn>).mock.calls[0]![0].prompt as string;
+    };
+    expect(await promptOf(31)).not.toContain("悉尼明天天气");
+    expect(await promptOf(5)).toContain("Paco earlier: 悉尼明天天气");
+  });
+  it("2a. a 41-char message after a recent line is rewritten too: the model's query is searched", async () => {
+    const s = setup({ rewrite: answer("Sydney weather tomorrow") }); recent(s);
     await runLookupLane(s.input({ userText: "a".repeat(41) }), s.d);
-    expect(s.r6()[0]).toEqual(["lookup.rewrite", "bare", "long_message", "run_1"]);
-    expect(s.d.rewrite).not.toHaveBeenCalled();
+    expect(s.d.rewrite).toHaveBeenCalledTimes(1);
+    expect(s.r6()[0]).toEqual(["lookup.rewrite", "rewrite", "rewritten", "run_1"]);
+    expect(s.d.search).toHaveBeenCalledWith({ query: "Sydney weather tomorrow", max_results: 5 });
+  });
+  // The real failure: the engine matched on the assistant's name because the whole sentence was searched.
+  it("2a2. a message opening with the assistant's name and no recent line is rewritten; the search gets the model's query, not the sentence", async () => {
+    const s = setup({ rewrite: answer("爱的代价 钢琴谱") });
+    const text = "猴哥, 帮忙找找爱的代价 钢琴典谱";
+    await runLookupLane(s.input({ userText: text }), s.d);
+    expect(s.d.rewrite).toHaveBeenCalledTimes(1);
+    expect(s.r6()[0]).toEqual(["lookup.rewrite", "rewrite", "rewritten", "run_1"]);
+    expect(s.d.search).toHaveBeenCalledWith({ query: "爱的代价 钢琴谱", max_results: 5 });
+    expect(s.d.search).not.toHaveBeenCalledWith({ query: text, max_results: 5 });
   });
   it("2b. quoted, the model answers a query: rewrite/rewritten and that query is searched", async () => {
     const s = setup({ rewrite: answer("Sydney weather tomorrow") }); recent(s);
@@ -94,7 +120,7 @@ describe("lookup.rewrite and lookup.thin rows (spec R6 §4.1, §4.2)", () => {
   it("3a. a thin read with a listable URL → fetch/thin, one fetch; row order after the second read's pair", async () => {
     const s = setup({ read: vi.fn().mockResolvedValueOnce(read(null)).mockResolvedValueOnce(read("Sunny")) });
     await runLookupLane(s.input(), s.d);
-    expect(s.r6()).toEqual([["lookup.rewrite", "bare", "no_recent_line", "run_1"], ["lookup.thin", "fetch", "thin", "run_1"]]);
+    expect(s.r6()).toEqual([["lookup.rewrite", "bare", "same", "run_1"], ["lookup.thin", "fetch", "thin", "run_1"]]);
     expect(s.d.fetch).toHaveBeenCalledTimes(1);
     expect(s.ids()).toEqual(["tool.wall", "reader.family", "tool.wall", "reader.family", "lookup.rewrite", "lookup.thin"]);
   });
@@ -107,7 +133,7 @@ describe("lookup.rewrite and lookup.thin rows (spec R6 §4.1, §4.2)", () => {
   it("3c. a failed first read: no lookup.thin consult; lookup.rewrite still written", async () => {
     const s = setup({ read: vi.fn(async (): Promise<StrictRead> => ({ ok: false, why: "unreadable" })) });
     expect(await runLookupLane(s.input(), s.d)).toEqual({ kind: "fallthrough", why: "reader_failed" });
-    expect(s.r6()).toEqual([["lookup.rewrite", "bare", "no_recent_line", "run_1"]]);
+    expect(s.r6()).toEqual([["lookup.rewrite", "bare", "same", "run_1"]]);
   });
   it("4. write timing (P14-1): a slow R6 record never eats the fetch's budget — rows are written after the compose", async () => {
     const s = setup({ read: vi.fn().mockResolvedValueOnce(read(null)).mockResolvedValueOnce(read("Sunny")) });
@@ -135,7 +161,7 @@ describe("lookup.rewrite and lookup.thin rows (spec R6 §4.1, §4.2)", () => {
     const err = vi.spyOn(console, "error").mockImplementation(() => {});
     const s = setup({ search: vi.fn((): Promise<ToolAdapterResult> => { throw new Error("boom"); }) });
     expect(await runLookupLane(s.input(), s.d)).toEqual({ kind: "fallthrough", why: "lane_threw" });
-    expect(s.r6()).toEqual([["lookup.rewrite", "bare", "no_recent_line", "run_1"]]);
+    expect(s.r6()).toEqual([["lookup.rewrite", "bare", "same", "run_1"]]);
     err.mockRestore();
   });
   it("7. no recorder: no throw, the result unchanged", async () => {

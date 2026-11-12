@@ -98,7 +98,7 @@ describe("runLookupLane — thin result: one fetch, through the reader again", (
   });
 });
 
-describe("runLookupLane — the query (pre-filter, Tiny rewrite, code validation)", () => {
+describe("runLookupLane — the query (Tiny rewrite of every lookup, code validation)", () => {
   it("a short message after a recent Paco line is rewritten; the validated query is searched and is the reader's objective", async () => {
     const s = setup({ rewrite: vi.fn(async (): Promise<LlmResult> => ({ ok: true, provider: "kimi-code", model: "k3", answer: "Melbourne weather tomorrow" })) });
     s.d.previousTelegramTurns = () => [paco("明天悉尼天气怎么样？", 5, s.clock.t)];
@@ -123,12 +123,17 @@ describe("runLookupLane — the query (pre-filter, Tiny rewrite, code validation
     await runLookupLane(s.input({ userText: "再查一次", deadlineAt: s.clock.t + COMPOSE_RESERVE_MS + 40 }), s.d);
     expect(s.d.search).toHaveBeenCalledWith({ query: "再查一次", max_results: 5 });
   });
-  it("no rewrite when Paco's previous Telegram line is over 30 minutes old, or there is none", async () => {
+  // A stale or missing previous line removes the context, not the rewrite: the assistant's name must still come out of the search.
+  it("a previous Telegram line over 30 minutes old, or none, still gets the rewrite, without the earlier line in its prompt", async () => {
     const s = setup();
     s.d.previousTelegramTurns = () => [paco("悉尼明天天气", 31, s.clock.t)];
     await runLookupLane(s.input({ userText: "再查一次" }), s.d);
-    await runLookupLane(setup().input({ userText: "再查一次" }), { ...s.d, previousTelegramTurns: () => [] });
-    expect(s.d.rewrite).not.toHaveBeenCalled();
+    const none = setup();
+    await runLookupLane(none.input({ userText: "再查一次" }), none.d);
+    for (const d of [s.d, none.d]) {
+      expect(d.rewrite).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(d.rewrite).mock.calls[0]![0].prompt).not.toContain("Paco earlier");
+    }
   });
   it("the query is whitespace-folded and cut at 200 chars", async () => {
     const s = setup();
