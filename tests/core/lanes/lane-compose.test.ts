@@ -51,9 +51,16 @@ describe("renderSourcesBlock / sourceUrl / withSourceLine", () => {
   });
 });
 
-// Stage B §5 step 2: whether a short message is a follow-up is a judgment call (a model), behind a cheap code gate; whatever the
+// Stage B §5 step 2: whether a short message is a follow-up is a judgment call (a model), on every lookup; whatever the
 // model returns is validated by code, and any doubt searches the bare message.
 describe("rewritePrompt / validateQuery / finalQuery", () => {
+  // The engine once matched on the assistant's name. The instruction is what tells the Tiny model to leave it out,
+  // and to answer SAME only for a message that needs no change, since SAME means the message is searched as typed.
+  it("the rewrite instruction names the address to leave out and narrows SAME", () => {
+    expect(REWRITE_INSTRUCTION).toContain("猴哥");
+    expect(REWRITE_INSTRUCTION).toContain("Houge");
+    expect(REWRITE_INSTRUCTION).toMatch(/SAME only when/);
+  });
   it("rewritePrompt gives the last two Paco lines, the last Houge line and the quote, each clipped to 200 chars, then the message", () => {
     const prev = [turn("user", "old one"), turn("user", "悉尼明天天气"), turn("assistant", "y".repeat(300)), turn("user", "z".repeat(250))];
     const p = rewritePrompt(prev, { role: "houge", kind: "answer", age_s: 5, text: "quoted text" }, "melbourne呢？");

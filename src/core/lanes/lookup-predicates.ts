@@ -1,10 +1,27 @@
-/** Stage B §5 step 2 constants; the lane's recent-context rule and query check live here so the decision entries import a leaf (spec R6 §4.1, plan P9). */
+/** Stage B §5 step 2 constants; the lane's earlier-lines rule, address strip and query check live here so the decision entries import a leaf (spec R6 §4.1, plan P9). */
+export const REWRITE_MAX_CHARS = 40;
 export const REWRITE_RECENT_MS = 30 * 60_000;
 export const QUERY_MAX_CHARS = 120;
 
-/** Earlier lines go into the rewrite prompt only when Paco's previous Telegram line is at most 30 min old. `ageMs > …` as before: NaN or a negative age counts as recent. */
-export function recentContextOf(ageMs: number | null): boolean {
-  return ageMs !== null && !(ageMs > REWRITE_RECENT_MS);
+/**
+ * Earlier lines go into the rewrite prompt only for a short or quoting follow-up to a recent line: Paco's previous Telegram
+ * line at most 30 min old, AND quoting or at most 40 code points. They can carry text Houge wrote from web sources, so a
+ * message that stands on its own gets none. `ageMs > …` as before: NaN or a negative age counts as recent.
+ */
+export function earlierLinesOf(message: string, quoted: boolean, ageMs: number | null): boolean {
+  return ageMs !== null && !(ageMs > REWRITE_RECENT_MS) && (quoted || [...message.trim()].length <= REWRITE_MAX_CHARS);
+}
+
+const ADDRESS_HEAD = /^\s*(?:猴哥|houge)\s*[,，:：!！、]\s*/i;
+const ADDRESS_TAIL = /\s*[,，、]\s*(?:猴哥|houge)\s*[.。!！?？]*\s*$/i;
+/**
+ * The message without the name Paco addresses Houge by, for the search of the bare message (the rewrite late, failed or
+ * SAME). Only at the very start or end and set off by punctuation, so the name as the subject of a question stays; a
+ * message that is nothing but the address stays whole.
+ */
+export function stripAddress(message: string): string {
+  const s = message.replace(ADDRESS_HEAD, "").replace(ADDRESS_TAIL, "").trim();
+  return s.length > 0 ? s : message;
 }
 
 export type QueryCheck = { kind: "same" } | { kind: "invalid" } | { kind: "query"; q: string };

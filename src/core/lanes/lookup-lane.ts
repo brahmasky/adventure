@@ -5,7 +5,7 @@ import { composeReply } from "./answer-lane.js";
 import { catchUpLine, finalQuery, renderLanePrompt, renderSourcesBlock, rewritePrompt, sourceUrl, validateQuery, withSourceLine } from "./lane-compose.js";
 import { LATE, within } from "./lane-time.js";
 import { fall, type LaneFall, type LaneInput, type LaneResult, type LookupLaneDeps } from "./lane-types.js";
-import { queryCheckOf, recentContextOf, thinOf, type ThinInput } from "./lookup-predicates.js";
+import { earlierLinesOf, queryCheckOf, stripAddress, thinOf, type ThinInput } from "./lookup-predicates.js";
 import { decideSync } from "../../decisions/decide.js";
 import { LOOKUP_REWRITE, type RewriteStep } from "../../decisions/entries/lookup-rewrite.js";
 import { LOOKUP_THIN } from "../../decisions/entries/lookup-thin.js";
@@ -68,7 +68,10 @@ async function lookupSteps(i: LaneInput, d: LookupLaneDeps, pending: Pending): P
 /** Time a step may still use before the compose reserve; a step starts only while this is positive (spec §5). */
 const beforeReserve = (i: LaneInput, d: { now(): number }): number => i.deadlineAt - d.now() - COMPOSE_RESERVE_MS;
 
-/** Step 2: one bounded Tiny rewrite of every lookup (earlier lines only while Paco's previous line is recent) whose answer code validates; every return path is one lookup.rewrite consult. */
+/**
+ * Step 2: one bounded Tiny rewrite of every lookup, whose answer code validates (earlier lines only for a short or quoting
+ * follow-up to a recent line). On any doubt the message is searched, without the address. Every return path is one lookup.rewrite consult.
+ */
 async function lookupQuery(i: LaneInput, d: LookupLaneDeps, pending: Pending): Promise<string> {
   const { step, query } = await rewriteStep(i, d);
   consult(pending, i, LOOKUP_REWRITE, { step });
@@ -79,13 +82,15 @@ async function rewriteStep(i: LaneInput, d: LookupLaneDeps): Promise<{ step: Rew
   const prev = d.previousTelegramTurns(i.chat_id);
   const lastPaco = [...prev].reverse().find((t) => t.role === "user");
   const age = lastPaco ? d.now() - Date.parse(lastPaco.created_at) : null;
+  const bare = stripAddress(i.userText);
   const bound = Math.min(REWRITE_MS, beforeReserve(i, d));
-  if (bound <= 0) return { step: "no_time", query: finalQuery(i.userText) };
-  const r = await within(bound, d.rewrite({ prompt: rewritePrompt(recentContextOf(age) ? prev : [], i.quoted, i.userText), deadlineMs: bound, signal: i.signal }).catch((): null => null), i.signal);
+  if (bound <= 0) return { step: "no_time", query: finalQuery(bare) };
+  const earlier = earlierLinesOf(i.userText, i.quoted !== null, age) ? prev : [];
+  const r = await within(bound, d.rewrite({ prompt: rewritePrompt(earlier, i.quoted, i.userText), deadlineMs: bound, signal: i.signal }).catch((): null => null), i.signal);
   const answered = r !== LATE && r !== null && r.ok;
   const check = answered ? queryCheckOf(r.answer).kind : null;
   const step: RewriteStep = r === LATE ? "late" : !answered ? "failed" : check === "query" ? "rewritten" : check!;
-  return { step, query: finalQuery(validateQuery(answered ? r.answer : "SAME", i.userText)) };
+  return { step, query: finalQuery(validateQuery(answered ? r.answer : "SAME", bare)) };
 }
 
 /** Step 3: one search raced against min(25 s, remaining − 15 s); the provenance row exactly as the planner's wrapper writes it. */

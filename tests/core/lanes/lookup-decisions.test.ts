@@ -72,6 +72,8 @@ describe("lookup.rewrite and lookup.thin rows (spec R6 §4.1, §4.2)", () => {
     expect(s.d.rewrite).toHaveBeenCalledTimes(1);
     expect(s.r6()[0]).toEqual(["lookup.rewrite", "rewrite", "rewritten", "run_1"]);
     expect(s.d.search).toHaveBeenCalledWith({ query: "Sydney weather tomorrow", max_results: 5 });
+    // a long message stands on its own: no earlier line (it may carry web-derived text) reaches the rewrite
+    expect((s.d.rewrite as ReturnType<typeof vi.fn>).mock.calls[0]![0].prompt).not.toContain("earlier:");
   });
   // The real failure: the engine matched on the assistant's name because the whole sentence was searched.
   it("2a2. a message opening with the assistant's name and no recent line is rewritten; the search gets the model's query, not the sentence", async () => {
@@ -82,6 +84,17 @@ describe("lookup.rewrite and lookup.thin rows (spec R6 §4.1, §4.2)", () => {
     expect(s.r6()[0]).toEqual(["lookup.rewrite", "rewrite", "rewritten", "run_1"]);
     expect(s.d.search).toHaveBeenCalledWith({ query: "爱的代价 钢琴谱", max_results: 5 });
     expect(s.d.search).not.toHaveBeenCalledWith({ query: text, max_results: 5 });
+  });
+  // The rewrite is a model call: it can fail, run late or answer SAME. The search must not fall back to the name then.
+  it.each([
+    ["answers SAME", () => answer("SAME"), "same"],
+    ["fails", () => vi.fn(async (): Promise<LlmResult> => ({ ok: false, provider: "omp", error: "quota" })), "failed"],
+    ["answers a URL (invalid)", () => answer("see https://x.y"), "invalid"]
+  ] as const)("2a3. when the rewrite %s, the bare message is searched without the address", async (_n, rewrite, step) => {
+    const s = setup({ rewrite: rewrite() });
+    await runLookupLane(s.input({ userText: "猴哥, 帮忙找找爱的代价 钢琴典谱" }), s.d);
+    expect(s.r6()[0]).toEqual(["lookup.rewrite", "bare", step, "run_1"]);
+    expect(s.d.search).toHaveBeenCalledWith({ query: "帮忙找找爱的代价 钢琴典谱", max_results: 5 });
   });
   it("2b. quoted, the model answers a query: rewrite/rewritten and that query is searched", async () => {
     const s = setup({ rewrite: answer("Sydney weather tomorrow") }); recent(s);

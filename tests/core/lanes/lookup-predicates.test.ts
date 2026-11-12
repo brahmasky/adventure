@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { validateQuery } from "../../../src/core/lanes/lane-compose.js";
-import { QUERY_MAX_CHARS, REWRITE_RECENT_MS, queryCheckOf, recentContextOf, thinOf } from "../../../src/core/lanes/lookup-predicates.js";
+import { QUERY_MAX_CHARS, REWRITE_MAX_CHARS, REWRITE_RECENT_MS, earlierLinesOf, queryCheckOf, stripAddress, thinOf } from "../../../src/core/lanes/lookup-predicates.js";
 
 // Spec R6 §4.1: validateQuery is a thin wrapper of queryCheckOf; it must return byte-identical results for every input,
 // or the lane would search a different query than the merge base does.
@@ -21,14 +21,36 @@ describe("lookup predicates (spec R6 §4.1, §4.2)", () => {
   it("validateQuery equals the merge-base body over every raw answer", () => {
     for (const r of RAWS) expect(validateQuery(r, "MSG"), JSON.stringify(r).slice(0, 20)).toBe(oldValidateQuery(r, "MSG"));
   });
-  it("recentContextOf: earlier lines are used only when Paco's previous line is at most 30 minutes old", () => {
-    expect(recentContextOf(null)).toBe(false);
-    expect(recentContextOf(0)).toBe(true);
-    expect(recentContextOf(30 * 60_000)).toBe(true);
-    expect(recentContextOf(30 * 60_000 + 1)).toBe(false);
+  // Earlier lines can carry text Houge wrote from web sources. Every lookup is rewritten now, so they stay limited to the
+  // case that used them before: a short or quoting follow-up to a recent line. A long message stands on its own.
+  it("earlierLinesOf: only a short or quoting follow-up to a line at most 30 minutes old gets earlier lines", () => {
+    expect(earlierLinesOf("x", false, null)).toBe(false);
+    expect(earlierLinesOf("x", true, null)).toBe(false);
+    expect(earlierLinesOf("x", false, 0)).toBe(true);
+    expect(earlierLinesOf("x", false, REWRITE_RECENT_MS)).toBe(true);
+    expect(earlierLinesOf("x", false, REWRITE_RECENT_MS + 1)).toBe(false);
+    expect(earlierLinesOf("a".repeat(REWRITE_MAX_CHARS), false, 0)).toBe(true);
+    expect(earlierLinesOf("a".repeat(REWRITE_MAX_CHARS + 1), false, 0)).toBe(false);
+    expect(earlierLinesOf("a".repeat(REWRITE_MAX_CHARS + 1), true, 0)).toBe(true);
+    expect(earlierLinesOf("😀".repeat(REWRITE_MAX_CHARS), false, 0)).toBe(true); // astral chars count as one
     // NaN and a negative age (clock skew) count as recent: unchanged from the old `ageMs > …` comparison.
-    expect(recentContextOf(NaN)).toBe(true);
-    expect(recentContextOf(-5)).toBe(true);
+    expect(earlierLinesOf("x", false, NaN)).toBe(true);
+    expect(earlierLinesOf("x", false, -5)).toBe(true);
+  });
+  // When the rewrite is late, fails or answers SAME, the message itself is searched. Searched with the name, the engine
+  // matched "猴哥" and missed the subject (run_9aec9bf6, 2026-11-06).
+  it("stripAddress: drops the name only where it addresses Houge, set off by punctuation at the start or end", () => {
+    expect(stripAddress("猴哥, 帮忙找找爱的代价 钢琴典谱")).toBe("帮忙找找爱的代价 钢琴典谱");
+    expect(stripAddress("Houge: weather in Sydney tomorrow")).toBe("weather in Sydney tomorrow");
+    expect(stripAddress("上面的讨论能不能深挖一下，猴哥")).toBe("上面的讨论能不能深挖一下");
+    expect(stripAddress("what is new in k3.1, houge?")).toBe("what is new in k3.1");
+    // the name as the subject stays: no punctuation sets it off
+    expect(stripAddress("猴哥是谁")).toBe("猴哥是谁");
+    expect(stripAddress("谁是猴哥")).toBe("谁是猴哥");
+    expect(stripAddress("Houge is a daemon on a Mac mini")).toBe("Houge is a daemon on a Mac mini");
+    expect(stripAddress("tell me about houge")).toBe("tell me about houge");
+    // a message that is only the address stays whole: an empty search is worse
+    expect(stripAddress("猴哥！")).toBe("猴哥！");
   });
   it("queryCheckOf classifies the model's answer: same, invalid, or the stripped query", () => {
     expect(queryCheckOf("")).toEqual({ kind: "invalid" });
