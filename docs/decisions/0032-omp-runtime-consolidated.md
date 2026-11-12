@@ -334,7 +334,9 @@ progress, or Paco's instructions about how its code, checks, memory or lessons s
   use of third-party software with Antigravity OAuth a breach that may suspend the Antigravity and Gemini CLI accounts;
   omp is such software, and it also polls that account's usage on its own while the login is stored. The login had run
   476 calls from 2026-10-01 with no account error. A suspension would cost: the reader's head, the planner's second leg,
-  a judge seat and a `grow_review` leg (each falls to its next leg or runs short, as built); photos, until Vision has a
+  a judge seat and a `grow_review` leg (each falls to its next leg or runs short, as built, provided omp reports the
+  suspension in a form `classifyOmpError` reads as `auth`, such as a 403; an error with no status code reads as `other`,
+  which ends a one-shot call and gives the planner one retry; the real wording is not known); photos, until Vision has a
   second leg; and voice, since `agy` signs in with the same account and has no other leg. A design that removes the
   login was specified and not adopted (spec 2026-11-12, no model call through the Antigravity login).
 - A `steer` merge means one reply answers two messages; the ledger records both runs.
