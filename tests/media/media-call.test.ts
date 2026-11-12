@@ -50,6 +50,20 @@ describe("buildMediaCall — which leg reads a photo and which hears a voice not
     expect(ompSpawns()[0]?.argv).toContain("kimi-code/k3");
   });
 
+  // Paco 2026-11-12: with one Vision leg a refused login meant no photo at all. The default list now ends on Kimi.
+  it("a photo whose first leg is refused (auth) is read by the next Vision leg, and both legs are audited", async () => {
+    const file = path.join(mediaDir, "media.jpg");
+    writeFileSync(file, "jpeg");
+    writeFileSync(path.join(work, "s.json"), JSON.stringify({
+      "google-antigravity/gemini-3.8-flash": { text: "", stopReason: "error", errorMessage: "403 This service has been disabled in this account" },
+      "*": { frames: "oneshot-image.jsonl" }
+    }));
+    const r = await buildMediaCall({ store, run_id: "run_walk", kind: "photo", env: process.env })({ question: "describe", system: "reader", media: { path: file, mime: "image/jpeg" } });
+    expect(r).toMatchObject({ ok: true });
+    expect(ompSpawns().map((s) => s.argv[s.argv.indexOf("--model") + 1])).toEqual(["google-antigravity/gemini-3.8-flash", "kimi-code/k3"]);
+    expect(attempts("run_walk").map((a) => [a.provider, a.outcome, a.error_kind])).toEqual([["google-antigravity", "error", "auth"], ["kimi-code", "ok", undefined]]);
+  });
+
   it("a photo is ONE omp one-shot on cfg.media with the image as an @path argument, audited as reader", async () => {
     const file = path.join(mediaDir, "media.jpg");
     writeFileSync(file, "jpeg");

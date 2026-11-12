@@ -28,7 +28,7 @@ export const ROLE_LEGS: Readonly<Record<RoleName, readonly Leg[]>> = {
   default: [leg("opus@anthropic", "medium"), leg("opus@antigravity", "medium"), leg("kimi", "low")],
   thinking: [leg("opus@anthropic", "high"), leg("opus@antigravity", "high"), leg("kimi", "high")],
   reader: [leg("gemini-flash", "low"), leg("kimi", "low"), leg("codex-sol", "low")],
-  vision: [leg("gemini-flash", "low")],
+  vision: [leg("gemini-flash", "low"), leg("kimi", "low")],
   tiny: [leg("kimi", "low"), leg("gemini-flash", "low")],
   judges: [leg("kimi"), leg("codex-sol"), leg("gemini-pro")],
   chair: [leg("opus@anthropic", "low")],
@@ -86,7 +86,7 @@ export const STATIC_ROLE_LISTS: Readonly<Record<RoleName, readonly string[]>> = 
   return {
     fast: planner, default: planner, thinking: planner,
     reader: ["google-antigravity/gemini-3.8-flash:low", "kimi-code/k3:low", "openai-codex/gpt-6.1-sol:low"],
-    vision: ["google-antigravity/gemini-3.8-flash:low"],
+    vision: ["google-antigravity/gemini-3.8-flash:low", "kimi-code/k3:low"],
     tiny: ["kimi-code/k3:low"],
     judges: ["kimi-code/k3", "openai-codex/gpt-6.1-sol"],
     chair: ["anthropic/claude-opus-5-5:low"],

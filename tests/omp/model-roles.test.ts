@@ -33,7 +33,7 @@ describe("role lists (code-owned, spec §4)", () => {
     const c = staticRoleChains();
     expect(f(c.planner)).toBe("anthropic/claude-opus-5-5:medium,google-antigravity/claude-opus-5-5:medium,kimi-code/k3:low");
     expect(f(c.reader)).toBe("google-antigravity/gemini-3.8-flash:low,kimi-code/k3:low,openai-codex/gpt-6.1-sol:low");
-    expect(f(c.media)).toBe("google-antigravity/gemini-3.8-flash:low");
+    expect(f(c.media)).toBe("google-antigravity/gemini-3.8-flash:low,kimi-code/k3:low");
     expect(f(c.ticks)).toBe("kimi-code/k3:low");
     expect(f(c.judges)).toBe("kimi-code/k3,openai-codex/gpt-6.1-sol");
     expect(f(c.chair)).toBe("anthropic/claude-opus-5-5:low");
@@ -72,7 +72,8 @@ describe("role lists (code-owned, spec §4)", () => {
   });
 
   it("a catalog that lists none of a role's selectors empties it in resolved mode (RoleResolver falls back, Task 7)", () => {
-    expect(resolved({ role: "vision", catalog: fixtureCatalog().filter((m) => m.id !== "gemini-3.8-flash") })).toEqual([]);
+    // chair is the one single-leg role left (vision gained a Kimi leg, 2026-11-12)
+    expect(resolved({ role: "chair", catalog: fixtureCatalog().filter((m) => !(m.provider === "anthropic" && m.id === "claude-opus-5-5")) })).toEqual([]);
   });
 
   it("every list selector is in the fixture catalog, so resolved mode over it returns the lists unchanged", () => {
@@ -84,7 +85,7 @@ describe("role lists (code-owned, spec §4)", () => {
 describe("resolveRole — spec §4 steps 1–4", () => {
   it("applies the provider allow-list before matching: a google/ or moonshot/ twin is never a candidate", () => {
     expect(matchOverride("gemini-3.8-flash", "vision", fixtureCatalog()).map((m) => `${m.provider}/${m.id}`)).toEqual(["google-antigravity/gemini-3.8-flash"]);
-    expect(resolved({ role: "vision", override: "gemini-3.8-flash" })).toEqual(["google-antigravity/gemini-3.8-flash:low"]);
+    expect(resolved({ role: "vision", override: "gemini-3.8-flash" })).toEqual(["google-antigravity/gemini-3.8-flash:low", "kimi-code/k3:low"]);
     expect(matchOverride("kimi-k3", "tiny", fixtureCatalog())).toEqual([]); // moonshot is metered
   });
 
@@ -100,7 +101,7 @@ describe("resolveRole — spec §4 steps 1–4", () => {
     ]);
     // A pattern matching two providers' models yields both, in catalog order, each with the list's effort for it.
     expect(resolved({ role: "default", override: "opus-5-5" }).slice(0, 2)).toEqual(["anthropic/claude-opus-5-5:medium", "google-antigravity/claude-opus-5-5:medium"]);
-    expect(resolved({ role: "vision", override: "GEMINI-3.1-PRO" })).toEqual(["google-antigravity/gemini-3.1-pro:low", "google-antigravity/gemini-3.8-flash:low"]);
+    expect(resolved({ role: "vision", override: "GEMINI-3.1-PRO" })).toEqual(["google-antigravity/gemini-3.1-pro:low", "google-antigravity/gemini-3.8-flash:low", "kimi-code/k3:low"]);
   });
 
   it("drops a listed selector the catalog no longer lists (a retired model), matching provider/id without the :effort", () => {

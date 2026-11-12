@@ -132,7 +132,7 @@ names it once at boot (`[omp-config] … no longer read`). Delete them from `.en
 | `default` | planner, standard gear; the Jev-down fallback | `opus@anthropic:medium`, `opus@antigravity:medium`, `kimi:low` |
 | `thinking` | planner, heavy gear | `opus@anthropic:high`, `opus@antigravity:high`, `kimi:high` |
 | `reader` | the quarantined reader ([ADR 0014](../decisions/0014-dual-llm-privilege-separation.md)) | `gemini-flash:low`, `kimi:low`, `codex-sol:low` |
-| `vision` | the photo seat | `gemini-flash:low` |
+| `vision` | the photo seat | `gemini-flash:low`, `kimi:low` |
 | `tiny` | memory ticks and the Jev cascade | `kimi:low`, `gemini-flash:low` |
 | `judges` | idea-panel judges, one tier head per seat index, never a chain | seat 0 `kimi`, seat 1 `codex-sol`, seat 2 `gemini-pro` |
 | `chair` | idea-panel chair | `opus@anthropic:low` |

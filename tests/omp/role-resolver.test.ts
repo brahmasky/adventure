@@ -182,9 +182,9 @@ describe("RoleResolver", () => {
     const c = roles.chains();
     // Seat 2 is a hole: the gemini-pro tier is empty and its static seat is empty (D4-A), so that seat fails alone.
     expect(c.judges.map((m) => (m ? formatModelString(m) : null))).toEqual(["google-antigravity/claude-opus-4-6", "openai-codex/gpt-6.1-sol", null]);
-    expect(c.media).toEqual(staticRoleChains().media);
+    expect(fmt(c.media)).toEqual(["kimi-code/k3:low"]); // the Gemini leg is gone from this catalog; the Kimi leg serves, no fallback
     expect(fmt(c.reader)).toEqual(["kimi-code/k3:low"]); // not empty: no fallback
-    expect(notes(store, "model_roles_fallback")).toEqual([{ role: "vision" }, { role: "judges:1" }]); // seat 2: an empty static seat is no fallback
+    expect(notes(store, "model_roles_fallback")).toEqual([{ role: "judges:1" }]); // seat 2: an empty static seat is no fallback
     store.close();
   });
 
@@ -194,7 +194,7 @@ describe("RoleResolver", () => {
     const all = roles.resolveAll();
     expect(all.map((r) => r.key)).toEqual(["fast", "default", "thinking", "reader", "vision", "tiny", "judges:0", "judges:1", "judges:2", "chair", "reviewer", "grow_review"]);
     expect(all.find((r) => r.key === "vision")).toEqual({ key: "vision", head: "google-antigravity/gemini-3.1-pro:low",
-      candidates: ["google-antigravity/gemini-3.1-pro:low", "google-antigravity/gemini-3.8-flash:low"], source: "override" });
+      candidates: ["google-antigravity/gemini-3.1-pro:low", "google-antigravity/gemini-3.8-flash:low", "kimi-code/k3:low"], source: "override" });
     expect(all.find((r) => r.key === "default")?.source).toBe("list");
     const bare = await pinnedRoles(store, fixtureCatalog().filter((m) => !/claude|k3/.test(m.id)));
     expect(bare.resolveAll().find((r) => r.key === "default")).toMatchObject({ head: null, candidates: [] }); // role_unresolved sees it (Task 11)

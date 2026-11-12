@@ -28,6 +28,11 @@ describe("legs over the seeded heads", () => {
     expect(ROLE_LEGS.judges).toEqual([{ tier: "kimi" }, { tier: "codex-sol" }, { tier: "gemini-pro" }]);
     expect(ROLE_LEGS.reviewer).toEqual([{ tier: "kimi", effort: "high" }, { tier: "opus@antigravity", effort: "medium" }]);
   });
+  // Paco 2026-11-12: photos stopped whenever the one Gemini leg was down or its login refused. Kimi reads images, so it backs the seat.
+  it("vision has a second leg on Kimi behind Gemini Flash, so a photo outlives the first leg failing", () => {
+    expect(ROLE_LEGS.vision).toEqual([{ tier: "gemini-flash", effort: "low" }, { tier: "kimi", effort: "low" }]);
+    expect(resolved({ role: "vision", catalog: fixtureCatalog().filter((m) => m.id !== "gemini-3.8-flash") })).toEqual(["kimi-code/k3:low"]);
+  });
 });
 
 describe("previous heads", () => {
@@ -47,7 +52,7 @@ describe("previous heads", () => {
 
 describe("keysOfTier", () => {
   it("names every role and judge seat with a leg on the tier", () => {
-    expect(keysOfTier("kimi")).toEqual(["default", "thinking", "reader", "tiny", "reviewer", "grow_review", "judges:0"]);
+    expect(keysOfTier("kimi")).toEqual(["default", "thinking", "reader", "vision", "tiny", "reviewer", "grow_review", "judges:0"]);
     expect(keysOfTier("gemini-pro")).toEqual(["grow_review", "judges:2"]);
   });
 });

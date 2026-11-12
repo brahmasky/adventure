@@ -31,7 +31,7 @@ export const SEED_LISTS: Readonly<Record<string, readonly string[]>> = {
   default: ["anthropic/claude-opus-5-5:medium", "google-antigravity/claude-opus-5-5:medium", "kimi-code/k3:low"],
   thinking: ["anthropic/claude-opus-5-5:high", "google-antigravity/claude-opus-5-5:high", "kimi-code/k3:high"],
   reader: ["google-antigravity/gemini-3.8-flash:low", "kimi-code/k3:low", "openai-codex/gpt-6.1-sol:low"],
-  vision: ["google-antigravity/gemini-3.8-flash:low"],
+  vision: ["google-antigravity/gemini-3.8-flash:low", "kimi-code/k3:low"],
   tiny: ["kimi-code/k3:low", "google-antigravity/gemini-3.8-flash:low"],
   "judges:0": ["kimi-code/k3"], "judges:1": ["openai-codex/gpt-6.1-sol"], "judges:2": [],
   chair: ["anthropic/claude-opus-5-5:low"],

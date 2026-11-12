@@ -27,7 +27,7 @@ describe("the re-pinned static lists", () => {
     const c = staticRoleChains();
     expect(f(c.planner)).toBe("anthropic/claude-opus-5-5:medium,google-antigravity/claude-opus-5-5:medium,kimi-code/k3:low");
     expect(f(c.reader)).toBe("google-antigravity/gemini-3.8-flash:low,kimi-code/k3:low,openai-codex/gpt-6.1-sol:low");
-    expect(f(c.media)).toBe("google-antigravity/gemini-3.8-flash:low");
+    expect(f(c.media)).toBe("google-antigravity/gemini-3.8-flash:low,kimi-code/k3:low");
     expect(f(c.ticks)).toBe("kimi-code/k3:low");
     expect(f(c.judges)).toBe("kimi-code/k3,openai-codex/gpt-6.1-sol");
     expect(f(c.chair)).toBe("anthropic/claude-opus-5-5:low");
