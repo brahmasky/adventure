@@ -384,7 +384,7 @@ the default one:
 ```bash
 omp --profile houge login anthropic            # Claude Max: planner and chair
 omp --profile houge login google-antigravity   # Gemini reader and photos; Claude fallback
-omp --profile houge login kimi-code            # Kimi: Tiny role, judge, reviewer, last planner fallback
+omp --profile houge login kimi-code            # Kimi: Tiny role, judge, reviewer, photo fallback, last planner fallback
 omp --profile houge login openai-codex         # GPT judge and reader fallback
 ```
 

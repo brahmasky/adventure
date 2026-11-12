@@ -943,7 +943,7 @@ never enter the DB; one `media_ingested` ledger row per media turn carries kind,
 | Variable | Default | Meaning |
 |---|---|---|
 | `HOUGE_MEDIA_INGEST_ENABLED` | off | Arms the ingest step. Accepts 1/true/yes/on; read per poll; in `DISARM_FLAGS`. |
-| `HOUGE_LLM_MEDIA_PROVIDERS` | `agy-cli` | Voice only. The voice chain; `agy-cli` is the only leg that hears audio. Any other name (a stale `pi`) is dropped with one warning. Photos use `HOUGE_OMP_MEDIA`. |
+| `HOUGE_LLM_MEDIA_PROVIDERS` | `agy-cli` | Voice only. The voice chain; `agy-cli` is the only leg that hears audio. Any other name (a stale `pi`) is dropped with one warning. Photos run on the `vision` model role (above), not on this chain; `HOUGE_OMP_MEDIA` is retired and sets nothing. |
 | `HOUGE_LLM_TIMEOUT_MS_MEDIA` | `45000` | Voice only. Per-leg timeout for the agy transcription call. The whole stage is capped at 150 s, before the turn's deadline. |
 
 Caps: 10 MB per file, 300 s per voice note. A failure (too large, download, no leg, empty, timeout)

@@ -177,14 +177,17 @@ describe("RoleResolver", () => {
 
   it("chains() keeps every judge on its own index; an emptied seat or role runs its static selector, never an empty chain", async () => {
     const store = RunStore.openInMemory();
-    const trimmed = fixtureCatalog().filter((m) => m.provider !== "openai-codex" && !(m.provider === "google-antigravity" && m.id === "gemini-3.8-flash"));
+    // No Codex, no Gemini Flash, and no Opus 5.5 on Anthropic: chair (one leg) is the role this catalog empties.
+    const trimmed = fixtureCatalog().filter((m) => m.provider !== "openai-codex" && !(m.provider === "google-antigravity" && m.id === "gemini-3.8-flash")
+      && !(m.provider === "anthropic" && m.id === "claude-opus-5-5"));
     const roles = await pinnedRoles(store, trimmed, { "judges:0": "opus-4-6" });
     const c = roles.chains();
     // Seat 2 is a hole: the gemini-pro tier is empty and its static seat is empty (D4-A), so that seat fails alone.
     expect(c.judges.map((m) => (m ? formatModelString(m) : null))).toEqual(["google-antigravity/claude-opus-4-6", "openai-codex/gpt-6.1-sol", null]);
     expect(fmt(c.media)).toEqual(["kimi-code/k3:low"]); // the Gemini leg is gone from this catalog; the Kimi leg serves, no fallback
     expect(fmt(c.reader)).toEqual(["kimi-code/k3:low"]); // not empty: no fallback
-    expect(notes(store, "model_roles_fallback")).toEqual([{ role: "judges:1" }]); // seat 2: an empty static seat is no fallback
+    expect(c.chair).toEqual(staticRoleChains().chair); // emptied: its static selector runs, never an empty chain
+    expect(notes(store, "model_roles_fallback").map((n) => n.role).sort()).toEqual(["chair", "judges:1"]); // seat 2: an empty static seat is no fallback
     store.close();
   });
 

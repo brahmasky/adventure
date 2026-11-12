@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { parseOmpCatalog } from "../../src/omp/model-catalog.js";
-import { JUDGE_SEATS, keysOfTier, resolveRole, ROLE_LEGS, ROLE_NAMES, roleSelectors, type ResolveInput, type RoleName } from "../../src/omp/model-roles.js";
+import { JUDGE_SEATS, keysOfTier, resolveRole, ROLE_LEGS, ROLE_NAMES, roleSelectors, soleKeysOf, type ResolveInput, type RoleName } from "../../src/omp/model-roles.js";
 import { formatModelString } from "../../src/omp/model-string.js";
 import { tierHeadsOf } from "../../src/omp/model-tiers.js";
 import { RoleResolver } from "../../src/omp/role-resolver.js";
@@ -54,6 +54,11 @@ describe("keysOfTier", () => {
   it("names every role and judge seat with a leg on the tier", () => {
     expect(keysOfTier("kimi")).toEqual(["default", "thinking", "reader", "vision", "tiny", "reviewer", "grow_review", "judges:0"]);
     expect(keysOfTier("gemini-pro")).toEqual(["grow_review", "judges:2"]);
+  });
+  // Vision's Kimi leg means no role rests on Gemini Flash alone: an empty flash tier sends no tap card, the roles walk on.
+  it("no role is served by the gemini-flash tier alone once vision has a Kimi leg", () => {
+    expect(soleKeysOf("gemini-flash")).toEqual([]);
+    expect(soleKeysOf("gemini-pro")).toEqual(["judges:2"]);
   });
 });
 

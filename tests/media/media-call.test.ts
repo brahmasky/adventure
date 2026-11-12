@@ -59,8 +59,9 @@ describe("buildMediaCall — which leg reads a photo and which hears a voice not
       "*": { frames: "oneshot-image.jsonl" }
     }));
     const r = await buildMediaCall({ store, run_id: "run_walk", kind: "photo", env: process.env })({ question: "describe", system: "reader", media: { path: file, mime: "image/jpeg" } });
-    expect(r).toMatchObject({ ok: true });
+    expect(r).toMatchObject({ ok: true, output: { provider: "kimi-code" } });
     expect(ompSpawns().map((s) => s.argv[s.argv.indexOf("--model") + 1])).toEqual(["google-antigravity/gemini-3.8-flash", "kimi-code/k3"]);
+    expect(ompSpawns()[1]?.argv).toContain(`@${file}`); // the Kimi leg got the image, not just the question
     expect(attempts("run_walk").map((a) => [a.provider, a.outcome, a.error_kind])).toEqual([["google-antigravity", "error", "auth"], ["kimi-code", "ok", undefined]]);
   });
 
