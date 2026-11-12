@@ -85,7 +85,7 @@ Jev's `category` picks one of eleven paths. Any category with `sets_rule` = yes 
 | Category | Today | Next | State |
 |---|---|---|---|
 | `answer` | answer lane (Sonnet composes from the thread); planner if any action is needed | — | built, stage B |
-| `lookup` | lookup lane (code query, search through the reader wall) | `improve.route`: a topic recurring 3× in 14 days raises a knowledge proposal | built, stage B |
+| `lookup` | lookup lane (a Tiny-rewritten query, search through the reader wall) | `improve.route`: a topic recurring 3× in 14 days raises a knowledge proposal | built, stage B |
 | `research` | planner, Thinking role | whether it becomes a lane: a stage C decision from the ledger | open |
 | `memory` | memory lane (its own `memory.kind` call): a rule, a fact or both saved; a fix (`memory_correct`) or nothing handed to the planner | — | built, live |
 | `self_change` | planner (`self_diagnose`, `self_write_propose`) | SP4; never a lane (approvals) | SP4 |

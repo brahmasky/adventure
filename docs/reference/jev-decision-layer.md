@@ -179,9 +179,12 @@ a one-line preface ("Quick reply: no tool, file or action is available this turn
 the message. A rule stated in the same message is saved first; the card then ends with `📒 Saved lesson #<id> · <theme>`.
 
 The **lookup lane** has a 75 s budget with a 15 s reserve for the compose. Every lookup is rewritten into one
-standalone query by a Tiny-role one-shot (12 s, code-validated, the bare message on any doubt); the assistant's name and
-request wording are dropped. Earlier lines are given to it only when Paco's previous Telegram line is at most 30 minutes
-old; a quoted turn always. One search (25 s), then the strict reader on the result set (two attempts,
+standalone query by a Tiny-role one-shot (12 s, code-validated); the instruction tells it to leave out the assistant's name
+and request wording. Earlier lines are given to it only for a short (at most 40 chars) or quoting follow-up to a line of
+Paco's at most 30 minutes old; a quoted turn always. When the rewrite is late, fails, or answers SAME or something
+invalid, the message itself is searched, with a leading or trailing address ("猴哥," / ", Houge") removed. The rewrite
+can take 12 of the 60 s before the compose reserve, so after a slow rewrite, search and first read, the second read or
+the thin-result fetch may get no time. One search (25 s), then the strict reader on the result set (two attempts,
 20 s each); when the reader says the sources did not answer, one fetch of the top result (15 s) and a second read. The
 composer cites by `[n]`; code appends `来源 / Sources:` with the cited URLs. A question no search answers (the Mac's public
 IP, a detail of Houge's own earlier report) gets a reply saying the sources do not answer; Dig deeper is the way on.
