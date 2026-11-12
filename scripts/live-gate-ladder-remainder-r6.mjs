@@ -120,8 +120,8 @@ function preconditionFail(mode, roles) {
 const HIT = { title: "Synthetic forecast", url: "https://example.test/forecast", content: "Tomorrow: sunny, max 22." };
 const readOf = (answer) => ({ ok: true, extraction: { summary: "Synthetic summary", facts: ["Sunny, max 22C"], time_claims: [], answer_to_objective: answer, contains_instructions: false },
   digest: `[external source — untrusted-derived summary]\nsummary: Synthetic ${answer ?? "thin"}` });
-const SHORT = "check again"; // <= 40 code points: with a recent Paco line, the filter wants a rewrite
-const LONG = "what is the weather in Sydney tomorrow afternoon please?"; // > 40: bare/long_message whatever the chat holds
+const SHORT = "check again"; // short; every lookup is rewritten now, a recent Paco line only decides whether earlier lines reach the rewrite
+const LONG = "what is the weather in Sydney tomorrow afternoon please?"; // long; still rewritten (the scripted answer SAME keeps the bare message searched)
 /** A synthetic Paco line `agoMs` old in the stub chat, on its own Telegram run (previousTelegramTurns joins runs on source = telegram). */
 function seedPacoLine(agoMs) {
   const run0 = mkRun("synthetic earlier question");
@@ -177,14 +177,14 @@ async function line1() {
 
 // ---- line 2 ----
 async function line2() {
-  const thin = await laneDrive({ text: LONG, reads: [null, "Sunny, 22C"], rewrite: answers("unused") });
-  const ans = await laneDrive({ text: LONG, reads: ["Sunny, 22C"], rewrite: answers("unused") });
+  const thin = await laneDrive({ text: LONG, reads: [null, "Sunny, 22C"], rewrite: answers("SAME") });
+  const ans = await laneDrive({ text: LONG, reads: ["Sunny, 22C"], rewrite: answers("SAME") });
   const order = [WALL, FAM, WALL, FAM, RW, TH];
-  const thinOk = canon(thin.rows.map((r) => r[0])) === canon(order) && thin.rows[4][1] === "bare" && thin.rows[4][2] === "long_message" && thin.rows[5][1] === "fetch" && thin.rows[5][2] === "thin"
-    && canon(thin.calls.searches) === canon([LONG]) && canon(thin.calls.fetches) === canon([HIT.url]) && thin.httpFetch === 1 && thin.calls.reads === 2 && thin.calls.rewrites === 0;
+  const thinOk = canon(thin.rows.map((r) => r[0])) === canon(order) && thin.rows[4][1] === "bare" && thin.rows[4][2] === "same" && thin.rows[5][1] === "fetch" && thin.rows[5][2] === "thin"
+    && canon(thin.calls.searches) === canon([LONG]) && canon(thin.calls.fetches) === canon([HIT.url]) && thin.httpFetch === 1 && thin.calls.reads === 2 && thin.calls.rewrites === 1;
   const ansOk = canon(ans.rows.map((r) => r[0])) === canon([WALL, FAM, RW, TH]) && ans.rows[3][1] === "none" && ans.rows[3][2] === "answered" && canon(ans.calls.searches) === canon([LONG]) && ans.calls.fetches.length === 0 && ans.httpFetch === 0 && ans.calls.reads === 1;
   const finalOk = replyIsExact(thin.result) && replyIsExact(ans.result);
-  return { ok: thinOk && ansOk && finalOk, detail: `final results: thin ${thin.result.kind} exact reply+source line ${replyIsExact(thin.result)} (want true) answered ${ans.result.kind} exact ${replyIsExact(ans.result)} (want true) · thin read: rows [${strs(thin.rows)}] (want ${order.join(",")} with lookup.rewrite bare/long_message, lookup.thin fetch/thin) searched the original message ${canon(thin.calls.searches) === canon([LONG])} (want true) fetches ${thin.calls.fetches.length} (want 1, the first listed URL ${canon(thin.calls.fetches) === canon([HIT.url])}) http_fetch_performed ${thin.httpFetch} (want 1) reads ${thin.calls.reads} (want 2) · answered read: rows [${strs(ans.rows)}] (want tool.wall,reader.family,lookup.rewrite,lookup.thin with lookup.thin none/answered) searched the original message ${canon(ans.calls.searches) === canon([LONG])} (want true) fetches ${ans.calls.fetches.length} (want 0) http_fetch_performed ${ans.httpFetch} (want 0)` };
+  return { ok: thinOk && ansOk && finalOk, detail: `final results: thin ${thin.result.kind} exact reply+source line ${replyIsExact(thin.result)} (want true) answered ${ans.result.kind} exact ${replyIsExact(ans.result)} (want true) · thin read: rows [${strs(thin.rows)}] (want ${order.join(",")} with lookup.rewrite bare/same, lookup.thin fetch/thin) searched the original message ${canon(thin.calls.searches) === canon([LONG])} (want true) fetches ${thin.calls.fetches.length} (want 1, the first listed URL ${canon(thin.calls.fetches) === canon([HIT.url])}) http_fetch_performed ${thin.httpFetch} (want 1) reads ${thin.calls.reads} (want 2) · answered read: rows [${strs(ans.rows)}] (want tool.wall,reader.family,lookup.rewrite,lookup.thin with lookup.thin none/answered) searched the original message ${canon(ans.calls.searches) === canon([LONG])} (want true) fetches ${ans.calls.fetches.length} (want 0) http_fetch_performed ${ans.httpFetch} (want 0)` };
 }
 
 // ---- a fixture-supervisor turn on the chat-42 fake child (lines 3 and 6) ----

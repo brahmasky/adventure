@@ -16,7 +16,7 @@ const BARE = "what is the weather in Sydney tomorrow?"; // the lane fixture's de
 const row = (entry, verdict, reason, rung = "rule") => [entry, rung, verdict, reason, "run_1", null];
 const recent = (text = "look it up") => ({ previousTelegramTurns: () => [laneTurn(text, 5)] });
 const answers = (text) => async () => ({ ok: true, provider: "kimi-code", model: "k3", answer: text });
-const AGAIN = { userText: "check again" }; // short: the filter wants a rewrite once a recent line exists
+const AGAIN = { userText: "check again" }; // short; every lookup is rewritten, a recent line only puts earlier lines in the prompt
 /** The first read comes back thin (no answer_to_objective), the second answers. */
 const thinThenAnswer = () => { let n = 0; return async () => (n++ === 0 ? laneRead(null) : laneRead("Sunny, 22C")); };
 const fetches = [LANE_HIT.url];
@@ -35,12 +35,12 @@ async function planted(d, file, name, drive) {
 // `make` builds a fresh script per run (abort controllers, counters). `settle`: ms to wait after the lane returned, so a late answer has its chance to be (wrongly) used.
 const killer = () => new AbortController();
 const ITEMS = [
-  { key: "rewrite_no_recent_line", tags: ["no_recent_line"], make: () => ({ script: {} }),
-    rows: [row(RW, "bare", "no_recent_line"), row(TH, "none", "answered")], ids: [WALL, FAM, RW, TH],
-    facts: { rewrites: 0, searches: [BARE], reads: 1, fetches: [], result: "reply", laneThrew: 0 } },
-  { key: "rewrite_long_message", tags: ["long_message"], make: () => ({ script: { ...recent(), input: { userText: "a".repeat(41) } } }),
-    rows: [row(RW, "bare", "long_message"), row(TH, "none", "answered")], ids: [WALL, FAM, RW, TH],
-    facts: { rewrites: 0, searches: ["a".repeat(41)], reads: 1, fetches: [], result: "reply", laneThrew: 0 } },
+  { key: "rewrite_no_recent_line_still_rewritten", tags: ["no_recent_line_rewritten"], make: () => ({ script: {} }),
+    rows: [row(RW, "bare", "same"), row(TH, "none", "answered")], ids: [WALL, FAM, RW, TH],
+    facts: { rewrites: 1, searches: [BARE], reads: 1, fetches: [], result: "reply", laneThrew: 0 } },
+  { key: "rewrite_long_message_still_rewritten", tags: ["long_message_rewritten"], make: () => ({ script: { ...recent(), input: { userText: "a".repeat(41) } } }),
+    rows: [row(RW, "bare", "same"), row(TH, "none", "answered")], ids: [WALL, FAM, RW, TH],
+    facts: { rewrites: 1, searches: ["a".repeat(41)], reads: 1, fetches: [], result: "reply", laneThrew: 0 } },
   { key: "rewrite_quoted_rewritten", tags: ["rewritten"], make: () => ({ script: { ...recent(), rewrite: answers("Sydney weather tomorrow"),
       input: { userText: "a".repeat(41), quoted: { role: "houge", kind: "answer", age_s: 300, text: "earlier" } } } }),
     rows: [row(RW, "rewrite", "rewritten"), row(TH, "none", "answered")], ids: [WALL, FAM, RW, TH],
@@ -79,35 +79,35 @@ const ITEMS = [
     rows: [row(RW, "bare", "same"), row(TH, "none", "answered")], ids: [WALL, FAM, RW, TH],
     facts: { rewrites: 1, searches: ["check again"], reads: 1, fetches: [], result: "reply", laneThrew: 0 } },
   { key: "thin_fetches", tags: ["thin"], make: () => ({ script: { read: thinThenAnswer() } }),
-    rows: [row(RW, "bare", "no_recent_line"), row(TH, "fetch", "thin")], ids: [WALL, FAM, WALL, FAM, RW, TH],
-    facts: { rewrites: 0, searches: [BARE], reads: 2, fetches, result: "reply", laneThrew: 0 } },
+    rows: [row(RW, "bare", "same"), row(TH, "fetch", "thin")], ids: [WALL, FAM, WALL, FAM, RW, TH],
+    facts: { rewrites: 1, searches: [BARE], reads: 2, fetches, result: "reply", laneThrew: 0 } },
   { key: "thin_no_listable_url", tags: ["no_url"], make: () => ({ script: { read: async () => laneRead(null), search: async () => laneSearchOk([{ ...LANE_HIT, url: "ftp://example.test/x" }]) } }),
-    rows: [row(RW, "bare", "no_recent_line"), row(TH, "none", "no_url")], ids: [WALL, FAM, RW, TH],
-    facts: { rewrites: 0, searches: [BARE], reads: 1, fetches: [], result: "reply", laneThrew: 0 } },
+    rows: [row(RW, "bare", "same"), row(TH, "none", "no_url")], ids: [WALL, FAM, RW, TH],
+    facts: { rewrites: 1, searches: [BARE], reads: 1, fetches: [], result: "reply", laneThrew: 0 } },
   // the first (thin) read moves the fixed clock to 1 s past the fetch's last start (deadline − reserve): the row is still `fetch/thin` (the decision), the fetch is not made (execution)
   { key: "thin_no_time_for_fetch", tags: ["thin_no_time"], make: () => ({ script: { read: async () => laneRead(null), advance: (clock, v) => { if (v?.ok && v.extraction?.answer_to_objective === null) clock.t += 61_000; } } }),
-    rows: [row(RW, "bare", "no_recent_line"), row(TH, "fetch", "thin")], ids: [WALL, FAM, RW, TH],
-    facts: { rewrites: 0, searches: [BARE], reads: 1, fetches: [], result: "reply", laneThrew: 0 } },
+    rows: [row(RW, "bare", "same"), row(TH, "fetch", "thin")], ids: [WALL, FAM, RW, TH],
+    facts: { rewrites: 1, searches: [BARE], reads: 1, fetches: [], result: "reply", laneThrew: 0 } },
   { key: "thin_first_read_failed", tags: ["read_failed"], make: () => ({ script: { read: async () => ({ ok: false, why: "unreadable" }) } }),
-    rows: [row(RW, "bare", "no_recent_line")], ids: [WALL, FAM, RW],
-    facts: { rewrites: 0, searches: [BARE], reads: 1, fetches: [], result: "fallthrough:reader_failed", laneThrew: 0 } },
+    rows: [row(RW, "bare", "same")], ids: [WALL, FAM, RW],
+    facts: { rewrites: 1, searches: [BARE], reads: 1, fetches: [], result: "fallthrough:reader_failed", laneThrew: 0 } },
   { key: "thin_killed_during_first_read", tags: ["kill_read"], make: () => { const ctl = killer();
       return { script: { signal: ctl.signal, read: async () => { ctl.abort(); return laneRead("Sunny, 22C"); } } }; },
     rows: [], ids: [],
-    facts: { rewrites: 0, searches: [BARE], reads: 1, fetches: [], result: "fallthrough:aborted", laneThrew: 0 } },
+    facts: { rewrites: 1, searches: [BARE], reads: 1, fetches: [], result: "fallthrough:aborted", laneThrew: 0 } },
   // spec §4.0: a recorder that moves the clock past the reserve ONLY on R6 calls, over a path whose fetch starts 1 s inside the reserve: the fetch happens, the rows come after the compose
   { key: "write_timing_r6_calls_slow", tags: ["timing"], slow: true, make: () => ({ script: { read: thinThenAnswer(), input: { deadlineAt: LANE_T0 + RESERVE + 1_000 } } }),
-    rows: [row(RW, "bare", "no_recent_line"), row(TH, "fetch", "thin")], ids: [WALL, FAM, WALL, FAM, RW, TH],
-    facts: { rewrites: 0, searches: [BARE], reads: 2, fetches, result: "reply", laneThrew: 0 } },
+    rows: [row(RW, "bare", "same"), row(TH, "fetch", "thin")], ids: [WALL, FAM, WALL, FAM, RW, TH],
+    facts: { rewrites: 1, searches: [BARE], reads: 2, fetches, result: "reply", laneThrew: 0 } },
   { key: "step_after_rewrite_throws", tags: ["threw"], make: () => ({ script: { search: async () => { throw new Error("boom"); } } }),
-    rows: [row(RW, "bare", "no_recent_line")], ids: [RW],
-    facts: { rewrites: 0, searches: [BARE], reads: 0, fetches: [], result: "fallthrough:lane_threw", laneThrew: 1 } },
+    rows: [row(RW, "bare", "same")], ids: [RW],
+    facts: { rewrites: 1, searches: [BARE], reads: 0, fetches: [], result: "fallthrough:lane_threw", laneThrew: 1 } },
   { key: "fault_rewrite_rule", tags: ["fault_rewrite"], plant: ["lookup-rewrite.js", "LOOKUP_REWRITE"], make: () => ({ script: { ...recent(), input: AGAIN, rewrite: answers("Sydney weather tomorrow") } }),
     rows: [row(RW, "bare", null, "fail"), row(TH, "none", "answered")], ids: [WALL, FAM, RW, TH],
     facts: { rewrites: 1, searches: ["Sydney weather tomorrow"], reads: 1, fetches: [], result: "reply", laneThrew: 0 } },
   { key: "fault_thin_rule", tags: ["fault_thin"], plant: ["lookup-thin.js", "LOOKUP_THIN"], make: () => ({ script: { read: thinThenAnswer() } }),
-    rows: [row(RW, "bare", "no_recent_line"), row(TH, "none", null, "fail")], ids: [WALL, FAM, WALL, FAM, RW, TH],
-    facts: { rewrites: 0, searches: [BARE], reads: 2, fetches, result: "reply", laneThrew: 0 } }
+    rows: [row(RW, "bare", "same"), row(TH, "none", null, "fail")], ids: [WALL, FAM, WALL, FAM, RW, TH],
+    facts: { rewrites: 1, searches: [BARE], reads: 2, fetches, result: "reply", laneThrew: 0 } }
 ];
 const BRANCHES = ITEMS.map((i) => i.tags[0]);
 
