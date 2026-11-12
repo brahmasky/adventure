@@ -64,7 +64,7 @@ Paco directly. (Amended 2026-11-10 by ADR 0035: `skill_author` authoring is gone
 | D4 | Conversation memory | **omp session owns the transcript**; Houge owns knowledge | stateless recomposition |
 | D5 | Planner autonomy | **yolo under `$HOME`**: file read/write/edit and shell commands run without a prompt, **except external writes and destructive deletes** (matcher, §5.2). The tap-free local writes are conditional on the turn's trust level (`turn.trust`, ADR 0034) | workspace jail; approve-every-bash |
 | D6 | Floors | (A) secret/protected paths denied at the OS level + policy hook (§5.1); (B) external effects wait for `/approve`: for `bash` a **best-effort, code-owned command matcher** (D12), for bridge tools the registry's `external_write` level | — |
-| D7 | Models | subscription OAuth only; Claude via Anthropic Max OAuth **inside omp**, the model named by the code-owned roles resolved against omp's catalog (§7) (terms risk accepted; the fallback is each role's next code-owned leg, §7; `HOUGE_MODEL_ROLES=static` rolls back the model lists, it is not a way off Claude) | `claude -p`; metered API |
+| D7 | Models | subscription OAuth only; Claude via Anthropic Max OAuth **inside omp**, the model named by the code-owned roles resolved against omp's catalog (§7) (terms risk accepted; the fallback is each role's next code-owned leg, §7; `HOUGE_MODEL_ROLES=static` rolls back the model lists, it is not a way off Claude). *Amended 2026-11-12:* the Google Antigravity login carries the same kind of terms risk and is accepted too (§10) | `claude -p`; metered API |
 | D8 | Tool set | port 12 as bridge tools; delete `llm_answer` + the money track (5 tools). *Amended 2026-11-10 by ADR 0035: `skill_author` is out; `grow_submit` and `grow_read` are in (plain branch of the bridge, 6.3)* | port all 18 |
 | D9 | Gmail | port with an `account` key designed in | rewrite later |
 | D10 | Family collapse (planner and reader on one family after fallback) | **accept the degradation, audited** (Paco, 2026-09-30): the read proceeds; every such read writes a `wall_collapse` ledger event and opens/keeps an incident. In resolved mode the reader's candidates are ordered cross-family first (a stable partition), so collapse is avoided before the read, not discovered after it; the Reader role's GPT-family leg (`codex-sol`), after its Gemini and Kimi legs, makes collapse rare | fail closed |
@@ -330,6 +330,13 @@ progress, or Paco's instructions about how its code, checks, memory or lessons s
   only by the turn deadline and the frame watchdog.
 - A bridge `call` dropped mid-flight leaves no row (follow-up: `handleCall` writes `tool_started`).
 - Antigravity's weekly ceiling covers a shared Claude/GPT bucket; reader volume rides Gemini's bucket.
+- **The Antigravity login's terms (accepted by Paco, 2026-11-12).** Google's Antigravity terms (§6, read 2026-11-12) call the
+  use of third-party software with Antigravity OAuth a breach that may suspend the Antigravity and Gemini CLI accounts;
+  omp is such software, and it also polls that account's usage on its own while the login is stored. The login had run
+  476 calls from 2026-10-01 with no account error. A suspension would cost: the reader's head, the planner's second leg,
+  a judge seat and a `grow_review` leg (each falls to its next leg or runs short, as built); photos, until Vision has a
+  second leg; and voice, since `agy` signs in with the same account and has no other leg. A design that removes the
+  login was specified and not adopted (spec 2026-11-12, no model call through the Antigravity login).
 - A `steer` merge means one reply answers two messages; the ledger records both runs.
 - Boot record: `kickstart` means any clean stop with the host up; a SIGKILL stop with the host up reads as
   `crash_recovery`.
@@ -383,6 +390,7 @@ progress, or Paco's instructions about how its code, checks, memory or lessons s
 | 2026-11-04 | Consolidated into this ADR, no change of meaning | — | 2026-11-05 |
 | 2026-11-06 | Drift rewording, no change of meaning: D7 fallback, D10 reader legs, memory-correct limits, empty-tier card conditions | — | 2026-11-06 |
 | 2026-11-10 | Grow zone: D8 (`skill_author` out, `grow_submit`/`grow_read` in); 1.7; 4.2 and 4.3 (the index, not bodies, in the prompt and fingerprint); 5.1 (j) (grow zone and backups read- and write-denied); 6.3 (`grow_read` named exception); 7.1 (role `grow_review`) | [grow zone](../superpowers/specs/2026-11-10-grow-zone-verification-design.md) (Rev 1.3.2) | 2026-11-10 (spec approval) |
+| 2026-11-12 | D7 and §10: the Antigravity login's terms risk read and accepted; what a suspension costs | [direction review](../research/direction-review-2026-11.md), [removal spec, not adopted](../superpowers/specs/2026-11-12-no-antigravity-oauth-design.md) | 2026-11-12 (in chat) |
 
 ## Reference map
 
