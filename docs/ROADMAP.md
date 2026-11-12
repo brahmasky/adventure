@@ -218,7 +218,8 @@ and slices 2–3 wait for a review on 2026-12-12 against a weekly use number on 
 first" above. (2) The Mandate spec is held until 1b's spec starts. (3) A governance freeze to 2026-12-12: no new
 ladder entries or record-only slices; floor work (ADR 0032 D11, memory provenance, the agy `search_web` egress)
 is exempt. (4) **Provider exposure is first and urgent:** most model calls ride on two OAuth legs the vendors'
-terms restrict, the planner's fallback from one is the other, and a suspension would reach beyond Houge; a probe
+terms restrict, the planner's fallback from one is the other, and a suspension would cost the subscription (the probe of 2026-11-12 found Google's terms scope it to the
+Antigravity and Gemini CLI accounts); a probe
 (which also reads the Kimi Code and OpenAI Codex terms, not read so far), then Paco picks (ADR 0032 D7 stays as written until that code ships). The ranked queue with first steps and done
 criteria is the top of `tasks/todo.md`; beyond these four decisions it is the orchestrator's draft. **Answered by Paco 2026-11-12:** Houge is both a product for his day
 and a place he learns by building; he wants to use it more, over Telegram or by voice, ahead of more backend rounds.

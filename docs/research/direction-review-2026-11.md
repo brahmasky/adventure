@@ -68,7 +68,9 @@ Non-Jev model calls since 2026-10-15 [M]: `google-antigravity` 280 (272 of them 
 - The planner's leg after Anthropic is `opus@antigravity`, then Kimi (`src/omp/model-roles.ts`). The `vision`
   role has only the Antigravity leg. Kimi leaves next year. [M]
 
-A block is handled (ADR 0032 7.9). A suspension is not: it reaches beyond Houge (Paco, 2026-11-12). This is the
+A block is handled (ADR 0032 7.9). A suspension is not. (Corrected after the probe of 2026-11-12: Google's terms
+scope the penalty to the Antigravity and Gemini CLI accounts, not the wider Google account; the probe's findings
+are under P0 in `tasks/todo.md`.) This is the
 one finding that can end Houge overnight, so it is first in the queue.
 
 Options, none probed yet:
