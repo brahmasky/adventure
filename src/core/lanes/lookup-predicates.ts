@@ -16,8 +16,8 @@ export function earlierLinesOf(message: string, quoted: boolean, ageMs: number |
 const ADDRESS_HEAD = /^(?:猴哥|houge)\s*[,，:：!！、]\s*/i;
 const ADDRESS_TAIL = /[,，、]\s*(?:猴哥|houge)\s*[.。!！?？]*$/i;
 /**
- * The message without the name Paco addresses Houge by, for the search of the bare message (the rewrite late, failed or
- * SAME). Only at the very start or end and set off by punctuation, so the name as the subject of a question stays ("猴哥
+ * The message without the name Paco addresses Houge by, for the search of the bare message when the rewrite gave no usable
+ * answer (no time, late, failed, invalid). Not after SAME: a comma can also follow the name as a topic ("猴哥，是什么角色？"). Only at the very start or end and set off by punctuation, so the name as the subject of a question stays ("猴哥
  * 帮我查" with a bare space is left to the rewrite: "Houge is …" reads the same way); a message that is nothing but the
  * address stays whole.
  */

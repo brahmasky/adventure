@@ -85,9 +85,9 @@ describe("lookup.rewrite and lookup.thin rows (spec R6 §4.1, §4.2)", () => {
     expect(s.d.search).toHaveBeenCalledWith({ query: "爱的代价 钢琴谱", max_results: 5 });
     expect(s.d.search).not.toHaveBeenCalledWith({ query: text, max_results: 5 });
   });
-  // The rewrite is a model call: it can fail, run late or answer SAME. The search must not fall back to the name then.
+  // The rewrite is a model call: it can fail or answer something code rejects. With no usable answer the search must not
+  // fall back to the name.
   it.each([
-    ["answers SAME", () => answer("SAME"), "same"],
     ["fails", () => vi.fn(async (): Promise<LlmResult> => ({ ok: false, provider: "omp", error: "quota" })), "failed"],
     ["answers a URL (invalid)", () => answer("see https://x.y"), "invalid"]
   ] as const)("2a3. when the rewrite %s, the bare message is searched without the address", async (_n, rewrite, step) => {
@@ -95,6 +95,14 @@ describe("lookup.rewrite and lookup.thin rows (spec R6 §4.1, §4.2)", () => {
     await runLookupLane(s.input({ userText: "猴哥, 帮忙找找爱的代价 钢琴典谱" }), s.d);
     expect(s.r6()[0]).toEqual(["lookup.rewrite", "bare", step, "run_1"]);
     expect(s.d.search).toHaveBeenCalledWith({ query: "帮忙找找爱的代价 钢琴典谱", max_results: 5 });
+  });
+  // SAME is the model's judgement that the message needs no change, made with the instruction to leave an address out.
+  // Stripping after it would cut a name that is the subject: "猴哥，是什么角色？" must not be searched as "是什么角色？".
+  it("2a4. when the rewrite answers SAME the message is searched as typed, name included", async () => {
+    const s = setup({ rewrite: answer("SAME") });
+    await runLookupLane(s.input({ userText: "猴哥，是什么角色？" }), s.d);
+    expect(s.r6()[0]).toEqual(["lookup.rewrite", "bare", "same", "run_1"]);
+    expect(s.d.search).toHaveBeenCalledWith({ query: "猴哥，是什么角色？", max_results: 5 });
   });
   it("2b. quoted, the model answers a query: rewrite/rewritten and that query is searched", async () => {
     const s = setup({ rewrite: answer("Sydney weather tomorrow") }); recent(s);

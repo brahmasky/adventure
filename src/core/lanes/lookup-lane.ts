@@ -70,7 +70,8 @@ const beforeReserve = (i: LaneInput, d: { now(): number }): number => i.deadline
 
 /**
  * Step 2: one bounded Tiny rewrite of every lookup, whose answer code validates (earlier lines only for a short or quoting
- * follow-up to a recent line). On any doubt the message is searched, without the address. Every return path is one lookup.rewrite consult.
+ * follow-up to a recent line). SAME searches the message as typed; with no usable answer the message is searched without the address.
+ * Every return path is one lookup.rewrite consult.
  */
 async function lookupQuery(i: LaneInput, d: LookupLaneDeps, pending: Pending): Promise<string> {
   const { step, query } = await rewriteStep(i, d);
@@ -90,7 +91,8 @@ async function rewriteStep(i: LaneInput, d: LookupLaneDeps): Promise<{ step: Rew
   const answered = r !== LATE && r !== null && r.ok;
   const check = answered ? queryCheckOf(r.answer).kind : null;
   const step: RewriteStep = r === LATE ? "late" : !answered ? "failed" : check === "query" ? "rewritten" : check!;
-  return { step, query: finalQuery(validateQuery(answered ? r.answer : "SAME", bare)) };
+  // SAME is the model's own judgement that the message needs no change, so it is searched as typed; with no usable answer the address goes.
+  return { step, query: finalQuery(validateQuery(answered ? r.answer : "SAME", check === "same" ? i.userText : bare)) };
 }
 
 /** Step 3: one search raced against min(25 s, remaining − 15 s); the provenance row exactly as the planner's wrapper writes it. */
