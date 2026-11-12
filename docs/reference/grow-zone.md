@@ -473,7 +473,7 @@ written again by Houge. Exemplars are restored by the seeder.
 - Plan: [2026-11-10-grow-zone-1a.md](../superpowers/plans/2026-11-10-grow-zone-1a.md).
 - ADR: [0035 grow zone](../decisions/0035-grow-zone-verification.md), rules G1-G7, with its Residuals. It amends
   ADR 0011, 0018, 0030/0034, 0031 and 0032. Index: [decisions/README.md](../decisions/README.md).
-- Comes next ([ROADMAP](../ROADMAP.md)): **1b** a synchronous `delegate`, agent files on the same doors, and a quota
+- Comes next ([ROADMAP](../ROADMAP.md); held until the 2026-12-12 review, Paco 2026-11-12): **1b** a synchronous `delegate`, agent files on the same doors, and a quota
   broker over the subscription pools (children barred from the Anthropic pool); **1c** script skills with a sealed
   case executor; **slice 2** standing agents and async jobs; **slice 3** a post-turn nudge, the tick writing through
   the door, and pruning by use. Memory provenance (R1) is a named open item.

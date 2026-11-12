@@ -702,3 +702,9 @@ The clean-room merge rebuilt `dist/` (new `omp/shell-wrapper.sh`) and the kickst
 - **Mutations only in a scratch copy, and `git commit -- <path>` commits the whole file.** One implementer mutated in place and a concurrent agent's run failed on it; in a shared worktree, check `git status` for every path before a path-limited commit.
 - **A live gate finds what reviews cannot.** The first gate runs found a real product defect (the reviewer saw the item's own index line and failed an update as a duplicate of itself) and a reviewer correctly failing the gate's own carelessly-worded skill. Budget a gate debug pass; give gate prompts facts a reviewer can pass.
 - **Ask the rule changes while the fixes run.** Paco answered four rule-change questions (trust, index, cap, residuals) in one AskUserQuestion while the fix units ran; nothing waited on him.
+
+## 2026-11-12 — Direction review
+
+- **Count the use before approving the build.** Six weeks of slices shipped green while Paco's turns sat near 9 a week after the cutover's gate week, and nothing in the flow looked. A spec names the use it expects to raise, and the orchestrator reads the weekly use number before asking for approval.
+- **Probe a recommendation against its own root cause before it overturns a decision.** The review proposed the post-turn nudge ahead of delegation; one query (4 qualifying turns in 30 days) showed the reorder would have starved the same way. Run the probe before the recommendation reaches Paco, not after.
+- **A feature built for one job is live only when that job runs on it.** Standing approval shipped two days after the watcher it was built for was disabled; `standing_approvals` stayed at 0 rows. Close a slice by running its first real user on it, or say plainly that it is unproven live.

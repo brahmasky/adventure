@@ -1,5 +1,8 @@
 # Mandate and follow-up — why a run was allowed, and where later input goes
 
+**HELD 2026-11-12 (Paco): parked as written until grow 1b's spec starts; do not work the blockers before then
+(`tasks/todo.md` priority queue).**
+
 **Rev 0.1 · 2026-11-11 · status: REVIEWED 2026-11-12, NOT READY. There are four blockers, and M1 and F1 wait on
 Paco (§11).** No code until every BLOCKER is closed and Paco approves.
 

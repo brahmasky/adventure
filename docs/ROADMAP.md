@@ -195,9 +195,33 @@ arrives by delegation. Sequence, each its own spec: **1a** grow zone + verificat
 `docs/superpowers/specs/2026-11-10-grow-zone-verification-design.md`, approved 2026-11-10, ADR 0035 signed with it) → **1b** sync `delegate`, agent files, quota broker over the subscription pools (children barred from
 the Anthropic pool) → **1c** script skills with a sealed case executor → **2** standing agents and async jobs →
 **3** post-turn nudge, the tick writing through the door, pruning by use. This re-scopes SP4 (self-evolution v2)
-and pulls SP3's quota broker forward into 1b; the SP2 Workspace-MCP slice keeps its place in the queue.
+and pulls SP3's quota broker forward into 1b; the SP2 Workspace-MCP slice keeps its place in the queue. (Order changed 2026-11-12: use first, 1b waits; see the 2026-11-12 delta.)
 **Named open item — provenance for memory:** trust is carried per conversation, not per fact, so outside text can
 reach a clean turn through episodic facts or wiki pages (accepted for 1a as residual R1 of that spec).
+
+**Delta 2026-11-12: direction review — use is the gate (Paco; decided, nothing shipped).** Evidence:
+[`research/direction-review-2026-11.md`](research/direction-review-2026-11.md) (one model, not reviewed). Probed
+2026-11-12:
+
+| Fact | Value |
+|---|---|
+| Commits since 2026-10-01 / Paco's Telegram turns in that time | 1,589 / about 138 |
+| Telegram turns per week since the omp cutover | 76, 27, 19, 7, 9, 9 |
+| `houge self-write` commits after 2026-10-08; `improvement_proposals` rows | 0; 0 |
+| Telegram turns with five or more tool calls, last 30 days | 4 (scheduled runs: 33, barred from the grow door by G7) |
+| Non-Jev model calls since 2026-10-15 on omp OAuth legs | 463 of 568 (`google-antigravity` 280, `anthropic` 183) |
+| `standing_approvals` rows | 0 |
+
+The grow sequence's order was not the constraint; its input is. **Decided:** (1) **use first** — after the
+provider item, the SP2 Workspace MCP slice through to actions and a watcher under standing approval; grow 1b, 1c
+and slices 2–3 wait for a review on 2026-12-12 against a weekly use number on `/status`. This changes "delegation
+first" above. (2) The Mandate spec is held until 1b's spec starts. (3) A governance freeze to 2026-12-12: no new
+ladder entries or record-only slices; floor work (ADR 0032 D11, memory provenance, the agy `search_web` egress)
+is exempt. (4) **Provider exposure is first and urgent:** most model calls ride on two OAuth legs the vendors'
+terms restrict, the planner's fallback from one is the other, and a suspension would reach beyond Houge; a probe
+(which also reads the Kimi Code and OpenAI Codex terms, not read so far), then Paco picks (ADR 0032 D7 stays as written until that code ships). The ranked queue with first steps and done
+criteria is the top of `tasks/todo.md`; beyond these four decisions it is the orchestrator's draft. **Open for Paco:** whether Houge is a product for his day or a
+harness-engineering lab; §1 is unchanged until he answers.
 
 **Delta 2026-10-06: Jev lane 1 is built** (`feat/jev-lane1`, not merged; 3438 tests green, live gate PASS). It cannot act until Paco commits calibration rows after the replay, labelling sitting and shadow period; see `tasks/todo.md` for what he owes. Lane 2 starts after lane 1 is armed or Paco reorders.
 
