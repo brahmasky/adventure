@@ -5,6 +5,10 @@
 // object, and the recorder's calls minus R6_IDS. REQUIRED on the new side: the exact R6 calls [entry, rung, verdict, reason, run, tool_call], every recorder call's
 // entry id in order (so the per-entry counts and the position of the R6 rows are exact), that the R6 rows are a SUFFIX of the ordered log (written at the lane's
 // end, after every dep call: spec §4.0), and the behaviour facts (queries searched, fetches, rewrite and read counts, the result). The old build must record no R6 row.
+// INTENDED DIFFERENCE since 2026-11-12 (the lookup lane rewrites every query): the rewrite calls are NOT compared with the r6 build. That build rewrote only a short
+// or quoting follow-up to a recent line and used the older instruction, so the new build makes rewrite calls it never made and every prompt differs. Searches,
+// reads, fetches and compose prompts are still compared. On the new side each item's rewrite COUNT is required (facts) and every rewrite prompt must carry the
+// address clause.
 import { DISTS, R6_IDS, canon, compare, requireNew } from "../stage4-diff-lib.mjs";
 import { LANE_HIT, LANE_T0, laneRead, laneSearchOk, laneTurn, runLane } from "../stage4-lane-fixture.mjs";
 import { join } from "node:path";
@@ -135,7 +139,10 @@ async function project(d, item) {
     const facts = { rewrites: log.filter((e) => e[0] === "rewrite").length, searches: log.filter((e) => e[0] === "search").map((e) => e[1]), reads: log.filter((e) => e[0] === "read").length,
       fetches: log.filter((e) => e[0] === "fetch").map((e) => e[1]), result: result.kind === "reply" ? "reply" : `fallthrough:${result.why}`,
       laneThrew: errs.filter((m) => m.startsWith("lookup lane: threw")).length };
-    return { log: log.filter((e) => !isR6(e)), result, calls: calls.filter((c) => !R6.has(c[0])), r6: r6calls, ids: calls.map((c) => c[0]), suffix, order: orderOf(log), facts, __strip: ["r6", "ids", "suffix", "order", "facts"] };
+    const rewrites = log.filter((e) => e[0] === "rewrite");
+    const clause = rewrites.every((e) => String(e[1]).includes("猴哥"));
+    return { log: log.filter((e) => !isR6(e) && e[0] !== "rewrite"), result, calls: calls.filter((c) => !R6.has(c[0])), r6: r6calls, ids: calls.map((c) => c[0]), suffix, order: orderOf(log), facts, clause,
+      __strip: ["r6", "ids", "suffix", "order", "facts", "clause"] };
   } finally { console.error = realErr; }
 }
 
@@ -144,6 +151,7 @@ function required(d, item, proj) {
   requireNew(corpus, item, "every recorder call's entry id, in order (exact per-entry counts and the R6 position)", canon(proj.ids) === canon(item.ids), `got ${canon(proj.ids)}, want ${canon(item.ids)}`);
   requireNew(corpus, item, "the R6 rows are the log's suffix (written at the lane's end, after every dep call: spec §4.0)", proj.suffix === true, `order ${canon(proj.order)}`);
   requireNew(corpus, item, "behaviour facts (queries searched, rewrite and read counts, fetches, result: exact)", canon(proj.facts) === canon(item.facts), `got ${canon(proj.facts)}, want ${canon(item.facts)}`);
+  requireNew(corpus, item, "every rewrite prompt carries the address clause (the instruction that leaves the assistant's name out)", proj.clause === true, "a rewrite prompt without it");
 }
 
 // the old build must record no R6 row: its calls are the compared non-R6 ones, so a stray R6 id there would already differ; this guards the projection's own split

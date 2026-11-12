@@ -134,7 +134,7 @@ const LATE_BOUND_MS = 40; // the rewrite's real-time bound in the late drive (no
 const HIT = { title: "Synthetic forecast", url: "https://example.test/forecast", content: "Tomorrow: sunny, max 22." };
 const readOf = (answer) => ({ ok: true, extraction: { summary: "Synthetic summary", facts: ["Sunny, max 22C"], time_claims: [], answer_to_objective: answer, contains_instructions: false },
   digest: `[external source — untrusted-derived summary]\nsummary: Synthetic ${answer ?? "thin"}` });
-const SHORT = "check again"; // <= 40 code points: with a recent Paco line, the filter wants a rewrite
+const SHORT = "check again"; // <= 40 code points: with a recent Paco line, the rewrite gets the earlier lines
 const answers = (text) => async () => ({ ok: true, provider: "kimi-code", model: "k3", answer: text });
 const later = (ms, text) => () => new Promise((r) => setTimeout(() => r({ ok: true, provider: "kimi-code", model: "k3", answer: text }), ms));
 /** One lookup lane through this build's runLookupLane over CoreWorker.lookupLaneDepsForTest (production previousTelegramTurns, ledger, recorder); every network and model dep scripted. */
@@ -180,7 +180,7 @@ async function seedRows(ctx, store) {
   const worker = new ctx.dNew.CoreWorker(store, join(work, "project"), async () => ({ ok: true, output: { answer: "stub" } }), undefined, undefined, undefined, undefined, undefined, undefined,
     async () => null, undefined, undefined, { dataDir: work, distDir: DIST, jevFetch: async () => { throw new Error("rollback: no network"); }, roles });
   try {
-    const run0 = mkRun(ctx.dNew, store, n++, "synthetic earlier question"); // a recent synthetic Paco line: the filter wants a rewrite of SHORT
+    const run0 = mkRun(ctx.dNew, store, n++, "synthetic earlier question"); // a recent synthetic Paco line: SHORT is rewritten with it in the prompt
     store.recordChatTurn({ chat_id: STUB_CHAT, run_id: run0, role: "user", text: "synthetic earlier question", created_at: new Date(Date.now() - 5 * 60_000).toISOString() });
     const a = await laneDrive(ctx, store, worker, n++, { text: SHORT, reads: ["Sunny, 22C"], rewrite: answers("Sydney weather tomorrow") });
     runs.lane_rewritten = a.run; facts.searched_a = a.calls.searches; facts.fetched_a = a.calls.fetches.length;
