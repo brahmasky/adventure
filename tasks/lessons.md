@@ -713,3 +713,7 @@ The clean-room merge rebuilt `dist/` (new `omp/shell-wrapper.sh`) and the kickst
 - **A fallback path carries the bug the main path fixed.** The always-rewrite change passed its tests while a late, failed or SAME rewrite still searched the raw message, name and all. For a fix that adds a model call, write the test for "the call gave nothing usable" before the test for the happy path.
 - **A heuristic strip needs the cases where it must not fire, from a second reader.** The address strip went through three reviews: quadratic on whitespace, then wrong after SAME for a name followed by a topic comma. List the negative cases first (the name as subject, at the start, with a comma) and time the pattern on long runs in the same commit.
 - **Run the standing gates on `main` as a control before reading a branch failure.** The full differential failed on the branch in corpora the change could not touch; one run on `main` showed the same failures. Without the control the failure would have been either blamed on the slice or waved through.
+
+## 2026-11-13 — P2 use number
+- **A count over one table is checked against every way in.** The use number read the command audit, and self-write button taps go around gateway intake and never wrote a row there. Before shipping a metric, list every entry path for the thing it counts, and test each one through the real path rather than by inserting rows.
+- **A metric excludes its own reading.** `/status` writes an accepted audit row, so a naive count would rise each time Paco looked at it.
