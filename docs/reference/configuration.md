@@ -146,7 +146,7 @@ names it once at boot (`[omp-config] … no longer read`). Delete them from `.en
 A new head is adopted only after a probe (a one-leg call through the one-shot seat): a pass adopts, `model_missing` keeps the tier
 and is not retried for 7 days, any other failure retries at the next tick. State is `model_tiers`; outcomes are `model_probe`
 rows. A judge seat resolves to its tier's head only, never a chain; when the head leaves the catalog the daily tick moves the seat
-to its previous head. A tier that no catalog id matches is empty (the `gemini-pro` tier started empty; it now matches Google's renamed ids and adopts through the first probe) and gets one tap card a day proposing same-provider ids by price. A tap probes
+to its previous head. A tier that no catalog id matches is empty (the `gemini-pro` tier started empty; it now matches Google's renamed ids and adopts through the first probe) and, when a role or judge seat has no other leg, gets one tap card a day proposing same-provider ids by price (`gemini-flash` no longer does: Vision has a Kimi leg). A tap probes
 first and writes the `/models` override only on a pass. No new env var. Changing a family inside a tier is a code edit or `/models`;
 Kimi is not renewed next year, so every list keeps a non-Kimi leg and judge seat 0 needs a replacement then. The `static` lists
 (`STATIC_ROLE_LISTS`) are re-pinned to the seeded heads; in `static` mode there are only two judge seats.

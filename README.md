@@ -160,7 +160,7 @@ Every LLM call runs on **subscription OAuth**; no metered API sits on any defaul
 **model role** (Fast, Default and Thinking for the planner's gears; Reader, Vision, Tiny, Judges, Chair, Reviewer for the
 rest). A role is a code-owned list of tier legs (`opus@anthropic`, `gemini-flash`, `kimi`, …): each tier resolves to its newest
 model in omp's live catalog, adopted only after a probe call passes. Paco can override one from Telegram with `/models`. An
-empty tier sends Paco a tap card, and an open actionable incident is repeated in a daily reminder until
+empty tier that is the only leg of a role or judge seat sends Paco a tap card, and an open actionable incident is repeated in a daily reminder until
 it is fixed. A daily model change is a `model_change` row in the change log, read with `/changes`, not a chat message. The lists, the resolution order and the
 `HOUGE_MODEL_ROLES` rollback switch live in the
 [configuration reference § Model roles](docs/reference/configuration.md#model-roles), not here.

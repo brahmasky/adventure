@@ -337,9 +337,9 @@ progress, or Paco's instructions about how its code, checks, memory or lessons s
   a judge seat and a `grow_review` leg (each falls to its next leg or runs short, as built, provided omp reports the
   suspension in a form `classifyOmpError` reads as `auth`, such as a 403; an error with no status code reads as `other`,
   which ends a one-shot call and gives the planner one retry; the real wording is not known); and voice, since `agy` signs in with the same account and has no other leg. Photos fall to
-  Vision's Kimi leg (added 2026-11-12) under the same `auth` condition. Two limits of that leg: a Gemini leg that hangs
-  to its timeout, not one that fails fast, uses up the 150 s photo stage before Kimi starts (Vision resolves to two
-  Gemini heads first, each with the full one-shot timeout); and a photo read on Kimi under a Kimi planner is a family
+  Vision's Kimi leg (added 2026-11-12) under the same `auth` condition. Two limits of that leg: Vision resolves to two
+  Gemini heads before Kimi, each with the full one-shot timeout, so when the two together take the 150 s photo stage
+  (one hanging and the next not failing fast) Kimi never starts; and a photo read on Kimi under a Kimi planner is a family
   collapse D10 does not audit, since a photo call carries no planner family. A design that removes the
   login was specified and not adopted (spec 2026-11-12, no model call through the Antigravity login).
 - A `steer` merge means one reply answers two messages; the ledger records both runs.
