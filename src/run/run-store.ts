@@ -2804,7 +2804,7 @@ export class RunStore {
       WHERE actor_id = ?
         AND chat_id = ?
         AND decision = 'accepted'
-        AND command NOT IN ('decision_review', 'improvement_tap', 'jev_accept_tap', 'model_tier_tap', 'mail_tap') -- review, improvement and Jev Accept taps are exempt and never count (ruling 16; 2b-ii §6.3; jev version check §2.6); empty-tier card taps (spec 2026-11-02 §4.4)
+        AND command NOT IN ('decision_review', 'improvement_tap', 'jev_accept_tap', 'model_tier_tap', 'mail_tap', 'selfwrite_action') -- self-write taps were never limited and stay so (P2 audit row); review, improvement and Jev Accept taps are exempt and never count (ruling 16; 2b-ii §6.3; jev version check §2.6); empty-tier card taps (spec 2026-11-02 §4.4)
         AND occurred_at > ?
     `).get<{ count: number }>(input.actor_id, input.chat_id, windowStart);
     if ((windowRow?.count ?? 0) >= TELEGRAM_MAX_COMMANDS_PER_WINDOW) {
@@ -7603,6 +7603,28 @@ export class RunStore {
 
   countChangeLogSince(sinceIso: string): number {
     return this.db.prepare(`SELECT COUNT(*) AS n FROM change_log WHERE created_at >= ?`).get<{ n: number }>(sinceIso)?.n ?? 0;
+  }
+
+  /**
+   * Priority queue P2 (2026-11-12): one actor's accepted Telegram turns, commands and taps per rolling
+   * seven days, newest first; week i is (now - 7(i+1)d, now - 7i d]. `/status` itself is left out so
+   * reading the number cannot raise it. A redelivered update writes a second accepted row, so an update
+   * counts once, in the week of its first row.
+   */
+  telegramUseByWeek(actorId: string, now: string, weeks = 4): number[] {
+    const week = 7 * 86_400_000, nowMs = Date.parse(now);
+    const at = (i: number): string => new Date(nowMs - i * week).toISOString();
+    const stmt = this.db.prepare(`SELECT COUNT(*) AS n FROM (
+        SELECT MIN(occurred_at) AS first_at FROM telegram_command_audit
+        WHERE actor_id = ? AND decision = 'accepted' AND command <> 'status' GROUP BY source_reference)
+      WHERE first_at > ? AND first_at <= ?`);
+    return Array.from({ length: weeks }, (_, i) => stmt.get<{ n: number }>(actorId, at(i + 1), at(i))?.n ?? 0);
+  }
+
+  /** A self-write button tap bypasses gateway intake; this gives it the accepted audit row every other tap gets (P2 use count). */
+  recordSelfWriteTap(e: { from: { id: string }; chat_id: string; source_reference: string }, now: string): void {
+    this.recordTelegramCommandAudit({ actor_id: e.from.id, chat_id: e.chat_id, command: "selfwrite_action",
+      source_reference: e.source_reference, decision: "accepted", occurred_at: now });
   }
 
   // --- Grow zone 1a (spec 2026-11-10 §5.13). Git holds content; these rows hold state, queue and evidence. ---

@@ -315,6 +315,7 @@ export async function runTelegramDaemon(
         if (isSelfWriteActionEvent(event)) {
           // M4: execute the authorized self-write action via the SHARED handler (identical to
           // the poll runner). Auth was enforced upstream (M2); this never re-derives it.
+          options.store.recordSelfWriteTap(event, new Date().toISOString());
           await handleSelfWriteAction({
             event,
             telegramClient: options.telegramClient,

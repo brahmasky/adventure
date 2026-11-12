@@ -1251,7 +1251,7 @@ export class Gateway {
     if (event.metadata?.status_view === "changes") return { text: changesText(this.runStore, now) };
     const status = queryStatus(this.runStore, run_id);
     const chatId = event.notify.kind === "telegram" ? event.notify.chat_id : null;
-    return { text: this.formatStatusText(status, now, chatId), status };
+    return { text: this.formatStatusText(status, now, chatId, event.requested_by.id), status };
   }
 
   /** Spec 2026-11-02 section 6.3: one line while the chat's planner transcript carries a raised level; /fresh is its exit. */
@@ -1349,7 +1349,7 @@ export class Gateway {
     ];
   }
 
-  private formatStatusText(status: ReturnType<typeof queryStatus>, now: string, chatId: string | null): string {
+  private formatStatusText(status: ReturnType<typeof queryStatus>, now: string, chatId: string | null, actorId: string): string {
     if (!status.ok) {
       return status.error.message;
     }
@@ -1383,6 +1383,9 @@ export class Gateway {
         `Runs: ${byState || "no runs"}`,
         `Last error: ${last_error ?? "none"}`,
         `Rating: ${ratingText}`,
+        "",
+        "👤 USE (4 weeks)",
+        `A week, newest first: ${this.runStore.telegramUseByWeek(actorId, now).join(" · ")} — your turns, commands and taps`,
         "",
         "💰 COST & USAGE",
         // Metered-$ ceiling (ADR 0019): spend vs both ceilings at a glance (line self-labels "Metered:").
