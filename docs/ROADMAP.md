@@ -217,7 +217,9 @@ provider item, the SP2 Workspace MCP slice through to actions and a watcher unde
 and slices 2–3 wait for a review on 2026-12-12 against a weekly use number on `/status`. This changes "delegation
 first" above. (2) The Mandate spec is held until 1b's spec starts. (3) A governance freeze to 2026-12-12: no new
 ladder entries or record-only slices; floor work (ADR 0032 D11, memory provenance, the agy `search_web` egress)
-is exempt. (4) **Provider exposure is first and urgent:** most model calls ride on two OAuth legs the vendors'
+is exempt. (4) **Provider exposure — decided later the same day: Paco keeps the Gemini legs and accepts the Antigravity login's
+terms risk (ADR 0032 D7, §10); photos get a second leg; the removal design is specified and not adopted.** As first
+written: most model calls ride on two OAuth legs the vendors'
 terms restrict, the planner's fallback from one is the other, and a suspension would cost the subscription (the probe of 2026-11-12 found Google's terms scope it to the
 Antigravity and Gemini CLI accounts); a probe
 (which also reads the Kimi Code and OpenAI Codex terms, not read so far), then Paco picks (ADR 0032 D7 stays as written until that code ships). The ranked queue with first steps and done

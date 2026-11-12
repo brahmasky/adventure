@@ -1,6 +1,12 @@
 # No model call through Google's Antigravity login
 
-**Status:** Rev 0.4 — 2026-11-12. Rev 0.1 was reviewed by a senior reviewer (Opus 5.5: 4 blockers, 6 warnings) and
+**NOT ADOPTED — 2026-11-12 (Paco).** Paco keeps the Gemini legs and accepts the Antigravity login's terms risk (ADR
+0032 D7 and §10, amended the same day). The cost that decided it: this design removes Gemini from every seat but
+voice and moves the load onto Kimi's login, which Kimi does not offer to third-party tools either, while the
+Antigravity login had run 476 calls since 2026-10-01 with no account error. The spec is kept on file for the day
+Google enforces. What ships instead: a second leg for photos (`tasks/todo.md`, P0a).
+
+**Status at the time it was set aside:** Rev 0.4 — 2026-11-12. Rev 0.1 was reviewed by a senior reviewer (Opus 5.5: 4 blockers, 6 warnings) and
 codex (5 blockers, 4 warnings); both said not ready. A scoped codex re-review of Rev 0.2 closed 8 of 12 rows and
 raised 3 new blockers and 3 warnings. A third scoped codex pass on Rev 0.3 closed every open row and raised one new
 blocker in §3.4, taken in Rev 0.4 as codex prescribed; that last fix has not been re-reviewed. Every finding was

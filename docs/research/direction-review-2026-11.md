@@ -122,7 +122,10 @@ the orchestrator's draft.
 2. **The Mandate spec is held** until 1b starts.
 3. **Governance freeze for 30 days**, to 2026-12-12: no new ladder entries, no record-only slices, a lighter flow
    outside the protected surface. Floor work is exempt.
-4. **Provider exposure is urgent**: probe, then Paco picks an option, before any other build.
+4. **Provider exposure is urgent**: probe, then Paco picks an option, before any other build. **Outcome, the same
+   day:** after the probe Paco chose option 3 for the Google login, keeping the Gemini legs and accepting the risk
+   (ADR 0032 D7 and §10), with a second leg for photos. Removing the login would have dropped Gemini from every seat
+   but voice and moved the load onto Kimi's login.
 
 ## Sources
 
