@@ -7,9 +7,12 @@
 //   control — Houge's overlay WITHOUT its `mcp:` and `disabledProviders:` blocks: every planted kind must fire (else the
 //             gate cannot see a regression in that kind, INCONCLUSIVE);
 //   gate    — Houge's overlay as written: no server may spawn (PASS), any spawn is FAIL.
+// Part 2, ADR 0032 5.1 (l): omp also loads plugin code from the nearest `.omp` at or above its cwd, which no setting turns
+// off, so neither sandbox profile may create one in the workspace or directly in an ancestor below $HOME (sandbox-exec probes).
 // Usage: npm run build && node scripts/live-gate-mcp-discovery.mjs
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
+import { spawnSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -73,11 +76,31 @@ async function runOnce(label, stripMcp) {
   return spawned;
 }
 
+/** Part 2: each profile must refuse every planted `.omp` and still allow an ordinary workspace write. */
+function writeDenyProbe() {
+  const root = mkdtempSync(join(tmpdir(), "lg-omp-")); const data = join(root, "data"); const wsRoot = join(data, "omp", "workspace"); const ws = join(wsRoot, "chat-gate");
+  mkdirSync(join(ws, "stage", "plugins"), { recursive: true });
+  const sb = writeSeatbeltProfiles({ home: REAL_HOME, repo: REPO, data });
+  const cases = [[`mkdir ${ws}/.omp`, false], [`mkdir -p ${ws}/x/.OMP/plugins`, false], [`ln -s /tmp ${ws}/.omp`, false], [`mv ${ws}/stage ${ws}/.omp`, false],
+    [`mkdir ${wsRoot}/.omp`, false], [`mkdir ${root}/.omp`, false], [`echo ok > ${ws}/notes.txt`, true]];
+  const wrong = [];
+  for (const kind of ["planner", "shell"]) for (const [cmd, allowed] of cases) {
+    const ok = spawnSync("/usr/bin/sandbox-exec", ["-f", sb[kind], "/bin/bash", "-c", cmd]).status === 0;
+    if (ok !== allowed) wrong.push(`${kind}: ${cmd.replace(root, "<tmp>")} ${ok ? "allowed" : "denied"}`);
+    spawnSync("/bin/bash", ["-c", `rm -rf ${ws}/.omp ${ws}/x ${wsRoot}/.omp ${root}/.omp; mkdir -p ${ws}/stage/plugins`]);
+  }
+  rmSync(root, { recursive: true, force: true });
+  console.log(`write deny: ${cases.length * 2} probes, ${wrong.length} wrong${wrong.length ? `: ${wrong.join("; ")}` : ""}`);
+  return wrong;
+}
+
 const control = await runOnce("control (overlay without its mcp and disabledProviders blocks)", true);
 const gate = await runOnce("gate (Houge's overlay)", false);
-const kinds = { project_mcp: control.some((n) => !n.startsWith("user_") && n !== "project_custom_tool"), project_custom_tool: control.includes("project_custom_tool"),
-  user_mcp_opted_in: control.includes("user_cursor_opted_in") };
-const blind = Object.entries(kinds).filter(([, seen]) => !seen).map(([k]) => k);
+// every item omp 18.19.0 loads without the overlay (the .vscode and windsurf project files never load, overlay or not)
+const EXPECTED = ["cursor", "claude", "omp", "mcp", "dotmcp", "gemini", "project_custom_tool", "user_cursor_opted_in"];
+const blind = EXPECTED.filter((n) => !control.includes(n));
+const denyWrong = writeDenyProbe();
 if (gate.length > 0) { console.log(`FAIL: planted code ran under Houge's overlay: ${gate.join(", ")}`); process.exit(1); }
+if (denyWrong.length > 0) { console.log("FAIL: a sandbox profile let a .omp project root be planted, or blocked an ordinary write"); process.exit(1); }
 if (blind.length > 0) { console.log(`INCONCLUSIVE: the control did not fire ${blind.join(", ")}, so this gate cannot see a regression there`); process.exit(2); }
-console.log(`PASS: the control fired every kind (${control.length} items); Houge's overlay fired none`);
+console.log(`PASS: the control fired every kind (${control.length} items); Houge's overlay fired none; both profiles refuse every planted .omp`);

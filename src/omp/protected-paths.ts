@@ -196,9 +196,37 @@ export function isDeniedRead(absPath: string, ctx: PathContext): boolean {
   return under(absPath, secretPaths(ctx)) || isHomeDotenv(absPath, ctx) || isCredentialPath(absPath, ctx.home);
 }
 
-/** Mirrors the profiles: secrets, then the re-allowed workspace (never sessions: the model must not edit its transcript), then the denies, then default-deny. */
+/**
+ * ADR 0032 5.1 (l): omp takes the nearest `.omp` dir at or above its cwd (above a git root too; it stops at $HOME and the
+ * temp roots) as a project root and loads plugin code from its `.omp/plugins`; no setting turns that off. So no `.omp`
+ * may be written anywhere under the workspace, nor directly inside any ancestor of it. Case-insensitive: so is the volume.
+ */
+export function ompProjectRoots(ctx: PathContext): { subtree: string; ancestors: string[] } {
+  const subtree = join(ctx.data, "omp", "workspace");
+  // omp's walk stops at $HOME (and the temp roots), so ancestors stop below $HOME: $HOME itself holds ~/.omp, the
+  // planner's own store, which omp must keep writing (D11). Outside $HOME (tests, temp data dirs) they run to the root.
+  const home = realpathOrSelf(ctx.home).toLowerCase();
+  const ancestors: string[] = [];
+  for (let d = dirname(subtree); d !== dirname(d); d = dirname(d)) {
+    const r = realpathOrSelf(d).toLowerCase();
+    if (r === home || home.startsWith(`${r}/`)) break;
+    ancestors.push(d);
+  }
+  return { subtree, ancestors };
+}
+
+export function isOmpProjectDir(absPath: string, ctx: PathContext): boolean {
+  const a = realpathOrSelf(absPath).toLowerCase();
+  const { subtree, ancestors } = ompProjectRoots(ctx);
+  const ws = realpathOrSelf(subtree).toLowerCase();
+  if (a === ws || a.startsWith(`${ws}/`)) return a.slice(ws.length).split("/").includes(".omp");
+  return ancestors.some((d) => { const o = `${realpathOrSelf(d).toLowerCase().replace(/\/$/, "")}/.omp`; return a === o || a.startsWith(`${o}/`); });
+}
+
+/** Mirrors the profiles: secrets, then the `.omp` project-root deny, then the re-allowed workspace (never sessions: the model must not edit its transcript), then the denies, then default-deny. */
 export function isDeniedWrite(absPath: string, ctx: PathContext): boolean {
   if (isDeniedRead(absPath, ctx)) return true;
+  if (isOmpProjectDir(absPath, ctx)) return true;
   if (under(absPath, writableExceptions(ctx, "shell"))) return false;
   if (under(absPath, [...protectedRepoPaths(ctx), ...operationalWriteDeny(ctx)])) return true;
   return !under(absPath, writeRoots(ctx, "shell"));

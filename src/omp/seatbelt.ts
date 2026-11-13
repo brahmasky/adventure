@@ -1,7 +1,7 @@
 import { mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { RoomPair } from "./cleanroom.js";
-import { CREDENTIAL_PATTERNS, ENV_TEMPLATE_PATTERNS, operationalWriteDeny, protectedRepoPaths, realpathOrSelf, secretPaths, writableExceptions, writeRoots, type PathContext } from "./protected-paths.js";
+import { CREDENTIAL_PATTERNS, ENV_TEMPLATE_PATTERNS, ompProjectRoots, operationalWriteDeny, protectedRepoPaths, realpathOrSelf, secretPaths, writableExceptions, writeRoots, type PathContext } from "./protected-paths.js";
 
 const esc = (s: string) => s.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 
@@ -76,6 +76,11 @@ function body(ctx: PathContext, kind: "planner" | "shell"): string[] {
     // and pin every chat dir under them (chat-<id>, which only the daemon creates) the same way: a swapped chat
     // workspace would let the daemon attach files the sandbox denies (security C2)
     ...exceptions.flatMap((r) => variants(r).map((v) => `(deny file-write* (regex #"^${regexPath(v)}/chat-[^/]+$"))`)),
+    // ADR 0032 5.1 (l): no `.omp` under the workspace, nor directly in any ancestor of it (omp loads plugin code from the
+    // nearest project `.omp` at or above its cwd; no setting turns that off). After the workspace allow, so it wins;
+    // case-insensitive, as the volume is
+    ...ompProjectRoots(ctx).ancestors.flatMap(variants).map((v) => `(deny file-write* (regex #"^${regexPath(v).replace(/\/$/, "")}/\\.[Oo][Mm][Pp](/.*)?$"))`),
+    ...variants(ompProjectRoots(ctx).subtree).map((v) => `(deny file-write* (regex #"^${regexPath(v)}(/.*)?/\\.[Oo][Mm][Pp](/.*)?$"))`),
     ...ancestorRules([...writeDeny, ...secrets]),
     // secrets last: SBPL takes the last matching rule, so no allow above can re-open a secret
     ...secrets.flatMap((p) => rule("file-read* file-write*", p)),

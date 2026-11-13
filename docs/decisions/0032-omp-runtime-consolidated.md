@@ -161,7 +161,7 @@ checks the stop before each embed too. (Amended 2026-11-10 by ADR 0035: the skil
 then denied again for the whole Houge repo, `dist/`, the `$HOME` binary install trees, the directories of the omp,
 codex, agy and node binaries, and the dotfiles that make git, a shell, a terminal or an editor run code; `os.tmpdir()`
 is not writable. The whole Houge repo is write-denied to the planner and to `bash`; the exceptions are
-`<data>/omp/workspace`, plus `<data>/omp/sessions` for the planner process only. Repo changes go only through the
+`<data>/omp/workspace`, plus `<data>/omp/sessions` for the planner process only. Inside the workspace, a `.omp` dir is not writable ((l)). Repo changes go only through the
 self-write pipeline (worktree → test gate → reviewer → Paco's merge tap). (b) Credential stores (`HOME_SECRETS`,
 `~/Library/Keychains`, top-level `~/.<name>.env`) are read- and write-denied, and `/usr/bin/security` cannot exec; the
 planner keeps `~/.omp` (D11). (c) The gate canonicalises every path the way omp resolves it (`@`, `:`, `~` forms,
@@ -188,9 +188,14 @@ start and before any hook, and the planner can write its workspace and most of `
 the planner's rights (D11). The config overlay sets `mcp.enableProjectConfig: false` and lists in `disabledProviders`
 every discovery provider that can carry code (`OMP_DISABLED_DISCOVERY`); a disabled provider wins over a project
 `enabledProviders`, and the overlay is the last settings layer. Houge uses none of them. `mcp-json` stays enabled: its
-user file is under the write-denied `~/.omp`. Checked live by `scripts/live-gate-mcp-discovery.mjs` (a control without
-the overlay blocks must fire every planted kind). Not yet covered: one omp loader that no setting reaches; its fix is a
-write deny inside the workspace, to follow.
+user file is under `~/.omp`, which the gate and the `bash` profile deny (only omp's own process writes it, D11). Checked live by `scripts/live-gate-mcp-discovery.mjs` (a control without
+the overlay blocks must fire every planted kind). One loader no setting reaches is closed by (l).
+(l) *Added 2026-11-13:* no `.omp` may be written under the workspace, nor directly in any ancestor of it below `$HOME`.
+omp takes the nearest `.omp` dir at or above its cwd (above a git root too; its walk stops at `$HOME` and the temp roots)
+as a project root and loads plugin code from its `.omp/plugins`, and no setting turns that off. Both Seatbelt profiles
+deny it after the workspace allow (case-insensitive, as the volume is) and the gate's `isDeniedWrite` mirrors it
+(`isOmpProjectDir`); `$HOME` itself is excluded, since `~/.omp` is the planner's own store (D11). `PI_CONFIG_DIR`,
+which renames omp's `.omp`, never reaches an omp child (`CHILD_ENV_NEVER`). The same live gate probes both profiles.
 5.2 **Matcher posture.** Patterns are anchored to command position. The line-wise safety pass never skips heredoc
 bodies. A parse error or eval-depth overflow classifies the command as destructive (ask), never as plain. The matcher
 recurses into `bash|sh|zsh -<flags>c`, here-strings, `env -S` and `find -exec`; a shell fed its script through a pipe,
@@ -404,7 +409,7 @@ progress, or Paco's instructions about how its code, checks, memory or lessons s
 | 2026-11-06 | Drift rewording, no change of meaning: D7 fallback, D10 reader legs, memory-correct limits, empty-tier card conditions | — | 2026-11-06 |
 | 2026-11-10 | Grow zone: D8 (`skill_author` out, `grow_submit`/`grow_read` in); 1.7; 4.2 and 4.3 (the index, not bodies, in the prompt and fingerprint); 5.1 (j) (grow zone and backups read- and write-denied); 6.3 (`grow_read` named exception); 7.1 (role `grow_review`) | [grow zone](../superpowers/specs/2026-11-10-grow-zone-verification-design.md) (Rev 1.3.2) | 2026-11-10 (spec approval) |
 | 2026-11-12 | D7 and §10: the Antigravity login's terms risk read and accepted; what a suspension costs | [direction review](../research/direction-review-2026-11.md), [removal spec, not adopted](../superpowers/specs/2026-11-12-no-antigravity-oauth-design.md) | 2026-11-12 (in chat) |
-| 2026-11-13 | 5.1 (k): omp's discovery of planted code off (floor hotfix found by the P3 probe) | — | 2026-11-13 |
+| 2026-11-13 | 5.1 (k): omp's discovery of planted code off; 5.1 (l): no `.omp` writable in or above the workspace; 5.1 (a) notes the exception (floor hotfixes found by the P3 probe) | — | 2026-11-13 |
 
 ## Reference map
 

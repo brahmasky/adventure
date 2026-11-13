@@ -296,6 +296,20 @@ describe("Seatbelt profiles — floor A at the OS level (spec §3 L1a/L1b)", () 
     for (const p of [planner, shell]) expect(p).toContain('(deny process-exec (literal "/usr/bin/security"))');
   });
 
+  it("denies writing a .omp under the workspace and directly in each ancestor, in both profiles, after the workspace allow (ADR 0032 5.1 l)", () => {
+    for (const p of [renderSeatbelt(ctx).planner, renderSeatbelt(ctx).shell]) {
+      const rules = p.split("\n").filter((l) => l.includes("[Oo][Mm][Pp]"));
+      const wsAllow = p.lastIndexOf('(allow file-write* (subpath "' + ctx.data + "/omp/workspace");
+      expect(wsAllow).toBeGreaterThan(-1);
+      for (const r of rules) expect(p.indexOf(r)).toBeGreaterThan(wsAllow);
+      expect(rules.some((r) => r.includes("omp/workspace(/.*)?/\\.[Oo][Mm][Pp](/.*)?$"))).toBe(true);
+      const parent = ctx.data.split("/").slice(0, -1).join("/").replace(/[^A-Za-z0-9/_-]/g, ".");
+      expect(rules).toContain(`(deny file-write* (regex #"^${parent}/\\.[Oo][Mm][Pp](/.*)?$"))`);
+      // never at or above $HOME: ~/.omp is the planner's own store, which omp writes on every token refresh (D11)
+      expect(rules.filter((r) => r.includes(`"^${ctx.home}/\\.`) || r.includes(`"^/Users/\\.`))).toEqual([]);
+    }
+  });
+
   it("no allow after the first credential deny re-opens a read, and later write allows are workspace roots only (task 2 review)", () => {
     const r = renderSeatbelt(ctx);
     expect(allowsAfterCredentialDeny(r.planner, ctx, "planner")).toEqual([]);

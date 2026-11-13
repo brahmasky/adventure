@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { installedBinaryDirs, isDeniedRead, isDeniedWrite, realpathOrSelf, secretPaths } from "../../src/omp/protected-paths.js";
+import { installedBinaryDirs, isDeniedRead, isDeniedWrite, isOmpProjectDir, realpathOrSelf, secretPaths } from "../../src/omp/protected-paths.js";
 
 const ctx = { home: "/Users/p", repo: "/Users/p/Projects/adventure", data: "/Users/p/Projects/adventure" };
 
@@ -22,6 +22,22 @@ describe("floor A path sets — the planner may touch anything under home except
     }
     expect(isDeniedRead("/Users/p/notes.env", ctx)).toBe(false);
     expect(isDeniedRead("/Users/p/Projects/x/.foo.env", ctx)).toBe(false);
+  });
+
+  it("denies writing any .omp under the workspace or directly in an ancestor of it: omp loads a plugin root from the nearest .omp at or above its cwd, above a git root too, and no setting turns that off (ADR 0032 5.1 l)", () => {
+    const ws = "/Users/p/Projects/adventure/omp/workspace";
+    for (const p of [`${ws}/chat-1/.omp`, `${ws}/chat-1/.omp/plugins/package.json`, `${ws}/chat-1/.OMP/plugins/x`, `${ws}/chat-1/.Omp`,
+      `${ws}/.omp`, `${ws}/.omp/plugins/node_modules/x/t.ts`, `${ws}/chat-1/sub/deeper/.omp/tools/t.ts`,
+      "/Users/p/Projects/.omp", "/Users/p/Projects/.OMP/plugins/package.json", "/Users/p/Projects/adventure/omp/.omp/x"]) {
+      expect(isDeniedWrite(p, ctx), p).toBe(true);
+    }
+    for (const p of [`${ws}/chat-1/notes.txt`, `${ws}/chat-1/omp/x`, `${ws}/chat-1/.ompx`, `${ws}/chat-1/x.omp`, `${ws}/chat-1/.tmp/a`,
+      "/Users/p/Projects/other/.omp/x", "/Users/p/Documents/.omp", "/Users/p/Projects/.ompx"]) {
+      expect(isOmpProjectDir(p, ctx), p).toBe(false);
+      expect(isDeniedWrite(p, ctx), p).toBe(false);
+    }
+    // the planner's own store is not a project root: omp stops its walk at $HOME (its gate denial comes from the secret set)
+    expect(isOmpProjectDir("/Users/p/.omp/profiles/houge/agent/agent.db", ctx)).toBe(false);
   });
 
   it("denies read and write of the grow zone though it sits under $HOME, where writes are otherwise allowed (ADR 0035 G2, G4)", () => {

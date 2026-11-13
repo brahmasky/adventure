@@ -16,10 +16,13 @@ export function childTmpDir(workspace: string): string {
   return dir;
 }
 
+/** Never passed, even when listed in HOUGE_OMP_ENV_PASSTHROUGH: it renames omp's `.omp` dir, which ADR 0032 5.1 (l) denies by that fixed name. */
+export const CHILD_ENV_NEVER: ReadonlySet<string> = new Set(["PI_CONFIG_DIR"]);
+
 export function buildChildEnv(passthrough: string[] | string | undefined): Record<string, string> {
   const extra = Array.isArray(passthrough) ? passthrough : (passthrough ?? "").split(",");
   const allowed = new Set<string>(CLI_ENV_ALLOWLIST);
-  for (const name of extra.map((n) => n.trim())) if (name.length > 0) allowed.add(name);
+  for (const name of extra.map((n) => n.trim())) if (name.length > 0 && !CHILD_ENV_NEVER.has(name)) allowed.add(name);
   const env: Record<string, string> = {};
   for (const name of allowed) {
     const value = process.env[name];
