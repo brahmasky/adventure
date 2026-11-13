@@ -1947,6 +1947,20 @@ describe("PlannerSupervisor â€” settles only on a terminal agent_end (P7, spec Â
     cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
     expect(readFileSync(writeHougeConfigFile({ data: dir }), "utf8")).toContain("fetch:\n  enabled: false\n");
   });
+
+  it("Houge's omp config turns off the omp discovery that can load planner-planted code (5.1 k)", () => {
+    // Probe 2026-11-13 (omp 18.19.0): without these, project MCP files spawned servers, a workspace .omp/tools/*.ts was
+    // imported into omp, and a workspace config opted a foreign user-level MCP file in, all at session start and before any hook.
+    const dir = mkdtempSync(join(tmpdir(), "hcfg-")); mkdirSync(join(dir, "omp"), { recursive: true });
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+    const text = readFileSync(writeHougeConfigFile({ data: dir }), "utf8");
+    expect(text).toContain("mcp:\n  enableProjectConfig: false\n");
+    for (const id of ["native", "claude", "claude-plugins", "codex", "omp-plugins", "agent-plugins", "cursor", "gemini", "opencode", "windsurf", "vscode", "github"]) {
+      expect(text).toContain(`\n  - ${id}\n`);
+    }
+    // not a model provider: disabling one of those would take a planner leg away
+    for (const model of ["anthropic", "google-antigravity", "kimi-code", "openai-codex"]) expect(text).not.toContain(`  - ${model}\n`);
+  });
 });
 
 // security final I-3: the omp transcript outlives the turn, so text a hostile turn read is still in the planner's context on

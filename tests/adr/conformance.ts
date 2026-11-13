@@ -9,6 +9,7 @@ export function dependencyProblems(packageJson: string): string[] {
 /** Files whose `claude` literals are model/family names omp is configured with, not binaries (each with its reason). */
 export const CLAUDE_MODEL_NAME_FILES: Record<string, string> = {
   "src/omp/model-tiers.ts": "tier table: model ids (claude-opus-5-5) and the family label, resolved by omp",
+  "src/omp/omp-discovery.ts": "omp discovery-provider ids (ADR 0032 5.1 k): \"claude\" names Claude Code's config dirs omp would read, disabled",
   "src/omp/model-string.ts": "family classifier: id.startsWith('claude') and the ModelFamily union"
 };
 

@@ -182,7 +182,15 @@ and the backup folder (`<repo>/backups`, `<data>/backups`) are **read- and write
 and before the workspace allow in `isDeniedWrite`. Read-denied because a shell `cat` of a born-untrusted skill would
 read it without the taint `grow_read` applies; the backup folder holds the zone's bundle beside the DB snapshots (and
 now closes a hole that predates the zone: `houge.sqlite` was read-denied while its nightly copies were not). The
-planner writes the zone only through `grow_submit`.
+planner writes the zone only through `grow_submit`. (k) *Added 2026-11-13:* omp's discovery of planted code is off.
+omp loads MCP servers, custom tools, hooks, extension modules and settings from its cwd and from `$HOME`, at session
+start and before any hook, and the planner can write its workspace and most of `$HOME`; a planted file would run with
+the planner's rights (D11). The config overlay sets `mcp.enableProjectConfig: false` and lists in `disabledProviders`
+every discovery provider that can carry code (`OMP_DISABLED_DISCOVERY`); a disabled provider wins over a project
+`enabledProviders`, and the overlay is the last settings layer. Houge uses none of them. `mcp-json` stays enabled: its
+user file is under the write-denied `~/.omp`. Checked live by `scripts/live-gate-mcp-discovery.mjs` (a control without
+the overlay blocks must fire every planted kind). Not yet covered: one omp loader that no setting reaches; its fix is a
+write deny inside the workspace, to follow.
 5.2 **Matcher posture.** Patterns are anchored to command position. The line-wise safety pass never skips heredoc
 bodies. A parse error or eval-depth overflow classifies the command as destructive (ask), never as plain. The matcher
 recurses into `bash|sh|zsh -<flags>c`, here-strings, `env -S` and `find -exec`; a shell fed its script through a pipe,
@@ -396,6 +404,7 @@ progress, or Paco's instructions about how its code, checks, memory or lessons s
 | 2026-11-06 | Drift rewording, no change of meaning: D7 fallback, D10 reader legs, memory-correct limits, empty-tier card conditions | — | 2026-11-06 |
 | 2026-11-10 | Grow zone: D8 (`skill_author` out, `grow_submit`/`grow_read` in); 1.7; 4.2 and 4.3 (the index, not bodies, in the prompt and fingerprint); 5.1 (j) (grow zone and backups read- and write-denied); 6.3 (`grow_read` named exception); 7.1 (role `grow_review`) | [grow zone](../superpowers/specs/2026-11-10-grow-zone-verification-design.md) (Rev 1.3.2) | 2026-11-10 (spec approval) |
 | 2026-11-12 | D7 and §10: the Antigravity login's terms risk read and accepted; what a suspension costs | [direction review](../research/direction-review-2026-11.md), [removal spec, not adopted](../superpowers/specs/2026-11-12-no-antigravity-oauth-design.md) | 2026-11-12 (in chat) |
+| 2026-11-13 | 5.1 (k): omp's discovery of planted code off (floor hotfix found by the P3 probe) | — | 2026-11-13 |
 
 ## Reference map
 

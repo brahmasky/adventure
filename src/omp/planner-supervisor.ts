@@ -34,6 +34,7 @@ import type { JevRequest, JevResult } from "../jev/jev-client.js";
 import { selectorKey, STEP_UP } from "./model-roles.js";
 import { familyOf, type ModelFamily, type ModelString } from "./model-string.js";
 import { PLANNER_HEARTBEAT_MS, type OmpConfig } from "./omp-config.js";
+import { OMP_DISABLED_DISCOVERY } from "./omp-discovery.js";
 import { classifyOmpError, frameErrorText, mayRetryOf, summarizeAssistantMessage, type AssistantSummary, type OmpFrame } from "./omp-frames.js";
 import type { OmpCheckResult } from "./omp-version.js";
 import { sharedOmpVersionCache } from "./omp-version-cache.js";
@@ -192,7 +193,15 @@ const TODO_REMINDER_KIND: ReadonlySet<string> = new Set(["todo_reminder_seen"]);
 const HOUGE_CONFIG_YML = "tools:\n  xdev: false\nstartup:\n  checkUpdate: false\nmarketplace:\n  autoUpdate: false\ntelemetry:\n  otlpExportEnabled: false\n"
   + "retry:\n  maxRetries: 2\n  maxDelayMs: 60000\n" // S2b: omp's retry window stays under the 180 s frame watchdog
   + "todo:\n  enabled: true\n  reminders: false\n  eager: default\n" // 2b-i §5, P3b': the tool itself comes from --tools
-  + "fetch:\n  enabled: false\n"; // 2b-i final review A4: omp's read never fetches a URL; the daemon's own fetch path is the gated one
+  + "fetch:\n  enabled: false\n" // 2b-i final review A4: omp's read never fetches a URL; the daemon's own fetch path is the gated one
+  // ADR 0032 5.1 (k): omp discovers code from the cwd and $HOME (MCP servers, custom tools, hooks, extension modules,
+  // settings), and the planner can write its workspace and most of $HOME. A planted file would run at the next session
+  // start, outside every gate, with the planner's rights (D11). Project MCP off, and every discovery provider that can
+  // carry code off; a disabled provider wins over a project `enabledProviders`. Houge uses none of them: its hook is
+  // `-e`, its prompt `--append-system-prompt`, its settings this overlay. mcp-json stays: its user file is under the
+  // write-denied ~/.omp. These ids are discovery providers, not model providers (anthropic, google-antigravity, kimi-code, openai-codex).
+  + "mcp:\n  enableProjectConfig: false\n"
+  + `disabledProviders:\n${OMP_DISABLED_DISCOVERY.map((id) => `  - ${id}\n`).join("")}`;
 /** The planner's omp config file, written atomically (0600); the contract probe writes the same file (spec §4.3). */
 export function writeHougeConfigFile(ctx: Pick<PathContext, "data">): string {
   const configFile = join(ctx.data, "omp", "houge-config.yml");
