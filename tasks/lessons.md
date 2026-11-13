@@ -717,3 +717,9 @@ The clean-room merge rebuilt `dist/` (new `omp/shell-wrapper.sh`) and the kickst
 ## 2026-11-13 — P2 use number
 - **A count over one table is checked against every way in.** The use number read the command audit, and self-write button taps go around gateway intake and never wrote a row there. Before shipping a metric, list every entry path for the thing it counts, and test each one through the real path rather than by inserting rows.
 - **A metric excludes its own reading.** `/status` writes an accepted audit row, so a naive count would rise each time Paco looked at it.
+
+## 2026-11-13 — omp discovery hotfix
+- **Close a class, not the instance.** The first fix closed the one file the probe used (`.mcp.json`); each review then found a sibling in the same class (user-level opt-in, custom tools, plugin roots). For a loader hole, list every way the runtime auto-loads code from a writable place (its source, not its docs) and plant a canary for each before calling it closed.
+- **Render the rules and read them before shipping a deny.** The ancestor loop ran past `$HOME` and would have denied `~/.omp`, the planner's own store; the unit tests passed. Printing the live rule set caught it.
+- **A finding goes into the public repo only after its fix.** The probe's floor finding was pushed to the public todo before it was fixed. Write security findings to a private note first; publish with the fix.
+- **A review that says "planner-writable" names the write path.** Codex's blocker conflated what the sandboxed process may write with what the model's tools may write; the gate and the `bash` profile answered it in one command.
