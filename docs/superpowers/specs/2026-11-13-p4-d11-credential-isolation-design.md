@@ -1,6 +1,6 @@
 # P4 (D11) — model logins leave the planner; the Workspace token never enters omp
 
-**Rev 1.1 · 2026-11-13 · status: REVIEWED, for Paco's approval.** Rev 1.0 was reviewed by spec-review-senior (Fable 5.2:
+**Rev 1.1 · 2026-11-13 · status: APPROVED by Paco 2026-11-13, residuals of §8 accepted.** Rev 1.0 was reviewed by spec-review-senior (Fable 5.2:
 2 BLOCKER, 9 WARNING, 2 SUGGESTION) and a codex design pass (3 BLOCKER, 3 WARNING, 1 SUGGESTION), both against the live
 code and omp 18.19.0's sources; every finding was checked first-hand and all are taken (change log §9). Direction approved
 by Paco in chat 2026-11-13. Changes the meaning of ADR 0032 D11 and ADR 0015's D11 text (Tier C: Paco signs).
@@ -174,7 +174,7 @@ Paco; items 5 and 7 produce a residual for Paco to accept or reject.
   any token file, and cannot write `models.yml` or `config.yml`; the gateway refuses no-token, wrong-token and
   out-of-grant requests; a `bash` child's env lacks the gateway token.
 
-## 8. Residuals (Tier C, for Paco to accept or reject)
+## 8. Residuals (Tier C; accepted by Paco 2026-11-13)
 
 - The gateway token sits in the omp processes Houge starts: a steered planner can make model calls through the gateway,
   which it can do today anyway; it cannot obtain a provider token.
